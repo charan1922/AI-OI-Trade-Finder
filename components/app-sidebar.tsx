@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState } from "react"
-import { BarChart2, ChevronDown, ChevronRight, Download, FlaskConical } from "lucide-react"
+import { BarChart2, CalendarDays, ChevronDown, ChevronRight, Download, Eye, FlaskConical, Gauge, Grid3x3, LineChart, ScanSearch } from "lucide-react"
 
 import {
   Sidebar,
@@ -24,6 +24,12 @@ const NAV_ITEMS = {
   children: [
     { title: "Market Simulator", href: "/market-simulator", icon: BarChart2 },
     { title: "Data Downloader", href: "/data-downloader", icon: Download },
+    { title: "Backtest", href: "/backtest", icon: LineChart },
+    { title: "Signal Lab", href: "/signal-lab", icon: ScanSearch },
+    { title: "Live Urgency", href: "/live", icon: Gauge },
+    { title: "Heatmap", href: "/heatmap", icon: Grid3x3 },
+    { title: "Trade Viewer", href: "/trade-viewer", icon: Eye },
+    { title: "Market Holidays", href: "/holidays", icon: CalendarDays },
   ],
 }
 
@@ -35,10 +41,22 @@ export function AppSidebar() {
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="border-b border-sidebar-border px-3 py-3">
-        <span className="text-sm font-semibold tracking-tight text-sidebar-foreground group-data-[collapsible=icon]:hidden">
-          Project-R
-        </span>
+      <SidebarHeader className="border-b border-sidebar-border">
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild size="lg" tooltip="Project-R Sim">
+              <Link href="/">
+                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+                  <FlaskConical className="size-4" />
+                </div>
+                <div className="grid flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
+                  <span className="truncate text-sm font-semibold tracking-tight">Project-R Sim</span>
+                  <span className="truncate text-xs text-sidebar-foreground/60">Simulation &amp; Backtesting</span>
+                </div>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarHeader>
 
       <SidebarContent>

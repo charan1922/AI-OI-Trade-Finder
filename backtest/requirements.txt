@@ -1,0 +1,5 @@
+# vectorbt (open-source) — backtest accounting, portfolio stats, and fast
+# parameter sweeps. It pulls numpy/pandas/numba/scipy and pins the pandas/numpy
+# versions it supports, so let pip resolve them (do NOT force pandas 3.x — vectorbt
+# is not tested against it and the install will break).
+vectorbt

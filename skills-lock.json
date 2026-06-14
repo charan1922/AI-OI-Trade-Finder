@@ -1,17 +1,53 @@
 {
   "version": 1,
   "skills": {
+    "backtest": {
+      "source": "marketcalls/vectorbt-backtesting-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/backtest/SKILL.md",
+      "computedHash": "90651dfebe20d3afcd4a2017fad7cfd64346c9ff8f16e32e4e4996c1dc905fef"
+    },
     "dhanhq": {
       "source": "dhan-oss/dhanhq-skills",
       "sourceType": "github",
       "skillPath": "skills/dhanhq/SKILL.md",
       "computedHash": "2e5845920ff4ccf2e4523e501e69f69888bcbb7523654d86916d5a5bc98ac37c"
     },
+    "optimize": {
+      "source": "marketcalls/vectorbt-backtesting-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/optimize/SKILL.md",
+      "computedHash": "daa44fb0ff65e1a287f42ce1036e7f690e625398c8d31d0093e0f93aff56a35f"
+    },
+    "quick-stats": {
+      "source": "marketcalls/vectorbt-backtesting-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/quick-stats/SKILL.md",
+      "computedHash": "2536df0d22bee2cfe21e819a9798b1f616151bf8b768f9639a3329220a0c7887"
+    },
+    "setup": {
+      "source": "marketcalls/vectorbt-backtesting-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/setup/SKILL.md",
+      "computedHash": "f776756c6478cfb4c531450f0120e41b6c3be3171b900d4e32230465fd87523a"
+    },
     "shadcn": {
       "source": "shadcn/ui",
       "sourceType": "github",
       "skillPath": "skills/shadcn/SKILL.md",
       "computedHash": "eee4f8123d0ce59aa1b2dbf7ea302e6ae1177ff9eb9ec7cb846ccac087e0025e"
+    },
+    "strategy-compare": {
+      "source": "marketcalls/vectorbt-backtesting-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/strategy-compare/SKILL.md",
+      "computedHash": "6ff3d726c072b89e02fe0f2811a416b69f29495898bba31910a6099b28a95d4f"
+    },
+    "vectorbt-expert": {
+      "source": "marketcalls/vectorbt-backtesting-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/vectorbt-expert/SKILL.md",
+      "computedHash": "9fee764594848d5e196f348f643335357903c4f624be2b9b87b28fffe38dbad3"
     }
   }
 }

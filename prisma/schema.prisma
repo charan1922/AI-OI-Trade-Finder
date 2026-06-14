@@ -1,0 +1,195 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Watchlist {
+  id         Int      @id @default(autoincrement())
+  symbol     String
+  exchange   String   @default("NSE")
+  segment    String   @default("EQ")
+  securityId String?
+  addedAt    DateTime @default(now())
+
+  @@unique([symbol, exchange])
+  @@map("watchlist")
+}
+
+model Activity {
+  id        Int      @id @default(autoincrement())
+  symbol    String
+  exchange  String
+  interval  String
+  action    String
+  rowsCount Int      @default(0)
+  status    String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([symbol])
+  @@map("activity")
+}
+
+model MasterContract {
+  id         Int       @id @default(autoincrement())
+  securityId String
+  symbol     String
+  exchange   String
+  segment    String
+  instrument String
+  name       String    @default("")
+  underlying String?
+  expiryDate DateTime?
+  lotSize      Float     @default(1)
+  strikePrice  Float?
+  optionType   String?
+  syncDate     String
+
+  @@unique([securityId, segment])
+  @@index([exchange, symbol])
+  @@index([segment, instrument, underlying])
+  @@index([underlying, expiryDate, optionType, strikePrice])
+  @@index([syncDate])
+  @@map("master_contracts")
+}
+
+model BhavcopyDay {
+  id          Int    @id @default(autoincrement())
+  date        String
+  symbol      String
+  eqVolume      Float  @default(0)
+  eqTurnover    Float  @default(0)
+  eqOpen        Float  @default(0)
+  eqHigh        Float  @default(0)
+  eqLow         Float  @default(0)
+  eqClose       Float  @default(0)
+  eqTrades      Int    @default(0)
+  eqDeliveryQty Float  @default(0)
+  eqDeliveryPct Float  @default(0)
+  futVolume   Float  @default(0)
+  futOi       Float  @default(0)
+  futOiChange Float  @default(0)
+  futTurnover Float  @default(0)
+  futTrades   Int    @default(0)
+  optVolume   Float  @default(0)
+  optOi       Float  @default(0)
+  optTurnover Float  @default(0)
+  optTrades   Int    @default(0)
+  ceVolume    Float  @default(0)
+  peVolume    Float  @default(0)
+  ceTrades    Int    @default(0)
+  peTrades    Int    @default(0)
+
+  @@unique([date, symbol])
+  @@index([symbol])
+  @@index([date])
+  @@map("bhavcopy_days")
+}
+
+/// Dhan contract IDs preserved per backtest trade (created originally via raw
+/// SQL in lib/backtest/backtest-store.ts; declared here so `db push` keeps it).
+model TradeContract {
+  symbol        String
+  date          String
+  optionType    String  @map("option_type")
+  strike        Float
+  eqSecurityId  String? @map("eq_security_id")
+  futSecurityId String? @map("fut_security_id")
+  futExpiry     String? @map("fut_expiry")
+  futLotSize    Float?  @map("fut_lot_size")
+  optSecurityId String? @map("opt_security_id")
+  optVia        String? @map("opt_via")
+  resolvedAt    String  @map("resolved_at")
+
+  @@id([symbol, date, optionType, strike])
+  @@map("trade_contracts")
+}
+
+/// NSE F&O universe with lot sizes (from "Dhan - Nse Fno Lot Size.csv") and
+/// sector classification. sectorSource records provenance: 'tf-map' = the
+/// project's existing 207-symbol TradeFinder-derived map; 'inferred' = assigned
+/// by matching the company's business to the map's convention for its closest
+/// peer (e.g. defence→AUTO like MAZDOCK, liquor→FMCG like UNITDSPR);
+/// 'index' = not a stock.
+model FnoStock {
+  id           Int    @id @default(autoincrement())
+  symbol       String @unique
+  name         String
+  isIndex      Boolean @default(false)
+  /// Contract lot sizes for the three published expiry months.
+  lotSize      Int
+  lotSizeNext  Int    @default(0)
+  lotSizeFar   Int    @default(0)
+  /// Which months the three lot-size columns refer to (from the CSV header).
+  lotMonths    String @default("")
+  sector       String
+  sectorSource String
+  syncedAt     String @default("")
+
+  @@index([sector])
+  @@map("fno_stocks")
+}
+
+model TfSnapshot {
+  id        Int    @id @default(autoincrement())
+  date      String
+  symbol    String
+  rFactor   Float
+  ltp       Float  @default(0)
+  prevClose Float  @default(0)
+  pctChange Float  @default(0)
+
+  @@unique([date, symbol])
+  @@index([date])
+  @@map("tf_snapshots")
+}
+
+model OptionTrade {
+  id            Int      @id @default(autoincrement())
+  date          String
+  symbol        String
+  optionType    String
+  strikePrice   Float
+  expiryDate    String
+  securityId    String
+  entryPrice    Float
+  exitPrice     Float?
+  quantity      Int
+  lotSize       Int
+  spotAtEntry   Float
+  grossPnl      Float?
+  charges       Float?
+  netPnl        Float?
+  entryTime     String
+  exitTime      String?
+  exitReason    String?
+  rFactor       Float
+  adx           Float?
+  aiRationale   String
+  aiConfidence  Float
+  paperTrade    Boolean  @default(true)
+  orderId       String?
+  status        String   @default("OPEN")
+
+  @@index([date])
+  @@index([symbol])
+  @@map("option_trades")
+}
+
+model Settings {
+  id              Int     @id @default(1)
+  dhanClientId    String  @default("")
+  dhanAccessToken String  @default("")
+  batchSize       Int     @default(10)
+  rateLimitMs     Int     @default(250)
+  defaultRange    String  @default("30")
+  theme           String  @default("dark")
+  chartHeight     Int     @default(450)
+  autoRefresh     Boolean @default(true)
+  showTooltips    Boolean @default(true)
+
+  @@map("settings")
+}

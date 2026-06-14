@@ -1,0 +1,30 @@
+{
+  "NSE_FNO_62802_5_2026-05-29_2026-05-29.parquet": {
+    "key": "NSE_FNO_62802_5_2026-05-29_2026-05-29.parquet",
+    "symbol": "RELIANCE",
+    "instrumentKind": "FUTSTK",
+    "segment": "NSE_FNO",
+    "securityId": "62802",
+    "interval": "5",
+    "fromDate": "2026-05-29",
+    "toDate": "2026-05-29",
+    "candles": 75,
+    "firstTime": 1780026300,
+    "lastTime": 1780048500,
+    "downloadedAt": "2026-06-02T02:52:17.625Z"
+  },
+  "NSE_EQ_2885_5_2026-06-01_2026-06-02.parquet": {
+    "key": "NSE_EQ_2885_5_2026-06-01_2026-06-02.parquet",
+    "symbol": "RELIANCE",
+    "instrumentKind": "EQUITY",
+    "segment": "NSE_EQ",
+    "securityId": "2885",
+    "interval": "5",
+    "fromDate": "2026-06-01",
+    "toDate": "2026-06-02",
+    "candles": 75,
+    "firstTime": 1780285500,
+    "lastTime": 1780307700,
+    "downloadedAt": "2026-06-02T03:11:00.538Z"
+  }
+}
