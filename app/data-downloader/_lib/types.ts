@@ -92,6 +92,8 @@ export interface DailyContextDay {
   optOITotal: number;
   /** TOTAL option volume across ALL strikes (CE+PE) — official NSE bhavcopy. */
   optVolumeTotal: number;
+  /** OI of the TRADED contract only (this exact expiry month). 0 when not backfilled. */
+  optContractOI: number;
   /** Equity turnover for the day = Σ(volume × close), in ₹. */
   eqTurnover: number;
   eqVolume: number;
@@ -132,13 +134,18 @@ export interface TradeContextData {
     optOIChangePctTradeDay: number | null;
     futOIChangePct: number | null;
     turnoverVsAvg: number | null;
-    /** TF/R-Factor `oi_level`: trade-day OI ÷ same-cycle average OI. Null for
-     *  options when too few same-cycle sessions exist (right after a monthly expiry). */
+    /** TF/R-Factor `oi_level`. From the traded contract's own OI when available
+     *  (accurate), else the summed total clipped to the trade day's cycle; null if
+     *  too few comparable sessions. */
     optOILevel20d: number | null;
     futOILevel20d: number | null;
-    /** A monthly options expiry falls inside the lookback — option OI level/change
-     *  are computed within the trade day's cycle only (and may be hidden). */
+    /** Fallback-only flag: a monthly expiry sits in the lookback and we had no
+     *  per-contract data, so the summed total is cycle-distorted (trust it less). */
     optExpiryInWindow: boolean;
+    /** Contract month the OI metrics track (ISO, e.g. "2026-06-30"), or null. */
+    optContractExpiry: string | null;
+    /** True when OI level/change come from the traded contract's own series. */
+    optContractDataAvailable: boolean;
     /** Trade-day underlying price change vs the previous session (%). */
     priceChangePctTradeDay: number | null;
     /** Price+OI quadrant for the futures (prev session → trade day). */

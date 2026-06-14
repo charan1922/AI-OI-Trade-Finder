@@ -6,6 +6,13 @@ import type { DirectionBias, TradeContextData } from '../_lib/types';
 const signed = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(0)}%`;
 const signed1 = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
 
+const MON3 = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** "2026-06-30" → "Jun 2026" — the contract month label. */
+const fmtExpiry = (iso: string) => {
+  const m = iso.match(/^(\d{4})-(\d{2})-\d{2}/);
+  return m ? `${MON3[Number(m[2])] ?? m[2]} ${m[1]}` : iso;
+};
+
 interface Evidence {
   id: string;
   text: React.ReactNode;
@@ -86,6 +93,21 @@ export function TradeRationale({ ctx }: { ctx: TradeContextData }) {
         </>
       ),
     });
+  // Traded contract's own buildup on the trade day (clean — both sides within the
+  // current near-month regime). The expiry-safe "fresh positioning" read.
+  if (i.optContractExpiry && i.optOIChangePctTradeDay != null)
+    evidence.push({
+      id: 'opt-contract',
+      supports: i.optOIChangePctTradeDay > 0,
+      text: (
+        <>
+          <strong className="text-foreground">{fmtExpiry(i.optContractExpiry)} contract</strong> (the one traded): OI{' '}
+          <strong className="text-foreground">{signed(i.optOIChangePctTradeDay)}</strong> on the trade day —{' '}
+          {i.optOIChangePctTradeDay > 0 ? 'fresh positions opening' : 'positions closing'}
+          <span className="text-muted-foreground/60"> (magnitude, not direction)</span>
+        </>
+      ),
+    });
   if (i.optOILevel20d != null)
     evidence.push({
       id: 'opt-oi-level',
@@ -93,7 +115,7 @@ export function TradeRationale({ ctx }: { ctx: TradeContextData }) {
       text: (
         <>
           Total option OI (CE+PE) at <strong className="text-foreground">{i.optOILevel20d.toFixed(2)}×</strong>{' '}
-          its 20-day average
+          its average this expiry cycle
         </>
       ),
     });
@@ -103,8 +125,7 @@ export function TradeRationale({ ctx }: { ctx: TradeContextData }) {
       supports: oiBuilding,
       text: (
         <>
-          <strong className="text-foreground">Total option OI {signed(i.optOIChangePct)}</strong> over 5 sessions
-          {i.optOIChangePctTradeDay != null && <> ({signed(i.optOIChangePctTradeDay)} on the trade day)</>} —{' '}
+          <strong className="text-foreground">Total option OI {signed(i.optOIChangePct)}</strong> over 5 sessions —{' '}
           {oiBuilding ? 'open contracts rising' : 'open contracts falling'}
           <span className="text-muted-foreground/60"> (magnitude, not direction)</span>
         </>
@@ -186,9 +207,10 @@ export function TradeRationale({ ctx }: { ctx: TradeContextData }) {
         <div className="mb-1.5 flex items-start gap-1.5 rounded border border-sky-300 dark:border-sky-500/30 bg-sky-100/60 dark:bg-sky-500/10 px-2 py-1 text-[11px] text-sky-700 dark:text-sky-300">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
           <span>
-            Monthly options expiry falls in this window — total option OI steps down as strikes roll off. The OI-level
-            read uses only post-expiry (same-cycle) sessions
-            {i.optOILevel20d == null && ', and is hidden until ≥5 such sessions exist'}, so it isn&apos;t skewed across cycles.
+            A monthly options expiry falls in this window (NSE calendar), so total option OI stepped down as that
+            month&apos;s strikes rolled off. The level is measured within the current cycle only
+            {i.optOILevel20d == null && ' — and is hidden until ≥5 post-expiry sessions exist; rely on the contract buildup above'}
+            {i.optContractExpiry && `. The trade used the ${fmtExpiry(i.optContractExpiry)} contract`}.
           </span>
         </div>
       )}

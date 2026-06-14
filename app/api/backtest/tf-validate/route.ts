@@ -296,6 +296,7 @@ export async function POST(req: Request) {
         optionType: body.optionType,
         strike: body.strike,
         days: body.days ?? 30,
+        expiry: body.expiry,
       });
       // Preserved Dhan contract IDs from download time — shown in the UI and
       // reused on re-sync (no fresh master lookup needed).

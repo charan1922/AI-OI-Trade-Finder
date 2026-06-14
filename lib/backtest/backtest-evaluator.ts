@@ -11,6 +11,8 @@
 
 import { ADX } from 'trading-signals';
 import { queryRows, getTradeContract } from './backtest-store';
+import { getOptionExpiryOISeries } from '@/lib/historify/bhavcopy-service';
+import { getExpiriesAsc, mostRecentExpiryBefore } from './expiry-calendar';
 import { analyzeWindow, type WindowCalendar } from './trading-calendar';
 import { TF_TRADES, type TFTrade } from './data-downloader';
 import { calculateOptionCharges, type ChargesBreakdown } from '@/lib/ai-trading/commissions';
@@ -176,6 +178,9 @@ export interface DailyContextDay {
   optOITotal: number;
   /** TOTAL option volume across ALL strikes (CE+PE) — official NSE bhavcopy. */
   optVolumeTotal: number;
+  /** OI of the TRADED contract only (this exact expiry month, all strikes CE+PE),
+   *  from the per-expiry table. 0 when not backfilled. Powers the expiry-safe level. */
+  optContractOI: number;
   eqTurnover: number;
   eqVolume: number;
   /** Underlying EOD close (bhavcopy, else last equity 5-min bar). Drives price direction. */
@@ -200,14 +205,21 @@ export interface TradeContext {
     optOIChangePctTradeDay: number | null; // prev day → trade day
     futOIChangePct: number | null;
     turnoverVsAvg: number | null; // trade-day futures turnover ÷ window avg
-    /** TF/R-Factor `oi_level`: trade-day OI ÷ same-cycle average OI (V4 key metric).
-     *  For options the baseline is clipped to the trade day's expiry cycle; null if
-     *  too few same-cycle sessions (e.g. trade sits right after a monthly expiry). */
+    /** TF/R-Factor `oi_level`. When the traded contract's per-expiry data exists,
+     *  this is trade-day OI ÷ that contract's own recent average (no cross-cycle
+     *  skew). Otherwise it falls back to the summed total clipped to the trade
+     *  day's cycle; null if too few comparable sessions. */
     optOILevel20d: number | null;
     futOILevel20d: number | null;
-    /** True if a monthly options expiry falls inside the lookback (option OI steps
-     *  down as strikes roll off, so the OI level/change use same-cycle sessions only). */
+    /** True only on the FALLBACK path (no per-contract data) when a monthly expiry
+     *  sits in the lookback — the summed total is cycle-distorted, so trust it less. */
     optExpiryInWindow: boolean;
+    /** The contract month the OI metrics track (ISO, e.g. "2026-06-30"), or null
+     *  when per-contract data isn't available and we fell back to the total. */
+    optContractExpiry: string | null;
+    /** True when the OI level/change come from the traded contract's own series
+     *  (the accurate path) rather than the summed-total fallback. */
+    optContractDataAvailable: boolean;
     /** Trade-day underlying price change vs the previous session (%). */
     priceChangePctTradeDay: number | null;
     /** Price+OI quadrant for the futures (prev session → trade day). */
@@ -234,15 +246,42 @@ export interface TradeContext {
  * `getDailySpreadHistory`). Turnover = Σ(volume × close) per day (Dhan history has
  * no turnover/VWAP field — see document.json).
  */
+const MONTHS_3: Record<string, string> = {
+  jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+  jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+};
+
+/**
+ * Normalize a trade's expiry to ISO YYYY-MM-DD so it matches the exchange file's
+ * `XpryDt` exactly. Accepts "30 Jun 2026", "2026-06-30", or "2026-06-30T..".
+ * Returns null if it can't be parsed (caller then falls back to the summed total).
+ */
+function normalizeExpiry(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const s = raw.trim();
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const dmy = s.match(/^(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\s+(\d{4})$/);
+  if (dmy) {
+    const mm = MONTHS_3[dmy[2].toLowerCase()];
+    if (mm) return `${dmy[3]}-${mm}-${dmy[1].padStart(2, '0')}`;
+  }
+  return null;
+}
+
 export async function getDailyContext(params: {
   symbol: string;
   date: string;
   optionType: 'CE' | 'PE';
   strike: number;
   days?: number;
+  /** The trade's contract month (any of "30 Jun 2026" / "2026-06-30"); used to
+   *  track that exact contract's OI instead of the all-months summed total. */
+  expiry?: string;
 }): Promise<TradeContext> {
   const { symbol, date, optionType, strike } = params;
   const days = params.days ?? 30;
+  const contractExpiry = normalizeExpiry(params.expiry); // ISO YYYY-MM-DD or null
 
   const futRows = (await queryRows(
     `
@@ -339,6 +378,17 @@ export async function getDailyContext(params: {
   const futMap = new Map(futRows.map((r) => [r.date, r]));
   const optMap = new Map(optRows.map((r) => [r.date, r]));
   const eqMap = new Map(eqRows.map((r) => [r.date, r]));
+
+  // Traded contract's OWN OI series (symbol + exact expiry month). Empty if the
+  // per-expiry table hasn't been backfilled for this contract yet → getDailyContext
+  // falls back to the summed-total path and flags it.
+  const contractOiByDate = new Map<string, number>();
+  if (contractExpiry) {
+    const series = await getOptionExpiryOISeries(symbol, contractExpiry, date, days + 5);
+    for (const s of series) contractOiByDate.set(s.date, s.optOi);
+  }
+  const optContractDataAvailable = contractOiByDate.size > 0;
+
   const allDates = new Set<string>([...futMap.keys(), ...optMap.keys(), ...eqMap.keys(), ...bhavMap.keys()]);
   const windowDates = [...allDates].sort().slice(-days); // oldest first
 
@@ -369,6 +419,9 @@ export async function getDailyContext(params: {
       optVolume: Number(o?.volume ?? 0), // single traded strike (Dhan) — not charted
       optOITotal: hasBhavOpt ? (b?.optOi ?? 0) : 0,
       optVolumeTotal: hasBhavOpt ? (b?.optVolume ?? 0) : 0,
+      // Traded contract's OI (this exact expiry month, bhavcopy per-expiry table).
+      // 0 when not backfilled — drives the expiry-safe oi_level when present.
+      optContractOI: contractOiByDate.get(d) ?? 0,
       // Official NSE bhavcopy traded value is authoritative; the Σ(5-min vol×close)
       // from Dhan candles is only an approximation, so use it solely as a fallback
       // for days bhavcopy hasn't covered. (Verified equal to ~0.003% on liquid names.)
@@ -415,27 +468,25 @@ export async function getDailyContext(params: {
     return avg > 0 && today > 0 ? today / avg : null;
   };
 
-  // ── Options expiry awareness ───────────────────────────────────────────────
+  // ── Options expiry awareness (authoritative NSE calendar) ──────────────────
   // Total option OI steps DOWN at each MONTHLY expiry — a whole expiry's strikes
-  // roll off, so the next day's total is a different contract cycle. (Futures roll
-  // smoothly, so they keep the plain 20-session baseline above.) Any option metric
-  // that straddles an expiry — a level-vs-trailing-average, or a vs-N-sessions-back
-  // change — mixes two cycles and skews. Detect the most recent expiry (a ≥40%
-  // single-session drop in total option OI) and keep option metrics WITHIN the
-  // trade day's own cycle; flag it so the read isn't trusted blindly.
-  const EXPIRY_DROP = 0.4;
+  // roll off — so a level-vs-trailing-average that straddles an expiry compares
+  // two contract cycles and skews high. The trade day's cycle starts the session
+  // AFTER the most recent expiry (exact date from the calendar, not a heuristic).
+  // We need ≥5 same-cycle sessions for a meaningful level; right after an expiry
+  // there aren't enough → return null (honest) rather than an inflated number.
+  const expiriesAsc = await getExpiriesAsc();
+  const recentExpiry = mostRecentExpiryBefore(expiriesAsc, date); // ISO or null
   let optCycleStart = 0; // index in daysArr where the trade day's option cycle begins
   let optExpiryInWindow = false;
-  for (let k = 1; k <= lastIdx; k++) {
-    const prevOi = daysArr[k - 1].optOITotal;
-    const curOi = daysArr[k].optOITotal;
-    if (prevOi > 0 && curOi > 0 && curOi < prevOi * (1 - EXPIRY_DROP)) {
-      optCycleStart = k;
+  if (recentExpiry) {
+    const idx = daysArr.findIndex((d) => d.date > recentExpiry);
+    if (idx > 0) {
+      optCycleStart = idx; // the expiry boundary falls INSIDE the window
       optExpiryInWindow = true;
     }
+    // idx === 0 → the whole window is already post-expiry (boundary precedes it)
   }
-  // oi_level using ONLY same-cycle sessions before the trade day (≥5 needed, else
-  // null — better no number than a cross-cycle one).
   const optCycleVals = daysArr
     .slice(optCycleStart, lastIdx)
     .map((d) => d.optOITotal)
@@ -445,8 +496,17 @@ export async function getDailyContext(params: {
     optCycleVals.length >= 5 && optTradeOi > 0
       ? optTradeOi / (optCycleVals.reduce((a, b) => a + b, 0) / optCycleVals.length)
       : null;
-  // 5-session option OI change only when the 5-back session is in the same cycle.
+  // 5-session summed-total change, only when the 5-back session is in the same cycle.
   const optChange5 = lastIdx - 5 >= optCycleStart ? kBack('optOITotal') : null;
+
+  // Traded contract's day-over-day OI change — the clean "fresh positioning into
+  // the traded month" signal (both sides are within the current near-month regime).
+  // We deliberately do NOT compute a contract level-vs-average: a single contract's
+  // OI ramps over its life (far→near month), which would inflate any such ratio.
+  const contractTradeOi = lastIdx >= 0 ? daysArr[lastIdx].optContractOI : 0;
+  const contractPrevOi = lastIdx > 0 ? daysArr[lastIdx - 1].optContractOI : 0;
+  const contractChangeTradeDay =
+    optContractDataAvailable && contractTradeOi > 0 ? pct(contractPrevOi, contractTradeOi) : null;
 
   // ── Price + OI direction (the four-quadrant read) ──────────────────────────
   // Direction comes from PRICE alongside OI, day-over-day (previous session →
@@ -472,13 +532,20 @@ export async function getDailyContext(params: {
     strike,
     days: daysArr,
     insight: {
+      // 5-session change on the summed total, clipped to the trade day's cycle.
       optOIChangePct: optChange5,
-      optOIChangePctTradeDay: pct(prevOptOI, tradeOptOI),
+      // Trade-day OI change of the TRADED CONTRACT when we have it (the clean
+      // buildup), else the summed-total day-over-day.
+      optOIChangePctTradeDay: optContractDataAvailable ? contractChangeTradeDay : pct(prevOptOI, tradeOptOI),
       futOIChangePct: kBack('futOI'),
       turnoverVsAvg: avgTurnover > 0 ? tradeTurnover / avgTurnover : null,
+      // Level vs normal = summed total clipped to the current expiry cycle (null
+      // right after an expiry — not enough same-cycle sessions yet).
       optOILevel20d: optOILevelCycle,
       futOILevel20d: oiLevel20('futOI'),
       optExpiryInWindow,
+      optContractExpiry: optContractDataAvailable ? contractExpiry : null,
+      optContractDataAvailable,
       priceChangePctTradeDay,
       futQuadrant: fut.quadrant,
       futBias: fut.bias,

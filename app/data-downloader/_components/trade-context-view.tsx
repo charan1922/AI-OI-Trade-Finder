@@ -44,6 +44,7 @@ export function TradeContextView({ trade, isDownloading, onDownload, refreshToke
             optionType: t.optionType,
             strike: t.strike,
             days: 30,
+            expiry: t.expiry,
           }),
         });
         const d = await res.json();
