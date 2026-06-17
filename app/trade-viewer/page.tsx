@@ -19,6 +19,9 @@ export default function TradeViewerPage() {
   }, []);
 
   useEffect(() => {
+    // Fetch-on-mount: setState runs after the awaited fetch resolves (async),
+    // not synchronously in the effect body — so it doesn't cause a render cascade.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchStatus();
   }, [fetchStatus]);
 

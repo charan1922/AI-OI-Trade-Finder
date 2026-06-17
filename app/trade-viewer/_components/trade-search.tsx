@@ -90,6 +90,7 @@ export function TradeSearch({ trades, selectedIdx, onSelect }: TradeSearchProps)
           type="text"
           role="combobox"
           aria-expanded={open}
+          aria-controls="trade-search-listbox"
           aria-haspopup="listbox"
           aria-autocomplete="list"
           value={open ? query : displayText}
@@ -119,6 +120,7 @@ export function TradeSearch({ trades, selectedIdx, onSelect }: TradeSearchProps)
       {open && (
         <div
           ref={listRef}
+          id="trade-search-listbox"
           role="listbox"
           className="absolute z-50 w-full mt-1 max-h-80 overflow-y-auto rounded-lg bg-card border border-border shadow-2xl shadow-black/50"
         >

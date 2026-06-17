@@ -11,7 +11,14 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    "dist/**",
     "next-env.d.ts",
+    // Python virtualenvs (e.g. backtest/.venv) ship vendored, multi-megabyte
+    // minified JS bundles (plotly, jupyter widgets). They are not our source,
+    // and parsing them exhausts ESLint's heap (OOM / exit 134). tsc never sees
+    // them because they're outside tsconfig's include — only ESLint crawls cwd.
+    "**/.venv/**",
+    "**/__pycache__/**",
   ]),
 ]);
 

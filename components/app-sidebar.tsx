@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState } from "react"
-import { BarChart2, CalendarDays, ChevronDown, ChevronRight, Download, Eye, FlaskConical, Gauge, Grid3x3, LineChart, ScanSearch } from "lucide-react"
+import { BarChart2, Bot, CalendarDays, ChevronDown, ChevronRight, Download, Eye, FlaskConical, Gauge, Grid3x3, LineChart, ScanSearch } from "lucide-react"
 
 import {
   Sidebar,
@@ -24,6 +24,7 @@ const NAV_ITEMS = {
   children: [
     { title: "Market Simulator", href: "/market-simulator", icon: BarChart2 },
     { title: "Data Downloader", href: "/data-downloader", icon: Download },
+    { title: "Trade Assistant", href: "/trade-assistant", icon: Bot },
     { title: "Backtest", href: "/backtest", icon: LineChart },
     { title: "Signal Lab", href: "/signal-lab", icon: ScanSearch },
     { title: "Live Urgency", href: "/live", icon: Gauge },

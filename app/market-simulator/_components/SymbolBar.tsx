@@ -48,20 +48,19 @@ export default function SymbolBar({ sim }: { sim: UseSimulator }) {
   const [symbol, setSymbol] = useState('RELIANCE');
   const [kind, setKind] = useState<SimInstrumentKind>('EQUITY');
   const [interval, setInterval] = useState<SimInterval>('5');
-  const [range, setRange] = useState<DateRange | undefined>();
+  // Default window: the last weekday (single recent trading session). Computed as
+  // lazy initial state — no effect needed, so no setState-in-effect cascade.
+  const [range, setRange] = useState<DateRange | undefined>(() => {
+    const d = new Date();
+    while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+    return { from: d, to: d };
+  });
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [showSuggest, setShowSuggest] = useState(false);
   const [datasets, setDatasets] = useState<SimDataset[]>([]);
   const [downloading, setDownloading] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Default window: the last weekday (single recent trading session).
-  useEffect(() => {
-    const d = new Date();
-    while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
-    setRange({ from: d, to: d });
-  }, []);
 
   const fetchDatasets = useCallback(async () => {
     try {
@@ -74,6 +73,9 @@ export default function SymbolBar({ sim }: { sim: UseSimulator }) {
   }, []);
 
   useEffect(() => {
+    // Fetch-on-mount: setState runs after the awaited fetch resolves (async),
+    // not synchronously in the effect body — so it doesn't cause a render cascade.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchDatasets();
   }, [fetchDatasets]);
 
