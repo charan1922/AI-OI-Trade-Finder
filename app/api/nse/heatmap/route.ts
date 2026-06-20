@@ -8,28 +8,32 @@ export const runtime = 'nodejs';
 /**
  * GET /api/nse/heatmap — official NSE indices + market status for the NSE heatmap.
  *
- * Pulls allIndices (sector/broad % change) and marketStatus (open/closed, GIFT
- * Nifty, market cap) from NSE's public feed — no Dhan auth. Both share the
- * cookie-cached client, and the result is cached briefly so many tabs collapse
- * into one upstream call.
+ * Resilience: NSE intermittently slow-walks requests (esp. concurrent ones), so
+ *  1. the two upstream calls run SEQUENTIALLY (concurrent hits get throttled),
+ *  2. a fresh result is cached for FRESH_MS, and
+ *  3. if a refresh fails we serve the LAST GOOD payload marked `stale` rather
+ *     than a 502 — the page never blanks once it has loaded once.
  */
 
-const CACHE_MS = 30_000;
+const FRESH_MS = 60_000;
 let cache: { at: number; payload: Record<string, unknown> } | null = null;
 
 export async function GET() {
+  if (cache && Date.now() - cache.at < FRESH_MS) {
+    return NextResponse.json(cache.payload);
+  }
   try {
-    if (cache && Date.now() - cache.at < CACHE_MS) {
-      return NextResponse.json(cache.payload);
-    }
-    const [{ timestamp, indices }, marketStatus] = await Promise.all([
-      fetchNseAllIndices(),
-      fetchMarketStatus().catch(() => null), // status is a nice-to-have; never fail the heatmap on it
-    ]);
-    const payload = { success: true, asOf: timestamp, count: indices.length, indices, marketStatus };
+    // Sequential, not Promise.all — NSE throttles concurrent calls on one session.
+    const { timestamp, indices } = await fetchNseAllIndices();
+    const marketStatus = await fetchMarketStatus().catch(() => null);
+    const payload = { success: true, asOf: timestamp, count: indices.length, indices, marketStatus, stale: false };
     cache = { at: Date.now(), payload };
     return NextResponse.json(payload);
   } catch (error) {
+    if (cache) {
+      // Serve the last good data instead of failing the page.
+      return NextResponse.json({ ...cache.payload, stale: true, staleSince: cache.at });
+    }
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 502 });
   }
 }
