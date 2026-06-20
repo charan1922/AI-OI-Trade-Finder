@@ -14,6 +14,7 @@ interface NseHeatmapResponse {
   count?: number;
   indices?: NseIndex[];
   marketStatus?: MarketStatus | null;
+  stale?: boolean;
   error?: string;
 }
 
@@ -157,6 +158,14 @@ export default function NseHeatmapPage() {
         >
           Official NSE · 24/7
         </span>
+        {data?.stale && (
+          <span
+            className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400"
+            title="NSE was briefly slow — showing the last good data, refreshing automatically."
+          >
+            cached
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center gap-1 rounded-lg border border-border p-0.5">
             <button type="button" onClick={() => setView('main')} className={toggleCls('main')}>

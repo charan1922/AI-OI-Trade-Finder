@@ -6,7 +6,7 @@ import type { ActiveStock, MoverStock, NsePulse, OiStock, WeekHighStock } from '
 import { MarketStatusStrip } from '@/app/nse/_components/market-status-strip';
 import { fmtCr, fmtNum, fmtPct, pctClass } from '@/app/nse/_lib/heat';
 
-type PulseResponse = { success: boolean; error?: string } & Partial<NsePulse>;
+type PulseResponse = { success: boolean; error?: string; stale?: boolean } & Partial<NsePulse>;
 
 // Poll fast while the market is OPEN (these feeds tick live); slow when CLOSED —
 // the data is the static last session, so frequent polls would just burn NSE's
@@ -144,6 +144,14 @@ export default function NseMoversPage() {
         >
           Official NSE
         </span>
+        {data?.stale && (
+          <span
+            className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400"
+            title="NSE was briefly slow — showing the last good data, refreshing automatically."
+          >
+            cached
+          </span>
+        )}
         <button
           type="button"
           onClick={() => void fetchOnce()}
