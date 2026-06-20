@@ -275,7 +275,7 @@ export default function NseMoversPage() {
           </Panel>
 
           <p className="text-[10px] text-muted-foreground">
-            Live from NSE public feeds — no broker auth. Refreshes every {data?.marketStatus && /open/i.test(data.marketStatus.status) ? '60s while open' : '5 min (market closed — static last session)'}.
+            Live from NSE public feeds — no broker auth. % is vs the previous close using <b className="text-foreground">last-traded price (LTP)</b>; EOD Movers uses NSE&apos;s official closing price, so values differ slightly. Refreshes every {data?.marketStatus && /open/i.test(data.marketStatus.status) ? '60s while open' : '5 min (market closed — static last session)'}.
           </p>
         </>
       )}

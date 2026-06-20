@@ -44,13 +44,23 @@ app/nse/                  UI
   _lib/heat.ts            finviz colour scale + formatters (fmtNum, fmtCr, fmtPct, pctClass)
   _components/            <MarketStatusStrip/>, <IndexTile/>
   heatmap/page.tsx        → /nse/heatmap
-  movers/page.tsx         → /nse/movers
+  movers/page.tsx         → /nse/movers          (LIVE intraday snapshot)
+  movers-history/page.tsx → /nse/movers-history   (EOD, date-picked, from bhavcopy)
 app/api/nse/
-  heatmap/route.ts        → /api/nse/heatmap  (allIndices + marketStatus, 30s cache)
-  pulse/route.ts          → /api/nse/pulse    (all mover feeds, 60s cache)
+  heatmap/route.ts        → /api/nse/heatmap         (allIndices + marketStatus, 60s cache, serve-stale)
+  pulse/route.ts          → /api/nse/pulse           (all mover feeds, 60s cache, serve-stale)
+  movers-history/route.ts → /api/nse/movers-history  (pure bhavcopy_days read; ?dates=true | ?date=YYYY-MM-DD)
 ```
 
-Sidebar: **NSE Heatmap** (`/nse/heatmap`, LayoutGrid icon) and **NSE Movers** (`/nse/movers`, Flame icon), right after the Dhan "Heatmap".
+Sidebar (after the Dhan "Heatmap"): **NSE Heatmap** (`/nse/heatmap`), **NSE Movers** (`/nse/movers`, live), **EOD Movers** (`/nse/movers-history`, historical).
+
+### Gotchas — why live and EOD differ (both real, neither fabricated)
+- **Price %** (gainers/losers/most-active): live uses **LTP (last traded price)**; EOD bhavcopy uses NSE's **official closing price** (last-30-min weighted avg / closing auction). Previous close matches to the rupee — only the "current price" differs, so the % differs slightly.
+- **OI build-up**: NSE's live "OI spurts" measures **total derivatives OI = futures + options** (`futOi + optOi`), NOT futures-only. The EOD route must sum both (verified: matches live to the decimal for most names). Using `futOiChange` alone was wrong (INFY read 12% vs the correct 25%).
+- Residual tiny OI gaps on a few names = live is an intraday OI snapshot vs EOD final settlement OI.
+
+### EOD Movers (`/nse/movers-history`)
+The historical counterpart to the live movers page — a date picker (◀ / session dropdown / ▶, 129 sessions 2025-12-09 → 2026-06-19) over **NSE bhavcopy** in the DB. For any session it reconstructs, **close-to-close**, the F&O OI Build-up, Most Active (value/volume), and Top Gainers/Losers. Pure DB read, no NSE/Dhan calls, no impact on the live page. Live NSE mover feeds are current-snapshot only (no date param), so this is the only way to view a past session — and it's EOD granularity, not the intraday snapshot the live page shows.
 
 ## 4. The two pages
 

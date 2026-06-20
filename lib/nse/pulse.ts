@@ -81,6 +81,14 @@ async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
+/**
+ * Gap between sequential NSE calls. Firing all ~7 feeds back-to-back trips NSE's
+ * burst throttle partway through (later feeds come back empty); spacing them ~350ms
+ * apart lets every feed succeed — verified against the live endpoints.
+ */
+const FEED_GAP_MS = 350;
+const gap = () => new Promise((r) => setTimeout(r, FEED_GAP_MS));
+
 export async function fetchMarketStatus(): Promise<MarketStatus> {
   const j = await nseApiGet<{
     marketState?: Record<string, unknown>[];
@@ -136,6 +144,7 @@ function mapActive(json: { data?: Record<string, unknown>[] }): ActiveStock[] {
 /** Fetch every pulse feed sequentially (cookie is cached, so each is one request). */
 export async function fetchNsePulse(): Promise<NsePulse> {
   const marketStatus = await safe(fetchMarketStatus);
+  await gap();
 
   const gainersJson = await safe(() =>
     nseApiGet<Record<string, { data?: Record<string, unknown>[] }>>(
@@ -143,27 +152,32 @@ export async function fetchNsePulse(): Promise<NsePulse> {
       { referer: moverRef },
     ),
   );
+  await gap();
   const losersJson = await safe(() =>
     nseApiGet<Record<string, { data?: Record<string, unknown>[] }>>(
       '/api/live-analysis-variations?index=loosers',
       { referer: moverRef },
     ),
   );
+  await gap();
   const mavJson = await safe(() =>
     nseApiGet<{ data?: Record<string, unknown>[] }>(
       '/api/live-analysis-most-active-securities?index=value',
       { referer: activeRef },
     ),
   );
+  await gap();
   const mvolJson = await safe(() =>
     nseApiGet<{ data?: Record<string, unknown>[] }>(
       '/api/live-analysis-most-active-securities?index=volume',
       { referer: activeRef },
     ),
   );
+  await gap();
   const whJson = await safe(() =>
     nseApiGet<{ data?: Record<string, unknown>[] }>('/api/live-analysis-data-52weekhighstock'),
   );
+  await gap();
   const oiJson = await safe(() =>
     nseApiGet<{ data?: Record<string, unknown>[] }>('/api/live-analysis-oi-spurts-underlyings'),
   );
