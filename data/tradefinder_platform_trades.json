@@ -381,8 +381,8 @@
       "entry_price": 15.45,
       "exit_time": "12:09:32 PM",
       "exit_price": 14.05,
-      "lots": 2,
-      "lot_size": 675,
+      "lots": 1,
+      "lot_size": 1350,
       "quantity": 1350,
       "capital_used": 20858,
       "humanReview": true

@@ -39,6 +39,17 @@ export interface NseIndicesResult {
   indices: NseIndex[];
 }
 
+/** fetch with an abort timeout so a stalled NSE never hangs the request. */
+async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Promise<Response> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 const num = (v: unknown): number => {
   const n = typeof v === 'string' ? Number(v) : (v as number);
   return Number.isFinite(n) ? n : 0;
@@ -51,14 +62,18 @@ const intOrNull = (v: unknown): number | null => {
 /** Visit nseindia.com to obtain the session cookie NSE requires for its APIs. */
 async function getNseCookie(): Promise<string> {
   try {
-    const res = await fetch('https://www.nseindia.com/', {
-      headers: {
-        'User-Agent': UA,
-        Accept: 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.9',
+    const res = await fetchWithTimeout(
+      'https://www.nseindia.com/',
+      {
+        headers: {
+          'User-Agent': UA,
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        redirect: 'follow',
       },
-      redirect: 'follow',
-    });
+      8000,
+    );
     const cookies = res.headers.getSetCookie?.() ?? [];
     return cookies.map((c) => c.split(';')[0]).join('; ');
   } catch {
@@ -69,15 +84,19 @@ async function getNseCookie(): Promise<string> {
 /** Fetch + normalize every NSE index. Throws on a non-OK response. */
 export async function fetchNseAllIndices(): Promise<NseIndicesResult> {
   const cookie = await getNseCookie();
-  const res = await fetch('https://www.nseindia.com/api/allIndices', {
-    headers: {
-      'User-Agent': UA,
-      Accept: 'application/json',
-      'Accept-Language': 'en-US,en;q=0.9',
-      Referer: 'https://www.nseindia.com/',
-      ...(cookie ? { Cookie: cookie } : {}),
+  const res = await fetchWithTimeout(
+    'https://www.nseindia.com/api/allIndices',
+    {
+      headers: {
+        'User-Agent': UA,
+        Accept: 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        Referer: 'https://www.nseindia.com/',
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
     },
-  });
+    9000,
+  );
   if (!res.ok) {
     throw new Error(`NSE allIndices HTTP ${res.status} — ${res.statusText}`);
   }
