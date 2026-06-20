@@ -13,6 +13,7 @@ const UA =
 
 const COOKIE_TTL_MS = 3 * 60 * 1000;
 let cookieCache: { value: string; at: number } | null = null;
+let cookiePromise: Promise<string> | null = null;
 
 export const num = (v: unknown): number => {
   const n = typeof v === 'string' ? Number(v) : (v as number);
@@ -50,7 +51,7 @@ async function freshCookie(): Promise<string> {
           },
           redirect: 'follow',
         },
-        8000,
+        6000,
       );
       jar.push(...(res.headers.getSetCookie?.() ?? []));
     } catch {
@@ -64,9 +65,18 @@ async function getCookie(force = false): Promise<string> {
   if (!force && cookieCache && Date.now() - cookieCache.at < COOKIE_TTL_MS && cookieCache.value) {
     return cookieCache.value;
   }
-  const value = await freshCookie();
-  cookieCache = { value, at: Date.now() };
-  return value;
+  // Dedupe: if a warm-up is already in flight, share it instead of stampeding NSE.
+  if (cookiePromise) return cookiePromise;
+  cookiePromise = (async () => {
+    try {
+      const value = await freshCookie();
+      cookieCache = { value, at: Date.now() };
+      return value;
+    } finally {
+      cookiePromise = null;
+    }
+  })();
+  return cookiePromise;
 }
 
 /** GET an NSE /api/* JSON endpoint. Throws on a non-OK / non-JSON response. */

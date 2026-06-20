@@ -38,7 +38,7 @@ export interface NseIndicesResult {
 export async function fetchNseAllIndices(): Promise<NseIndicesResult> {
   const json = await nseApiGet<{ timestamp?: string; data?: Record<string, unknown>[] }>(
     '/api/allIndices',
-    { referer: 'https://www.nseindia.com/market-data/live-market-indices' },
+    { referer: 'https://www.nseindia.com/market-data/live-market-indices', timeoutMs: 7000 },
   );
 
   const indices: NseIndex[] = (json.data ?? [])
