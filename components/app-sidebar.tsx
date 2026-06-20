@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState } from "react"
-import { BarChart2, Bot, CalendarDays, ChevronDown, ChevronRight, Download, Eye, FlaskConical, Gauge, Grid3x3, LineChart, ScanSearch } from "lucide-react"
+import { BarChart2, Bot, BookOpen, CalendarDays, ChevronDown, ChevronRight, Download, Eye, FlaskConical, Gauge, Grid3x3, LayoutGrid, LineChart, ScanSearch, Table2 } from "lucide-react"
 
 import {
   Sidebar,
@@ -29,8 +29,11 @@ const NAV_ITEMS = {
     { title: "Signal Lab", href: "/signal-lab", icon: ScanSearch },
     { title: "Live Urgency", href: "/live", icon: Gauge },
     { title: "Heatmap", href: "/heatmap", icon: Grid3x3 },
+    { title: "NSE Heatmap", href: "/nse-heatmap", icon: LayoutGrid },
     { title: "Trade Viewer", href: "/trade-viewer", icon: Eye },
     { title: "Market Holidays", href: "/holidays", icon: CalendarDays },
+    { title: "F&O Lot Sizes", href: "/fno-lots", icon: Table2 },
+    { title: "API Docs", href: "/api-docs", icon: BookOpen },
   ],
 }
 

@@ -9,3 +9,4 @@ allowBuilds:
   "@prisma/engines": true
   "@prisma/client": true
   "@duckdb/node-api": true
+  '@scarf/scarf': set this to true or false

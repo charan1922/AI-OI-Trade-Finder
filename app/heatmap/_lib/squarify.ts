@@ -28,6 +28,74 @@ function worstAspect(areas: number[], side: number): number {
   return Math.max((side2 * max) / s2, s2 / (side2 * min));
 }
 
+/** Average aspect ratio of a full-width row of areas laid out left→right. */
+function rowAvgAspect(areas: number[], w: number): number {
+  const rowArea = areas.reduce((a, b) => a + b, 0);
+  if (rowArea <= 0 || w <= 0) return Number.POSITIVE_INFINITY;
+  const rowH = rowArea / w;
+  let sum = 0;
+  for (const a of areas) {
+    const ww = rowH > 0 ? a / rowH : 0;
+    sum += ww > 0 ? Math.max(ww / rowH, rowH / ww) : Number.POSITIVE_INFINITY;
+  }
+  return sum / areas.length;
+}
+
+/**
+ * Order-PRESERVING strip treemap. Unlike squarify() (which sorts by value so the
+ * biggest tile lands top-left), this lays tiles out in the EXACT input order —
+ * left→right within a row, rows top→bottom — while still sizing each by value.
+ *
+ * The heatmap uses it for the sector bands: feed sectors pre-sorted by % change
+ * and the map reads best→worst top-to-bottom, yet each band's area still encodes
+ * its turnover. Rows are grown greedily while the average aspect ratio improves.
+ */
+export function squarifyOrdered(items: TreemapItem[], x: number, y: number, w: number, h: number): TreemapRect[] {
+  const out: TreemapRect[] = [];
+  const positive = items.filter((i) => i.value > 0); // preserves order — no sort
+  const total = positive.reduce((s, i) => s + i.value, 0);
+  if (total <= 0 || w <= 0 || h <= 0) return out;
+
+  const scale = (w * h) / total;
+  const areas = positive.map((i) => ({ id: i.id, area: i.value * scale }));
+
+  let i = 0;
+  let cy = y;
+  let remainingH = h;
+  while (i < areas.length) {
+    // Grow the row while adding the next tile lowers the average aspect ratio.
+    let count = 1;
+    let best = rowAvgAspect([areas[i].area], w);
+    while (i + count < areas.length) {
+      const next = rowAvgAspect(
+        areas.slice(i, i + count + 1).map((a) => a.area),
+        w,
+      );
+      if (next <= best) {
+        best = next;
+        count++;
+      } else break;
+    }
+
+    const row = areas.slice(i, i + count);
+    const rowArea = row.reduce((s, r) => s + r.area, 0);
+    // Last row absorbs any rounding slack so the strip fills to the bottom edge.
+    const isLast = i + count >= areas.length;
+    const rowH = isLast ? remainingH : Math.min(remainingH, rowArea / w);
+    let xx = x;
+    for (const r of row) {
+      const ww = rowH > 0 ? r.area / rowH : 0;
+      out.push({ id: r.id, x: xx, y: cy, w: ww, h: rowH });
+      xx += ww;
+    }
+    cy += rowH;
+    remainingH -= rowH;
+    i += count;
+  }
+
+  return out;
+}
+
 export function squarify(items: TreemapItem[], x: number, y: number, w: number, h: number): TreemapRect[] {
   const out: TreemapRect[] = [];
   const positive = items.filter((i) => i.value > 0);

@@ -16,6 +16,18 @@ export interface LiveUrgencyRow {
   turnover: number | null;
   /** False when no order book came back for this name (shown as "—", never faked). */
   hasDepth: boolean;
+
+  // ── Intraday OI urgency (from the per-day oi_intraday series) ──────────────
+  // Rate-of-change of OI within THIS session, distinct from oiLevel (a static
+  // 20-day ratio). Null until enough intraday snapshots have accumulated today.
+  /** Total OI build since the session's first snapshot (%). */
+  sessionOiChangePct: number | null;
+  /** Latest OI build rate, ‰ of day-open OI per minute, clamped [−5, +5]. */
+  oiVelocity: number | null;
+  /** Is the OI build itself accelerating? Clamped [−3, +3]. */
+  oiAccel: number | null;
+  /** Composite 0–10 urgency — fast + accelerating + already-significant OI build. */
+  oiUrgency: number | null;
 }
 
 /** One pick from /api/live/sector-leaders — a sector's top performer. */

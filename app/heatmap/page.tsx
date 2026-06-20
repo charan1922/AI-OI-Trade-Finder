@@ -2,7 +2,8 @@
 
 import { Grid3x3, Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { squarify, type TreemapRect } from './_lib/squarify';
+import type { SectorAggregate } from '@/lib/sector/aggregate';
+import { squarify, squarifyOrdered, type TreemapRect } from './_lib/squarify';
 
 interface HeatTile {
   symbol: string;
@@ -22,6 +23,8 @@ interface HeatmapResponse {
   /** Set when the market is open but the live quote failed (rate limit etc.). */
   liveError?: string | null;
   tiles?: HeatTile[];
+  /** Per-sector turnover-weighted move + breadth (headlines each sector band). */
+  sectors?: SectorAggregate[];
   error?: string;
 }
 
@@ -126,11 +129,15 @@ export default function HeatmapPage() {
       if (g) g.push(t);
       else bySector.set(t.sector, [t]);
     }
-    const sectorTotals = [...bySector.entries()].map(([sector, g]) => ({
-      id: sector,
-      value: g.reduce((s, t) => s + t.turnover, 0),
-    }));
-    const sectorRects = squarify(sectorTotals, 0, 0, W, H);
+    // Bands are sized by turnover but ORDERED by MAGNITUDE of % change (biggest
+    // mover first, regardless of + / −) so the map reads top-left = most active
+    // sector → bottom-right = quietest. Color still encodes direction (red/green).
+    // squarifyOrdered preserves this order; plain squarify would re-sort by area.
+    const pctBySector = new Map((data?.sectors ?? []).map((s) => [s.sector, s.weightedPct]));
+    const sectorTotals = [...bySector.entries()]
+      .map(([sector, g]) => ({ id: sector, value: g.reduce((s, t) => s + t.turnover, 0) }))
+      .sort((a, b) => Math.abs(pctBySector.get(b.id) ?? 0) - Math.abs(pctBySector.get(a.id) ?? 0));
+    const sectorRects = squarifyOrdered(sectorTotals, 0, 0, W, H);
     const tileBySym = new Map(tiles.map((t) => [t.symbol, t]));
 
     return sectorRects.map((sr) => {
@@ -147,6 +154,23 @@ export default function HeatmapPage() {
           : [];
       return { sector: sr, stocks: inner.map((r) => ({ rect: r, tile: tileBySym.get(r.id) })) };
     });
+  }, [data]);
+
+  // Per-sector aggregate (turnover-weighted move + breadth) keyed by sector name.
+  const sectorAgg = useMemo(
+    () => new Map((data?.sectors ?? []).map((s) => [s.sector, s])),
+    [data],
+  );
+
+  // Sectors ranked by their turnover-weighted move (best → worst) for the side
+  // bar chart. maxAbs scales the diverging bars so the strongest mover fills the
+  // track on each side.
+  const sectorRanking = useMemo(() => {
+    // Bar chart stays a SIGNED leaderboard — gainers (top) → losers (bottom).
+    // (The treemap is the magnitude view; this side chart keeps direction order.)
+    const arr = (data?.sectors ?? []).slice().sort((a, b) => b.weightedPct - a.weightedPct);
+    const maxAbs = arr.reduce((m, s) => Math.max(m, Math.abs(s.weightedPct)), 0) || 1;
+    return { arr, maxAbs };
   }, [data]);
 
   return (
@@ -224,15 +248,30 @@ export default function HeatmapPage() {
       )}
 
       {layout && (
-        <div className="overflow-hidden rounded-xl border border-border bg-[#1b1e27]">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+          <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-border bg-[#1b1e27]">
           <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" role="img" aria-label="Sector heatmap">
-            {layout.map(({ sector, stocks }) => (
+            {layout.map(({ sector, stocks }) => {
+              const agg = sectorAgg.get(sector.id);
+              return (
               <g key={sector.id}>
                 {/* Sector band */}
-                <rect x={sector.x} y={sector.y} width={sector.w} height={sector.h} fill="rgba(148,163,184,0.12)" stroke="rgba(148,163,184,0.45)" strokeWidth={1} />
+                <rect x={sector.x} y={sector.y} width={sector.w} height={sector.h} fill="rgba(148,163,184,0.12)" stroke="rgba(148,163,184,0.45)" strokeWidth={1}>
+                  {agg && (
+                    <title>
+                      {`${sector.id} — turnover-weighted ${agg.weightedPct >= 0 ? '+' : ''}${agg.weightedPct.toFixed(2)}% (simple ${agg.simplePct >= 0 ? '+' : ''}${agg.simplePct.toFixed(2)}%)\n${agg.advancers} up · ${agg.decliners} down · ${agg.unchanged} flat${agg.advanceRatio != null ? ` · ${Math.round(agg.advanceRatio * 100)}% advancing` : ''}`}
+                    </title>
+                  )}
+                </rect>
                 {sector.w > 56 && (
-                  <text x={sector.x + 4} y={sector.y + 11.5} fontSize={9} fontWeight={700} fill="rgb(148,163,184)" style={{ textTransform: 'uppercase' }}>
-                    {sector.id}
+                  <text x={sector.x + 4} y={sector.y + 11.5} fontSize={9} fontWeight={700} style={{ textTransform: 'uppercase' }}>
+                    <tspan fill="rgb(148,163,184)">{sector.id}</tspan>
+                    {agg && sector.w > 110 && (
+                      <tspan dx={6} fill={agg.weightedPct >= 0 ? 'rgb(48,204,90)' : 'rgb(246,53,56)'}>
+                        {agg.weightedPct >= 0 ? '+' : ''}
+                        {agg.weightedPct.toFixed(2)}%
+                      </tspan>
+                    )}
                   </text>
                 )}
                 {/* Stock tiles */}
@@ -263,14 +302,56 @@ export default function HeatmapPage() {
                   );
                 })}
               </g>
-            ))}
+              );
+            })}
           </svg>
+          </div>
+
+          {/* Compact sector ranking — turnover-weighted % change, best → worst. */}
+          <div className="w-full shrink-0 rounded-xl border border-border bg-card p-2 lg:w-60">
+            <div className="mb-1.5 flex items-baseline justify-between px-1">
+              <span className="text-[11px] font-semibold text-foreground">Sectors by % change</span>
+              <span className="text-[9px] text-muted-foreground">turnover-wtd</span>
+            </div>
+            <div className="space-y-[3px]">
+              {sectorRanking.arr.map((s) => {
+                const pct = s.weightedPct;
+                const frac = Math.min(1, Math.abs(pct) / sectorRanking.maxAbs);
+                return (
+                  <div
+                    key={s.sector}
+                    className="flex items-center gap-1"
+                    title={`${s.sector} — turnover-weighted ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% (simple ${s.simplePct >= 0 ? '+' : ''}${s.simplePct.toFixed(2)}%)\n${s.advancers} up · ${s.decliners} down · ${s.stocks} stocks`}
+                  >
+                    <span className="w-[62px] shrink-0 truncate text-[9px] text-muted-foreground">{s.sector}</span>
+                    <div className="relative h-3 flex-1 rounded-sm bg-muted/40">
+                      <div className="absolute inset-y-0 left-1/2 w-px bg-border" />
+                      <div
+                        className="absolute top-0.5 bottom-0.5 rounded-sm"
+                        style={
+                          pct >= 0
+                            ? { left: '50%', width: `${(frac * 50).toFixed(1)}%`, background: heatColor(pct) }
+                            : { right: '50%', width: `${(frac * 50).toFixed(1)}%`, background: heatColor(pct) }
+                        }
+                      />
+                    </div>
+                    <span
+                      className={`w-9 shrink-0 text-right text-[9px] tabular-nums ${pct >= 0 ? 'text-emerald-500' : 'text-red-400'}`}
+                    >
+                      {pct >= 0 ? '+' : ''}
+                      {pct.toFixed(1)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
       {data && (
         <p className="text-[11px] text-muted-foreground">
-          {data.tiles?.length ?? 0} F&O stocks across 11 sectors
+          {data.tiles?.length ?? 0} F&O stocks across {data.sectors?.length ?? 0} sectors
           {data.source === 'live'
             ? ' — fully live from Dhan (price, % change, and turnover are all today’s real-time figures; nothing comes from stored data).'
             : ' — official NSE bhavcopy (market closed). Live colors resume automatically at 9:15 IST; EOD view updates when you sync NSE data.'}{' '}

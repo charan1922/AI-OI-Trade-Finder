@@ -16,7 +16,8 @@ export interface SetupVerdict {
 const SPREAD_TRADEABLE = 0.3; // % — above this the name is too costly to trade
 const BID_HEAVY = 0.55;
 const ASK_HEAVY = 0.45;
-const CONVICTION = 1.25; // OI ÷ 20d avg
+const CONVICTION = 1.25; // OI ÷ 20d avg — sustained positioning (a LEVEL)
+const URGENT_BUILD = 3; // intraday OI-urgency score (0–10) — fresh OI piling on NOW (a RATE)
 const EXTENDED_MOVE = 3; // |Chg% since open| beyond which the move is "already made"
 
 /**
@@ -74,12 +75,29 @@ export function setupScore(r: LiveUrgencyRow): SetupVerdict {
         : `OI ${r.oiLevel.toFixed(2)}× avg — near normal`,
   );
 
+  // Intraday OI urgency — the RATE of OI build this session (orthogonal to the
+  // static level above). A name can ignite (low level, fast build) before its
+  // 20-day ratio catches up, so a strong build counts as conviction too.
+  const building = (r.oiUrgency ?? 0) >= URGENT_BUILD;
+  if (building) {
+    reasons.push(
+      `OI building fast (urgency ${r.oiUrgency!.toFixed(1)}/10${
+        r.sessionOiChangePct != null ? `, ${r.sessionOiChangePct >= 0 ? '+' : ''}${r.sessionOiChangePct.toFixed(1)}% today` : ''
+      })`,
+    );
+  }
+
   if (extended) reasons.push(`already moved ${r.changePctOpen! >= 0 ? '+' : ''}${r.changePctOpen!.toFixed(1)}% today — late to chase`);
 
+  // Conviction comes from EITHER sustained positioning (level) OR a fast fresh
+  // build (urgency) — both say "real money is committing here".
+  const heavy = conviction || building;
   let level: SetupLevel;
-  if (aligned && conviction) level = 'strong';
-  else if (aligned || conviction) level = 'watch';
+  if (aligned && heavy) level = 'strong';
+  else if (aligned || heavy) level = 'watch';
   else level = 'quiet';
 
-  return { level, bias, reasons, rank: level === 'strong' ? 3 : level === 'watch' ? 2 : 1, extended };
+  // Within a level, a fast OI build sorts ahead of an otherwise-equal name.
+  const base = level === 'strong' ? 3 : level === 'watch' ? 2 : 1;
+  return { level, bias, reasons, rank: base + (building ? 0.5 : 0), extended };
 }

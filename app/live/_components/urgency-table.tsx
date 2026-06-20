@@ -24,6 +24,33 @@ function spreadCls(p: number | null): string {
   return 'text-red-600 dark:text-red-400';
 }
 
+/**
+ * Intraday OI-build cell — the session's OI change so far, colored by urgency
+ * (rate of build). Distinct from the static OI level. "—" until enough intraday
+ * snapshots have accumulated today (never fabricated).
+ */
+function OiBuild({ r }: { r: LiveUrgencyRow }) {
+  if (r.oiUrgency == null || r.sessionOiChangePct == null) {
+    return <span className="text-muted-foreground/50">—</span>;
+  }
+  const up = r.sessionOiChangePct >= 0;
+  const cls =
+    r.oiUrgency >= 5
+      ? 'font-semibold text-emerald-600 dark:text-emerald-400'
+      : r.oiUrgency >= 3
+        ? 'text-amber-600 dark:text-amber-400'
+        : 'text-muted-foreground';
+  return (
+    <span
+      className={`tabular-nums ${cls}`}
+      title={`urgency ${r.oiUrgency.toFixed(1)}/10 · velocity ${r.oiVelocity?.toFixed(2) ?? '—'}‰/min · accel ${r.oiAccel?.toFixed(2) ?? '—'} — rate of fresh OI build this session`}
+    >
+      {up ? '+' : ''}
+      {r.sessionOiChangePct.toFixed(1)}% {up ? '▲' : '▼'}
+    </span>
+  );
+}
+
 /** Order-book imbalance bar: bid-heavy (green) vs ask-heavy (red). */
 function Imbalance({ v }: { v: number | null }) {
   if (v == null) return <span className="text-muted-foreground/50">—</span>;
@@ -61,7 +88,17 @@ function SetupBadge({ v }: { v: SetupVerdict }) {
   );
 }
 
-type SortKey = 'setup' | 'symbol' | 'ltp' | 'changePctOpen' | 'spreadPct' | 'imbalance' | 'futOi' | 'oiLevel' | 'turnover';
+type SortKey =
+  | 'setup'
+  | 'symbol'
+  | 'ltp'
+  | 'changePctOpen'
+  | 'spreadPct'
+  | 'imbalance'
+  | 'futOi'
+  | 'oiLevel'
+  | 'oiUrgency'
+  | 'turnover';
 type Row = LiveUrgencyRow & { verdict: SetupVerdict };
 
 /** Sortable header cell — top-level so React doesn't remount it every render. */
@@ -154,6 +191,13 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
             <Th label="Bid/Ask" col="imbalance" align="right" title="Resting bid ÷ (bid+ask) — order-flow pressure." {...th} />
             <Th label="Fut OI" col="futOi" align="right" title="Live futures open interest" {...th} />
             <Th label="OI Lvl" col="oiLevel" align="right" title="Live futures OI ÷ 20-session average (conviction)" {...th} />
+            <Th
+              label="OI Build"
+              col="oiUrgency"
+              align="right"
+              title="Intraday OI build this session (% since first snapshot), colored by urgency = rate of fresh OI piling on now. Distinct from the static OI level."
+              {...th}
+            />
             <Th label="Turnover" col="turnover" align="right" title="Live futures turnover ≈ VWAP × volume (quality)" {...th} />
           </tr>
         </thead>
@@ -207,12 +251,15 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               >
                 {r.oiLevel != null ? `${num(r.oiLevel)}×` : '—'}
               </td>
+              <td className="px-2 py-2 text-right">
+                <OiBuild r={r} />
+              </td>
               <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{fmtCompact(r.turnover)}</td>
             </tr>
           ))}
           {sorted.length === 0 && (
             <tr>
-              <td colSpan={9} className="px-3 py-8 text-center text-muted-foreground">
+              <td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">
                 No data.
               </td>
             </tr>

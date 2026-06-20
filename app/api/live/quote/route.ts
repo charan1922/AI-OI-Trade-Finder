@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -79,6 +80,7 @@ export async function POST(req: Request) {
     // 20-session futures-OI average per symbol (bhavcopy), for the OI-level ratio.
     const oiAvg = await futOiAverages(symbols);
 
+    const today = todayIST();
     const rows: LiveUrgencyRow[] = symbols.map((s) => {
       const eqId = eqMap.get(s);
       const futId = futMap.get(s)?.securityId;
@@ -111,10 +113,46 @@ export async function POST(req: Request) {
         oiLevel,
         turnover,
         hasDepth: ba != null,
+        sessionOiChangePct: null,
+        oiVelocity: null,
+        oiAccel: null,
+        oiUrgency: null,
       };
     });
 
-    return NextResponse.json({ success: true, marketOpen: true, asOf: new Date().toISOString(), date: todayIST(), rows, symbols });
+    // Persist this poll into the per-day OI series, then derive intraday urgency
+    // (rate of OI build) from the trailing points. Best-effort: a storage hiccup
+    // must never break the live quote response.
+    try {
+      await recordIntradayOi(
+        today,
+        rows.map((r) => ({
+          symbol: r.symbol,
+          ltp: r.ltp,
+          futOi: r.futOi,
+          futOiAvg20d: oiAvg.get(r.symbol) ?? null,
+          oiLevel: r.oiLevel,
+          futTurnover: r.turnover,
+          changePctOpen: r.changePctOpen,
+          spreadPct: r.spreadPct,
+          imbalance: r.imbalance,
+        })),
+      );
+      const seriesMap = await getIntradaySeriesForSymbols(today, symbols);
+      for (const r of rows) {
+        const u = computeOiUrgency(seriesMap.get(r.symbol) ?? []);
+        if (u.ok) {
+          r.sessionOiChangePct = u.sessionOiChangePct;
+          r.oiVelocity = u.oiVelocity;
+          r.oiAccel = u.oiAccel;
+          r.oiUrgency = u.urgencyScore;
+        }
+      }
+    } catch (e) {
+      console.warn('[live/quote] intraday OI capture failed:', (e as Error).message);
+    }
+
+    return NextResponse.json({ success: true, marketOpen: true, asOf: new Date().toISOString(), date: today, rows, symbols });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }

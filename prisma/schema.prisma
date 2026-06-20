@@ -147,6 +147,29 @@ model TfSnapshot {
   @@map("tf_snapshots")
 }
 
+/// Intraday futures-OI snapshots powering the Live Urgency time-series (created
+/// at runtime via raw SQL in lib/signals/oi-intraday.ts; declared here so
+/// `db push` keeps it). One date-partitioned table keyed by (symbol, date,
+/// bucketTs) — bucketTs is the epoch-second wall clock floored to a 60s grid.
+model OiIntraday {
+  symbol        String
+  date          String
+  bucketTs      Int
+  capturedAt    String
+  ltp           Float  @default(0)
+  futOi         Float  @default(0)
+  futOiAvg20d   Float  @default(0)
+  oiLevel       Float  @default(0)
+  futTurnover   Float  @default(0)
+  changePctOpen Float?
+  spreadPct     Float?
+  imbalance     Float?
+
+  @@id([symbol, date, bucketTs])
+  @@index([date, symbol])
+  @@map("oi_intraday")
+}
+
 model OptionTrade {
   id            Int      @id @default(autoincrement())
   date          String

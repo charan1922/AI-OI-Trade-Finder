@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import sectorMap from '@/lib/data/fno_sectors.json';
 import { prisma } from '@/lib/db';
 import { dhanMarketFeed, isMarketHours, type MarketFeedQuote } from '@/lib/dhan/market-feed';
+import { aggregateSectors } from '@/lib/sector/aggregate';
+import { loadSectorMap } from '@/lib/sector/sector-map';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +40,7 @@ let liveCache: { at: number; payload: Record<string, unknown> } | null = null;
 
 export async function GET() {
   try {
-    const sectors = sectorMap as Record<string, string>;
+    const sectors = await loadSectorMap();
 
     // ── Live path: pure Dhan, universe from master_contracts ∩ sector map ───
     let liveError: string | null = null;
@@ -83,6 +84,7 @@ export async function GET() {
               marketOpen: true,
               asOf: new Date().toISOString(),
               tiles,
+              sectors: aggregateSectors(tiles),
             };
             liveCache = { at: Date.now(), payload };
             return NextResponse.json(payload);
@@ -147,6 +149,7 @@ export async function GET() {
       baseDate: prev,
       liveError,
       tiles,
+      sectors: aggregateSectors(tiles),
     });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });

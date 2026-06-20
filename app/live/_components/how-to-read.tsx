@@ -52,6 +52,13 @@ export function HowToRead() {
                 <span className="text-emerald-600 dark:text-emerald-400">≥1.25×</span> = unusually heavy positioning,{' '}
                 <span>~1.0× = normal</span>. A giant Fut OI with OI Lvl ~1.0× is just a big, ordinary day.
               </Def>
+              <Def term="OI Build">
+                The <b>rate</b> of fresh OI piling on <b>this session</b> — OI Lvl tells you positioning is heavy;
+                OI Build tells you it&apos;s happening <b>right now</b>. Shows OI % change since the day&apos;s first
+                snapshot, colored by an urgency score (velocity + acceleration of the build).{' '}
+                <span className="text-emerald-600 dark:text-emerald-400">Bright = igniting</span>. A name can build fast
+                (urgent) before its 20-day OI Lvl catches up. Fills in once a few minutes of data have accumulated.
+              </Def>
               <Def term="Turnover">
                 VWAP × volume — the <b>quality filter</b>: confirms real money flow, not a thin-volume move.
               </Def>
@@ -75,8 +82,9 @@ export function HowToRead() {
                 down + ask-heavy = supply. Mixed → the move may be fading, wait.
               </li>
               <li>
-                <b>Conviction or noise? → OI Lvl + Turnover.</b> OI Lvl ≥1.25× and heavy turnover = real positioning
-                behind the move; ~1.0× and thin = ignore.
+                <b>Conviction or noise? → OI Lvl / OI Build + Turnover.</b> OI Lvl ≥1.25× (heavy positioning) <b>or</b> a
+                fast OI Build (fresh positions piling on now), with heavy turnover = real money behind the move; ~1.0×,
+                flat build, and thin = ignore.
               </li>
             </ol>
             <p className="mt-2">
@@ -91,11 +99,11 @@ export function HowToRead() {
             <ul className="space-y-1.5">
               <li className="flex items-center gap-2">
                 <Dot cls="bg-emerald-500" /> <b className="text-foreground">Strong</b> — liquid, price+book aligned,
-                <b> and</b> heavy positioning (with ↑/↓ bias).
+                <b> and</b> conviction: heavy OI level <b>or</b> a fast OI build (with ↑/↓ bias).
               </li>
               <li className="flex items-center gap-2">
                 <Dot cls="bg-amber-500" /> <b className="text-foreground">Watch</b> — liquid and one of (aligned /
-                heavy positioning), not both.
+                conviction), not both.
               </li>
               <li className="flex items-center gap-2">
                 <Dot cls="bg-slate-400" /> <b className="text-foreground">Quiet</b> — liquid but nothing is pulling it.
