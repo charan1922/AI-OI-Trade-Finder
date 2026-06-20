@@ -2,34 +2,26 @@
 
 import { LayoutGrid, Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-
-interface NseIndex {
-  symbol: string;
-  name: string;
-  category: string;
-  last: number;
-  previousClose: number;
-  percentChange: number;
-  variation: number;
-  advances: number | null;
-  declines: number | null;
-  unchanged: number | null;
-}
+import type { NseIndex } from '@/lib/nse/indices';
+import type { MarketStatus } from '@/lib/nse/pulse';
+import { IndexTile } from '@/app/nse/_components/index-tile';
+import { MarketStatusStrip } from '@/app/nse/_components/market-status-strip';
+import { LEGEND_GRADIENT } from '@/app/nse/_lib/heat';
 
 interface NseHeatmapResponse {
   success: boolean;
   asOf?: string | null;
   count?: number;
   indices?: NseIndex[];
+  marketStatus?: MarketStatus | null;
   error?: string;
 }
 
 const POLL_MS = 60_000;
 
 /**
- * Curated "main sectors" — the official NSE sectoral indices that mirror the
- * Dhan heatmap's sector buckets. Symbols are the exact NSE `indexSymbol` strings
- * (verified against /api/allIndices); `label` is the friendly name we display.
+ * Curated "main sectors" — official NSE sectoral indices mirroring the Dhan
+ * heatmap buckets. Symbols are exact NSE `indexSymbol` strings; `label` is shown.
  */
 const MAIN_SECTORS: { symbol: string; label: string }[] = [
   { symbol: 'NIFTY BANK', label: 'BANK' },
@@ -51,7 +43,6 @@ const MAIN_SECTORS: { symbol: string; label: string }[] = [
   { symbol: 'NIFTY MEDIA', label: 'MEDIA' },
 ];
 
-/** Key broad-market benchmarks shown as a compact context strip. */
 const BROAD: { symbol: string; label: string }[] = [
   { symbol: 'NIFTY 50', label: 'NIFTY 50' },
   { symbol: 'NIFTY NEXT 50', label: 'NEXT 50' },
@@ -70,67 +61,6 @@ const CATEGORY_ORDER = [
   'FIXED INCOME INDICES',
 ];
 
-/** Finviz-style scale: deep neutral at 0%, saturated green/red at ±3%. */
-const COLOR_STOPS: [number, [number, number, number]][] = [
-  [-3, [246, 53, 56]],
-  [-2, [191, 64, 69]],
-  [-1, [139, 68, 78]],
-  [0, [65, 69, 84]],
-  [1, [53, 118, 78]],
-  [2, [47, 158, 79]],
-  [3, [48, 204, 90]],
-];
-
-function heatColor(pct: number): string {
-  const v = Math.max(-3, Math.min(3, pct));
-  for (let i = 0; i < COLOR_STOPS.length - 1; i++) {
-    const [p0, c0] = COLOR_STOPS[i];
-    const [p1, c1] = COLOR_STOPS[i + 1];
-    if (v <= p1) {
-      const k = (v - p0) / (p1 - p0);
-      const c = c0.map((f, j) => Math.round(f + (c1[j] - f) * k));
-      return `rgb(${c[0]},${c[1]},${c[2]})`;
-    }
-  }
-  const last = COLOR_STOPS[COLOR_STOPS.length - 1][1];
-  return `rgb(${last[0]},${last[1]},${last[2]})`;
-}
-
-const LEGEND_GRADIENT = `linear-gradient(to right, ${COLOR_STOPS.map(
-  ([p, c]) => `rgb(${c[0]},${c[1]},${c[2]}) ${((p + 3) / 6) * 100}%`,
-).join(', ')})`;
-
-const fmtNum = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 2 });
-
-/** One colored index tile. */
-function IndexTile({ idx, label, big }: { idx: NseIndex; label: string; big?: boolean }) {
-  const pct = idx.percentChange;
-  return (
-    <div
-      className={`flex flex-col justify-between rounded-md p-2 ${big ? 'min-h-[72px]' : 'min-h-[58px]'}`}
-      style={{ background: heatColor(pct) }}
-      title={`${idx.symbol}\n${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%  (${idx.variation >= 0 ? '+' : ''}${fmtNum(idx.variation)} pts)\nlast ${fmtNum(idx.last)} · prev ${fmtNum(idx.previousClose)}${
-        idx.advances != null && idx.declines != null
-          ? `\n${idx.advances} up · ${idx.declines} down${idx.unchanged != null ? ` · ${idx.unchanged} flat` : ''}`
-          : ''
-      }`}
-    >
-      <div
-        className={`line-clamp-2 font-semibold leading-tight text-white/95 ${big ? 'text-[11px]' : 'text-[10px]'}`}
-      >
-        {label}
-      </div>
-      <div className="flex items-baseline justify-between gap-1">
-        <span className={`font-bold tabular-nums text-white ${big ? 'text-[15px]' : 'text-[13px]'}`}>
-          {pct >= 0 ? '+' : ''}
-          {pct.toFixed(2)}%
-        </span>
-        <span className="text-[9px] tabular-nums text-white/70">{fmtNum(idx.last)}</span>
-      </div>
-    </div>
-  );
-}
-
 export default function NseHeatmapPage() {
   const [data, setData] = useState<NseHeatmapResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -139,7 +69,7 @@ export default function NseHeatmapPage() {
 
   const fetchOnce = useCallback(async () => {
     try {
-      const res = await fetch('/api/nse-heatmap');
+      const res = await fetch('/api/nse/heatmap');
       const d = (await res.json()) as NseHeatmapResponse;
       if (d.success) {
         setData(d);
@@ -170,25 +100,26 @@ export default function NseHeatmapPage() {
     };
   }, [fetchOnce]);
 
-  const bySymbol = useMemo(
-    () => new Map((data?.indices ?? []).map((i) => [i.symbol, i])),
-    [data],
-  );
+  const bySymbol = useMemo(() => new Map((data?.indices ?? []).map((i) => [i.symbol, i])), [data]);
 
-  // Main view: curated sectors ordered by MAGNITUDE of move (biggest first,
-  // like the Dhan heatmap), plus the broad-market strip in its fixed order.
-  const mainSectors = useMemo(() => {
-    return MAIN_SECTORS.map((m) => ({ ...m, idx: bySymbol.get(m.symbol) }))
-      .filter((m): m is { symbol: string; label: string; idx: NseIndex } => !!m.idx)
-      .sort((a, b) => Math.abs(b.idx.percentChange) - Math.abs(a.idx.percentChange));
-  }, [bySymbol]);
-
-  const broad = useMemo(
-    () => BROAD.map((m) => ({ ...m, idx: bySymbol.get(m.symbol) })).filter((m) => !!m.idx),
+  // Main view: curated sectors ordered by MAGNITUDE of move (biggest first, like
+  // the Dhan heatmap); broad-market strip stays in its fixed order.
+  const mainSectors = useMemo(
+    () =>
+      MAIN_SECTORS.map((m) => ({ ...m, idx: bySymbol.get(m.symbol) }))
+        .filter((m): m is { symbol: string; label: string; idx: NseIndex } => !!m.idx)
+        .sort((a, b) => Math.abs(b.idx.percentChange) - Math.abs(a.idx.percentChange)),
     [bySymbol],
   );
 
-  // All view: every index grouped by NSE category, sorted by % change in-group.
+  const broad = useMemo(
+    () =>
+      BROAD.map((m) => ({ ...m, idx: bySymbol.get(m.symbol) })).filter(
+        (m): m is { symbol: string; label: string; idx: NseIndex } => !!m.idx,
+      ),
+    [bySymbol],
+  );
+
   const allGroups = useMemo(() => {
     const indices = data?.indices ?? [];
     const byCat = new Map<string, NseIndex[]>();
@@ -222,7 +153,7 @@ export default function NseHeatmapPage() {
         <h1 className="text-lg font-bold text-foreground">NSE Heatmap</h1>
         <span
           className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"
-          title="Official NSE indices from nseindia.com. Carries previous close, so it shows a real % change 24/7 — even when the market is closed."
+          title="Official NSE indices from nseindia.com — shows a real % change 24/7, even when the market is closed."
         >
           Official NSE · 24/7
         </span>
@@ -235,7 +166,6 @@ export default function NseHeatmapPage() {
               All indices
             </button>
           </div>
-          {data?.asOf && <span className="text-[10px] text-muted-foreground">as of {data.asOf}</span>}
           <button
             type="button"
             onClick={() => void fetchOnce()}
@@ -247,6 +177,9 @@ export default function NseHeatmapPage() {
         </div>
       </div>
 
+      {/* Market status strip */}
+      <MarketStatusStrip status={data?.marketStatus ?? null} />
+
       {/* How to read it */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
         <span>
@@ -257,11 +190,7 @@ export default function NseHeatmapPage() {
           <span className="h-2.5 w-28 rounded-sm" style={{ background: LEGEND_GRADIENT }} />
           <span className="font-mono">+3%</span>
         </span>
-        <span>
-          {view === 'main'
-            ? 'Main sectors, biggest mover first.'
-            : 'All NSE indices grouped by category.'}
-        </span>
+        <span>{view === 'main' ? 'Main sectors, biggest mover first.' : 'All NSE indices by category.'}</span>
       </div>
 
       {error && (
@@ -280,7 +209,7 @@ export default function NseHeatmapPage() {
         </div>
       )}
 
-      {/* ── Main sectors view ───────────────────────────────────────────── */}
+      {/* Main sectors view */}
       {data && view === 'main' && (
         <div className="space-y-3">
           <div className="space-y-1.5">
@@ -300,7 +229,7 @@ export default function NseHeatmapPage() {
               <h2 className="text-xs font-semibold uppercase tracking-wide text-foreground">Broad market</h2>
               <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-6">
                 {broad.map((m) => (
-                  <IndexTile key={m.symbol} idx={m.idx!} label={m.label} />
+                  <IndexTile key={m.symbol} idx={m.idx} label={m.label} />
                 ))}
               </div>
             </div>
@@ -308,7 +237,7 @@ export default function NseHeatmapPage() {
         </div>
       )}
 
-      {/* ── All indices view ────────────────────────────────────────────── */}
+      {/* All indices view */}
       {data &&
         view === 'all' &&
         allGroups.map(({ category, list }) => (

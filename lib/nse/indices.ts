@@ -6,14 +6,9 @@
  * vs the prior close. Unlike Dhan's IDX_I quote — which zeroes `net_change` once
  * the session ends — this carries `previousClose` and stays meaningful 24/7,
  * including weekends. No auth/token required.
- *
- * NSE blocks server-side calls that arrive without a session cookie, so we warm
- * up by visiting nseindia.com first (the same pattern the bhavcopy downloader
- * uses in lib/historify/bhavcopy-service.ts).
  */
 
-const UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+import { intOrNull, nseApiGet, num } from '@/lib/nse/client';
 
 export interface NseIndex {
   /** indexSymbol, e.g. "NIFTY IT". */
@@ -39,68 +34,12 @@ export interface NseIndicesResult {
   indices: NseIndex[];
 }
 
-/** fetch with an abort timeout so a stalled NSE never hangs the request. */
-async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Promise<Response> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-const num = (v: unknown): number => {
-  const n = typeof v === 'string' ? Number(v) : (v as number);
-  return Number.isFinite(n) ? n : 0;
-};
-const intOrNull = (v: unknown): number | null => {
-  const n = typeof v === 'string' ? Number(v) : (v as number);
-  return Number.isFinite(n) ? n : null;
-};
-
-/** Visit nseindia.com to obtain the session cookie NSE requires for its APIs. */
-async function getNseCookie(): Promise<string> {
-  try {
-    const res = await fetchWithTimeout(
-      'https://www.nseindia.com/',
-      {
-        headers: {
-          'User-Agent': UA,
-          Accept: 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        redirect: 'follow',
-      },
-      8000,
-    );
-    const cookies = res.headers.getSetCookie?.() ?? [];
-    return cookies.map((c) => c.split(';')[0]).join('; ');
-  } catch {
-    return '';
-  }
-}
-
 /** Fetch + normalize every NSE index. Throws on a non-OK response. */
 export async function fetchNseAllIndices(): Promise<NseIndicesResult> {
-  const cookie = await getNseCookie();
-  const res = await fetchWithTimeout(
-    'https://www.nseindia.com/api/allIndices',
-    {
-      headers: {
-        'User-Agent': UA,
-        Accept: 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Referer: 'https://www.nseindia.com/',
-        ...(cookie ? { Cookie: cookie } : {}),
-      },
-    },
-    9000,
+  const json = await nseApiGet<{ timestamp?: string; data?: Record<string, unknown>[] }>(
+    '/api/allIndices',
+    { referer: 'https://www.nseindia.com/market-data/live-market-indices' },
   );
-  if (!res.ok) {
-    throw new Error(`NSE allIndices HTTP ${res.status} — ${res.statusText}`);
-  }
-  const json = (await res.json()) as { timestamp?: string; data?: Record<string, unknown>[] };
 
   const indices: NseIndex[] = (json.data ?? [])
     .map((d) => ({
