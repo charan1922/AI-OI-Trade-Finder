@@ -10,7 +10,9 @@ export const runtime = 'nodejs';
  * plus market status. All NSE-only, no Dhan auth. Cached ~45s.
  */
 
-const CACHE_MS = 45_000;
+// One pulse build = ~7 upstream NSE calls, so cache generously: many tabs and
+// the page's own 60s poll collapse into at most one fetch per minute.
+const CACHE_MS = 60_000;
 let cache: { at: number; payload: Record<string, unknown> } | null = null;
 
 export async function GET() {
