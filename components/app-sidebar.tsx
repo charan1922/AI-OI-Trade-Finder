@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState } from "react"
-import { BarChart2, Bot, BookOpen, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, LineChart, ScanSearch, Table2 } from "lucide-react"
+import { BarChart2, Bot, BookOpen, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, LineChart, Table2 } from "lucide-react"
 
 import {
   Sidebar,
@@ -27,7 +27,6 @@ const NAV_ITEMS = {
     { title: "Trade Viewer", href: "/trade-viewer", icon: Eye },
     { title: "Trade Assistant", href: "/trade-assistant", icon: Bot },
     { title: "Backtest", href: "/backtest", icon: LineChart },
-    { title: "Signal Lab", href: "/signal-lab", icon: ScanSearch },
     { title: "Live Urgency", href: "/live", icon: Gauge },
     { title: "Heatmap", href: "/heatmap", icon: Grid3x3 },
     { title: "NSE Heatmap", href: "/nse/heatmap", icon: LayoutGrid },

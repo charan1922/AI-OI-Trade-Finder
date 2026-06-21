@@ -165,21 +165,6 @@ const spec = {
         responses: { '200': ok('{ runId, results, summary, prep }'), '500': errorResponse('Prepare or engine error') },
       },
     },
-    '/api/backtest/scan': {
-      post: {
-        tags: ['Backtest'],
-        summary: 'Point-in-time universe signal scan',
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/ScanParams' },
-              example: { oiLevelMin: 1.25, turnoverMin: 1.5, direction: 'both', includeWeak: false, holdDays: 1, costPct: 0.1 },
-            },
-          },
-        },
-        responses: { '200': ok('Scan trades + stats'), '500': errorResponse('Scan error') },
-      },
-    },
     '/api/backtest/download-stream': {
       post: {
         tags: ['Backtest'],
@@ -446,18 +431,6 @@ const spec = {
           startPaused: { type: 'boolean', example: true },
           loop: { type: 'boolean', example: false },
           seed: { type: 'integer', example: 1337 },
-        },
-      },
-      ScanParams: {
-        type: 'object',
-        description: 'Partial accepted — missing/invalid fields fall back to DEFAULT_SCAN_PARAMS.',
-        properties: {
-          oiLevelMin: { type: 'number', example: 1.25, description: 'Futures OI ≥ this × 20-session avg' },
-          turnoverMin: { type: 'number', example: 1.5, description: 'Futures turnover ≥ this × 20-session avg' },
-          direction: { type: 'string', enum: ['both', 'long', 'short'], example: 'both' },
-          includeWeak: { type: 'boolean', example: false },
-          holdDays: { type: 'integer', example: 1 },
-          costPct: { type: 'number', example: 0.1 },
         },
       },
     },
