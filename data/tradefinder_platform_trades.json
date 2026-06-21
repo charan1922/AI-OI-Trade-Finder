@@ -89,15 +89,15 @@
       "total_pnl": 30902,
       "trade_status": "Trade Taken",
       "verified": true,
-      "entry_time": null,
-      "entry_price": null,
-      "exit_time": null,
-      "exit_price": null,
-      "lots": null,
+      "entry_time": "10:19:59 AM",
+      "entry_price": 6.40,
+      "exit_time": "01:44:28 PM",
+      "exit_price": 15.17,
+      "lots": 3,
       "lot_size": 1175,
-      "quantity": null,
-      "capital_used": null,
-      "humanReview": false
+      "quantity": 3525,
+      "capital_used": 22560,
+      "humanReview": true
     },
     {
       "month": "June",
