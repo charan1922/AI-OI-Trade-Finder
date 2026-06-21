@@ -24,6 +24,7 @@ const NAV_ITEMS = {
   children: [
     { title: "Market Simulator", href: "/market-simulator", icon: BarChart2 },
     { title: "Data Downloader", href: "/data-downloader", icon: Download },
+    { title: "Trade Viewer", href: "/trade-viewer", icon: Eye },
     { title: "Trade Assistant", href: "/trade-assistant", icon: Bot },
     { title: "Backtest", href: "/backtest", icon: LineChart },
     { title: "Signal Lab", href: "/signal-lab", icon: ScanSearch },
@@ -32,7 +33,6 @@ const NAV_ITEMS = {
     { title: "NSE Heatmap", href: "/nse/heatmap", icon: LayoutGrid },
     { title: "NSE Movers", href: "/nse/movers", icon: Flame },
     { title: "EOD Movers", href: "/nse/movers-history", icon: History },
-    { title: "Trade Viewer", href: "/trade-viewer", icon: Eye },
     { title: "Market Holidays", href: "/holidays", icon: CalendarDays },
     { title: "F&O Lot Sizes", href: "/fno-lots", icon: Table2 },
     { title: "API Docs", href: "/api-docs", icon: BookOpen },
