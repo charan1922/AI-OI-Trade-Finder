@@ -24,4 +24,4 @@ focus on process
 7. **Volume** — sometimes
 8. **Majority indicators** — buying or selling signal
 9. **Open interest indicator direction**
-
+10. **Time 9:45AM after**
