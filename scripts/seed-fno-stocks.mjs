@@ -39,6 +39,21 @@ const INFERRED = {
   VMM: 'FMCG', // retail — like TRENT/DMART
 };
 
+// Trade-band numeric segments — mirror of TRADE_BAND_SEGMENTS in lib/trade-band.ts.
+// Inclusive lot bounds. "extended" intentionally has two shoulders around Core.
+const BAND_SEGMENTS = [
+  { band: 'avoid',    label: 'Avoid',    lotMin: 0,    lotMax: 149,       note: 'Too expensive per lot (BOSCH, MARUTI, SHREECEM) or index lots.' },
+  { band: 'extended', label: 'Extended', lotMin: 150,  lotMax: 249,       note: 'Lower shoulder of Core.' },
+  { band: 'core',     label: 'Core',     lotMin: 250,  lotMax: 1500,      note: 'Best fit — about 56% of trades.' },
+  { band: 'extended', label: 'Extended', lotMin: 1501, lotMax: 2500,      note: 'Upper shoulder — widening here covers about 77%.' },
+  { band: 'avoid',    label: 'Avoid',    lotMin: 2501, lotMax: 999999999, note: 'Cheap high-lot / penny-ish (IDEA, YESBANK, SUZLON, IDFCFIRSTB).' },
+];
+const classifyTradeBand = (lot) => {
+  if (!(lot > 0)) return '';
+  const seg = BAND_SEGMENTS.find((s) => lot >= s.lotMin && lot <= s.lotMax);
+  return seg ? seg.band : '';
+};
+
 const raw = readFileSync(csvPath, 'utf8');
 const lines = raw.split(/\r?\n/).filter((l) => l.trim());
 const header = lines[0];
@@ -83,6 +98,7 @@ for (const r of rows) {
     lotMonths,
     sector,
     sectorSource,
+    tradeBand: classifyTradeBand(Number(lot1)),
   });
 }
 
@@ -93,15 +109,36 @@ if (problems.length > 0) {
 }
 
 const db = new Database(path.join(root, 'data', 'project-r.db'));
+// Additive, idempotent: ensure the tradeBand column exists (no-op if already there).
+try {
+  db.exec("ALTER TABLE fno_stocks ADD COLUMN tradeBand TEXT NOT NULL DEFAULT ''");
+} catch {
+  /* column already exists */
+}
+
+// Reference table so the numeric band ranges are queryable from the DB itself.
+db.exec(`CREATE TABLE IF NOT EXISTS trade_band_ranges (
+  band   TEXT    NOT NULL,
+  label  TEXT    NOT NULL,
+  lotMin INTEGER NOT NULL,
+  lotMax INTEGER NOT NULL,
+  note   TEXT    NOT NULL DEFAULT '',
+  PRIMARY KEY (band, lotMin)
+)`);
+db.exec('DELETE FROM trade_band_ranges');
+const insRange = db.prepare(
+  'INSERT INTO trade_band_ranges (band, label, lotMin, lotMax, note) VALUES (@band, @label, @lotMin, @lotMax, @note)'
+);
+for (const seg of BAND_SEGMENTS) insRange.run(seg);
 const syncedAt = new Date().toISOString();
 const upsert = db.prepare(`
-  INSERT INTO fno_stocks (symbol, name, isIndex, lotSize, lotSizeNext, lotSizeFar, lotMonths, sector, sectorSource, syncedAt)
-  VALUES (@symbol, @name, @isIndex, @lotSize, @lotSizeNext, @lotSizeFar, @lotMonths, @sector, @sectorSource, @syncedAt)
+  INSERT INTO fno_stocks (symbol, name, isIndex, lotSize, lotSizeNext, lotSizeFar, lotMonths, sector, sectorSource, tradeBand, syncedAt)
+  VALUES (@symbol, @name, @isIndex, @lotSize, @lotSizeNext, @lotSizeFar, @lotMonths, @sector, @sectorSource, @tradeBand, @syncedAt)
   ON CONFLICT(symbol) DO UPDATE SET
     name=excluded.name, isIndex=excluded.isIndex, lotSize=excluded.lotSize,
     lotSizeNext=excluded.lotSizeNext, lotSizeFar=excluded.lotSizeFar,
     lotMonths=excluded.lotMonths, sector=excluded.sector,
-    sectorSource=excluded.sectorSource, syncedAt=excluded.syncedAt
+    sectorSource=excluded.sectorSource, tradeBand=excluded.tradeBand, syncedAt=excluded.syncedAt
 `);
 const tx = db.transaction((recs) => {
   for (const rec of recs) upsert.run({ ...rec, syncedAt });

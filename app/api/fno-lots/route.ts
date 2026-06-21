@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server"
-import { readFileSync } from "fs"
-import { join } from "path"
-import fnoSectors from "@/lib/data/fno_sectors.json"
+import { prisma } from "@/lib/db"
+import { classifyTradeBand } from "@/lib/trade-band"
 
 export const dynamic = "force-dynamic"
-
-const INDEX_SYMBOLS = new Set(["BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTY", "NIFTYNXT50"])
 
 export type FnoRow = {
   name: string
@@ -14,39 +11,36 @@ export type FnoRow = {
   lotJul: string
   lotAug: string
   sector: string
-}
-
-function parseCSV(content: string): FnoRow[] {
-  const lines = content.trim().split("\n").slice(1) // skip header
-  const rows: FnoRow[] = []
-
-  for (const line of lines) {
-    const fields = line.match(/"([^"]*)"/g)?.map((f) => f.replace(/"/g, "")) ?? []
-    if (fields.length < 6) continue
-
-    const symbol = fields[2]
-    const sector = INDEX_SYMBOLS.has(symbol)
-      ? "INDEX"
-      : (fnoSectors as Record<string, string>)[symbol] ?? "OTHER"
-
-    rows.push({
-      name: fields[0],
-      symbol,
-      lotJun: fields[3],
-      lotJul: fields[4],
-      lotAug: fields[5],
-      sector,
-    })
-  }
-
-  return rows
+  tradeBand: string
 }
 
 export async function GET() {
   try {
-    const csvPath = join(process.cwd(), "Dhan - Nse Fno Lot Size.csv")
-    const content = readFileSync(csvPath, "utf-8")
-    const data = parseCSV(content)
+    // Only select long-standing fields so this works regardless of Prisma-client
+    // regeneration. The band is derived from lotSize via the shared lib (single
+    // source of truth); fno_stocks.tradeBand persists the same value for SQL use.
+    const rows = await prisma.fnoStock.findMany({
+      orderBy: { symbol: "asc" },
+      select: {
+        symbol: true,
+        name: true,
+        lotSize: true,
+        lotSizeNext: true,
+        lotSizeFar: true,
+        sector: true,
+      },
+    })
+
+    const data: FnoRow[] = rows.map((r) => ({
+      name: r.name,
+      symbol: r.symbol,
+      lotJun: String(r.lotSize),
+      lotJul: r.lotSizeNext ? String(r.lotSizeNext) : "-",
+      lotAug: r.lotSizeFar ? String(r.lotSizeFar) : "-",
+      sector: r.sector,
+      tradeBand: classifyTradeBand(r.lotSize) ?? "",
+    }))
+
     return NextResponse.json({ success: true, data })
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 })

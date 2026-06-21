@@ -127,10 +127,30 @@ model FnoStock {
   lotMonths    String @default("")
   sector       String
   sectorSource String
+  /// Trade band by lot size: 'core' (250-1500) | 'extended' (150-249/1501-2500)
+  /// | 'avoid' (<150 / >2500). Persisted at seed time; logic in lib/trade-band.ts.
+  tradeBand    String @default("")
   syncedAt     String @default("")
 
   @@index([sector])
+  @@index([tradeBand])
   @@map("fno_stocks")
+}
+
+/// Numeric definition of the trade bands — a queryable lookup so the lot-size
+/// ranges behind fno_stocks.tradeBand are visible in the DB. Populated by
+/// scripts/seed-fno-stocks.mjs from lib/trade-band.ts. "extended" has two rows
+/// (the two shoulders around Core). Find a band for lot N with:
+///   SELECT band FROM trade_band_ranges WHERE N BETWEEN lotMin AND lotMax
+model TradeBandRange {
+  band   String
+  label  String
+  lotMin Int
+  lotMax Int
+  note   String @default("")
+
+  @@id([band, lotMin])
+  @@map("trade_band_ranges")
 }
 
 model TfSnapshot {

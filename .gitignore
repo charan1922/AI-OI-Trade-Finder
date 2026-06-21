@@ -35,6 +35,5 @@ pnpm-debug.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local database
-data/project-r.db
+# local database (project-r.db tracked via Git LFS)
 data/.dhan-token.json

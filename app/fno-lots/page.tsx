@@ -1,9 +1,10 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Search, X } from "lucide-react"
+import { Search, X, Info } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+import { TRADE_BAND_ORDER, TRADE_BAND_META, type TradeBand } from "@/lib/trade-band"
 
 type FnoRow = {
   name: string
@@ -12,12 +13,14 @@ type FnoRow = {
   lotJul: string
   lotAug: string
   sector: string
+  tradeBand: string
 }
 
 const SECTOR_ORDER = [
   "INDEX", "IT", "AUTO", "PHARMA", "FMCG", "METAL",
   "ENERGY", "REALTY", "PVT BANK", "PSU BANK", "FIN SERVICE",
-  "CEMENT", "CAPITAL GOODS", "CONSUMER DURABLES", "CHEMICALS", "TELECOM", "OTHER",
+  "CEMENT", "CAPITAL GOODS", "CONSUMER DURABLES", "CHEMICALS", "TELECOM",
+  "CONSUMER SERVICES", "SERVICES", "OTHER",
 ]
 
 const SECTOR_COLOR: Record<string, string> = {
@@ -37,6 +40,8 @@ const SECTOR_COLOR: Record<string, string> = {
   "CONSUMER DURABLES":"bg-lime-50 text-lime-700 border-lime-200 data-[active=true]:bg-lime-600 data-[active=true]:text-white",
   CHEMICALS:         "bg-violet-50 text-violet-700 border-violet-200 data-[active=true]:bg-violet-600 data-[active=true]:text-white",
   TELECOM:           "bg-sky-50 text-sky-700 border-sky-200 data-[active=true]:bg-sky-600 data-[active=true]:text-white",
+  "CONSUMER SERVICES":"bg-pink-50 text-pink-700 border-pink-200 data-[active=true]:bg-pink-600 data-[active=true]:text-white",
+  SERVICES:          "bg-rose-50 text-rose-700 border-rose-200 data-[active=true]:bg-rose-600 data-[active=true]:text-white",
   OTHER:             "bg-zinc-100 text-zinc-600 border-zinc-300 data-[active=true]:bg-zinc-600 data-[active=true]:text-white",
 }
 
@@ -49,10 +54,52 @@ function SectorBadge({ sector }: { sector: string }) {
   )
 }
 
+function asBand(v: string): TradeBand | null {
+  return v === "core" || v === "extended" || v === "avoid" ? v : null
+}
+
+function BandBadge({ band }: { band: TradeBand | null }) {
+  if (!band) return <span className="text-muted-foreground">—</span>
+  return (
+    <span className={cn("inline-block rounded border font-medium text-[10px] px-1.5 py-0", TRADE_BAND_META[band].badgeCls)}>
+      {TRADE_BAND_META[band].label}
+    </span>
+  )
+}
+
+// Hover legend explaining the trade bands — quick reference.
+function BandInfo() {
+  return (
+    <span className="relative inline-flex group">
+      <Info className="size-3.5 text-muted-foreground cursor-help" />
+      <div className="absolute left-0 top-5 z-30 hidden group-hover:block w-72 rounded-md border bg-popover text-popover-foreground p-2.5 shadow-md">
+        <p className="text-[11px] font-semibold mb-1.5">Trade bands (by lot size)</p>
+        <ul className="space-y-1.5">
+          {TRADE_BAND_ORDER.map((b) => (
+            <li key={b} className="flex gap-2 text-[11px] leading-snug">
+              <span className={cn("mt-1 size-2 rounded-full shrink-0", TRADE_BAND_META[b].dot)} />
+              <span>
+                <span className="font-medium">{TRADE_BAND_META[b].label}</span>{" "}
+                <span className="text-muted-foreground tabular-nums">{TRADE_BAND_META[b].range}</span>
+                <br />
+                <span className="text-muted-foreground">{TRADE_BAND_META[b].desc}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-[10px] text-muted-foreground mt-2 pt-1.5 border-t">
+          Core ≈ 56% of trades · Core+Extended ≈ 77%.
+        </p>
+      </div>
+    </span>
+  )
+}
+
 export default function FnoLotsPage() {
   const [stocks, setStocks] = useState<FnoRow[]>([])
   const [query, setQuery] = useState("")
   const [activeSector, setActiveSector] = useState<string | null>(null)
+  const [activeBand, setActiveBand] = useState<TradeBand | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -78,17 +125,27 @@ export default function FnoLotsPage() {
     return map
   }, [stocks])
 
+  const bandCounts = useMemo(() => {
+    const map: Record<TradeBand, number> = { core: 0, extended: 0, avoid: 0 }
+    for (const s of stocks) {
+      const b = asBand(s.tradeBand)
+      if (b) map[b]++
+    }
+    return map
+  }, [stocks])
+
   const filtered = useMemo(() => {
     let rows = stocks
     if (activeSector) rows = rows.filter((s) => s.sector === activeSector)
+    if (activeBand) rows = rows.filter((s) => s.tradeBand === activeBand)
     if (query) {
       const q = query.toLowerCase()
       rows = rows.filter((s) => s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
     }
     return rows
-  }, [stocks, activeSector, query])
+  }, [stocks, activeSector, activeBand, query])
 
-  const anyFilter = activeSector !== null || query !== ""
+  const anyFilter = activeSector !== null || activeBand !== null || query !== ""
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
@@ -96,6 +153,29 @@ export default function FnoLotsPage() {
       <div className="flex items-center gap-3 px-4 py-2 border-b shrink-0">
         <span className="text-sm font-semibold whitespace-nowrap">F&amp;O Lot Sizes</span>
         <span className="text-xs text-muted-foreground whitespace-nowrap">{filtered.length}/{stocks.length}</span>
+
+        {/* Trade-band filter + info */}
+        {!loading && !error && (
+          <div className="flex items-center gap-1">
+            <span className="text-[11px] text-muted-foreground mr-0.5">Band</span>
+            <BandInfo />
+            {TRADE_BAND_ORDER.map((b) => {
+              const active = activeBand === b
+              return (
+                <button
+                  key={b}
+                  data-active={active}
+                  title={`Lot ${TRADE_BAND_META[b].range} — ${TRADE_BAND_META[b].desc}`}
+                  onClick={() => setActiveBand(active ? null : b)}
+                  className={cn("text-[11px] px-2 py-0.5 rounded border font-medium transition-colors", TRADE_BAND_META[b].pillCls)}
+                >
+                  {TRADE_BAND_META[b].label} <span className="opacity-60 font-normal">{bandCounts[b]}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         <div className="relative w-48 shrink-0 ml-auto">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
           <Input
@@ -107,7 +187,7 @@ export default function FnoLotsPage() {
         </div>
         {anyFilter && (
           <button
-            onClick={() => { setActiveSector(null); setQuery("") }}
+            onClick={() => { setActiveSector(null); setActiveBand(null); setQuery("") }}
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground shrink-0"
           >
             <X className="size-3.5" /> Clear
@@ -159,33 +239,41 @@ export default function FnoLotsPage() {
                 <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Name</th>
                 <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Sector</th>
                 <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Lot Size</th>
+                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Band</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                  <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
                     No results found
                   </td>
                 </tr>
               ) : (
-                filtered.map((s, i) => (
-                  <tr
-                    key={s.symbol}
-                    className="border-t hover:bg-muted/30 transition-colors cursor-pointer"
-                    onClick={() => setActiveSector(activeSector === s.sector ? null : s.sector)}
-                  >
-                    <td className="px-3 py-1 text-muted-foreground tabular-nums">{i + 1}</td>
-                    <td className="px-3 py-1 font-mono font-semibold">{s.symbol}</td>
-                    <td className="px-3 py-1 text-muted-foreground">{s.name}</td>
-                    <td className="px-3 py-1"><SectorBadge sector={s.sector} /></td>
-                    <td className="px-3 py-1 text-right tabular-nums font-medium">
-                      {s.lotJun === "-"
-                        ? <span className="text-muted-foreground">—</span>
-                        : Number(s.lotJun).toLocaleString()}
-                    </td>
-                  </tr>
-                ))
+                filtered.map((s, i) => {
+                  const band = asBand(s.tradeBand)
+                  return (
+                    <tr
+                      key={s.symbol}
+                      className={cn(
+                        "border-t hover:bg-muted/30 transition-colors cursor-pointer",
+                        band === "avoid" && "bg-red-50/40"
+                      )}
+                      onClick={() => setActiveSector(activeSector === s.sector ? null : s.sector)}
+                    >
+                      <td className="px-3 py-1 text-muted-foreground tabular-nums">{i + 1}</td>
+                      <td className="px-3 py-1 font-mono font-semibold">{s.symbol}</td>
+                      <td className="px-3 py-1 text-muted-foreground">{s.name}</td>
+                      <td className="px-3 py-1"><SectorBadge sector={s.sector} /></td>
+                      <td className="px-3 py-1 text-right tabular-nums font-medium">
+                        {s.lotJun === "-"
+                          ? <span className="text-muted-foreground">—</span>
+                          : Number(s.lotJun).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-1"><BandBadge band={band} /></td>
+                    </tr>
+                  )
+                })
               )}
             </tbody>
           </table>
