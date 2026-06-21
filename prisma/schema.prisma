@@ -153,6 +153,17 @@ model TradeBandRange {
   @@map("trade_band_ranges")
 }
 
+/// Manual, hand-curated band overrides (e.g. force specific symbols to 'avoid'
+/// regardless of lot size). Applied to fno_stocks.tradeBand at seed time so it
+/// survives re-seeding. NOT auto-populated — only edited deliberately.
+model BandOverride {
+  symbol String @id
+  band   String
+  note   String @default("")
+
+  @@map("band_overrides")
+}
+
 model TfSnapshot {
   id        Int    @id @default(autoincrement())
   date      String

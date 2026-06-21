@@ -14,6 +14,8 @@ type FnoRow = {
   lotAug: string
   sector: string
   tradeBand: string
+  isOverride: boolean
+  overrideNote: string
 }
 
 const SECTOR_ORDER = [
@@ -87,8 +89,8 @@ function BandInfo() {
             </li>
           ))}
         </ul>
-        <p className="text-[10px] text-muted-foreground mt-2 pt-1.5 border-t">
-          Core ≈ 56% of trades · Core+Extended ≈ 77%.
+        <p className="text-[10px] text-muted-foreground mt-2 pt-1.5 border-t leading-snug">
+          On 337 TradeFinder trades: Core 56% · Extended 34% · Avoid 7% (lot &gt;2,500).
         </p>
       </div>
     </span>
@@ -270,7 +272,14 @@ export default function FnoLotsPage() {
                           ? <span className="text-muted-foreground">—</span>
                           : Number(s.lotJun).toLocaleString()}
                       </td>
-                      <td className="px-3 py-1"><BandBadge band={band} /></td>
+                      <td className="px-3 py-1">
+                        <span className="inline-flex items-center gap-1.5">
+                          <BandBadge band={band} />
+                          {s.isOverride && (
+                            <span title={s.overrideNote || "Manually set"} className="text-[9px] text-muted-foreground cursor-help">manual</span>
+                          )}
+                        </span>
+                      </td>
                     </tr>
                   )
                 })

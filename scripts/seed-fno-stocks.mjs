@@ -42,11 +42,10 @@ const INFERRED = {
 // Trade-band numeric segments — mirror of TRADE_BAND_SEGMENTS in lib/trade-band.ts.
 // Inclusive lot bounds. "extended" intentionally has two shoulders around Core.
 const BAND_SEGMENTS = [
-  { band: 'avoid',    label: 'Avoid',    lotMin: 0,    lotMax: 149,       note: 'Too expensive per lot (BOSCH, MARUTI, SHREECEM) or index lots.' },
-  { band: 'extended', label: 'Extended', lotMin: 150,  lotMax: 249,       note: 'Lower shoulder of Core.' },
-  { band: 'core',     label: 'Core',     lotMin: 250,  lotMax: 1500,      note: 'Best fit — about 56% of trades.' },
-  { band: 'extended', label: 'Extended', lotMin: 1501, lotMax: 2500,      note: 'Upper shoulder — widening here covers about 77%.' },
-  { band: 'avoid',    label: 'Avoid',    lotMin: 2501, lotMax: 999999999, note: 'Cheap high-lot / penny-ish (IDEA, YESBANK, SUZLON, IDFCFIRSTB).' },
+  { band: 'extended', label: 'Extended', lotMin: 0,    lotMax: 249,       note: 'Lot <=249 (pricey low-lot names & indices). Fills fine for option buyers.' },
+  { band: 'core',     label: 'Core',     lotMin: 250,  lotMax: 1500,      note: 'Best fit — 56% of TradeFinder trades fell here.' },
+  { band: 'extended', label: 'Extended', lotMin: 1501, lotMax: 2500,      note: 'Upper shoulder of Core.' },
+  { band: 'avoid',    label: 'Avoid',    lotMin: 2501, lotMax: 999999999, note: 'Cheap high-lot stocks; lowest option premiums in recent trades => most slippage (IDEA, YESBANK, SUZLON, BANKBARODA).' },
 ];
 const classifyTradeBand = (lot) => {
   if (!(lot > 0)) return '';
@@ -130,6 +129,15 @@ const insRange = db.prepare(
   'INSERT INTO trade_band_ranges (band, label, lotMin, lotMax, note) VALUES (@band, @label, @lotMin, @lotMax, @note)'
 );
 for (const seg of BAND_SEGMENTS) insRange.run(seg);
+
+// Hand-curated band overrides — created if missing, NEVER wiped here. Applied
+// to fno_stocks.tradeBand after the lot-based seeding below so manual avoids
+// (etc.) survive re-seeding.
+db.exec(`CREATE TABLE IF NOT EXISTS band_overrides (
+  symbol TEXT PRIMARY KEY,
+  band   TEXT NOT NULL,
+  note   TEXT NOT NULL DEFAULT ''
+)`);
 const syncedAt = new Date().toISOString();
 const upsert = db.prepare(`
   INSERT INTO fno_stocks (symbol, name, isIndex, lotSize, lotSizeNext, lotSizeFar, lotMonths, sector, sectorSource, tradeBand, syncedAt)
@@ -144,6 +152,13 @@ const tx = db.transaction((recs) => {
   for (const rec of recs) upsert.run({ ...rec, syncedAt });
 });
 tx(records);
+
+// Apply manual overrides on top of the lot-based band.
+const overrides = db.prepare('SELECT symbol, band FROM band_overrides').all();
+const applyOverride = db.prepare('UPDATE fno_stocks SET tradeBand = @band WHERE symbol = @symbol');
+let applied = 0;
+for (const o of overrides) applied += applyOverride.run(o).changes;
+if (overrides.length) console.log(`Applied ${applied}/${overrides.length} manual band overrides`);
 
 const counts = db
   .prepare('SELECT sector, COUNT(*) n FROM fno_stocks GROUP BY sector ORDER BY n DESC')
