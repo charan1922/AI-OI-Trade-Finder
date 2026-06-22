@@ -1,7 +1,7 @@
 'use client';
 
 import { Gauge, Loader2, RefreshCw, Sparkles } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { HowToRead } from './_components/how-to-read';
 import { UrgencyTable } from './_components/urgency-table';
 import { useLiveUrgency } from './_hooks/use-live-urgency';
@@ -112,6 +112,14 @@ export default function LiveUrgencyPage() {
     setAutoLoading(false);
   };
 
+  // Manual refresh: rebuild the auto-picked watchlist from the current source
+  // (so freshly-entered movers appear), then immediately re-poll live quotes.
+  // A manually-typed list is left as-is — only the live quotes refresh.
+  const handleRefresh = () => {
+    if (autoPicks !== null) void autoPick(source);
+    void refresh();
+  };
+
   // Symbol → sector for the table tag (only known when auto-picked).
   const sectorBySymbol = useMemo(() => {
     if (!autoPicks) return undefined;
@@ -133,13 +141,45 @@ export default function LiveUrgencyPage() {
     };
   }, []);
 
+  // Warm the NSE pulse feeds (shared 30s server cache) in the background so the
+  // NSE-movers dropdown sources build instantly instead of cold-missing into a
+  // ~9s NSE timeout (the 502 the user hit). Fire-and-forget, staggered to stay
+  // under NSE's burst throttle. One successful warm per feed is enough — the
+  // cache then serves stale on any later failure, so it never hard-fails again.
+  useEffect(() => {
+    const feeds = ['oiSpurts', 'gainers', 'losers', 'mostActiveValue', 'mostActiveVolume', 'week52High'];
+    const timers = feeds.map((f, i) =>
+      setTimeout(() => {
+        void fetch(`/api/nse/pulse/${f}`).catch(() => {});
+      }, i * 400),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, []);
+
+  // Latest-ref so the 60s interval below never resets / goes stale.
+  const autoRefreshRef = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => {
+    autoRefreshRef.current = () => {
+      if (autoPicks !== null && !autoLoading) void autoPick(source);
+    };
+  });
+
+  // Auto-refresh the auto-picked watchlist every minute so live NSE movers stay
+  // current. (Sector-leader sources are EOD bhavcopy — no intraday change, so
+  // this is a harmless no-op there.) The quote table itself already re-polls
+  // every 4s; this refreshes WHICH stocks are listed.
+  useEffect(() => {
+    const id = setInterval(() => autoRefreshRef.current?.(), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-4">
+    <div className="mx-auto max-w-7xl space-y-2 p-3">
       {/* Header */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <Gauge className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-bold text-foreground">Live Urgency</h1>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <Gauge className="h-4 w-4 text-primary" />
+          <h1 className="text-base font-bold text-foreground">Live Urgency</h1>
           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
             real-time depth · Dhan quote
           </span>
@@ -163,11 +203,12 @@ export default function LiveUrgencyPage() {
           <HowToRead />
           <button
             type="button"
-            onClick={refresh}
-            disabled={loading}
+            onClick={handleRefresh}
+            disabled={loading || autoLoading}
+            title="Rebuild the watchlist from the current source and re-poll live quotes"
             className="flex items-center gap-1 rounded-md bg-muted px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-50"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${loading || autoLoading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
         </div>
@@ -240,8 +281,8 @@ export default function LiveUrgencyPage() {
 
       {/* What the auto-pick selected, grouped by sector — so the list explains itself */}
       {autoPicks && autoPicks.length > 0 && (
-        <div className="rounded-xl border border-border bg-card p-2.5">
-          <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 text-[10px] text-muted-foreground">
+        <div className="rounded-lg border border-border bg-card p-2">
+          <div className="mb-1 flex flex-wrap items-baseline gap-x-2 text-[10px] text-muted-foreground">
             <span className="font-bold uppercase tracking-wide">Auto-picked: {SOURCE_LABEL[source]}</span>
             {autoMeta && (
               <span>
@@ -281,13 +322,22 @@ export default function LiveUrgencyPage() {
         </div>
       )}
 
-      {/* Honest framing of what the signals mean */}
-      <div className="rounded-xl border border-border bg-muted/30 p-3 text-[11px] leading-relaxed text-muted-foreground">
-        <b className="text-foreground">Reading urgency:</b> a <b>tight spread</b> means liquidity / cheap execution (not
-        &quot;calm&quot;); a <b>wide</b> spread means illiquidity or stress. The real aggression read is the{' '}
-        <b>bid/ask imbalance</b> (resting demand vs supply), paired with the futures <b>OI level</b> (conviction) and{' '}
-        <b>turnover</b> (quality). Caveat: large players hide size via icebergs / slicing, so the visible book
-        under-represents the biggest flow — treat this as a partial, real-time view, never the whole picture.
+      {/* What the signals mean — plain English, compact single strip */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-[10px] leading-snug text-muted-foreground">
+        <span className="font-bold uppercase tracking-wide text-foreground">How to read</span>
+        <span>
+          <b className="text-foreground">Spread</b> = cost (tight = cheap)
+        </span>
+        <span>
+          <b className="text-foreground">Bid/Ask</b> = who&apos;s pushing (buyers vs sellers)
+        </span>
+        <span>
+          <b className="text-foreground">OI level</b> = conviction (high = big players in)
+        </span>
+        <span>
+          <b className="text-foreground">Turnover</b> = is it real? (high = real money)
+        </span>
+        <span className="text-muted-foreground/70">· big players hide size, so this is a partial view</span>
       </div>
 
       {error && (
@@ -297,14 +347,14 @@ export default function LiveUrgencyPage() {
       )}
 
       {marketOpen === false ? (
-        <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+        <div className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
           The market is closed (NSE 9:15–15:30 IST, weekdays). The order book — and therefore the live spread /
           imbalance — only exists during market hours, so nothing is shown rather than a fabricated snapshot.
         </div>
       ) : marketOpen === null && (loading || autoLoading) ? (
-        <div className="flex items-center justify-center gap-2 rounded-xl border border-border p-10 text-sm text-muted-foreground">
-          <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          {autoLoading ? 'Picking sector leaders…' : 'Connecting to the live quote feed…'}
+        <div className="flex items-center justify-center gap-2 rounded-lg border border-border p-6 text-xs text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+          {autoLoading ? 'Building watchlist…' : 'Connecting to the live quote feed…'}
         </div>
       ) : (
         <UrgencyTable rows={rows} sectors={sectorBySymbol} />

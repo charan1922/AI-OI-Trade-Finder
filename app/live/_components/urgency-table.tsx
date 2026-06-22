@@ -89,6 +89,7 @@ function SetupBadge({ v }: { v: SetupVerdict }) {
 }
 
 type SortKey =
+  | 'rank'
   | 'setup'
   | 'symbol'
   | 'ltp'
@@ -99,7 +100,8 @@ type SortKey =
   | 'oiLevel'
   | 'oiUrgency'
   | 'turnover';
-type Row = LiveUrgencyRow & { verdict: SetupVerdict };
+/** `origRank` = the row's 1-based position in the incoming watchlist (= NSE Movers order). */
+type Row = LiveUrgencyRow & { verdict: SetupVerdict; origRank: number };
 
 /** Sortable header cell — top-level so React doesn't remount it every render. */
 function Th({
@@ -123,7 +125,7 @@ function Th({
   const justify = align === 'left' ? 'justify-start' : align === 'center' ? 'justify-center' : 'justify-end';
   const textAlign = align === 'left' ? 'text-left' : align === 'center' ? 'text-center' : 'text-right';
   return (
-    <th className={`px-2 py-2 font-semibold ${textAlign}`} title={title}>
+    <th className={`px-2 py-1.5 font-semibold ${textAlign}`} title={title}>
       <button
         type="button"
         onClick={() => onSort(col)}
@@ -145,25 +147,28 @@ function Th({
 }
 
 const sortValue = (r: Row, key: SortKey): number | string => {
+  if (key === 'rank') return r.origRank;
   if (key === 'setup') return r.verdict.rank;
   if (key === 'symbol') return r.symbol;
   return (r[key] as number | null) ?? Number.NEGATIVE_INFINITY;
 };
 
 export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sectors?: Record<string, string> }) {
-  const [sortKey, setSortKey] = useState<SortKey>('setup');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  // Default to the watchlist order (= the NSE Movers / sector-leaders order the
+  // list was built in), so /live mirrors /nse/movers. Headers stay sortable.
+  const [sortKey, setSortKey] = useState<SortKey>('rank');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
   const onSort = (key: SortKey) => {
     if (key === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     else {
       setSortKey(key);
-      setSortDir(key === 'symbol' || key === 'spreadPct' ? 'asc' : 'desc');
+      setSortDir(key === 'rank' || key === 'symbol' || key === 'spreadPct' ? 'asc' : 'desc');
     }
   };
 
   const sorted = useMemo<Row[]>(() => {
-    const withVerdict: Row[] = rows.map((r) => ({ ...r, verdict: setupScore(r) }));
+    const withVerdict: Row[] = rows.map((r, i) => ({ ...r, verdict: setupScore(r), origRank: i + 1 }));
     const dir = sortDir === 'asc' ? 1 : -1;
     return withVerdict.sort((a, b) => {
       const av = sortValue(a, sortKey);
@@ -180,11 +185,12 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
 
   return (
     <div className="overflow-x-auto rounded-xl border border-border bg-card">
-      <table className="w-full text-xs">
+      <table className="w-full text-[11px]">
         <thead className="bg-muted/50 text-muted-foreground">
           <tr>
+            <Th label="#" col="rank" align="right" title="Watchlist order — same as NSE Movers. Default sort; click any header to re-rank." {...th} />
             <Th label="Symbol" col="symbol" align="left" {...th} />
-            <Th label="Setup" col="setup" align="left" title="Combined verdict — see 'How to read'. Default sort." {...th} />
+            <Th label="Setup" col="setup" align="left" title="Combined verdict — see 'How to read'. Click to rank strongest first." {...th} />
             <Th label="LTP" col="ltp" align="right" title="Last price" {...th} />
             <Th label="Chg%" col="changePctOpen" align="right" title="Change since the day's open" {...th} />
             <Th label="Spread%" col="spreadPct" align="right" title="(ask − bid) ÷ mid. Tight = liquid / cheap to execute." {...th} />
@@ -204,7 +210,8 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
         <tbody>
           {sorted.map((r) => (
             <tr key={r.symbol} className="border-t border-border hover:bg-muted/30">
-              <td className="px-3 py-2 font-medium text-foreground">
+              <td className="px-2 py-1 text-right tabular-nums text-[10px] text-muted-foreground">{r.origRank}</td>
+              <td className="px-3 py-1 font-medium text-foreground">
                 {r.symbol}
                 {sectors?.[r.symbol] && (
                   <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-[9px] font-normal text-muted-foreground">
@@ -212,7 +219,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
                   </span>
                 )}
               </td>
-              <td className="px-2 py-2">
+              <td className="px-2 py-1">
                 <div className="flex items-center gap-1">
                   <SetupBadge v={r.verdict} />
                   {r.verdict.extended && (
@@ -225,9 +232,9 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
                   )}
                 </div>
               </td>
-              <td className="px-2 py-2 text-right tabular-nums">{r.ltp != null ? `₹${num(r.ltp)}` : '—'}</td>
+              <td className="px-2 py-1 text-right tabular-nums">{r.ltp != null ? `₹${num(r.ltp)}` : '—'}</td>
               <td
-                className={`px-2 py-2 text-right tabular-nums ${
+                className={`px-2 py-1 text-right tabular-nums ${
                   r.changePctOpen == null
                     ? 'text-muted-foreground/50'
                     : r.changePctOpen >= 0
@@ -237,29 +244,29 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               >
                 {r.changePctOpen != null ? `${r.changePctOpen >= 0 ? '+' : ''}${num(r.changePctOpen)}%` : '—'}
               </td>
-              <td className={`px-2 py-2 text-right font-medium tabular-nums ${spreadCls(r.spreadPct)}`}>
+              <td className={`px-2 py-1 text-right font-medium tabular-nums ${spreadCls(r.spreadPct)}`}>
                 {r.spreadPct != null ? `${num(r.spreadPct, 3)}%` : '—'}
               </td>
-              <td className="px-2 py-2">
+              <td className="px-2 py-1">
                 <Imbalance v={r.imbalance} />
               </td>
-              <td className="px-2 py-2 text-right tabular-nums text-muted-foreground">{fmtCompact(r.futOi)}</td>
+              <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">{fmtCompact(r.futOi)}</td>
               <td
-                className={`px-2 py-2 text-right tabular-nums ${
+                className={`px-2 py-1 text-right tabular-nums ${
                   (r.oiLevel ?? 0) >= 1.25 ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
                 }`}
               >
                 {r.oiLevel != null ? `${num(r.oiLevel)}×` : '—'}
               </td>
-              <td className="px-2 py-2 text-right">
+              <td className="px-2 py-1 text-right">
                 <OiBuild r={r} />
               </td>
-              <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{fmtCompact(r.turnover)}</td>
+              <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{fmtCompact(r.turnover)}</td>
             </tr>
           ))}
           {sorted.length === 0 && (
             <tr>
-              <td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">
+              <td colSpan={11} className="px-3 py-8 text-center text-muted-foreground">
                 No data.
               </td>
             </tr>

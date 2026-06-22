@@ -28,8 +28,14 @@ const MAX_SYMBOLS = 25;
  */
 async function rawMovers(source: WatchlistSource): Promise<{ symbol: string; pct: number }[]> {
   switch (source) {
-    case 'nse-oi':
-      return (await getPulseFeed<OiStock[]>('oiSpurts')).data.map((s) => ({ symbol: s.symbol, pct: s.changeInOiPct }));
+    case 'nse-oi': {
+      // Mirror the /nse/movers "OI Build-up" panel exactly: signed change desc
+      // (biggest OI gains first), NOT the fetcher's absolute-value order.
+      const oi = (await getPulseFeed<OiStock[]>('oiSpurts')).data;
+      return [...oi]
+        .sort((a, b) => b.changeInOiPct - a.changeInOiPct)
+        .map((s) => ({ symbol: s.symbol, pct: s.changeInOiPct }));
+    }
     case 'nse-active-value':
       return (await getPulseFeed<ActiveStock[]>('mostActiveValue')).data.map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
     case 'nse-active-volume':
@@ -89,9 +95,16 @@ export async function GET(req: Request) {
     };
     return NextResponse.json(resp);
   } catch (error) {
+    // A cold-cache miss while NSE is throttling/slow → the upstream fetch times
+    // out (~9s). It's an NSE-side hiccup, not a bug — 502 (bad gateway), with a
+    // message the page can show. Pre-warming on the live page makes this rare.
     return NextResponse.json(
-      { success: false, picks: [], error: (error as Error).message } satisfies SectorLeadersResponse,
-      { status: 500 },
+      {
+        success: false,
+        picks: [],
+        error: `NSE feed didn't respond (likely throttled) — try again in a moment. [${(error as Error).message}]`,
+      } satisfies SectorLeadersResponse,
+      { status: 502 },
     );
   }
 }
