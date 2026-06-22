@@ -39,7 +39,7 @@ Held off on these two until they can be built against their real live shape (rat
 lib/nse/                  data layer (NSE fetching only)
   client.ts               shared cookie cache + nseApiGet (one warm-up shared by all routes)
   indices.ts              fetchNseAllIndices()  → allIndices
-  pulse.ts                fetchMarketStatus(), fetchNsePulse()  → movers + status feeds
+  pulse.ts                fetchMarketStatus() + per-feed fetchers via FEED_FETCHERS registry → movers + status feeds
 app/nse/                  UI
   _lib/heat.ts            finviz colour scale + formatters (fmtNum, fmtCr, fmtPct, pctClass)
   _components/            <MarketStatusStrip/>, <IndexTile/>
@@ -48,7 +48,7 @@ app/nse/                  UI
   movers-history/page.tsx → /nse/movers-history   (EOD, date-picked, from bhavcopy)
 app/api/nse/
   heatmap/route.ts        → /api/nse/heatmap         (allIndices + marketStatus, 60s cache, serve-stale)
-  pulse/route.ts          → /api/nse/pulse           (all mover feeds, 60s cache, serve-stale)
+  pulse/[feed]/route.ts   → /api/nse/pulse/[feed]     (one mover feed each, per-feed 30s cache, serve-stale; feed ∈ FEED_KEYS)
   movers-history/route.ts → /api/nse/movers-history  (pure bhavcopy_days read; ?dates=true | ?date=YYYY-MM-DD)
 ```
 

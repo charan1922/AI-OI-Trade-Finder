@@ -54,40 +54,11 @@ export interface OiStock {
   underlyingValue: number;
 }
 
-export interface NsePulse {
-  asOf: string | null;
-  marketStatus: MarketStatus | null;
-  /** Keyed by NSE group: "allSec" | "FOSec" | "NIFTY". */
-  gainers: Record<string, MoverStock[]>;
-  losers: Record<string, MoverStock[]>;
-  mostActiveValue: ActiveStock[];
-  mostActiveVolume: ActiveStock[];
-  week52High: WeekHighStock[];
-  oiSpurts: OiStock[];
-}
-
 /** Groups we surface from the variations feed (each capped at ~20 by NSE). */
 const MOVER_GROUPS = ['allSec', 'FOSec', 'NIFTY'] as const;
 
 const moverRef = 'https://www.nseindia.com/market-data/top-gainers-losers';
 const activeRef = 'https://www.nseindia.com/market-data/most-active-equities';
-
-/** Run a feed fetch, swallowing failures to null so one bad feed can't blank the page. */
-async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
-  try {
-    return await fn();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Gap between sequential NSE calls. Firing all ~7 feeds back-to-back trips NSE's
- * burst throttle partway through (later feeds come back empty); spacing them ~350ms
- * apart lets every feed succeed — verified against the live endpoints.
- */
-const FEED_GAP_MS = 350;
-const gap = () => new Promise((r) => setTimeout(r, FEED_GAP_MS));
 
 export async function fetchMarketStatus(): Promise<MarketStatus> {
   const j = await nseApiGet<{
@@ -141,55 +112,51 @@ function mapActive(json: { data?: Record<string, unknown>[] }): ActiveStock[] {
   }));
 }
 
-/** Fetch every pulse feed sequentially (cookie is cached, so each is one request). */
-export async function fetchNsePulse(): Promise<NsePulse> {
-  const marketStatus = await safe(fetchMarketStatus);
-  await gap();
+export async function fetchGainers(): Promise<Record<string, MoverStock[]>> {
+  const json = await nseApiGet<Record<string, { data?: Record<string, unknown>[] }>>(
+    '/api/live-analysis-variations?index=gainers',
+    { referer: moverRef },
+  );
+  return mapMovers(json);
+}
 
-  const gainersJson = await safe(() =>
-    nseApiGet<Record<string, { data?: Record<string, unknown>[] }>>(
-      '/api/live-analysis-variations?index=gainers',
-      { referer: moverRef },
-    ),
+export async function fetchLosers(): Promise<Record<string, MoverStock[]>> {
+  const json = await nseApiGet<Record<string, { data?: Record<string, unknown>[] }>>(
+    '/api/live-analysis-variations?index=loosers',
+    { referer: moverRef },
   );
-  await gap();
-  const losersJson = await safe(() =>
-    nseApiGet<Record<string, { data?: Record<string, unknown>[] }>>(
-      '/api/live-analysis-variations?index=loosers',
-      { referer: moverRef },
-    ),
-  );
-  await gap();
-  const mavJson = await safe(() =>
-    nseApiGet<{ data?: Record<string, unknown>[] }>(
-      '/api/live-analysis-most-active-securities?index=value',
-      { referer: activeRef },
-    ),
-  );
-  await gap();
-  const mvolJson = await safe(() =>
-    nseApiGet<{ data?: Record<string, unknown>[] }>(
-      '/api/live-analysis-most-active-securities?index=volume',
-      { referer: activeRef },
-    ),
-  );
-  await gap();
-  const whJson = await safe(() =>
-    nseApiGet<{ data?: Record<string, unknown>[] }>('/api/live-analysis-data-52weekhighstock'),
-  );
-  await gap();
-  const oiJson = await safe(() =>
-    nseApiGet<{ data?: Record<string, unknown>[] }>('/api/live-analysis-oi-spurts-underlyings'),
-  );
+  return mapMovers(json);
+}
 
-  const week52High: WeekHighStock[] = (whJson?.data ?? []).map((d) => ({
+export async function fetchMostActiveValue(): Promise<ActiveStock[]> {
+  const json = await nseApiGet<{ data?: Record<string, unknown>[] }>(
+    '/api/live-analysis-most-active-securities?index=value',
+    { referer: activeRef },
+  );
+  return mapActive(json);
+}
+
+export async function fetchMostActiveVolume(): Promise<ActiveStock[]> {
+  const json = await nseApiGet<{ data?: Record<string, unknown>[] }>(
+    '/api/live-analysis-most-active-securities?index=volume',
+    { referer: activeRef },
+  );
+  return mapActive(json);
+}
+
+export async function fetchWeek52High(): Promise<WeekHighStock[]> {
+  const json = await nseApiGet<{ data?: Record<string, unknown>[] }>('/api/live-analysis-data-52weekhighstock');
+  return (json.data ?? []).map((d) => ({
     symbol: String(d.symbol ?? ''),
     company: String(d.comapnyName ?? ''), // NSE's field is misspelled
     ltp: num(d.ltp),
     pctChange: num(d.pChange),
   }));
+}
 
-  const oiSpurts: OiStock[] = (oiJson?.data ?? [])
+export async function fetchOiSpurts(): Promise<OiStock[]> {
+  const json = await nseApiGet<{ data?: Record<string, unknown>[] }>('/api/live-analysis-oi-spurts-underlyings');
+  return (json.data ?? [])
     .map((d) => ({
       symbol: String(d.symbol ?? ''),
       changeInOiPct: num(d.avgInOI),
@@ -198,15 +165,23 @@ export async function fetchNsePulse(): Promise<NsePulse> {
       underlyingValue: num(d.underlyingValue),
     }))
     .sort((a, b) => Math.abs(b.changeInOiPct) - Math.abs(a.changeInOiPct));
-
-  return {
-    asOf: marketStatus?.tradeDate ?? null,
-    marketStatus,
-    gainers: gainersJson ? mapMovers(gainersJson) : {},
-    losers: losersJson ? mapMovers(losersJson) : {},
-    mostActiveValue: mavJson ? mapActive(mavJson) : [],
-    mostActiveVolume: mvolJson ? mapActive(mvolJson) : [],
-    week52High,
-    oiSpurts,
-  };
 }
+
+/**
+ * Per-feed fetcher registry. Each feed is fetched independently so a feed NSE
+ * throttles fails alone instead of blanking the whole page; the browser staggers
+ * the calls (~350ms apart) to stay under NSE's burst limit. The cookie is shared
+ * and cached in-process, so every feed reuses one warm-up.
+ */
+export const FEED_FETCHERS = {
+  marketStatus: fetchMarketStatus,
+  gainers: fetchGainers,
+  losers: fetchLosers,
+  mostActiveValue: fetchMostActiveValue,
+  mostActiveVolume: fetchMostActiveVolume,
+  week52High: fetchWeek52High,
+  oiSpurts: fetchOiSpurts,
+} as const;
+
+export type FeedKey = keyof typeof FEED_FETCHERS;
+export const FEED_KEYS = Object.keys(FEED_FETCHERS) as FeedKey[];
