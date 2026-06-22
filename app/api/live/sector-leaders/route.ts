@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { SectorBasis, SectorPick } from '@/app/live/_lib/types';
 import sectorMap from '@/lib/data/fno_sectors.json';
 import { prisma } from '@/lib/db';
+import { loadFnoUniverse } from '../_lib/fno-universe';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,6 +65,11 @@ export async function GET(req: Request) {
     );
     const hasLiveFuture = new Set(futRows.map((r) => r.underlying));
 
+    // Live Urgency never shows the 'avoid' lot-size band — drop those names here
+    // so the auto-picked chips match what the live table will actually render.
+    const fnoUniverse = await loadFnoUniverse();
+    let excludedAvoid = 0;
+
     const bySymbol = new Map<string, { date: string; eqClose: number; futTurnover: number }[]>();
     for (const r of rows) {
       const list = bySymbol.get(r.symbol);
@@ -75,6 +81,10 @@ export async function GET(req: Request) {
     const candidates: SectorPick[] = [];
     for (const [symbol, days] of bySymbol) {
       if (!hasLiveFuture.has(symbol)) continue;
+      if (fnoUniverse.get(symbol)?.tradeBand === 'avoid') {
+        excludedAvoid++;
+        continue; // 'avoid' band — low-premium options, wide spreads
+      }
       const sector = sectors[symbol];
       if (!sector) continue; // not in the F&O sector map — skip rather than guess
 
@@ -124,6 +134,7 @@ export async function GET(req: Request) {
         liquidityFloorCr: MIN_FUT_TURNOVER / 1e7,
         sectorsCovered: new Set(picks.map((p) => p.sector)).size,
         candidates: candidates.length,
+        excludedAvoid,
       },
     });
   } catch (error) {

@@ -3,6 +3,7 @@ import type { LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
+import { classifyFno, excludeReasonLabel, loadFnoUniverse } from '../_lib/fno-universe';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -33,6 +34,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, marketOpen: false, rows: [], symbols });
     }
 
+    // Live Urgency is F&O-only and never shows the 'avoid' lot-size band. Drop
+    // anything that isn't a tradeable F&O name (covers manual entries too) and
+    // report what was removed, so the watchlist shrinks visibly, never silently.
+    const fno = await loadFnoUniverse(symbols);
+    const excluded: { symbol: string; reason: string }[] = [];
+    const allowed: string[] = [];
+    for (const s of symbols) {
+      const cls = classifyFno(fno.get(s));
+      if (cls.ok) allowed.push(s);
+      else excluded.push({ symbol: s, reason: excludeReasonLabel(cls.reason ?? 'not-fno') });
+    }
+    if (allowed.length === 0) {
+      return NextResponse.json({ success: true, marketOpen: true, rows: [], symbols: allowed, excluded });
+    }
+
     // Resolve equity + near-month futures security IDs DIRECTLY from
     // master_contracts. We deliberately do NOT use batchResolveFutures here:
     // its ensureSynced() gate throws unless the master was synced *today*, but
@@ -40,14 +56,14 @@ export async function POST(req: Request) {
     // no Master Contracts sync page. Equity IDs are stable, so a slightly stale
     // master still resolves them — and spread/imbalance come from equity depth.
     const eqRows = await prisma.masterContract.findMany({
-      where: { symbol: { in: symbols }, segment: 'NSE_EQ' },
+      where: { symbol: { in: allowed }, segment: 'NSE_EQ' },
       select: { symbol: true, securityId: true },
     });
     const eqMap = new Map(eqRows.map((r) => [r.symbol, r.securityId]));
 
     const futRows = await prisma.masterContract.findMany({
       where: {
-        underlying: { in: symbols },
+        underlying: { in: allowed },
         instrument: 'FUTSTK',
         segment: 'NSE_FNO',
         expiryDate: { gte: new Date() },
@@ -63,7 +79,7 @@ export async function POST(req: Request) {
     // One quote request covers the whole watchlist (equity for depth, futures for OI).
     const eqIds: number[] = [];
     const futIds: number[] = [];
-    for (const s of symbols) {
+    for (const s of allowed) {
       const eq = eqMap.get(s);
       if (eq) eqIds.push(Number(eq));
       const fut = futMap.get(s);
@@ -78,10 +94,10 @@ export async function POST(req: Request) {
     const futSeg = quotes.NSE_FNO ?? {};
 
     // 20-session futures-OI average per symbol (bhavcopy), for the OI-level ratio.
-    const oiAvg = await futOiAverages(symbols);
+    const oiAvg = await futOiAverages(allowed);
 
     const today = todayIST();
-    const rows: LiveUrgencyRow[] = symbols.map((s) => {
+    const rows: LiveUrgencyRow[] = allowed.map((s) => {
       const eqId = eqMap.get(s);
       const futId = futMap.get(s)?.securityId;
       const eqQ = eqId ? eqSeg[String(eqId)] : undefined;
@@ -138,7 +154,7 @@ export async function POST(req: Request) {
           imbalance: r.imbalance,
         })),
       );
-      const seriesMap = await getIntradaySeriesForSymbols(today, symbols);
+      const seriesMap = await getIntradaySeriesForSymbols(today, allowed);
       for (const r of rows) {
         const u = computeOiUrgency(seriesMap.get(r.symbol) ?? []);
         if (u.ok) {
@@ -152,7 +168,15 @@ export async function POST(req: Request) {
       console.warn('[live/quote] intraday OI capture failed:', (e as Error).message);
     }
 
-    return NextResponse.json({ success: true, marketOpen: true, asOf: new Date().toISOString(), date: today, rows, symbols });
+    return NextResponse.json({
+      success: true,
+      marketOpen: true,
+      asOf: new Date().toISOString(),
+      date: today,
+      rows,
+      symbols: allowed,
+      excluded,
+    });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }

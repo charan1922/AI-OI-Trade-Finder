@@ -320,11 +320,28 @@ const spec = {
       get: {
         tags: ['Live'],
         summary: 'Dynamic sector-leader watchlist from bhavcopy',
+        description: 'Per-sector leaders from synced bhavcopy. Gated to F&O-only, excluding the \'avoid\' lot-size band.',
         parameters: [
           { name: 'basis', in: 'query', required: false, schema: { type: 'string', enum: ['gainers', 'losers', 'movers'], default: 'gainers' } },
           { name: 'perSector', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 4, default: 2 } },
         ],
         responses: { '200': ok('{ picks, meta }'), '400': errorResponse('Not enough bhavcopy sessions'), '500': errorResponse('Ranking error') },
+      },
+    },
+    '/api/live/nse-watchlist': {
+      get: {
+        tags: ['Live'],
+        summary: 'Watchlist from a live NSE movers feed',
+        description: 'Builds a Live Urgency watchlist from an NSE pulse feed, gated to F&O-only names with a live future, excluding the \'avoid\' lot-size band. Same response shape as /api/live/sector-leaders.',
+        parameters: [
+          {
+            name: 'source',
+            in: 'query',
+            required: true,
+            schema: { type: 'string', enum: ['nse-oi', 'nse-gainers', 'nse-losers', 'nse-active-value', 'nse-active-volume', 'nse-52wh'] },
+          },
+        ],
+        responses: { '200': ok('{ picks, meta }'), '400': errorResponse('Unknown source'), '500': errorResponse('Feed / ranking error') },
       },
     },
 

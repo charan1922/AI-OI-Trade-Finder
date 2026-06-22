@@ -30,28 +30,49 @@ export interface LiveUrgencyRow {
   oiUrgency: number | null;
 }
 
-/** One pick from /api/live/sector-leaders — a sector's top performer. */
+/** One auto-picked watchlist name. Used by both sector-leaders and NSE-movers sources. */
 export interface SectorPick {
   symbol: string;
   sector: string;
-  /** % change in close over the lookback window (5 sessions). */
+  /** % move: 5-session close return for sector leaders, today's feed % for NSE movers. */
   retPct: number;
-  /** Avg daily futures turnover over the last 20 sessions, in ₹ Cr. */
-  avgFutTurnoverCr: number;
+  /** Avg daily futures turnover over the last 20 sessions, in ₹ Cr. Sector leaders only. */
+  avgFutTurnoverCr?: number;
 }
 
 export type SectorBasis = 'gainers' | 'losers' | 'movers';
 
+/**
+ * Where the Live Urgency watchlist is auto-built from. `sector-*` come from the
+ * synced bhavcopy (per-sector leaders); `nse-*` come from NSE's live pulse feeds.
+ * Every source is gated to F&O-only, non-'avoid' names server-side.
+ */
+export type WatchlistSource =
+  | 'sector-gainers'
+  | 'sector-losers'
+  | 'nse-oi'
+  | 'nse-gainers'
+  | 'nse-losers'
+  | 'nse-active-value'
+  | 'nse-active-volume'
+  | 'nse-52wh';
+
+/** Response of both /api/live/sector-leaders and /api/live/nse-watchlist. */
 export interface SectorLeadersResponse {
   success: boolean;
   picks: SectorPick[];
   meta?: {
-    basis: SectorBasis;
-    perSector: number;
-    returnWindow: { from: string; to: string; sessions: number };
-    liquidityFloorCr: number;
+    /** Set by the NSE-movers source; absent for sector leaders. */
+    source?: WatchlistSource;
+    basis?: SectorBasis;
+    perSector?: number;
+    /** Sector-leaders only — the return-window dates. */
+    returnWindow?: { from: string; to: string; sessions: number };
+    liquidityFloorCr?: number;
     sectorsCovered: number;
     candidates: number;
+    /** F&O names dropped for being in the 'avoid' lot-size band. */
+    excludedAvoid?: number;
   };
   error?: string;
 }
@@ -63,5 +84,7 @@ export interface LiveQuoteResponse {
   date?: string;
   rows: LiveUrgencyRow[];
   symbols: string[];
+  /** Symbols dropped from the watchlist because they aren't tradeable F&O names. */
+  excluded?: { symbol: string; reason: string }[];
   error?: string;
 }

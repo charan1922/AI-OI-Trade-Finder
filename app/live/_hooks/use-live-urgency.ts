@@ -14,11 +14,13 @@ export function useLiveUrgency(symbols: string[]) {
   const [asOf, setAsOf] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [excluded, setExcluded] = useState<NonNullable<LiveQuoteResponse['excluded']>>([]);
 
   const fetchOnce = useCallback(async () => {
     // No watchlist yet (auto-pick still loading or cleared) — nothing to poll.
     if (!symbolsKey) {
       setRows([]);
+      setExcluded([]);
       return;
     }
     setLoading(true);
@@ -33,6 +35,7 @@ export function useLiveUrgency(symbols: string[]) {
         setMarketOpen(d.marketOpen);
         setRows(d.rows ?? []);
         setAsOf(d.asOf ?? null);
+        setExcluded(d.excluded ?? []);
         setError(null);
       } else {
         setError(d.error ?? 'Failed to fetch live quotes');
@@ -57,5 +60,5 @@ export function useLiveUrgency(symbols: string[]) {
     };
   }, [fetchOnce]);
 
-  return { rows, marketOpen, asOf, loading, error, refresh: fetchOnce };
+  return { rows, marketOpen, asOf, loading, error, excluded, refresh: fetchOnce };
 }

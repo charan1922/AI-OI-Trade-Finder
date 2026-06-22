@@ -5,13 +5,35 @@ import { useEffect, useMemo, useState } from 'react';
 import { HowToRead } from './_components/how-to-read';
 import { UrgencyTable } from './_components/urgency-table';
 import { useLiveUrgency } from './_hooks/use-live-urgency';
-import type { SectorBasis, SectorLeadersResponse, SectorPick } from './_lib/types';
+import type { SectorLeadersResponse, SectorPick, WatchlistSource } from './_lib/types';
 
-const BASIS_LABEL: Record<SectorBasis, string> = {
-  gainers: 'top gainers',
-  losers: 'top losers',
-  movers: 'biggest movers',
-};
+// Grouped watchlist sources for the dropdown. Sector leaders come from the synced
+// bhavcopy; NSE movers come from NSE's live pulse feeds (same as /nse/movers).
+// Every source is gated server-side to F&O-only, non-'avoid' names.
+const SOURCE_GROUPS: { group: string; options: { value: WatchlistSource; label: string }[] }[] = [
+  {
+    group: 'Sector leaders (bhavcopy)',
+    options: [
+      { value: 'sector-gainers', label: 'Sector winners' },
+      { value: 'sector-losers', label: 'Sector losers' },
+    ],
+  },
+  {
+    group: 'NSE movers (live)',
+    options: [
+      { value: 'nse-oi', label: 'F&O OI build-up' },
+      { value: 'nse-gainers', label: 'F&O top gainers' },
+      { value: 'nse-losers', label: 'F&O top losers' },
+      { value: 'nse-active-value', label: 'Most active (value)' },
+      { value: 'nse-active-volume', label: 'Most active (volume)' },
+      { value: 'nse-52wh', label: '52-week highs' },
+    ],
+  },
+];
+
+const SOURCE_LABEL = Object.fromEntries(
+  SOURCE_GROUPS.flatMap((g) => g.options.map((o) => [o.value, o.label])),
+) as Record<WatchlistSource, string>;
 
 export default function LiveUrgencyPage() {
   // No hardcoded basket — the default watchlist is auto-picked sector leaders
@@ -19,9 +41,9 @@ export default function LiveUrgencyPage() {
   const [watchInput, setWatchInput] = useState('');
   const [applied, setApplied] = useState('');
 
-  // Auto-pick (sector leaders) state. Cleared when the user applies a manual
-  // list. autoLoading starts true because the mount effect always auto-picks.
-  const [autoBasis, setAutoBasis] = useState<SectorBasis>('gainers');
+  // Auto-pick state. Cleared when the user applies a manual list. autoLoading
+  // starts true because the mount effect always auto-picks.
+  const [source, setSource] = useState<WatchlistSource>('sector-gainers');
   const [autoPicks, setAutoPicks] = useState<SectorPick[] | null>(null);
   const [autoMeta, setAutoMeta] = useState<SectorLeadersResponse['meta'] | null>(null);
   const [autoLoading, setAutoLoading] = useState(true);
@@ -36,7 +58,7 @@ export default function LiveUrgencyPage() {
     [applied],
   );
 
-  const { rows, marketOpen, asOf, loading, error, refresh } = useLiveUrgency(symbols);
+  const { rows, marketOpen, asOf, loading, error, excluded, refresh } = useLiveUrgency(symbols);
 
   const applyManual = (text: string) => {
     setApplied(text);
@@ -46,10 +68,15 @@ export default function LiveUrgencyPage() {
   };
 
   // Pure fetch — no setState, so the mount effect below stays free of
-  // synchronous setState (react-hooks/set-state-in-effect).
-  const fetchSectorLeaders = async (basis: SectorBasis): Promise<SectorLeadersResponse> => {
+  // synchronous setState (react-hooks/set-state-in-effect). Sector sources hit
+  // the bhavcopy ranker; NSE sources hit the live pulse feeds. Both return the
+  // same shape and are gated to F&O-only, non-'avoid' names server-side.
+  const fetchWatchlist = async (src: WatchlistSource): Promise<SectorLeadersResponse> => {
     try {
-      const res = await fetch(`/api/live/sector-leaders?basis=${basis}&perSector=2`);
+      const url = src.startsWith('sector-')
+        ? `/api/live/sector-leaders?basis=${src === 'sector-losers' ? 'losers' : 'gainers'}&perSector=2`
+        : `/api/live/nse-watchlist?source=${src}`;
+      const res = await fetch(url);
       return (await res.json()) as SectorLeadersResponse;
     } catch (e) {
       return { success: false, picks: [], error: (e as Error).message };
@@ -58,7 +85,17 @@ export default function LiveUrgencyPage() {
 
   const applyPicks = (d: SectorLeadersResponse) => {
     if (!d.success) {
-      setAutoError(d.error ?? 'Failed to build the sector watchlist');
+      setAutoError(`Couldn't build the watchlist: ${d.error ?? 'unknown error'}`);
+      return;
+    }
+    if (d.picks.length === 0) {
+      // Honest empty state — e.g. an equity-wide NSE feed whose current names are
+      // all non-F&O or in the 'avoid' band. Clear the list and say why.
+      setWatchInput('');
+      setApplied('');
+      setAutoPicks(null);
+      setAutoMeta(null);
+      setAutoError('No tradeable F&O names in this source right now — every candidate was non-F&O or in the ‘avoid’ band. Try another source.');
       return;
     }
     const list = d.picks.map((p) => p.symbol).join(', ');
@@ -69,9 +106,9 @@ export default function LiveUrgencyPage() {
     setAutoError(null);
   };
 
-  const autoPick = async (basis: SectorBasis) => {
+  const autoPick = async (src: WatchlistSource) => {
     setAutoLoading(true);
-    applyPicks(await fetchSectorLeaders(basis));
+    applyPicks(await fetchWatchlist(src));
     setAutoLoading(false);
   };
 
@@ -86,7 +123,7 @@ export default function LiveUrgencyPage() {
   // banner shows and the user can type a manual list.
   useEffect(() => {
     let ignore = false;
-    fetchSectorLeaders('gainers').then((d) => {
+    fetchWatchlist('sector-gainers').then((d) => {
       if (ignore) return;
       applyPicks(d);
       setAutoLoading(false);
@@ -158,33 +195,46 @@ export default function LiveUrgencyPage() {
         <span className="text-[11px] text-muted-foreground/60">or</span>
         <div
           className="flex items-center gap-1.5"
-          title="Builds the watchlist automatically from synced NSE data: the 2 strongest stocks of EACH sector over the last 5 sessions, only counting liquid names (≥ ₹100 Cr/day futures turnover) with a live futures contract. Max 25 stocks."
+          title="Builds the watchlist from the chosen source — bhavcopy sector leaders or a live NSE movers feed. Always F&O-only, excluding the 'avoid' lot-size band and names without a live future. Max 25 stocks."
         >
           <button
             type="button"
-            onClick={() => autoPick(autoBasis)}
+            onClick={() => autoPick(source)}
             disabled={autoLoading}
             className="flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
           >
             {autoLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-            Auto-pick sector leaders
+            Build watchlist
           </button>
           <select
-            value={autoBasis}
-            onChange={(e) => setAutoBasis(e.target.value as SectorBasis)}
-            className="rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground focus:border-primary focus:outline-none"
-            title="gainers = strongest 5-session rise per sector · losers = strongest fall (short candidates) · biggest movers = largest move either way"
+            value={source}
+            onChange={(e) => {
+              // Changing the source rebuilds the watchlist immediately — no need
+              // to also click "Build watchlist" (that's now just a manual refresh).
+              const next = e.target.value as WatchlistSource;
+              setSource(next);
+              void autoPick(next);
+            }}
+            disabled={autoLoading}
+            className="rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground focus:border-primary focus:outline-none disabled:opacity-50"
+            title="Sector winners/losers = per-sector leaders from bhavcopy · NSE movers = live feeds from /nse/movers (OI build-up, gainers, losers, most active, 52-week highs). Changing this rebuilds the list."
           >
-            <option value="gainers">top gainers</option>
-            <option value="losers">top losers</option>
-            <option value="movers">biggest movers</option>
+            {SOURCE_GROUPS.map((g) => (
+              <optgroup key={g.group} label={g.group}>
+                {g.options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
           </select>
         </div>
       </div>
 
       {autoError && (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
-          Auto-pick failed: {autoError}
+          {autoError}
         </div>
       )}
 
@@ -192,12 +242,15 @@ export default function LiveUrgencyPage() {
       {autoPicks && autoPicks.length > 0 && (
         <div className="rounded-xl border border-border bg-card p-2.5">
           <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 text-[10px] text-muted-foreground">
-            <span className="font-bold uppercase tracking-wide">Auto-picked: {BASIS_LABEL[autoBasis]} per sector</span>
+            <span className="font-bold uppercase tracking-wide">Auto-picked: {SOURCE_LABEL[source]}</span>
             {autoMeta && (
               <span>
-                5-session return {autoMeta.returnWindow.from} → {autoMeta.returnWindow.to} · liquidity ≥ ₹
-                {autoMeta.liquidityFloorCr} Cr/day · {autoMeta.sectorsCovered} sectors · refreshes from bhavcopy, so
-                re-click after each NSE sync
+                {autoMeta.returnWindow
+                  ? `5-session return ${autoMeta.returnWindow.from} → ${autoMeta.returnWindow.to} · liquidity ≥ ₹${autoMeta.liquidityFloorCr} Cr/day`
+                  : 'live F&O movers from NSE'}{' '}
+                · {autoMeta.sectorsCovered} sectors
+                {autoMeta.excludedAvoid ? ` · ${autoMeta.excludedAvoid} avoid-band removed` : ''} · F&O only, re-click to
+                refresh
               </span>
             )}
           </div>
@@ -205,7 +258,7 @@ export default function LiveUrgencyPage() {
             {autoPicks.map((p) => (
               <span
                 key={p.symbol}
-                title={`${p.sector} · ${p.retPct >= 0 ? '+' : ''}${p.retPct.toFixed(2)}% over 5 sessions · ₹${p.avgFutTurnoverCr.toFixed(0)} Cr/day avg futures turnover`}
+                title={`${p.sector} · ${p.retPct >= 0 ? '+' : ''}${p.retPct.toFixed(2)}%${p.avgFutTurnoverCr ? ` · ₹${p.avgFutTurnoverCr.toFixed(0)} Cr/day avg futures turnover` : ''}`}
                 className="inline-flex cursor-help items-center gap-1 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[10px]"
               >
                 <span className="text-muted-foreground/60">{p.sector}</span>
@@ -217,6 +270,14 @@ export default function LiveUrgencyPage() {
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Names the watchlist asked for but Live Urgency won't show — F&O-only, no 'avoid' band */}
+      {excluded.length > 0 && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+          <b>Hidden (F&amp;O-only, no &lsquo;avoid&rsquo; band):</b>{' '}
+          {excluded.map((e) => `${e.symbol} (${e.reason})`).join(', ')}
         </div>
       )}
 
