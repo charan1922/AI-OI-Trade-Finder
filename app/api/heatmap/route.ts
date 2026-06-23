@@ -23,8 +23,11 @@ export const dynamic = 'force-dynamic';
 export interface HeatTile {
   symbol: string;
   sector: string;
-  /** % change vs the previous close (live: Dhan net_change; closed: EOD vs EOD). */
+  /** % change vs the PREVIOUS close (live: Dhan net_change; closed: EOD vs prior EOD). */
   pct: number;
+  /** Intraday % change since TODAY'S OPEN — (LTP − open) / open. The default tile
+   *  metric; excludes the overnight gap. Falls back to `pct` if open is missing. */
+  intradayPct: number;
   /** Traded value in ₹ (live: VWAP × volume so far today; closed: full-day turnover). */
   turnover: number;
   price: number;
@@ -34,6 +37,11 @@ export interface HeatTile {
  * Server-side shield for Dhan's 1-quote-call/sec limit: the live result is
  * cached briefly, so N browser tabs (or a misbehaving poller) collapse into at
  * most one upstream call per window. Module-level — survives across requests.
+ *
+ * The cache also doubles as a STALE fallback: if a live call fails mid-session
+ * (429 / transient), we keep serving the last good live snapshot flagged
+ * `stale: true` rather than yanking the user back to yesterday's EOD. We only
+ * fall back to EOD when there's no live snapshot at all (e.g. right at 9:15).
  */
 const LIVE_CACHE_MS = 10_000;
 let liveCache: { at: number; payload: Record<string, unknown> } | null = null;
@@ -69,10 +77,13 @@ export async function GET() {
             const vol = q?.volume ?? 0;
             const turnover = vwap > 0 && vol > 0 ? vwap * vol : ltp * vol;
             if (turnover <= 0) continue; // first seconds of the session — no size yet
+            const open = q?.ohlc?.open ?? 0;
+            const pct = (netChange / prevClose) * 100;
             tiles.push({
               symbol: r.symbol,
               sector: sectors[r.symbol],
-              pct: (netChange / prevClose) * 100,
+              pct,
+              intradayPct: open > 0 ? ((ltp - open) / open) * 100 : pct,
               turnover,
               price: ltp,
             });
@@ -82,6 +93,7 @@ export async function GET() {
               success: true,
               source: 'live',
               marketOpen: true,
+              stale: false,
               asOf: new Date().toISOString(),
               tiles,
               sectors: aggregateSectors(tiles),
@@ -94,11 +106,23 @@ export async function GET() {
           liveError = 'no equity IDs in master_contracts';
         }
       } catch (e) {
-        // Dhan unavailable (429 / creds) — fall through to EOD below, but
-        // SURFACE the reason so a silent fallback can't masquerade as "closed".
+        // Dhan unavailable (429 / creds) — surface the reason so a silent
+        // fallback can't masquerade as a healthy feed.
         liveError = (e as Error).message;
-        console.error('[Heatmap] live path failed, serving EOD:', liveError);
+        console.error('[Heatmap] live path failed:', liveError);
       }
+
+      // Live failed THIS cycle but we have a prior good snapshot → keep showing
+      // it (flagged stale + retrying) instead of jumping to yesterday's EOD.
+      // The fast 15s open-market poll keeps trying, so this self-heals.
+      if (liveCache) {
+        return NextResponse.json({
+          ...liveCache.payload,
+          stale: true,
+          liveError,
+        });
+      }
+      // No live snapshot yet this session → genuine EOD fallback below.
     }
 
     // ── EOD path (closed market, or live failed): NSE bhavcopy ──────────────
@@ -114,17 +138,18 @@ export async function GET() {
     const [latest, prev] = [dateRows[0].date, dateRows[1].date];
 
     const rows = await prisma.$queryRawUnsafe<
-      { symbol: string; date: string; eqClose: number; eqTurnover: number }[]
+      { symbol: string; date: string; eqOpen: number; eqClose: number; eqTurnover: number }[]
     >(
-      `SELECT symbol, date, eqClose, eqTurnover FROM bhavcopy_days
+      `SELECT symbol, date, eqOpen, eqClose, eqTurnover FROM bhavcopy_days
        WHERE date IN (?, ?) AND eqClose > 0`,
       latest,
       prev,
     );
-    const latestBySym = new Map<string, { close: number; turnover: number }>();
+    const latestBySym = new Map<string, { open: number; close: number; turnover: number }>();
     const prevBySym = new Map<string, number>();
     for (const r of rows) {
-      if (r.date === latest) latestBySym.set(r.symbol, { close: r.eqClose, turnover: r.eqTurnover });
+      if (r.date === latest)
+        latestBySym.set(r.symbol, { open: r.eqOpen, close: r.eqClose, turnover: r.eqTurnover });
       else prevBySym.set(r.symbol, r.eqClose);
     }
 
@@ -132,10 +157,13 @@ export async function GET() {
       .filter(([sym]) => sectors[sym] && (prevBySym.get(sym) ?? 0) > 0)
       .map(([sym, cur]) => {
         const base = prevBySym.get(sym) ?? 0;
+        const pct = ((cur.close - base) / base) * 100;
         return {
           symbol: sym,
           sector: sectors[sym],
-          pct: ((cur.close - base) / base) * 100,
+          pct,
+          // Session intraday move (open → close of the latest synced day).
+          intradayPct: cur.open > 0 ? ((cur.close - cur.open) / cur.open) * 100 : pct,
           turnover: cur.turnover,
           price: cur.close,
         };

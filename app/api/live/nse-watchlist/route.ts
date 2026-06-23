@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { SectorLeadersResponse, SectorPick, WatchlistSource } from '@/app/live/_lib/types';
-import type { ActiveStock, MoverStock, OiStock, WeekHighStock } from '@/lib/nse/pulse';
+import type { ActiveStock, MoverStock, OiStock } from '@/lib/nse/pulse';
 import { getPulseFeed } from '@/lib/nse/pulse-cache';
 import { classifyFno, loadFnoUniverse, loadLiveFutureUnderlyings } from '../_lib/fno-universe';
 
@@ -8,45 +8,63 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /**
- * GET /api/live/nse-watchlist?source=nse-oi|nse-gainers|nse-losers|nse-active-value|nse-active-volume|nse-52wh
+ * GET /api/live/nse-watchlist?source=nse-oi|nse-gainers|nse-losers|nse-active-value|nse-active-volume
  *
- * Builds a Live Urgency watchlist from one of NSE's live market-pulse feeds (the
- * same feeds the /nse/movers page shows), then gates it to the Live Urgency
- * universe: F&O stocks only, no 'avoid'-band names, and only symbols with a live
- * stock future (so the OI-level column resolves). NSE's ranked order is kept.
+ * Builds a Live Urgency watchlist from one of NSE's live market-pulse feeds — the
+ * SAME lists the /nse/movers page shows, capped to the same sizes that page
+ * displays (OI build-up = top 24; the rest are NSE's ~20-name lists). The /live
+ * page loads one of these per category section.
  *
- * Returns the same shape as /api/live/sector-leaders so the page renders both
- * source families identically.
+ * The result is gated to the Live Urgency universe: F&O stocks only, no
+ * 'avoid'-band names, and only symbols with a live stock future (so the OI-level
+ * column resolves). NSE's ranked order is kept.
+ *
+ * Returns the same shape as /api/live/sector-leaders. The quote API batches a
+ * section's whole list into one request, so symbol count never multiplies Dhan calls.
  */
 
-const MAX_SYMBOLS = 25;
+// /nse/movers shows only the top 24 OI-build-up names (oiBuildup.slice(0, 24));
+// mirror that here so /live matches the page instead of dumping the 216-row feed.
+const OI_DISPLAY = 24;
 
 /**
- * Produce [symbol, pct] in NSE's ranked order for the chosen source. Feeds come
- * through the shared 30s pulse cache, so this reuses whatever the Market Movers
- * page already warmed instead of hitting (and being throttled by) NSE again.
+ * Per-feed lists in NSE's ranked order, each EXACTLY what the matching /nse/movers
+ * panel displays. Feeds come through the shared 30s pulse cache, so this reuses
+ * whatever the Market Movers page already warmed instead of hitting (and being
+ * throttled by) NSE again.
  */
+async function oiMovers(): Promise<{ symbol: string; pct: number }[]> {
+  // Signed change desc (biggest OI gains first), top 24 — the panel's exact view.
+  const oi = (await getPulseFeed<OiStock[]>('oiSpurts')).data;
+  return [...oi]
+    .sort((a, b) => b.changeInOiPct - a.changeInOiPct)
+    .slice(0, OI_DISPLAY)
+    .map((s) => ({ symbol: s.symbol, pct: s.changeInOiPct }));
+}
+
+async function activeMovers(by: 'value' | 'volume'): Promise<{ symbol: string; pct: number }[]> {
+  const feed = by === 'value' ? 'mostActiveValue' : 'mostActiveVolume';
+  return (await getPulseFeed<ActiveStock[]>(feed)).data.map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
+}
+
+async function moverGroup(kind: 'gainers' | 'losers'): Promise<{ symbol: string; pct: number }[]> {
+  // FOSec = NSE's F&O-securities group (the equity-wide list mostly isn't F&O).
+  return ((await getPulseFeed<Record<string, MoverStock[]>>(kind)).data.FOSec ?? []).map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
+}
+
+/** Produce [symbol, pct] in NSE's ranked order for the chosen source. */
 async function rawMovers(source: WatchlistSource): Promise<{ symbol: string; pct: number }[]> {
   switch (source) {
-    case 'nse-oi': {
-      // Mirror the /nse/movers "OI Build-up" panel exactly: signed change desc
-      // (biggest OI gains first), NOT the fetcher's absolute-value order.
-      const oi = (await getPulseFeed<OiStock[]>('oiSpurts')).data;
-      return [...oi]
-        .sort((a, b) => b.changeInOiPct - a.changeInOiPct)
-        .map((s) => ({ symbol: s.symbol, pct: s.changeInOiPct }));
-    }
+    case 'nse-oi':
+      return oiMovers();
     case 'nse-active-value':
-      return (await getPulseFeed<ActiveStock[]>('mostActiveValue')).data.map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
+      return activeMovers('value');
     case 'nse-active-volume':
-      return (await getPulseFeed<ActiveStock[]>('mostActiveVolume')).data.map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
+      return activeMovers('volume');
     case 'nse-gainers':
-      // FOSec = NSE's F&O-securities group (the equity-wide list mostly isn't F&O).
-      return ((await getPulseFeed<Record<string, MoverStock[]>>('gainers')).data.FOSec ?? []).map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
+      return moverGroup('gainers');
     case 'nse-losers':
-      return ((await getPulseFeed<Record<string, MoverStock[]>>('losers')).data.FOSec ?? []).map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
-    case 'nse-52wh':
-      return (await getPulseFeed<WeekHighStock[]>('week52High')).data.map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
+      return moverGroup('losers');
     default:
       return [];
   }
@@ -80,7 +98,6 @@ export async function GET(req: Request) {
       if (!liveFut.has(symbol)) continue; // no live future → OI level can't resolve
       seen.add(symbol);
       picks.push({ symbol, sector: meta!.sector, retPct: pct });
-      if (picks.length >= MAX_SYMBOLS) break;
     }
 
     const resp: SectorLeadersResponse = {

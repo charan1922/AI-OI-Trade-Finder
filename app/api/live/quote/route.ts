@@ -20,12 +20,17 @@ export const runtime = 'nodejs';
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}) as { symbols?: unknown });
+    // A section's whole symbol list is quoted in ONE batched Dhan request (built
+    // below), so list size never multiplies Dhan calls. The /live page issues one
+    // such request per category section, serialized client-side to ≤1 req/sec. This
+    // generous guard only stops a pathological input from ballooning a batch
+    // (≤200 symbols ≈ ≤400 instruments, well under Dhan's per-request limit).
     const symbols: string[] = Array.isArray(body.symbols)
-      ? (body.symbols as unknown[]).slice(0, 25).map((s) => String(s).toUpperCase())
+      ? (body.symbols as unknown[]).slice(0, 200).map((s) => String(s).toUpperCase())
       : [];
 
-    // No hardcoded fallback basket — an empty watchlist returns empty rows
-    // (the client builds its default via /api/live/sector-leaders).
+    // No hardcoded fallback basket — an empty watchlist returns empty rows (each
+    // /live section builds its own list via /api/live/nse-watchlist).
     if (symbols.length === 0) {
       return NextResponse.json({ success: true, marketOpen: isMarketHours(), rows: [], symbols });
     }

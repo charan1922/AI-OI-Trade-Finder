@@ -37,3 +37,4 @@ next-env.d.ts
 
 # local database (project-r.db tracked via Git LFS)
 data/.dhan-token.json
+data/project-r.db

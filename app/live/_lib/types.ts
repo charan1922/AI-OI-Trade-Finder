@@ -54,8 +54,7 @@ export type WatchlistSource =
   | 'nse-gainers'
   | 'nse-losers'
   | 'nse-active-value'
-  | 'nse-active-volume'
-  | 'nse-52wh';
+  | 'nse-active-volume';
 
 /** Response of both /api/live/sector-leaders and /api/live/nse-watchlist. */
 export interface SectorLeadersResponse {
