@@ -25,3 +25,5 @@ focus on process
 8. **Majority indicators** — buying or selling signal
 9. **Open interest indicator direction**
 10. **Time 9:45AM after**
+11. compare last 20days oi
+12. breakout
