@@ -153,7 +153,7 @@ export default function NseMoversHistoryPage() {
         <h1 className="text-base font-bold text-foreground">EOD Movers</h1>
         <span
           className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-500/10 dark:text-sky-400"
-          title="Reconstructed from NSE's official end-of-day bhavcopy (close-to-close). The live /nse/movers page is the intraday snapshot."
+          title="Reconstructed from NSE's official end-of-day bhavcopy. Price/% use the day's last-traded price (matching the live feed); OI% is counted in contracts. The live /nse/movers page is the intraday snapshot."
         >
           NSE bhavcopy · EOD
         </span>
@@ -282,10 +282,11 @@ export default function NseMoversHistoryPage() {
           </div>
 
           <p className="text-[10px] text-muted-foreground">
-            Reconstructed from NSE official bhavcopy (end-of-day close-to-close). OI% is total (futures + options) open-interest
-            change counted in contracts — each expiry&apos;s OI divided by that expiry&apos;s own board lot, taken per-contract
-            from the bhavcopy file — matching the live NSE Movers feed to ~0.1pp for ~210 of 211 F&O stocks, including names mid
-            lot-size revision (e.g. MCX). For live intraday movers, see NSE Movers.
+            Reconstructed from NSE official bhavcopy. Price &amp; % change use the day&apos;s last-traded price vs the prior
+            official close — the same basis as the live NSE Movers feed (and Google/brokers), so the two line up. OI% is total
+            (futures + options) open-interest change counted in contracts — each expiry&apos;s OI divided by that expiry&apos;s
+            own board lot, taken per-contract from the bhavcopy file — matching the live feed even across lot-size revisions
+            (e.g. MCX). For live intraday movers, see NSE Movers.
           </p>
         </>
       )}

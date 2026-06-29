@@ -371,8 +371,8 @@ export default function NseMoversPage() {
       <p className="text-[10px] text-muted-foreground">
         Live from NSE public feeds — no broker auth. Each panel refreshes on its own timer (every{' '}
         {open ? '60s while open' : '90s while closed'}) and shows its own last-fetched time. % is vs the previous close
-        using <b className="text-foreground">last-traded price (LTP)</b>; EOD Movers uses NSE&apos;s official closing
-        price, so values differ slightly.
+        using <b className="text-foreground">last-traded price (LTP)</b> — the same basis as EOD Movers, so the two
+        line up.
       </p>
     </div>
   );
