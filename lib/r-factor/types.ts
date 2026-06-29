@@ -21,6 +21,7 @@ export type FactorKey =
   | 'pcr'
   | 'turnover'
   | 'volume'
+  | 'rangeSpread'
   | 'bidAskSpread'
   | 'breakout';
 
@@ -58,6 +59,13 @@ export interface RFactorInput {
   /** Breakout reference levels — e.g. prior-day high/low or the opening range. */
   breakoutHigh?: number;
   breakoutLow?: number;
+
+  // ── Range expansion (the TF-dominant "spread") ──
+  /** Session high/low so far (intraday live, or EOD high/low). */
+  dayHigh?: number;
+  dayLow?: number;
+  /** 20-day average of (High−Low)/Close — the range-ratio baseline. */
+  rangeSpread20dAvg?: number;
 
   // ── Futures open interest ──
   /** Current futures OI. */

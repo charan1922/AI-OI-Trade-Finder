@@ -201,6 +201,29 @@ model OiIntraday {
   @@map("oi_intraday")
 }
 
+/// Live 5-minute intraday candles, persisted so the series is available at any
+/// time (R-Factor breakout/range, charts, an AI agent) without re-hitting Dhan.
+/// Same lazy-CREATE + mirrored-model convention as OiIntraday. Keyed by
+/// (symbol, date, bucketTs); bucketTs is the bar-START epoch second floored to a
+/// 300s (5-min) grid. `source` = 'rest' (authoritative Dhan backfill) or 'agg'
+/// (aggregated from live quote polls; OHLC only, volume 0 until backfilled).
+model IntradayCandle {
+  symbol    String
+  date      String
+  bucketTs  Int
+  open      Float  @default(0)
+  high      Float  @default(0)
+  low       Float  @default(0)
+  close     Float  @default(0)
+  volume    Float  @default(0)
+  source    String @default("agg")
+  updatedAt String
+
+  @@id([symbol, date, bucketTs])
+  @@index([date, symbol])
+  @@map("intraday_candles")
+}
+
 model OptionTrade {
   id            Int      @id @default(autoincrement())
   date          String

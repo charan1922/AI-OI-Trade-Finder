@@ -90,6 +90,9 @@ export default function LiveUrgencyPage() {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-[10px] leading-snug text-muted-foreground">
         <span className="font-bold uppercase tracking-wide text-foreground">How to read</span>
         <span>
+          <b className="text-foreground">R-Factor</b> = live interest 1–5 + bias (hover for why)
+        </span>
+        <span>
           <b className="text-foreground">Spread</b> = cost (tight = cheap)
         </span>
         <span>

@@ -16,11 +16,13 @@ const LIST_POLL_MS = 60_000;
 // Stagger each section's FIRST list fetch so four sections don't hit NSE's pulse
 // feeds in the same instant on mount (mirrors the /nse/movers stagger).
 const LIST_STAGGER_MS = 400;
-// Live depth/urgency QUOTES are the fast signal. Per section; the shared scheduler
-// serializes them to ≤ 1 Dhan req/sec and the in-flight guard below keeps at most
-// one outstanding request per section, so the scheduler queue never grows beyond
-// the section count.
-const QUOTE_POLL_MS = 5_000;
+// Live depth/urgency QUOTES are the fast signal. Per section; the server-side
+// Quote-API gate (lib/dhan/market-feed.ts) serializes ALL callers to a safe margin
+// under Dhan's 1 req/sec, and the in-flight guard below keeps at most one
+// outstanding request per section. 7s × 4 sections ≈ 0.57 req/sec keeps total
+// demand under the gate's ~0.67/sec capacity (with headroom for the heatmap), so
+// quotes drain steadily instead of perpetually queueing.
+const QUOTE_POLL_MS = 7_000;
 
 export interface CategoryUrgency {
   /** The F&O-gated mover list for this category, in NSE's ranked order. */

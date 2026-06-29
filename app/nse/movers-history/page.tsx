@@ -202,7 +202,14 @@ export default function NseMoversHistoryPage() {
           <Panel
             title="F&O OI Build-up"
             icon={<TrendingUp className="h-3.5 w-3.5 text-violet-500" />}
-            right={<span className="text-[9px] text-muted-foreground">top OI gains · price · OI%</span>}
+            right={
+              <span
+                className="cursor-help text-[9px] text-muted-foreground"
+                title="Total (futures + options) OI change, close-to-close, counted in CONTRACTS (each expiry's OI ÷ that expiry's lot, summed) — the same basis as the live NSE Movers feed. This stays correct even when a stock is mid lot-size revision (e.g. MCX 625→225), where a share-based count would mislead because OI rolling into the next expiry carries a different lot."
+              >
+                top OI gains · price · OI%
+              </span>
+            }
           >
             {oiBuildup.length === 0 ? (
               <Empty />
@@ -275,7 +282,10 @@ export default function NseMoversHistoryPage() {
           </div>
 
           <p className="text-[10px] text-muted-foreground">
-            Reconstructed from NSE official bhavcopy (end-of-day close-to-close). For live intraday movers, see NSE Movers.
+            Reconstructed from NSE official bhavcopy (end-of-day close-to-close). OI% is total (futures + options) open-interest
+            change counted in contracts — each expiry&apos;s OI divided by that expiry&apos;s lot — matching the live NSE Movers
+            feed to ~0.1pp for ~210 of 211 F&O stocks, including names mid lot-size revision (e.g. MCX). For live intraday movers,
+            see NSE Movers.
           </p>
         </>
       )}

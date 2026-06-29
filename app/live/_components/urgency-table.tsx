@@ -88,10 +88,61 @@ function SetupBadge({ v }: { v: SetupVerdict }) {
   );
 }
 
+const BIAS_STYLE: Record<'buy' | 'sell' | 'neutral', { arrow: string; cls: string }> = {
+  buy: { arrow: '▲', cls: 'text-emerald-600 dark:text-emerald-400' },
+  sell: { arrow: '▼', cls: 'text-red-600 dark:text-red-400' },
+  neutral: { arrow: '·', cls: 'text-muted-foreground' },
+};
+
+/**
+ * R-Factor cell — the live institutional-interest score (1.0–5.0) plus its
+ * directional bias arrow, colored by strength. The hover tooltip breaks down every
+ * contributing factor. Values are provisional until the blend weights are
+ * calibrated to TradeFinder. "—" when there's no usable price (never fabricated).
+ */
+function RFactorCell({ r }: { r: LiveUrgencyRow }) {
+  if (r.rFactor == null) return <span className="text-muted-foreground/50">—</span>;
+  const bias = r.rFactorBias ?? 'neutral';
+  const b = BIAS_STYLE[bias];
+  const strengthCls =
+    r.rFactor >= 4
+      ? 'font-bold text-emerald-600 dark:text-emerald-400'
+      : r.rFactor >= 3
+        ? 'font-semibold text-amber-600 dark:text-amber-400'
+        : 'text-muted-foreground';
+
+  const conf = r.rFactorConfidence != null ? `${Math.round(r.rFactorConfidence * 100)}%` : '—';
+  const factors = r.rFactors ?? [];
+  const active = factors
+    .filter((f) => f.available)
+    .map((f) => `• ${f.label}: ${f.score.toFixed(2)}${f.vote !== 'neutral' ? ` (${f.vote})` : ''} — ${f.detail}`)
+    .join('\n');
+  const naLabels = factors.filter((f) => !f.available).map((f) => f.label);
+
+  const tip = [
+    `R-Factor ${r.rFactor.toFixed(2)} / 5 · bias ${bias} · agreement ${conf}`,
+    r.rFactorAfterEntry === false ? '⚠ before the 09:45 IST entry window — may be opening noise' : '',
+    '',
+    active,
+    naLabels.length ? `\nNot available: ${naLabels.join(', ')}` : '',
+    '\nProvisional — blend weights not yet calibrated to TradeFinder.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return (
+    <span className={`inline-flex cursor-help items-center gap-1 tabular-nums ${strengthCls}`} title={tip}>
+      {r.rFactor.toFixed(1)}
+      <span className={b.cls}>{b.arrow}</span>
+    </span>
+  );
+}
+
 type SortKey =
   | 'rank'
   | 'setup'
   | 'symbol'
+  | 'rFactor'
   | 'ltp'
   | 'changePctOpen'
   | 'spreadPct'
@@ -150,6 +201,7 @@ const sortValue = (r: Row, key: SortKey): number | string => {
   if (key === 'rank') return r.origRank;
   if (key === 'setup') return r.verdict.rank;
   if (key === 'symbol') return r.symbol;
+  if (key === 'rFactor') return r.rFactor ?? Number.NEGATIVE_INFINITY;
   return (r[key] as number | null) ?? Number.NEGATIVE_INFINITY;
 };
 
@@ -190,6 +242,13 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
           <tr>
             <Th label="#" col="rank" align="right" title="Watchlist order — same as NSE Movers. Default sort; click any header to re-rank." {...th} />
             <Th label="Symbol" col="symbol" align="left" {...th} />
+            <Th
+              label="R-Factor"
+              col="rFactor"
+              align="right"
+              title="Live institutional-interest score 1.0–5.0 (higher = stronger) + bias arrow. Recomputed every poll from live OI/spread/breakout against fixed EOD baselines. Hover a value for the factor breakdown. Provisional until calibrated to TradeFinder."
+              {...th}
+            />
             <Th label="Setup" col="setup" align="left" title="Combined verdict — see 'How to read'. Click to rank strongest first." {...th} />
             <Th label="LTP" col="ltp" align="right" title="Last price" {...th} />
             <Th label="Chg%" col="changePctOpen" align="right" title="Change since the day's open" {...th} />
@@ -218,6 +277,9 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
                     {sectors[r.symbol]}
                   </span>
                 )}
+              </td>
+              <td className="px-2 py-1 text-right">
+                <RFactorCell r={r} />
               </td>
               <td className="px-2 py-1">
                 <div className="flex items-center gap-1">
@@ -266,7 +328,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
           ))}
           {sorted.length === 0 && (
             <tr>
-              <td colSpan={11} className="px-3 py-8 text-center text-muted-foreground">
+              <td colSpan={12} className="px-3 py-8 text-center text-muted-foreground">
                 No data.
               </td>
             </tr>

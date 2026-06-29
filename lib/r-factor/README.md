@@ -22,6 +22,7 @@ for Calculating R Factor"):
 | 4 | Futures OI                  | `futuresOiSignal`                 | `oi.ts`             | no (intensity) |
 | 5 | Turnover                    | `turnoverSignal`                  | `flow.ts`           | no (quality) |
 | 6 | Bid-Ask Spread              | `bidAskSpreadSignal`              | `microstructure.ts` | no (quality) |
+| 6b| Range expansion (TF "spread")| `rangeSpreadSignal`               | `range-spread.ts`   | no (intensity) |
 | 7 | Volume (sometimes)          | `volumeSignal`                    | `flow.ts`           | no (quality) |
 | 8 | Majority indicators         | `majoritySignal`                  | `majority.ts`       | aggregates votes |
 | 9 | OI direction                | `oiDirectionSignal`               | `oi.ts`             | yes        |
@@ -77,8 +78,22 @@ NOT fitted to TradeFinder ground truth.** They lean on what this project found m
 predictive (sustained OI level, smart-money accumulation, tight spread), but the
 exact numbers are provisional.
 
-Calibrate against captured TF rankings (see the parent project's `derive-r/`
-ground-truth work) before trusting them. Override per call:
+### What calibration against TF ground truth showed (2026-06-23)
+
+Fitting against `../derive-r/ground_truth` (where `param_3` = TF's R-Factor):
+
+- **Only 2 of 3 capture dates were usable** (bhavcopy covers 2026-03-19/20, not 03-26).
+  Two days is too few to fit robust weights.
+- **The list-derived factors alone do NOT match TF** (top-10 overlap 1–2/10);
+  turnover/volume even correlated *negatively* with TF's score.
+- **TF's dominant signal is range-expansion spread** (`rangeSpreadSignal`,
+  `(H−L)/Close` vs 20-day avg) — NOT the bid-ask spread the requirements named.
+  On 2026-03-20 it scored **7/10 top-10** (Spearman 0.70); on 2026-03-19 it scored
+  **1/10** (Spearman −0.20). Highly **date-dependent** — which is why the parent
+  project blends an ensemble rather than trusting spread alone, and why
+  `rangeSpread`'s weight here is provisional pending more capture days.
+
+Calibrate against more captured TF rankings before trusting the weights. Override per call:
 
 ```ts
 computeRFactor(input, { weights: { oiLevel: 0.25, bidAskSpread: 0.2 } });

@@ -16,6 +16,7 @@ import { pctChange, round } from './math';
 import { bidAskSpreadSignal } from './microstructure';
 import { futuresOiSignal, oiDirectionSignal, oiVsTwentyDaySignal } from './oi';
 import { callOptionOiSignal, pcrSignal, putOptionOiSignal } from './options';
+import { rangeSpreadSignal } from './range-spread';
 import { isAfterEntryTime } from './timing';
 import type { FactorScore, RFactorInput, RFactorResult, RFactorWeights } from './types';
 
@@ -27,16 +28,17 @@ import type { FactorScore, RFactorInput, RFactorResult, RFactorWeights } from '.
  * Weights need not sum to 1 — the engine renormalizes over available factors.
  */
 export const DEFAULT_WEIGHTS: RFactorWeights = {
-  oiLevel: 0.18,
-  smartMoney: 0.16,
-  bidAskSpread: 0.14,
-  futuresOi: 0.12,
-  turnover: 0.12,
+  rangeSpread: 0.18, // TF's dominant "spread" — provisional weight (date-dependent; not yet calibrated)
+  oiLevel: 0.16,
+  smartMoney: 0.14,
+  bidAskSpread: 0.1,
+  futuresOi: 0.1,
+  turnover: 0.08,
   oiDirection: 0.08,
-  pcr: 0.06,
-  callOi: 0.04,
-  putOi: 0.04,
-  breakout: 0.04,
+  breakout: 0.06,
+  pcr: 0.04,
+  callOi: 0.02,
+  putOi: 0.02,
   volume: 0.02,
 };
 
@@ -74,6 +76,7 @@ export function computeRFactor(input: RFactorInput, config: RFactorConfig = {}):
     pcrSignal(input.callOi, input.putOi),
     turnoverSignal(input.turnover, input.turnover20dAvg),
     volumeSignal(input.volume, input.volume20dAvg),
+    rangeSpreadSignal(input.dayHigh, input.dayLow, input.ltp, input.rangeSpread20dAvg),
     bidAskSpreadSignal(input.bid, input.ask),
     breakoutSignal(input.ltp, input.breakoutHigh, input.breakoutLow),
   ];

@@ -66,6 +66,29 @@ export async function ensureOptionExpiryTable(): Promise<void> {
 }
 
 /**
+ * Per-(symbol, expiry) FUTURES OI table — the futures-side counterpart to
+ * bhavcopy_option_expiry. The summed `futOi` in bhavcopy_days is in shares and
+ * throws away the contract-month split; that split is required to count OI in
+ * *contracts* across a lot-size revision (different expiries carry different lot
+ * sizes during the roll). Created on demand via raw SQL, same as the options one.
+ */
+export async function ensureFutExpiryTable(): Promise<void> {
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS bhavcopy_fut_expiry (
+      date TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      expiry TEXT NOT NULL,
+      futOi REAL NOT NULL DEFAULT 0,
+      futVolume REAL NOT NULL DEFAULT 0,
+      PRIMARY KEY (symbol, date, expiry)
+    )
+  `);
+  await prisma.$executeRawUnsafe(
+    `CREATE INDEX IF NOT EXISTS idx_futexp_symbol_expiry_date ON bhavcopy_fut_expiry (symbol, expiry, date)`,
+  );
+}
+
+/**
  * Daily option OI/volume for ONE contract (symbol + expiry month), newest first.
  * This is a single contract's life — it builds steadily and only resets on its
  * OWN expiry, so a level-vs-average over it never mixes contract cycles.
@@ -98,6 +121,7 @@ export async function syncBhavcopy(
   const startMs = Date.now();
 
   await ensureOptionExpiryTable();
+  await ensureFutExpiryTable();
   const candidateDates = getWeekdayDates(days + 10);
   const existingDays = new Set(
     (await prisma.bhavcopyDay.findMany({ select: { date: true }, distinct: ['date'] })).map((r) => r.date),
@@ -107,12 +131,17 @@ export async function syncBhavcopy(
       (r) => r.date,
     ),
   );
-  // A date needs work if EITHER table is missing it. This makes the per-expiry
-  // table backfill on the next sync for dates already in bhavcopy_days (we only
+  const existingFutExpiry = new Set(
+    (await prisma.$queryRawUnsafe<{ date: string }[]>(`SELECT DISTINCT date FROM bhavcopy_fut_expiry`)).map(
+      (r) => r.date,
+    ),
+  );
+  // A date needs work if ANY table is missing it. This makes the per-expiry
+  // tables backfill on the next sync for dates already in bhavcopy_days (we only
   // re-download F&O for those — equity/MTO are skipped since they're present).
   const needDates = candidateDates.filter((d) => {
     const k = formatDate(d);
-    return !existingDays.has(k) || !existingExpiry.has(k);
+    return !existingDays.has(k) || !existingExpiry.has(k) || !existingFutExpiry.has(k);
   });
 
   let totalRows = 0;
@@ -132,7 +161,8 @@ export async function syncBhavcopy(
     const dateKey = formatDate(date);
     const needDays = !existingDays.has(dateKey);
     const needExpiry = !existingExpiry.has(dateKey);
-    console.log(`[Bhavcopy] ${dateKey} (days=${needDays}, expiry=${needExpiry})...`);
+    const needFutExpiry = !existingFutExpiry.has(dateKey);
+    console.log(`[Bhavcopy] ${dateKey} (days=${needDays}, optExpiry=${needExpiry}, futExpiry=${needFutExpiry})...`);
 
     const [fno, eqData, mtoData] = await Promise.all([
       fetchFnOBhavcopy(date, nseCookie),
@@ -141,7 +171,7 @@ export async function syncBhavcopy(
     ]);
     const fnoData = fno.bySymbol;
 
-    if (fnoData.size === 0 && fno.byExpiry.size === 0) {
+    if (fnoData.size === 0 && fno.byExpiry.size === 0 && fno.byExpiryFut.size === 0) {
       if (needDays && eqData.size === 0) {
         // Holiday, not-yet-published, or blocked — recorded, never fabricated.
         skipped.push(dateKey);
@@ -189,6 +219,21 @@ export async function syncBhavcopy(
       }
       touched = true;
       console.log(`[Bhavcopy] ${dateKey} — ${exRows.length} contract-months (option_expiry)`);
+    }
+
+    // bhavcopy_fut_expiry (one row per symbol per futures contract-month).
+    if (needFutExpiry && fno.byExpiryFut.size > 0) {
+      const futRows = [...fno.byExpiryFut.values()].map(
+        (e) => `('${dateKey}', '${esc(e.symbol)}', '${esc(e.expiry)}', ${e.fut_oi}, ${e.fut_volume})`,
+      );
+      const CHUNK = 200;
+      for (let i = 0; i < futRows.length; i += CHUNK) {
+        await prisma.$executeRawUnsafe(
+          `INSERT OR IGNORE INTO bhavcopy_fut_expiry (date, symbol, expiry, futOi, futVolume) VALUES ${futRows.slice(i, i + CHUNK).join(',')}`,
+        );
+      }
+      touched = true;
+      console.log(`[Bhavcopy] ${dateKey} — ${futRows.length} futures contract-months (fut_expiry)`);
     }
 
     if (touched) datesAdded++;
@@ -403,18 +448,33 @@ interface OptionExpiryAgg {
   opt_volume: number;
 }
 
+/** Per-(symbol, expiry) FUTURES OI/volume — the futures counterpart to
+ *  OptionExpiryAgg, kept so OI can be counted in contracts (÷ that expiry's lot)
+ *  across a lot-size revision, when the summed shares total is misleading. */
+interface FutExpiryAgg {
+  symbol: string;
+  expiry: string; // ISO YYYY-MM-DD, exactly as the exchange file reports XpryDt
+  fut_oi: number;
+  fut_volume: number;
+}
+
 async function fetchFnOBhavcopy(
   date: Date,
   cookie = '',
-): Promise<{ bySymbol: Map<string, FnOData>; byExpiry: Map<string, OptionExpiryAgg> }> {
+): Promise<{
+  bySymbol: Map<string, FnOData>;
+  byExpiry: Map<string, OptionExpiryAgg>;
+  byExpiryFut: Map<string, FutExpiryAgg>;
+}> {
   const dateStr = formatDateForUrl(date);
   const url = `${NSE_BASE}/fo/BhavCopy_NSE_FO_0_0_0_${dateStr}_F_0000.csv.zip`;
   const csv = await downloadAndExtractZip(url, cookie);
-  if (!csv) return { bySymbol: new Map(), byExpiry: new Map() };
+  if (!csv) return { bySymbol: new Map(), byExpiry: new Map(), byExpiryFut: new Map() };
 
   const rows = parseCSV(csv);
   const result = new Map<string, FnOData>();
   const byExpiry = new Map<string, OptionExpiryAgg>();
+  const byExpiryFut = new Map<string, FutExpiryAgg>();
   const futuresRows = new Map<string, { expiry: string; row: Record<string, string> }[]>();
   const optionsRows: Record<string, string>[] = [];
 
@@ -443,12 +503,26 @@ async function fetchFnOBhavcopy(
     let fut_volume = 0;
     let fut_turnover = 0;
     let fut_trades = 0;
-    for (const { row: r } of entries) {
-      fut_oi += Number.parseFloat(r.OpnIntrst) || 0;
+    for (const { expiry, row: r } of entries) {
+      const oi = Number.parseFloat(r.OpnIntrst) || 0;
+      const vol = Number.parseFloat(r.TtlTradgVol) || 0;
+      fut_oi += oi;
       fut_oi_change += Number.parseFloat(r.ChngInOpnIntrst) || 0;
-      fut_volume += Number.parseFloat(r.TtlTradgVol) || 0;
+      fut_volume += vol;
       fut_turnover += Number.parseFloat(r.TtlTrfVal) || 0;
       fut_trades += Number.parseInt(r.TtlNbOfTxsExctd, 10) || 0;
+
+      // Per-contract-month futures breakdown (kept ALONGSIDE the summed total).
+      if (expiry) {
+        const k = `${symbol}|${expiry}`;
+        const e = byExpiryFut.get(k);
+        if (e) {
+          e.fut_oi += oi;
+          e.fut_volume += vol;
+        } else {
+          byExpiryFut.set(k, { symbol, expiry, fut_oi: oi, fut_volume: vol });
+        }
+      }
     }
     result.set(symbol, {
       fut_oi,
@@ -520,7 +594,7 @@ async function fetchFnOBhavcopy(
     }
   }
 
-  return { bySymbol: result, byExpiry };
+  return { bySymbol: result, byExpiry, byExpiryFut };
 }
 
 async function fetchEquityBhavcopy(date: Date, cookie = ''): Promise<Map<string, EqData>> {

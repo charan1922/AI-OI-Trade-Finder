@@ -19,6 +19,7 @@ export { futuresOiSignal, oiDirectionSignal, oiVsTwentyDaySignal } from './oi';
 export { callOptionOiSignal, putOptionOiSignal, pcrSignal } from './options';
 export { smartMoneyAccumulationSignal, turnoverSignal, volumeSignal } from './flow';
 export { bidAskSpreadSignal } from './microstructure';
+export { rangeSpreadSignal } from './range-spread';
 export { breakoutSignal } from './breakout';
 export { majoritySignal } from './majority';
 export type { MajorityResult } from './majority';

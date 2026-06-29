@@ -1,0 +1,96 @@
+/**
+ * Bhavcopy baselines for the Live Urgency R-Factor.
+ *
+ * A live quote is just "now" — the R-Factor needs what "now" is being compared
+ * against: 20-session averages (OI, turnover, volume), the previous session's OI,
+ * and prior-day high/low/close (the breakout reference and the change-vs-prev-close
+ * basis). All of that is EOD data, read once from `bhavcopy_days`.
+ *
+ * This supersedes the quote route's inline `futOiAverages` (which computed only the
+ * 20-day OI average for the OI-Level column) with the full baseline set.
+ */
+
+import { prisma } from '@/lib/db';
+
+export interface RFactorBaseline {
+  /** Previous session's futures OI (most recent bhavcopy row). */
+  futOiPrev: number | null;
+  futOi20dAvg: number | null;
+  futTurnover20dAvg: number | null;
+  futVolume20dAvg: number | null;
+  /** Prior-session equity high/low/close — breakout reference + prev-close basis. */
+  priorDayHigh: number | null;
+  priorDayLow: number | null;
+  priorDayClose: number | null;
+  /** 20-day average of (eqHigh−eqLow)/eqClose — the range-expansion baseline. */
+  rangeSpread20dAvg: number | null;
+}
+
+interface BhavRow {
+  symbol: string;
+  date: string;
+  futOi: number | null;
+  futTurnover: number | null;
+  futVolume: number | null;
+  eqHigh: number | null;
+  eqLow: number | null;
+  eqClose: number | null;
+}
+
+const WINDOW = 20;
+const MIN_POINTS = 5; // fewer than this and an average is too noisy to trust
+
+/** Mean of the newest ≤20 positive values; null if fewer than MIN_POINTS. */
+function avg(values: number[]): number | null {
+  const xs = values.filter((v) => v > 0).slice(0, WINDOW);
+  return xs.length >= MIN_POINTS ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+}
+
+const pos = (v: number | null | undefined): number | null => (v != null && Number(v) > 0 ? Number(v) : null);
+
+/** Load per-symbol bhavcopy baselines (one query, newest sessions first). */
+export async function loadRFactorBaselines(symbols: string[]): Promise<Map<string, RFactorBaseline>> {
+  const out = new Map<string, RFactorBaseline>();
+  if (symbols.length === 0) return out;
+  try {
+    const placeholders = symbols.map(() => '?').join(',');
+    const rows = await prisma.$queryRawUnsafe<BhavRow[]>(
+      `SELECT symbol, date, futOi, futTurnover, futVolume, eqHigh, eqLow, eqClose
+         FROM bhavcopy_days WHERE symbol IN (${placeholders}) ORDER BY symbol, date DESC`,
+      ...symbols,
+    );
+
+    const bySymbol = new Map<string, BhavRow[]>();
+    for (const r of rows) {
+      const arr = bySymbol.get(r.symbol) ?? [];
+      arr.push(r);
+      bySymbol.set(r.symbol, arr);
+    }
+
+    for (const [symbol, rs] of bySymbol) {
+      // rs[0] = most recent session = the "previous session" relative to live
+      // today (today's bhavcopy isn't synced during market hours, when this runs).
+      const prev = rs[0];
+      // (H-L)/close per session, for the 20-day range-expansion baseline.
+      const rangeRatios = rs.map((r) => {
+        const c = Number(r.eqClose ?? 0);
+        const h = Number(r.eqHigh ?? 0);
+        const l = Number(r.eqLow ?? 0);
+        return c > 0 && h >= l && h > 0 ? (h - l) / c : 0;
+      });
+      out.set(symbol, {
+        futOiPrev: pos(prev?.futOi),
+        futOi20dAvg: avg(rs.map((r) => Number(r.futOi ?? 0))),
+        futTurnover20dAvg: avg(rs.map((r) => Number(r.futTurnover ?? 0))),
+        futVolume20dAvg: avg(rs.map((r) => Number(r.futVolume ?? 0))),
+        priorDayHigh: pos(prev?.eqHigh),
+        priorDayLow: pos(prev?.eqLow),
+        priorDayClose: pos(prev?.eqClose),
+        rangeSpread20dAvg: avg(rangeRatios),
+      });
+    }
+  } catch {
+    // bhavcopy absent — baselines won't resolve and the R-Factor degrades gracefully.
+  }
+  return out;
+}

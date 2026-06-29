@@ -2,8 +2,13 @@ import { NextResponse } from 'next/server';
 import type { LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { computeRFactor } from '@/lib/r-factor';
+import { upsertLiveBars } from '@/lib/signals/intraday-candles';
 import { computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
 import { classifyFno, excludeReasonLabel, loadFnoUniverse } from '../_lib/fno-universe';
+import { ensureMorningContext, getMorningContext } from '../_lib/morning-candles';
+import { buildLiveRFactorInput } from '../_lib/rfactor-inputs';
+import { loadRFactorBaselines } from '../_lib/rfactor-baselines';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -98,10 +103,13 @@ export async function POST(req: Request) {
     const eqSeg = quotes.NSE_EQ ?? {};
     const futSeg = quotes.NSE_FNO ?? {};
 
-    // 20-session futures-OI average per symbol (bhavcopy), for the OI-level ratio.
-    const oiAvg = await futOiAverages(allowed);
+    // Per-symbol bhavcopy baselines (20d OI/turnover averages, prev-day OI,
+    // prior-day high/low/close) — the fixed EOD anchors the live R-Factor scores
+    // against. One query for the whole watchlist.
+    const baselines = await loadRFactorBaselines(allowed);
 
     const today = todayIST();
+    const now = new Date();
     const rows: LiveUrgencyRow[] = allowed.map((s) => {
       const eqId = eqMap.get(s);
       const futId = futMap.get(s)?.securityId;
@@ -114,13 +122,36 @@ export async function POST(req: Request) {
       const open = eqQ?.ohlc?.open ?? 0;
       const changePctOpen = ltp != null && open > 0 ? ((ltp - open) / open) * 100 : null;
 
+      const base = baselines.get(s);
       const futOi = futQ?.oi ?? null;
-      const avg = oiAvg.get(s) ?? 0;
+      const avg = base?.futOi20dAvg ?? 0;
       const oiLevel = futOi != null && futOi > 0 && avg > 0 ? futOi / avg : null;
       const turnover =
         futQ?.average_price != null && futQ?.volume != null && futQ.average_price > 0
           ? futQ.average_price * futQ.volume
           : null;
+
+      // R-Factor: score the live snapshot against the baselines + whatever morning
+      // context is already cached (opening-range breakout). Candles are warmed only
+      // for the top-N by R-Factor below — NOT per displayed stock — so candle load
+      // stays bounded regardless of universe size.
+      const rf = buildLiveRFactorInput(
+        {
+          symbol: s,
+          ltp,
+          changePctOpen,
+          bid: ba?.bid ?? null,
+          ask: ba?.ask ?? null,
+          futOi,
+          turnover,
+          dayHigh: eqQ?.ohlc?.high ?? null,
+          dayLow: eqQ?.ohlc?.low ?? null,
+        },
+        base,
+        getMorningContext(s),
+        now,
+      );
+      const r = rf ? computeRFactor(rf) : null;
 
       return {
         symbol: s,
@@ -138,8 +169,29 @@ export async function POST(req: Request) {
         oiVelocity: null,
         oiAccel: null,
         oiUrgency: null,
+        rFactor: r?.rFactor ?? null,
+        rFactorBias: r?.bias ?? null,
+        rFactorConfidence: r?.confidence ?? null,
+        rFactorAfterEntry: r?.afterEntryWindow ?? null,
+        rFactors: r?.factors.map((f) => ({ label: f.label, score: f.score, vote: f.vote, available: f.available, detail: f.detail })) ?? null,
       };
     });
+
+    // Warm the morning-candle context (opening-range breakout reference) for ONLY
+    // the top-N names by R-Factor — a fixed cost regardless of how many stocks are
+    // displayed. The rest keep using prior-day high/low. Fire-and-forget on a
+    // rate-limited background chain; the opening range populates over the next poll
+    // or two (R-Factor never blocks on candles). ensureMorningContext de-dupes
+    // across sections (shared per-day cache) and no-ops when fresh/in-flight.
+    const WARM_TOP_N = 12;
+    [...rows]
+      .filter((r) => r.rFactor != null)
+      .sort((a, b) => (b.rFactor ?? 0) - (a.rFactor ?? 0))
+      .slice(0, WARM_TOP_N)
+      .forEach((r) => {
+        const eqId = eqMap.get(r.symbol);
+        if (eqId) ensureMorningContext(r.symbol, Number(eqId));
+      });
 
     // Persist this poll into the per-day OI series, then derive intraday urgency
     // (rate of OI build) from the trailing points. Best-effort: a storage hiccup
@@ -151,7 +203,7 @@ export async function POST(req: Request) {
           symbol: r.symbol,
           ltp: r.ltp,
           futOi: r.futOi,
-          futOiAvg20d: oiAvg.get(r.symbol) ?? null,
+          futOiAvg20d: baselines.get(r.symbol)?.futOi20dAvg ?? null,
           oiLevel: r.oiLevel,
           futTurnover: r.turnover,
           changePctOpen: r.changePctOpen,
@@ -173,6 +225,19 @@ export async function POST(req: Request) {
       console.warn('[live/quote] intraday OI capture failed:', (e as Error).message);
     }
 
+    // Fold this poll's prices into the live 5-min candle store (one batched UPSERT).
+    // Reuses the LTPs we already have — zero extra Dhan calls — keeping each watched
+    // stock's current bar fresh to ~the poll interval. Best-effort, like OI capture.
+    try {
+      await upsertLiveBars(
+        today,
+        rows.map((r) => ({ symbol: r.symbol, price: r.ltp ?? 0 })),
+        now.getTime(),
+      );
+    } catch (e) {
+      console.warn('[live/quote] candle aggregation failed:', (e as Error).message);
+    }
+
     return NextResponse.json({
       success: true,
       marketOpen: true,
@@ -185,31 +250,4 @@ export async function POST(req: Request) {
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
-}
-
-/** Mean of the last 20 positive futOi values per symbol (newest sessions). */
-async function futOiAverages(symbols: string[]): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  if (symbols.length === 0) return out;
-  try {
-    const placeholders = symbols.map(() => '?').join(',');
-    const rows = await prisma.$queryRawUnsafe<{ symbol: string; futOi: number | null; date: string }[]>(
-      `SELECT symbol, futOi, date FROM bhavcopy_days WHERE symbol IN (${placeholders}) ORDER BY date DESC`,
-      ...symbols,
-    );
-    const bySymbol = new Map<string, number[]>();
-    for (const r of rows) {
-      const v = Number(r.futOi ?? 0);
-      if (v <= 0) continue;
-      const arr = bySymbol.get(r.symbol) ?? [];
-      if (arr.length < 20) arr.push(v);
-      bySymbol.set(r.symbol, arr);
-    }
-    for (const [sym, vals] of bySymbol) {
-      if (vals.length >= 5) out.set(sym, vals.reduce((a, b) => a + b, 0) / vals.length);
-    }
-  } catch {
-    // bhavcopy absent — OI level simply won't render
-  }
-  return out;
 }
