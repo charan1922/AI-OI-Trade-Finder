@@ -55,6 +55,7 @@ app/api/nse/
 Sidebar (after the Dhan "Heatmap"): **NSE Heatmap** (`/nse/heatmap`), **NSE Movers** (`/nse/movers`, live), **EOD Movers** (`/nse/movers-history`, historical).
 
 ### Gotchas — why live and EOD differ (both real, neither fabricated)
+> **UPDATE 2026-06-30:** the two differences below were *closed* so EOD now matches the live feed — see [`eod-movers-lot-size-fix.md`](./eod-movers-lot-size-fix.md). Price/% now use the last-traded price (not the official close), and OI is counted in **contracts** (per-expiry OI ÷ that expiry's board lot) instead of summed shares — which fixes lot-revision names like MCX that previously flipped sign. The notes below are kept for context on what the original behaviour was.
 - **Price %** (gainers/losers/most-active): live uses **LTP (last traded price)**; EOD bhavcopy uses NSE's **official closing price** (last-30-min weighted avg / closing auction). Previous close matches to the rupee — only the "current price" differs, so the % differs slightly.
 - **OI build-up**: NSE's live "OI spurts" measures **total derivatives OI = futures + options** (`futOi + optOi`), NOT futures-only. The EOD route must sum both (verified: matches live to the decimal for most names). Using `futOiChange` alone was wrong (INFY read 12% vs the correct 25%).
 - Residual tiny OI gaps on a few names = live is an intraday OI snapshot vs EOD final settlement OI.
