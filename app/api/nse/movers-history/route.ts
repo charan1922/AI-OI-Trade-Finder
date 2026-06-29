@@ -19,10 +19,12 @@ export const runtime = 'nodejs';
  * contracts; bhavcopy OI is in shares. The two are identical UNLESS a stock is
  * mid lot-size revision, when OI rolling into the next expiry (a different lot)
  * makes the shares total move opposite to the contracts total (e.g. MCX 625→225).
- * So we reconstruct contracts per expiry: Σ (expiry OI ÷ that expiry's lot), using
- * the per-expiry OI in `bhavcopy_{option,fut}_expiry` and the three-month lots in
- * `fno_stocks`. When per-expiry data is missing for a symbol (not yet backfilled),
- * we fall back to the shares-based fut+opt total — never fabricate.
+ * So we reconstruct contracts per expiry: Σ (expiry OI ÷ that expiry's lot). The
+ * lot is the per-contract board lot (NewBrdLotQty) captured from the bhavcopy file
+ * itself and stored per row in `bhavcopy_{option,fut}_expiry` — so it is correct
+ * for every date and every expiry cycle (no dependence on a current lot snapshot).
+ * When a symbol lacks per-expiry data or a stored lot for that session, we fall
+ * back to the shares-based fut+opt total — never fabricate.
  */
 
 interface HistRow {
@@ -40,13 +42,7 @@ interface ExpiryOiRow {
   date: string;
   expiry: string;
   oi: number;
-}
-
-interface LotRow {
-  symbol: string;
   lotSize: number;
-  lotSizeNext: number;
-  lotSizeFar: number;
 }
 
 export async function GET(req: Request) {
@@ -85,33 +81,29 @@ export async function GET(req: Request) {
       prevDate,
     );
 
-    // Per-expiry OI (options + futures) for both sessions, plus the three-month
-    // lot table — the inputs to count OI in contracts across a lot-size revision.
-    // Tables/rows may be absent (not yet backfilled) → we degrade to shares.
-    const [optExp, futExp, lotRows] = await Promise.all([
+    // Per-expiry OI (options + futures) for both sessions, each row carrying the
+    // contract's own board lot (NewBrdLotQty, captured from the bhavcopy file).
+    // Tables/rows/lots may be absent (older data not yet backfilled) → degrade to shares.
+    const [optExp, futExp] = await Promise.all([
       prisma
         .$queryRawUnsafe<ExpiryOiRow[]>(
-          `SELECT symbol, date, expiry, optOi AS oi FROM bhavcopy_option_expiry WHERE date IN (?, ?)`,
+          `SELECT symbol, date, expiry, optOi AS oi, lotSize FROM bhavcopy_option_expiry WHERE date IN (?, ?)`,
           date,
           prevDate,
         )
         .catch(() => [] as ExpiryOiRow[]),
       prisma
         .$queryRawUnsafe<ExpiryOiRow[]>(
-          `SELECT symbol, date, expiry, futOi AS oi FROM bhavcopy_fut_expiry WHERE date IN (?, ?)`,
+          `SELECT symbol, date, expiry, futOi AS oi, lotSize FROM bhavcopy_fut_expiry WHERE date IN (?, ?)`,
           date,
           prevDate,
         )
         .catch(() => [] as ExpiryOiRow[]),
-      prisma
-        .$queryRawUnsafe<LotRow[]>(`SELECT symbol, lotSize, lotSizeNext, lotSizeFar FROM fno_stocks`)
-        .catch(() => [] as LotRow[]),
     ]);
 
-    const lotBySymbol = new Map(lotRows.map((l) => [l.symbol, l]));
-
-    // symbol|date -> Map(expiry -> summed OI in shares), merging opt + fut legs.
-    const oiByKeyExpiry = new Map<string, Map<string, number>>();
+    // symbol|date -> Map(expiry -> { oi (shares, opt+fut), lot }). Futures and
+    // options of the same expiry share one board lot, so we keep the positive one.
+    const oiByKeyExpiry = new Map<string, Map<string, { oi: number; lot: number }>>();
     const addExpiry = (r: ExpiryOiRow) => {
       const k = `${r.symbol}|${r.date}`;
       let m = oiByKeyExpiry.get(k);
@@ -119,26 +111,26 @@ export async function GET(req: Request) {
         m = new Map();
         oiByKeyExpiry.set(k, m);
       }
-      m.set(r.expiry, (m.get(r.expiry) ?? 0) + r.oi);
+      const cur = m.get(r.expiry);
+      m.set(r.expiry, {
+        oi: (cur?.oi ?? 0) + r.oi,
+        lot: r.lotSize > 0 ? r.lotSize : (cur?.lot ?? 0),
+      });
     };
     for (const r of optExp) addExpiry(r);
     for (const r of futExp) addExpiry(r);
 
     // Total OI in CONTRACTS for a symbol on a date: Σ (expiry OI ÷ that expiry's
-    // lot). Expiries sorted ascending map to [lotSize, lotSizeNext, lotSizeFar]
-    // (the exchange's three nearest contract months). Returns null when we lack
-    // per-expiry data or lots — caller then falls back to the shares total.
+    // own board lot). Returns null if we lack per-expiry data, or any expiry is
+    // missing its stored lot — the caller then falls back to the shares total.
     const contractsOi = (symbol: string, d: string): number | null => {
       const m = oiByKeyExpiry.get(`${symbol}|${d}`);
-      const lot = lotBySymbol.get(symbol);
-      if (!m || m.size === 0 || !lot) return null;
-      const cols = [lot.lotSize, lot.lotSizeNext || lot.lotSize, lot.lotSizeFar || lot.lotSize];
-      const expiriesAsc = [...m.keys()].sort();
+      if (!m || m.size === 0) return null;
       let total = 0;
-      expiriesAsc.forEach((e, i) => {
-        const l = cols[i] || cols[cols.length - 1] || 1;
-        total += (m.get(e) ?? 0) / l;
-      });
+      for (const { oi, lot } of m.values()) {
+        if (!(lot > 0)) return null; // no trustworthy lot for this expiry → bail to shares
+        total += oi / lot;
+      }
       return total;
     };
 

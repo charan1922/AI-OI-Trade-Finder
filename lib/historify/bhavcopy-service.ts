@@ -57,12 +57,26 @@ export async function ensureOptionExpiryTable(): Promise<void> {
       expiry TEXT NOT NULL,
       optOi REAL NOT NULL DEFAULT 0,
       optVolume REAL NOT NULL DEFAULT 0,
+      lotSize REAL NOT NULL DEFAULT 0,
       PRIMARY KEY (symbol, date, expiry)
     )
   `);
+  await addColumnIfMissing('bhavcopy_option_expiry', 'lotSize');
   await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS idx_optexp_symbol_expiry_date ON bhavcopy_option_expiry (symbol, expiry, date)`,
   );
+}
+
+/**
+ * Add a `REAL NOT NULL DEFAULT 0` column to a per-expiry table if it isn't there
+ * yet — lets the `lotSize` addition land on databases created before it existed,
+ * without a Prisma migration (these tables are raw-SQL managed).
+ */
+async function addColumnIfMissing(table: string, column: string): Promise<void> {
+  const cols = await prisma.$queryRawUnsafe<{ name: string }[]>(`PRAGMA table_info(${table})`);
+  if (!cols.some((c) => c.name === column)) {
+    await prisma.$executeRawUnsafe(`ALTER TABLE ${table} ADD COLUMN ${column} REAL NOT NULL DEFAULT 0`);
+  }
 }
 
 /**
@@ -80,9 +94,11 @@ export async function ensureFutExpiryTable(): Promise<void> {
       expiry TEXT NOT NULL,
       futOi REAL NOT NULL DEFAULT 0,
       futVolume REAL NOT NULL DEFAULT 0,
+      lotSize REAL NOT NULL DEFAULT 0,
       PRIMARY KEY (symbol, date, expiry)
     )
   `);
+  await addColumnIfMissing('bhavcopy_fut_expiry', 'lotSize');
   await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS idx_futexp_symbol_expiry_date ON bhavcopy_fut_expiry (symbol, expiry, date)`,
   );
@@ -126,15 +142,22 @@ export async function syncBhavcopy(
   const existingDays = new Set(
     (await prisma.bhavcopyDay.findMany({ select: { date: true }, distinct: ['date'] })).map((r) => r.date),
   );
+  // A date "has" per-expiry data only once its lot column is populated (lotSize>0).
+  // Rows imported before lotSize existed report 0 here, so they get re-fetched and
+  // upserted with the real board lot — the contracts math needs the per-expiry lot.
   const existingExpiry = new Set(
-    (await prisma.$queryRawUnsafe<{ date: string }[]>(`SELECT DISTINCT date FROM bhavcopy_option_expiry`)).map(
-      (r) => r.date,
-    ),
+    (
+      await prisma.$queryRawUnsafe<{ date: string }[]>(
+        `SELECT DISTINCT date FROM bhavcopy_option_expiry WHERE lotSize > 0`,
+      )
+    ).map((r) => r.date),
   );
   const existingFutExpiry = new Set(
-    (await prisma.$queryRawUnsafe<{ date: string }[]>(`SELECT DISTINCT date FROM bhavcopy_fut_expiry`)).map(
-      (r) => r.date,
-    ),
+    (
+      await prisma.$queryRawUnsafe<{ date: string }[]>(
+        `SELECT DISTINCT date FROM bhavcopy_fut_expiry WHERE lotSize > 0`,
+      )
+    ).map((r) => r.date),
   );
   // A date needs work if ANY table is missing it. This makes the per-expiry
   // tables backfill on the next sync for dates already in bhavcopy_days (we only
@@ -209,12 +232,13 @@ export async function syncBhavcopy(
     // bhavcopy_option_expiry (one row per symbol per contract-month).
     if (needExpiry && fno.byExpiry.size > 0) {
       const exRows = [...fno.byExpiry.values()].map(
-        (e) => `('${dateKey}', '${esc(e.symbol)}', '${esc(e.expiry)}', ${e.opt_oi}, ${e.opt_volume})`,
+        (e) => `('${dateKey}', '${esc(e.symbol)}', '${esc(e.expiry)}', ${e.opt_oi}, ${e.opt_volume}, ${e.lot})`,
       );
       const CHUNK = 200;
       for (let i = 0; i < exRows.length; i += CHUNK) {
         await prisma.$executeRawUnsafe(
-          `INSERT OR IGNORE INTO bhavcopy_option_expiry (date, symbol, expiry, optOi, optVolume) VALUES ${exRows.slice(i, i + CHUNK).join(',')}`,
+          `INSERT INTO bhavcopy_option_expiry (date, symbol, expiry, optOi, optVolume, lotSize) VALUES ${exRows.slice(i, i + CHUNK).join(',')}
+           ON CONFLICT(symbol, date, expiry) DO UPDATE SET optOi=excluded.optOi, optVolume=excluded.optVolume, lotSize=excluded.lotSize`,
         );
       }
       touched = true;
@@ -224,12 +248,13 @@ export async function syncBhavcopy(
     // bhavcopy_fut_expiry (one row per symbol per futures contract-month).
     if (needFutExpiry && fno.byExpiryFut.size > 0) {
       const futRows = [...fno.byExpiryFut.values()].map(
-        (e) => `('${dateKey}', '${esc(e.symbol)}', '${esc(e.expiry)}', ${e.fut_oi}, ${e.fut_volume})`,
+        (e) => `('${dateKey}', '${esc(e.symbol)}', '${esc(e.expiry)}', ${e.fut_oi}, ${e.fut_volume}, ${e.lot})`,
       );
       const CHUNK = 200;
       for (let i = 0; i < futRows.length; i += CHUNK) {
         await prisma.$executeRawUnsafe(
-          `INSERT OR IGNORE INTO bhavcopy_fut_expiry (date, symbol, expiry, futOi, futVolume) VALUES ${futRows.slice(i, i + CHUNK).join(',')}`,
+          `INSERT INTO bhavcopy_fut_expiry (date, symbol, expiry, futOi, futVolume, lotSize) VALUES ${futRows.slice(i, i + CHUNK).join(',')}
+           ON CONFLICT(symbol, date, expiry) DO UPDATE SET futOi=excluded.futOi, futVolume=excluded.futVolume, lotSize=excluded.lotSize`,
         );
       }
       touched = true;
@@ -446,6 +471,7 @@ interface OptionExpiryAgg {
   expiry: string; // ISO YYYY-MM-DD, exactly as the exchange file reports XpryDt
   opt_oi: number;
   opt_volume: number;
+  lot: number; // NewBrdLotQty — that contract's board lot, straight from the file
 }
 
 /** Per-(symbol, expiry) FUTURES OI/volume — the futures counterpart to
@@ -456,6 +482,7 @@ interface FutExpiryAgg {
   expiry: string; // ISO YYYY-MM-DD, exactly as the exchange file reports XpryDt
   fut_oi: number;
   fut_volume: number;
+  lot: number; // NewBrdLotQty — that contract's board lot, straight from the file
 }
 
 async function fetchFnOBhavcopy(
@@ -506,6 +533,7 @@ async function fetchFnOBhavcopy(
     for (const { expiry, row: r } of entries) {
       const oi = Number.parseFloat(r.OpnIntrst) || 0;
       const vol = Number.parseFloat(r.TtlTradgVol) || 0;
+      const lot = Number.parseFloat(r.NewBrdLotQty) || 0;
       fut_oi += oi;
       fut_oi_change += Number.parseFloat(r.ChngInOpnIntrst) || 0;
       fut_volume += vol;
@@ -519,8 +547,9 @@ async function fetchFnOBhavcopy(
         if (e) {
           e.fut_oi += oi;
           e.fut_volume += vol;
+          if (lot > 0) e.lot = lot;
         } else {
-          byExpiryFut.set(k, { symbol, expiry, fut_oi: oi, fut_volume: vol });
+          byExpiryFut.set(k, { symbol, expiry, fut_oi: oi, fut_volume: vol, lot });
         }
       }
     }
@@ -552,13 +581,15 @@ async function fetchFnOBhavcopy(
     // Per-contract-month breakdown (kept ALONGSIDE the summed total below).
     const expiry = row.XpryDt;
     if (expiry) {
+      const lot = Number.parseFloat(row.NewBrdLotQty) || 0;
       const k = `${symbol}|${expiry}`;
       const e = byExpiry.get(k);
       if (e) {
         e.opt_oi += oi;
         e.opt_volume += vol;
+        if (lot > 0) e.lot = lot; // same lot across an expiry's strikes; keep a positive one
       } else {
-        byExpiry.set(k, { symbol, expiry, opt_oi: oi, opt_volume: vol });
+        byExpiry.set(k, { symbol, expiry, opt_oi: oi, opt_volume: vol, lot });
       }
     }
 
