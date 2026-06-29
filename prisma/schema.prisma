@@ -66,6 +66,9 @@ model BhavcopyDay {
   eqHigh        Float  @default(0)
   eqLow         Float  @default(0)
   eqClose       Float  @default(0)
+  /// NSE official VWAP close (ClsPric). eqLastPrice below is the final traded
+  /// price (LastPric) — they differ on a late spike; movers UI uses last price.
+  eqLastPrice   Float  @default(0)
   eqTrades      Int    @default(0)
   eqDeliveryQty Float  @default(0)
   eqDeliveryPct Float  @default(0)

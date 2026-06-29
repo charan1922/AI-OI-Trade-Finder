@@ -30,7 +30,8 @@ export const runtime = 'nodejs';
 interface HistRow {
   symbol: string;
   date: string;
-  eqClose: number;
+  eqClose: number; // NSE official VWAP close — denominator for % change (prior session)
+  eqLastPrice: number; // final traded price — what the movers UI shows (matches live/Google)
   eqTurnover: number;
   eqVolume: number;
   futOi: number;
@@ -75,7 +76,7 @@ export async function GET(req: Request) {
     }
 
     const rows = await prisma.$queryRawUnsafe<HistRow[]>(
-      `SELECT symbol, date, eqClose, eqTurnover, eqVolume, futOi, optOi
+      `SELECT symbol, date, eqClose, eqLastPrice, eqTurnover, eqVolume, futOi, optOi
        FROM bhavcopy_days WHERE date IN (?, ?) AND eqClose > 0`,
       date,
       prevDate,
@@ -164,10 +165,16 @@ export async function GET(req: Request) {
         oiPct = priorOi > 0 ? ((totalOi - priorOi) / priorOi) * 100 : 0;
       }
 
+      // Show the last-traded price and a %change off it — matching the live page,
+      // Google, and brokers. Denominator stays the prior session's official close
+      // (= NSE's PrvsClsgPric reference). Fall back to the official close when the
+      // last price hasn't been backfilled for this row.
+      const last = r.eqLastPrice > 0 ? r.eqLastPrice : r.eqClose;
+
       stocks.push({
         symbol: r.symbol,
-        close: r.eqClose,
-        pctChange: ((r.eqClose - pc) / pc) * 100,
+        close: last,
+        pctChange: ((last - pc) / pc) * 100,
         turnover: r.eqTurnover,
         volume: r.eqVolume,
         oiPct,

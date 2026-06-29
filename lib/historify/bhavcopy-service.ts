@@ -138,9 +138,21 @@ export async function syncBhavcopy(
 
   await ensureOptionExpiryTable();
   await ensureFutExpiryTable();
+  await addColumnIfMissing('bhavcopy_days', 'eqLastPrice');
   const candidateDates = getWeekdayDates(days + 10);
   const existingDays = new Set(
     (await prisma.bhavcopyDay.findMany({ select: { date: true }, distinct: ['date'] })).map((r) => r.date),
+  );
+  // Dates whose equity rows already carry the last-traded price (eqLastPrice>0).
+  // Rows imported before that column existed report 0, so they get an equity
+  // re-fetch + UPDATE — the movers UI shows last price (LastPric) to match the
+  // live/Google numbers, not the official VWAP close (eqClose).
+  const existingLastPrice = new Set(
+    (
+      await prisma.$queryRawUnsafe<{ date: string }[]>(
+        `SELECT DISTINCT date FROM bhavcopy_days WHERE eqLastPrice > 0`,
+      )
+    ).map((r) => r.date),
   );
   // A date "has" per-expiry data only once its lot column is populated (lotSize>0).
   // Rows imported before lotSize existed report 0 here, so they get re-fetched and
@@ -164,7 +176,7 @@ export async function syncBhavcopy(
   // re-download F&O for those — equity/MTO are skipped since they're present).
   const needDates = candidateDates.filter((d) => {
     const k = formatDate(d);
-    return !existingDays.has(k) || !existingExpiry.has(k) || !existingFutExpiry.has(k);
+    return !existingDays.has(k) || !existingExpiry.has(k) || !existingFutExpiry.has(k) || !existingLastPrice.has(k);
   });
 
   let totalRows = 0;
@@ -185,11 +197,15 @@ export async function syncBhavcopy(
     const needDays = !existingDays.has(dateKey);
     const needExpiry = !existingExpiry.has(dateKey);
     const needFutExpiry = !existingFutExpiry.has(dateKey);
-    console.log(`[Bhavcopy] ${dateKey} (days=${needDays}, optExpiry=${needExpiry}, futExpiry=${needFutExpiry})...`);
+    // Existing row missing only the last-traded price → equity re-fetch + UPDATE.
+    const needLastPrice = !needDays && !existingLastPrice.has(dateKey);
+    console.log(
+      `[Bhavcopy] ${dateKey} (days=${needDays}, optExpiry=${needExpiry}, futExpiry=${needFutExpiry}, lastPx=${needLastPrice})...`,
+    );
 
     const [fno, eqData, mtoData] = await Promise.all([
       fetchFnOBhavcopy(date, nseCookie),
-      needDays ? fetchEquityBhavcopy(date, nseCookie) : Promise.resolve(new Map<string, EqData>()),
+      needDays || needLastPrice ? fetchEquityBhavcopy(date, nseCookie) : Promise.resolve(new Map<string, EqData>()),
       needDays ? fetchMTODeliveryData(date, nseCookie) : Promise.resolve(new Map<string, MTOData>()),
     ]);
     const fnoData = fno.bySymbol;
@@ -215,18 +231,34 @@ export async function syncBhavcopy(
         const eq = eqData.get(symbol);
         const mto = mtoData.get(symbol);
         rows.push(
-          `(NULL, '${dateKey}', '${esc(symbol)}', ${eq?.eq_volume ?? 0}, ${eq?.eq_turnover ?? 0}, ${eq?.eq_open ?? 0}, ${eq?.eq_high ?? 0}, ${eq?.eq_low ?? 0}, ${eq?.eq_close ?? 0}, ${eq?.eq_trades ?? 0}, ${mto?.eq_delivery_qty ?? 0}, ${mto?.eq_delivery_pct ?? 0}, ${fno2.fut_volume}, ${fno2.fut_oi}, ${fno2.fut_oi_change}, ${fno2.fut_turnover}, ${fno2.fut_trades}, ${fno2.opt_volume}, ${fno2.opt_oi}, ${fno2.opt_turnover}, ${fno2.opt_trades}, ${fno2.ce_volume}, ${fno2.pe_volume}, ${fno2.ce_trades}, ${fno2.pe_trades})`,
+          `(NULL, '${dateKey}', '${esc(symbol)}', ${eq?.eq_volume ?? 0}, ${eq?.eq_turnover ?? 0}, ${eq?.eq_open ?? 0}, ${eq?.eq_high ?? 0}, ${eq?.eq_low ?? 0}, ${eq?.eq_close ?? 0}, ${eq?.eq_last_price ?? 0}, ${eq?.eq_trades ?? 0}, ${mto?.eq_delivery_qty ?? 0}, ${mto?.eq_delivery_pct ?? 0}, ${fno2.fut_volume}, ${fno2.fut_oi}, ${fno2.fut_oi_change}, ${fno2.fut_turnover}, ${fno2.fut_trades}, ${fno2.opt_volume}, ${fno2.opt_oi}, ${fno2.opt_turnover}, ${fno2.opt_trades}, ${fno2.ce_volume}, ${fno2.pe_volume}, ${fno2.ce_trades}, ${fno2.pe_trades})`,
         );
       }
       const CHUNK = 200;
       for (let i = 0; i < rows.length; i += CHUNK) {
         await prisma.$executeRawUnsafe(
-          `INSERT OR IGNORE INTO bhavcopy_days (id, date, symbol, eqVolume, eqTurnover, eqOpen, eqHigh, eqLow, eqClose, eqTrades, eqDeliveryQty, eqDeliveryPct, futVolume, futOi, futOiChange, futTurnover, futTrades, optVolume, optOi, optTurnover, optTrades, ceVolume, peVolume, ceTrades, peTrades) VALUES ${rows.slice(i, i + CHUNK).join(',')}`,
+          `INSERT OR IGNORE INTO bhavcopy_days (id, date, symbol, eqVolume, eqTurnover, eqOpen, eqHigh, eqLow, eqClose, eqLastPrice, eqTrades, eqDeliveryQty, eqDeliveryPct, futVolume, futOi, futOiChange, futTurnover, futTrades, optVolume, optOi, optTurnover, optTrades, ceVolume, peVolume, ceTrades, peTrades) VALUES ${rows.slice(i, i + CHUNK).join(',')}`,
         );
       }
       totalRows += rows.length;
       touched = true;
       console.log(`[Bhavcopy] ${dateKey} — ${rows.length} stocks (bhavcopy_days)`);
+    }
+
+    // Backfill last-traded price onto rows that predate the eqLastPrice column
+    // (one UPDATE for the date via a CASE map — no full re-insert / MTO re-fetch).
+    if (needLastPrice && eqData.size > 0) {
+      const present = [...eqData.entries()].filter(([, d]) => d.eq_last_price > 0);
+      if (present.length > 0) {
+        const cases = present.map(([sym, d]) => `WHEN '${esc(sym)}' THEN ${d.eq_last_price}`).join(' ');
+        const syms = present.map(([sym]) => `'${esc(sym)}'`).join(',');
+        await prisma.$executeRawUnsafe(
+          `UPDATE bhavcopy_days SET eqLastPrice = CASE symbol ${cases} ELSE eqLastPrice END
+           WHERE date = '${dateKey}' AND symbol IN (${syms})`,
+        );
+        touched = true;
+        console.log(`[Bhavcopy] ${dateKey} — last price backfilled (${present.length} symbols)`);
+      }
     }
 
     // bhavcopy_option_expiry (one row per symbol per contract-month).
@@ -454,7 +486,8 @@ interface EqData {
   eq_open: number;
   eq_high: number;
   eq_low: number;
-  eq_close: number;
+  eq_close: number; // NSE official VWAP close (ClsPric)
+  eq_last_price: number; // final traded price (LastPric) — what live/Google show
   eq_trades: number;
 }
 
@@ -646,6 +679,7 @@ async function fetchEquityBhavcopy(date: Date, cookie = ''): Promise<Map<string,
       eq_high: Number.parseFloat(row.HghPric) || 0,
       eq_low: Number.parseFloat(row.LwPric) || 0,
       eq_close: Number.parseFloat(row.ClsPric) || 0,
+      eq_last_price: Number.parseFloat(row.LastPric) || 0,
       eq_trades: Number.parseInt(row.TtlNbOfTxsExctd, 10) || 0,
     });
   }
