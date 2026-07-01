@@ -33,7 +33,7 @@ One line: did the data support the direction TradeFinder traded? (use direction.
 ## Evidence
 3–4 short bullets, each naming the one number that matters:
 - Direction: futures quadrant + price move, and whether it matches the CE/PE.
-- Option OI: the traded contract + its trade-day buildup %. If levelVsCycleAverage is null, explain the monthly-expiry reason in a few words.
+- Option OI — keep two scopes distinct: tradedContractBuildupPctTradeDay is the traded contract's OWN fresh positioning; stockwideLevelVsCycleAvg is the whole-stock option OI level (every strike & month) — never call it "the contract's". If stockwideLevelVsCycleAvg is null, explain the monthly-expiry reason in a few words.
 - Futures OI level vs 20-day average; turnover vs average (only if notable).
 
 ## What it means
