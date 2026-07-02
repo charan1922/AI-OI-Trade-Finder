@@ -1,0 +1,298 @@
+'use client';
+
+import { Activity, Download, Loader2, Pause, Play, RefreshCw, Radio } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+
+/** Mirror of lib/fyers/poller.ts CycleSummary / PollerStatus (API response shapes). */
+interface CycleError {
+  symbol: string;
+  stage: string;
+  message: string;
+}
+interface CycleSummary {
+  date: string;
+  startedAt: string;
+  durationMs: number;
+  trigger: string;
+  universeSize: number;
+  symbolsProcessed: number;
+  apiCalls: number;
+  eqBars: number;
+  futBars: number;
+  oiAttached: number;
+  skipped?: string;
+  errors: CycleError[];
+}
+interface CoverageRow {
+  symbol: string;
+  instrument: string;
+  bars: number;
+  lastBucketTs: number;
+  lastOi: number;
+}
+interface PollerStatus {
+  success: boolean;
+  started: boolean;
+  paused: boolean;
+  cycleRunning: boolean;
+  cycles: number;
+  nextTickAt: number | null;
+  lastCycle: CycleSummary | null;
+  marketOpen: boolean;
+  credentialsConfigured: boolean;
+  token: { cached: boolean; expiresAt: number | null };
+  universe: { date: string; symbols: string[] } | null;
+  coverage?: CoverageRow[];
+}
+
+const POLL_MS = 10_000;
+
+const fmtTime = (ts: number | null | undefined) =>
+  ts
+    ? new Date(ts).toLocaleTimeString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+    : '—';
+
+const fmtBucket = (bucketTs: number) => (bucketTs > 0 ? fmtTime(bucketTs * 1000) : '—');
+
+function Badge({ ok, okLabel, badLabel }: { ok: boolean; okLabel: string; badLabel: string }) {
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+        ok
+          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'
+          : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-500/10 dark:text-zinc-400'
+      }`}
+    >
+      {ok ? okLabel : badLabel}
+    </span>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-border/50 px-2 py-1">
+      <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-[12px] font-semibold tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+export default function FyersPage() {
+  const [status, setStatus] = useState<PollerStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [acting, setActing] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch('/api/fyers/poller?coverage=1');
+      const j = (await res.json()) as PollerStatus;
+      if (j.success) {
+        setStatus(j);
+        setError(null);
+      } else {
+        setError('Failed to load status');
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+
+  // Self-scheduling timer chain (same pattern as the movers page) — the first
+  // fetch runs from a timeout callback, never synchronously inside the effect.
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = (delay: number) => {
+      timer = setTimeout(async () => {
+        if (stopped) return;
+        await refresh();
+        if (stopped) return;
+        schedule(POLL_MS);
+      }, delay);
+    };
+    schedule(0);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [refresh]);
+
+  const act = useCallback(
+    async (action: 'pause' | 'resume' | 'run-once') => {
+      setActing(action);
+      try {
+        await fetch('/api/fyers/poller', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+        });
+        await refresh();
+      } finally {
+        setActing(null);
+      }
+    },
+    [refresh],
+  );
+
+  const last = status?.lastCycle;
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-3 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="flex items-center gap-2 text-sm font-semibold">
+          <Radio className="h-4 w-4 text-primary" />
+          Fyers Live F&O Downloader
+        </h1>
+        <div className="flex items-center gap-1.5">
+          {status && (
+            <>
+              <Badge ok={status.started && !status.paused} okLabel="running" badLabel={status.paused ? 'paused' : 'stopped'} />
+              <Badge ok={status.marketOpen} okLabel="market open" badLabel="market closed" />
+              <Badge ok={status.credentialsConfigured} okLabel="creds ok" badLabel="no credentials" />
+              <Badge ok={status.token.cached} okLabel={`token · exp ${fmtTime(status.token.expiresAt)}`} badLabel="no token" />
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => void act(status?.paused ? 'resume' : 'pause')}
+            disabled={!!acting || !status}
+            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
+          >
+            {status?.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+            {status?.paused ? 'Resume' : 'Pause'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void act('run-once')}
+            disabled={!!acting || !status}
+            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
+          >
+            {acting === 'run-once' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+            Run once
+          </button>
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            title="Refresh status"
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <RefreshCw className="h-3 w-3" />
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="rounded border border-red-300 px-3 py-2 text-[11px] text-red-600">{error}</div>}
+      {!status && !error && (
+        <div className="flex items-center gap-2 px-3 py-6 text-[11px] text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin text-primary" /> Loading…
+        </div>
+      )}
+
+      {status && (
+        <>
+          <div className="rounded-lg border border-border bg-card p-2.5">
+            <h2 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
+              <Activity className="h-3.5 w-3.5" />
+              Last cycle
+              {status.cycleRunning && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
+              <span className="ml-auto font-normal normal-case text-muted-foreground">
+                #{status.cycles} · next tick {fmtTime(status.nextTickAt)} IST
+              </span>
+            </h2>
+            {!last ? (
+              <div className="px-1 py-2 text-[11px] text-muted-foreground">No cycle has run yet.</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
+                  <Stat label="date" value={last.date} />
+                  <Stat label="universe" value={`${last.symbolsProcessed}/${last.universeSize}`} />
+                  <Stat label="eq bars" value={String(last.eqBars)} />
+                  <Stat label="fut bars" value={String(last.futBars)} />
+                  <Stat label="OI attached" value={String(last.oiAttached)} />
+                  <Stat label="duration" value={`${(last.durationMs / 1000).toFixed(1)}s`} />
+                </div>
+                <div className="mt-1.5 text-[10px] text-muted-foreground">
+                  {last.trigger} · {last.apiCalls} API calls · started {fmtTime(Date.parse(last.startedAt))} IST
+                  {last.skipped && (
+                    <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                      skipped: {last.skipped}
+                    </span>
+                  )}
+                </div>
+                {last.errors.length > 0 && (
+                  <div className="mt-2 max-h-40 overflow-y-auto rounded border border-red-300/40">
+                    {last.errors.map((e) => (
+                      <div
+                        key={`${e.symbol}-${e.stage}-${e.message}`}
+                        className="flex gap-2 border-b border-border/30 px-2 py-1 text-[10px]"
+                      >
+                        <span className="w-24 shrink-0 font-mono font-medium">{e.symbol}</span>
+                        <span className="w-20 shrink-0 text-muted-foreground">{e.stage}</span>
+                        <span className="truncate text-red-600 dark:text-red-400" title={e.message}>
+                          {e.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-border bg-card p-2.5">
+            <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide">
+              Tracked universe
+              <span className="ml-2 font-normal normal-case text-muted-foreground">
+                {status.universe ? `${status.universe.symbols.length} symbols · ${status.universe.date}` : 'not built yet'}
+              </span>
+            </h2>
+            <div className="flex flex-wrap gap-1">
+              {(status.universe?.symbols ?? []).map((s) => (
+                <span key={s} className="rounded bg-accent px-1.5 py-0.5 font-mono text-[10px]">
+                  {s}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {status.coverage && status.coverage.length > 0 && (
+            <div className="rounded-lg border border-border bg-card p-2.5">
+              <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide">Today&apos;s coverage</h2>
+              <div className="max-h-80 overflow-y-auto">
+                <table className="w-full text-[10px]">
+                  <thead className="sticky top-0 bg-card text-left text-muted-foreground">
+                    <tr>
+                      <th className="px-1.5 py-1 font-medium">Symbol</th>
+                      <th className="px-1.5 py-1 font-medium">Inst</th>
+                      <th className="px-1.5 py-1 text-right font-medium">Bars</th>
+                      <th className="px-1.5 py-1 text-right font-medium">Last bar (IST)</th>
+                      <th className="px-1.5 py-1 text-right font-medium">Last OI</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {status.coverage.map((r) => (
+                      <tr key={`${r.symbol}-${r.instrument}`} className="border-b border-border/30">
+                        <td className="px-1.5 py-0.5 font-mono font-medium">{r.symbol}</td>
+                        <td className="px-1.5 py-0.5">{r.instrument}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">{r.bars}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">{fmtBucket(r.lastBucketTs)}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">
+                          {r.lastOi > 0 ? r.lastOi.toLocaleString('en-IN') : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

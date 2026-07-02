@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState } from "react"
-import { BarChart2, Bot, BookOpen, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, LineChart, Table2 } from "lucide-react"
+import { BarChart2, Bot, BookOpen, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, LineChart, Radio, Table2 } from "lucide-react"
 
 import {
   Sidebar,
@@ -32,6 +32,7 @@ const NAV_ITEMS = {
     { title: "NSE Heatmap", href: "/nse/heatmap", icon: LayoutGrid },
     { title: "NSE Movers", href: "/nse/movers", icon: Flame },
     { title: "EOD Movers", href: "/nse/movers-history", icon: History },
+    { title: "Fyers Live", href: "/fyers", icon: Radio },
     { title: "Market Holidays", href: "/holidays", icon: CalendarDays },
     { title: "F&O Lot Sizes", href: "/fno-lots", icon: Table2 },
     { title: "API Docs", href: "/api-docs", icon: BookOpen },

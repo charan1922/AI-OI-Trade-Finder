@@ -227,6 +227,31 @@ model IntradayCandle {
   @@map("intraday_candles")
 }
 
+/// Fyers live 5-min candles (equity + current-month stock future) for the F&O
+/// movers universe, accumulated per day (created at runtime via raw SQL in
+/// lib/fyers/candle-store.ts; declared here so `db push` keeps it). Only
+/// today's rows are retained (pruned each poller cycle). `oi` is live futures
+/// OI attached to the bucket that was current at sample time (FUT rows only,
+/// 0 elsewhere — Fyers history has no OI). bucketTs = bar-START epoch seconds
+/// on a 300s grid, as returned by the Fyers history API.
+model FyersCandle {
+  symbol     String
+  instrument String // 'EQ' | 'FUT'
+  date       String
+  bucketTs   Int
+  open       Float  @default(0)
+  high       Float  @default(0)
+  low        Float  @default(0)
+  close      Float  @default(0)
+  volume     Float  @default(0)
+  oi         Float  @default(0)
+  updatedAt  String
+
+  @@id([symbol, instrument, date, bucketTs])
+  @@index([date, symbol, instrument])
+  @@map("fyers_candles")
+}
+
 model OptionTrade {
   id            Int      @id @default(autoincrement())
   date          String

@@ -15,12 +15,31 @@ const envSchema = z.object({
   AZURE_OPENAI_INSTANCE_NAME: z.string().optional(),
   AZURE_OPENAI_CHAT_DEPLOYMENT: z.string().optional(),
   AZURE_OPENAI_API_VERSION: z.string().optional(),
+  // Fyers live 5-min F&O data (lib/fyers/) — TOTP auto-login; all six required together
+  FYERS_ID: z.string().optional(), // Fyers login/client id, e.g. XC01234
+  FYERS_APP_ID: z.string().optional(), // API app id incl. type suffix, e.g. ABCD1EFG2H-100
+  FYERS_SECRET_KEY: z.string().optional(), // API app secret key
+  FYERS_TOTP_SECRET: z.string().optional(), // base32 TOTP secret from Fyers 2FA setup
+  FYERS_PIN: z.string().optional(), // 4-digit login PIN
+  FYERS_REDIRECT_URI: z.string().optional(), // must exactly match the app's configured redirect
 });
 
 export const env = envSchema.parse(process.env);
 
 export function hasDhanCredentials(): boolean {
   return !!env.DHAN_CLIENT_ID && !!env.DHAN_ACCESS_TOKEN;
+}
+
+/** True when the full Fyers TOTP auto-login chain is configured (lib/fyers/auth.ts). */
+export function hasFyersCredentials(): boolean {
+  return (
+    !!env.FYERS_ID &&
+    !!env.FYERS_APP_ID &&
+    !!env.FYERS_SECRET_KEY &&
+    !!env.FYERS_TOTP_SECRET &&
+    !!env.FYERS_PIN &&
+    !!env.FYERS_REDIRECT_URI
+  );
 }
 
 /** True when Azure OpenAI is configured (the Trade Assistant needs all three). */

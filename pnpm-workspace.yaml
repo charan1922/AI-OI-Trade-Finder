@@ -10,3 +10,5 @@ allowBuilds:
   "@prisma/client": true
   "@duckdb/node-api": true
   '@scarf/scarf': false
+  # fyers-api-v3 dep; postinstall only matters for its websocket path, which we don't use
+  protobufjs: false
