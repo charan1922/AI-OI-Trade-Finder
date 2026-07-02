@@ -1,8 +1,8 @@
 'use client';
 
-import { Download, MousePointerClick, RefreshCw } from 'lucide-react';
+import { CloudDownload, MousePointerClick } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { TradeContextData, TradeContractIds, TradeDataStatus } from '../_lib/types';
+import type { TradeContextData, TradeDataStatus } from '../_lib/types';
 import { DailyBarChart, fmtOI, fmtTurnover } from './daily-bar-chart';
 import { DailyContextTable } from './daily-context-table';
 import { HumanVerifiedBadge } from './human-verified-badge';
@@ -11,15 +11,12 @@ import { tradeKey } from './trade-list';
 
 interface TradeContextViewProps {
   trade: TradeDataStatus | null;
-  isDownloading: boolean;
-  onDownload: (t: TradeDataStatus) => void;
-  /** Bump to force a re-fetch (after a download completes). */
+  /** Bump to force a re-fetch (after a bhavcopy sync). */
   refreshToken: number;
 }
 
-export function TradeContextView({ trade, isDownloading, onDownload, refreshToken }: TradeContextViewProps) {
+export function TradeContextView({ trade, refreshToken }: TradeContextViewProps) {
   const [ctx, setCtx] = useState<TradeContextData | null>(null);
-  const [contracts, setContracts] = useState<TradeContractIds | null>(null);
   const [ctxKey, setCtxKey] = useState<string | null>(null);
   // Keyed like ctx so an error for trade A never shows while trade B is loading.
   const [ctxError, setCtxError] = useState<{ key: string; message: string } | null>(null);
@@ -51,7 +48,6 @@ export function TradeContextView({ trade, isDownloading, onDownload, refreshToke
         if (ignore) return;
         if (d.success) {
           setCtx(d.context as TradeContextData);
-          setContracts((d.contracts as TradeContractIds | null) ?? null);
           setCtxKey(k);
           setCtxError(null);
         } else {
@@ -79,27 +75,19 @@ export function TradeContextView({ trade, isDownloading, onDownload, refreshToke
   if (trade.status === 'missing') {
     return (
       <div className="space-y-3">
-        <Header trade={trade} onDownload={onDownload} isDownloading={isDownloading} />
+        <Header trade={trade} />
         <div className="flex items-center gap-3 px-4 py-6 rounded-xl bg-amber-100 dark:bg-amber-500/10 border-2 border-amber-400 dark:border-amber-500/30 border-dashed">
-          <Download className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+          <CloudDownload className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
           <div className="flex-1">
             <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
-              No data for {trade.symbol} on {trade.date}
+              No NSE bhavcopy data for {trade.symbol} on {trade.date}
             </span>
             <p className="text-[11px] text-amber-600/70 dark:text-amber-400/60 mt-0.5">
-              One click fetches everything for this trade (trade day + ~30 sessions): equity + futures + {trade.optionType}{' '}
-              {trade.strike} option from Dhan, plus the NSE bhavcopy OI totals behind the charts.
+              Click <strong>Sync NSE data</strong> (top of the page) — one file fills the trade day + ~30 sessions for
+              every stock: equity, futures &amp; total option OI, and the traded {trade.optionType} {trade.strike} strike.
+              If it stays empty, NSE doesn&apos;t serve it (symbol left F&amp;O, or a date outside bhavcopy coverage).
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => onDownload(trade)}
-            disabled={isDownloading}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 border border-amber-400 dark:border-amber-500/40 text-xs font-semibold disabled:opacity-50 shrink-0"
-          >
-            <Download className="w-3.5 h-3.5" />
-            {isDownloading ? 'Getting data…' : 'Get all data'}
-          </button>
         </div>
       </div>
     );
@@ -109,7 +97,7 @@ export function TradeContextView({ trade, isDownloading, onDownload, refreshToke
   if (!matches) {
     return (
       <div className="space-y-3">
-        <Header trade={trade} onDownload={onDownload} isDownloading={isDownloading} />
+        <Header trade={trade} />
         {ctxError && ctxError.key === key ? (
           <div className="rounded-xl bg-card border border-red-300 dark:border-red-500/30 px-4 py-6 text-center text-xs text-red-600 dark:text-red-400">
             Failed to load trade context: {ctxError.message} — select another trade and back (or reload the page) to
@@ -128,11 +116,9 @@ export function TradeContextView({ trade, isDownloading, onDownload, refreshToke
 
   return (
     <div className="space-y-3">
-      <Header trade={trade} onDownload={onDownload} isDownloading={isDownloading} />
+      <Header trade={trade} />
 
       <TradeRationale ctx={ctx} />
-
-      <ContractChips contracts={contracts} />
 
       <CalendarNote ctx={ctx} />
 
@@ -140,9 +126,9 @@ export function TradeContextView({ trade, isDownloading, onDownload, refreshToke
 
       {trade.status === 'partial' && (
         <div className="text-[11px] text-amber-600 dark:text-amber-400">
-          Some legs are missing{!trade.hasOptions && <> (option {trade.optionType} {trade.strike})</>} — try Get all
-          data. If it persists, the source doesn&apos;t serve that data: expired options beyond the ATM±3 band, and
-          bhavcopy OI for symbols that have left F&O, are unavailable.
+          Some sessions are missing{!trade.hasOptions && <> (option {trade.optionType} {trade.strike})</>} — click{' '}
+          <strong>Sync NSE data</strong>. If it persists, NSE doesn&apos;t serve it: symbols that have left F&amp;O, or
+          strikes/dates outside bhavcopy coverage, are unavailable.
         </div>
       )}
 
@@ -171,7 +157,7 @@ export function TradeContextView({ trade, isDownloading, onDownload, refreshToke
         />
         <DailyBarChart
           title="Equity Turnover"
-          hint="Official NSE equity traded value (bhavcopy). Falls back to Σ(5-min volume × close) from Dhan candles only for days bhavcopy hasn't covered."
+          hint="Official NSE equity traded value (bhavcopy)."
           mode="solid"
           accent="rgba(139,92,246,0.85)"
           data={days.map((d) => ({ date: d.date, value: d.eqTurnover, isTradeDate: d.isTradeDate }))}
@@ -185,61 +171,14 @@ export function TradeContextView({ trade, isDownloading, onDownload, refreshToke
 }
 
 /**
- * Preserved Dhan contract IDs (resolved at download time, reused on Re-sync —
- * no fresh master-contract lookup needed). Transparency: exactly which
- * instruments back this trade's data.
- */
-function ContractChips({ contracts }: { contracts: TradeContractIds | null }) {
-  if (!contracts) return null;
-  const chips: { id: string; text: string; title: string }[] = [];
-  if (contracts.eqSecurityId)
-    chips.push({ id: 'eq', text: `EQ #${contracts.eqSecurityId}`, title: 'Equity securityId (Dhan)' });
-  if (contracts.futSecurityId)
-    chips.push({
-      id: 'fut',
-      text: `FUT #${contracts.futSecurityId}${contracts.futExpiry ? ` · exp ${contracts.futExpiry.slice(0, 10)}` : ''}${
-        contracts.futLotSize ? ` · lot ${contracts.futLotSize}` : ''
-      }`,
-      title: 'Futures contract securityId resolved for this trade window',
-    });
-  if (contracts.optSecurityId)
-    chips.push({ id: 'opt', text: `OPT #${contracts.optSecurityId}`, title: 'Option contract securityId (Dhan)' });
-  else if (contracts.optVia)
-    chips.push({
-      id: 'opt-via',
-      text: `OPT via ${contracts.optVia.split('(')[0]}`,
-      title: `Expired contract — fetched via ${contracts.optVia}`,
-    });
-  if (chips.length === 0) return null;
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap text-[10px] font-mono">
-      <span className="text-muted-foreground/70">Contracts:</span>
-      {chips.map((c) => (
-        <span
-          key={c.id}
-          title={c.title}
-          className="px-1.5 py-0.5 rounded border bg-muted/50 text-muted-foreground border-border cursor-help"
-        >
-          {c.text}
-        </span>
-      ))}
-      <span className="text-muted-foreground/50">preserved {contracts.resolvedAt.slice(0, 10)} · reused on Re-sync</span>
-    </div>
-  );
-}
-
-/**
- * Per-trade, per-SOURCE data coverage. Each leg is filled by a different action,
- * so the report says which: equity / futures / traded option come from the
- * per-trade Download button (Dhan); the OI charts come from the separate Sync
- * button (NSE bhavcopy). Green = covered, amber = partial, red = missing — with
- * the exact button to click. Gaps render as empty bars, never an estimate.
+ * Per-trade, per-SOURCE data coverage — every leg is NSE bhavcopy, filled by the
+ * one "Sync NSE data" button. Green = covered, amber = partial, red = missing.
+ * Gaps render as empty bars, never an estimate.
  */
 function LegCoverageNote({ trade }: { trade: TradeDataStatus }) {
   const legs = trade.legs?.filter((l) => l.applicable) ?? [];
   if (legs.length === 0) return null;
-  const needsSync = legs.some((l) => l.status !== 'ok' && l.fixedBy === 'sync');
-  const needsDownload = legs.some((l) => l.status !== 'ok' && l.fixedBy === 'download');
+  const needsSync = legs.some((l) => l.status !== 'ok');
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px]">
       {legs.map((l) => {
@@ -259,13 +198,11 @@ function LegCoverageNote({ trade }: { trade: TradeDataStatus }) {
             : l.sessionsKnown > 0
               ? `${l.daysPresent}/${l.sessionsKnown} sessions`
               : 'no data';
-        const fix = ok ? '' : l.fixedBy === 'sync' ? ' → Sync' : ' → Download';
+        const fix = ok ? '' : ' → Sync';
         return (
           <span
             key={l.key}
-            title={`${l.label} — filled by ${
-              l.fixedBy === 'sync' ? 'the Sync button (NSE bhavcopy)' : 'the per-trade Download button (Dhan)'
-            }`}
+            title={`${l.label} — filled by the Sync NSE data button (official NSE bhavcopy)`}
             className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-medium ${cls}`}
           >
             {icon} {l.label} · {count}
@@ -273,12 +210,9 @@ function LegCoverageNote({ trade }: { trade: TradeDataStatus }) {
           </span>
         );
       })}
-      {(needsSync || needsDownload) && (
+      {needsSync && (
         <span className="text-muted-foreground">
-          Fill gaps:{' '}
-          {needsDownload && <strong>Download</strong>}
-          {needsDownload && needsSync && ' + '}
-          {needsSync && <strong>Sync</strong>} (gaps shown as empty bars, never estimated).
+          Fill gaps: <strong>Sync NSE data</strong> (gaps shown as empty bars, never estimated).
         </span>
       )}
     </div>
@@ -345,15 +279,7 @@ function CalendarNote({ ctx }: { ctx: TradeContextData }) {
   );
 }
 
-function Header({
-  trade,
-  onDownload,
-  isDownloading,
-}: {
-  trade: TradeDataStatus;
-  onDownload: (t: TradeDataStatus) => void;
-  isDownloading: boolean;
-}) {
+function Header({ trade }: { trade: TradeDataStatus }) {
   const ret =
     trade.entryPrice && trade.exitPrice && trade.entryPrice > 0
       ? ((trade.exitPrice - trade.entryPrice) / trade.entryPrice) * 100
@@ -381,16 +307,6 @@ function Header({
           {ret != null && <span className="ml-1">({ret >= 0 ? '+' : ''}{ret.toFixed(0)}%)</span>}
         </span>
       )}
-      <button
-        type="button"
-        onClick={() => onDownload(trade)}
-        disabled={isDownloading}
-        className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md bg-muted hover:bg-accent text-muted-foreground text-[11px] disabled:opacity-50"
-        title={`Re-fetch ALL data for this trade (${trade.symbol} ${trade.optionType} ${trade.strike}, ${trade.date}): equity + futures + option from Dhan, plus NSE bhavcopy OI totals. One click, both sources.`}
-      >
-        <RefreshCw className={`w-3 h-3 ${isDownloading ? 'animate-spin' : ''}`} />
-        {isDownloading ? 'Getting data…' : 'Get all data'}
-      </button>
     </div>
   );
 }

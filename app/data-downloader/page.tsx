@@ -3,11 +3,9 @@
 import { Database, RefreshCw, ShieldCheck } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { BhavcopySync } from './_components/bhavcopy-sync';
-import { DownloadProgress } from './_components/download-progress';
 import { TradeContextView } from './_components/trade-context-view';
 import { TradeList, tradeKey } from './_components/trade-list';
 import { useDataStatus } from './_hooks/use-data-status';
-import { useDownloadStream } from './_hooks/use-download-stream';
 import type { TradeDataStatus } from './_lib/types';
 
 export default function BacktestDataPage() {
@@ -15,11 +13,12 @@ export default function BacktestDataPage() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
 
-  const onDownloadComplete = useCallback(() => {
+  // After a bhavcopy sync, refresh the list status (ready/partial counts) and the
+  // open trade's context.
+  const onSynced = useCallback(() => {
     refresh();
     setRefreshToken((n) => n + 1);
   }, [refresh]);
-  const stream = useDownloadStream(onDownloadComplete);
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'ready' | 'partial' | 'missing'>('all');
@@ -65,13 +64,6 @@ export default function BacktestDataPage() {
   const selectedTrade = useMemo<TradeDataStatus | null>(
     () => trades.find((t) => tradeKey(t) === effectiveKey) ?? null,
     [trades, effectiveKey],
-  );
-
-  const handleDownload = useCallback(
-    (t: TradeDataStatus) => {
-      stream.start([t]);
-    },
-    [stream],
   );
 
   return (
@@ -140,12 +132,9 @@ export default function BacktestDataPage() {
           <ShieldCheck className="w-3.5 h-3.5" />
           {showUnverified ? 'All trades' : 'Verified only'}
         </button>
-        <BhavcopySync onSynced={() => setRefreshToken((n) => n + 1)} />
+        <BhavcopySync onSynced={onSynced} />
         <span className="text-[10px] text-muted-foreground ml-auto">{filtered.length} shown</span>
       </div>
-
-      {/* Download progress (per-trade streaming) */}
-      <DownloadProgress {...stream} onCancel={stream.cancel} />
 
       {/* Master / detail — list left, context right */}
       {loading && trades.length === 0 ? (
@@ -160,12 +149,7 @@ export default function BacktestDataPage() {
             <TradeList trades={filtered} selectedKey={effectiveKey} onSelect={(t) => setSelectedKey(tradeKey(t))} />
           </aside>
           <main className="flex-1 min-w-0">
-            <TradeContextView
-              trade={selectedTrade}
-              isDownloading={stream.isDownloading}
-              onDownload={handleDownload}
-              refreshToken={refreshToken}
-            />
+            <TradeContextView trade={selectedTrade} refreshToken={refreshToken} />
           </main>
         </div>
       )}

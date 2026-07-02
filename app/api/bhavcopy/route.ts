@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { tradedStrikeKeys } from '@/lib/backtest/data-downloader';
 import { getBhavcopyStatus, syncBhavcopy } from '@/lib/historify/bhavcopy-service';
 
 export const dynamic = 'force-dynamic';
@@ -57,7 +58,11 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const days = typeof body.days === 'number' ? body.days : await autoDaysToCoverBacktest();
-    const result = await syncBhavcopy(days);
+    // Also capture each TF-traded strike's daily close/OI from the same bhavcopy
+    // files — this is what powers the data-downloader's option-flow read without a
+    // per-trade Dhan download. Cheap (only the ~hundreds of traded strikes).
+    const wantedStrikes = await tradedStrikeKeys();
+    const result = await syncBhavcopy(days, { wantedStrikes });
     const status = await getBhavcopyStatus();
     return NextResponse.json({ success: true, days, ...result, status });
   } catch (error) {

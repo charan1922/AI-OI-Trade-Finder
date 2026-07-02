@@ -449,6 +449,21 @@ export async function loadAllTFTrades(): Promise<{
 }
 
 /**
+ * The set of option contracts the TF trades actually reference, as
+ * `${symbol}|${optionType}|${strike}` keys. The bhavcopy sync uses this to capture
+ * ONLY these strikes' daily close/OI (so the data-downloader's option-flow read
+ * works from bhavcopy, no Dhan download) — keeping `bhavcopy_option_strike` small.
+ */
+export async function tradedStrikeKeys(): Promise<Set<string>> {
+  const { trades } = await loadAllTFTrades();
+  const keys = new Set<string>();
+  for (const t of trades) {
+    if (t.strike > 0) keys.add(`${t.symbol}|${t.optionType}|${t.strike}`);
+  }
+  return keys;
+}
+
+/**
  * Download data for specific symbols (not just the hardcoded 20).
  * Downloads equity + futures 5-min. Options only if strike is provided.
  */

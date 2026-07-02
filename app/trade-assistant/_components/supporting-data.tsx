@@ -48,7 +48,7 @@ interface TradeCtx {
     pnl?: number; optionReturnPct?: number | null; humanVerified?: boolean;
   };
   direction?: { dataBias?: string; futuresQuadrant?: string; priceChangePctTradeDay?: number | null; agreesWithTrade?: boolean };
-  optionOI?: { tradedContract?: string | null; levelVsCycleAverage?: number | null; tradeDayBuildupPct?: number | null; monthlyExpiryInWindow?: boolean };
+  optionOI?: { tradedContract?: string | null; stockwideLevelVsCycleAvg?: number | null; tradedContractBuildupPctTradeDay?: number | null; monthlyExpiryInWindow?: boolean };
   futuresOI?: { levelVs20dAverage?: number | null; turnoverVsAverage?: number | null };
   coverage?: { sessions?: number; dataGaps?: string[] } | null;
 }
@@ -110,11 +110,11 @@ function TradeCard({ d }: { d: TradeCtx }) {
         </div>
 
         <Stat label="Traded contract" value={fmtExpiry(oi.tradedContract)} />
-        <Stat label="OI buildup (day)" value={pct(oi.tradeDayBuildupPct)} tone={(oi.tradeDayBuildupPct ?? 0) >= 0 ? 'pos' : 'neg'} />
+        <Stat label="Contract OI buildup (day)" value={pct(oi.tradedContractBuildupPctTradeDay)} tone={(oi.tradedContractBuildupPctTradeDay ?? 0) >= 0 ? 'pos' : 'neg'} />
         <Stat
-          label="OI level (cycle)"
-          value={oi.levelVsCycleAverage != null ? mult(oi.levelVsCycleAverage) : 'n/a · post-expiry'}
-          tone={(oi.levelVsCycleAverage ?? 0) >= 1.1 ? 'pos' : 'neutral'}
+          label="Total opt OI (cycle)"
+          value={oi.stockwideLevelVsCycleAvg != null ? mult(oi.stockwideLevelVsCycleAvg) : 'n/a · post-expiry'}
+          tone={(oi.stockwideLevelVsCycleAvg ?? 0) >= 1.1 ? 'pos' : 'neutral'}
         />
 
         <Stat label="Futures OI level" value={mult(fut.levelVs20dAverage)} tone={(fut.levelVs20dAverage ?? 0) >= 1.1 ? 'pos' : 'neutral'} />

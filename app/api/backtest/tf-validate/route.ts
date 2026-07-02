@@ -4,13 +4,8 @@ export const dynamic = 'force-dynamic';
 
 import { getDailyContext, getTradeDetail, runFullBacktest, simulateTrade } from '@/lib/backtest/backtest-evaluator';
 import { downloadAllTFData, downloadSymbols, loadAllTFTrades, TF_TRADES } from '@/lib/backtest/data-downloader';
-import {
-  getBhavcopyDateMap,
-  getOptionDateMap,
-  getRowCount,
-  getSymbolDateMap,
-  getTradeContract,
-} from '@/lib/backtest/backtest-store';
+import { getBhavcopyDateMap, getRowCount, getTradeContract } from '@/lib/backtest/backtest-store';
+import { getStrikeDateMap } from '@/lib/historify/bhavcopy-service';
 import type { FixAction, LegCoverage } from '@/app/data-downloader/_lib/types';
 
 /**
@@ -96,17 +91,15 @@ export async function POST(req: Request) {
 
     if (action === 'symbol-status') {
       const allTF = await loadAllTFTrades();
-      // Batch: pull symbol→dates for every source ONCE (not per trade), then check
-      // window coverage in memory. Bhavcopy is a separate source (Sync button) from
-      // the Dhan legs (Download button) — both are reported so the gap says which.
-      const [eqMap, futMap, optMap, bhavMap] = await Promise.all([
-        getSymbolDateMap('backtest_equity'),
-        getSymbolDateMap('backtest_futures'),
-        getOptionDateMap(),
-        getBhavcopyDateMap(),
+      // Batch: pull symbol→dates for every bhavcopy source ONCE (not per trade), then
+      // check window coverage in memory. This page is bhavcopy-only — the single
+      // "Sync NSE data" button fills every leg; no Dhan download is involved.
+      const [bhavMap, strikeMap] = await Promise.all([
+        getBhavcopyDateMap(), // bhavcopy_days: equity + futures OI + total option OI
+        getStrikeDateMap(), // bhavcopy per-strike close/OI (the traded strike)
       ]);
 
-      // ~30 sessions of lookback ≈ 45 calendar days — matches the downloader window.
+      // ~30 sessions of lookback ≈ 45 calendar days — matches the context window.
       const WINDOW_DAYS = 45;
       const datesInWindow = (dates: Set<string> | undefined, from: string, to: string): string[] => {
         if (!dates) return [];
@@ -125,19 +118,12 @@ export async function POST(req: Request) {
         const windowStart = from.toISOString().slice(0, 10);
         const windowEnd = t.date;
 
-        const eqDates = datesInWindow(eqMap.get(t.symbol), windowStart, windowEnd);
-        const futDates = datesInWindow(futMap.get(t.symbol), windowStart, windowEnd);
         const bhavDates = datesInWindow(bhavMap.get(t.symbol), windowStart, windowEnd);
-        // Honest denominator: sessions we have any DISPLAYED data for. Only equity
-        // (Dhan) and bhavcopy feed the charts — Dhan single-contract futures only
-        // yields futClose/futVolume, neither of which is charted (the Futures OI &
-        // Turnover charts use bhavcopy totals across ALL contracts). So Dhan futures
-        // is excluded from the denominator and is NOT a tracked leg below.
-        const sessionsKnown = new Set<string>([...eqDates, ...bhavDates]).size;
-        // A few sessions Dhan/NSE simply don't serve (e.g. a contract that didn't
-        // trade that day) are UNFILLABLE — re-downloading can't recover them. So
-        // near-complete coverage reads as 'ok', not a permanent warning the user
-        // can never clear. The detail panel's CalendarNote still lists exact gaps.
+        // Honest denominator: bhavcopy sessions we have in the window (the sole source).
+        const sessionsKnown = bhavDates.length;
+        // A few sessions NSE simply doesn't serve (e.g. a symbol that has left F&O)
+        // are UNFILLABLE — a re-sync can't recover them. So near-complete coverage
+        // reads as 'ok', not a permanent warning. The CalendarNote still lists gaps.
         const gapTolerance = Math.max(1, Math.floor(sessionsKnown * 0.1));
 
         const cov = (
@@ -157,22 +143,21 @@ export async function POST(req: Request) {
           applicable: true,
         });
 
-        // Traded option (single strike, Dhan): powers the trade-day premium + flow,
-        // so it's a trade-DAY presence check, not window coverage.
-        const hasOptDay =
-          t.strike > 0 && (optMap.get(`${t.symbol}|${t.optionType}|${t.strike}`)?.has(t.date) ?? false);
+        // Traded option premium + flow on the trade day — the NSE bhavcopy per-strike
+        // row. Bhavcopy alone powers the option-flow read; no Dhan download needed.
+        const optKey = `${t.symbol}|${t.optionType}|${t.strike}`;
+        const hasOptDay = t.strike > 0 && (strikeMap.get(optKey)?.has(t.date) ?? false);
 
         const legs: LegCoverage[] = [
-          cov('equity', 'EQ', 'Equity (Dhan)', eqDates.length, 'download'),
-          cov('bhavcopy', 'OI', 'Futures + Option OI (NSE bhavcopy)', bhavDates.length, 'sync'),
+          cov('bhavcopy', 'OI', 'Equity + Futures + Option OI (NSE bhavcopy)', bhavDates.length, 'sync'),
           {
             key: 'tradedOption',
             short: 'OPT',
-            label: 'Traded option (Dhan)',
+            label: 'Traded option (NSE bhavcopy per-strike)',
             daysPresent: hasOptDay ? 1 : 0,
             sessionsKnown: 1,
             status: t.strike > 0 ? (hasOptDay ? 'ok' : 'missing') : 'ok',
-            fixedBy: 'download',
+            fixedBy: 'sync',
             applicable: t.strike > 0,
           },
         ];
@@ -201,9 +186,9 @@ export async function POST(req: Request) {
           exitPrice: t.exitPrice,
           quantity: t.quantity,
           expiry: t.expiry,
-          // Back-compat booleans — leg present anywhere in the window.
-          hasEquity: eqDates.length > 0,
-          hasFutures: futDates.length > 0,
+          // Back-compat booleans — bhavcopy coverage (equity + F&O live in one row).
+          hasEquity: bhavDates.length > 0,
+          hasFutures: bhavDates.length > 0,
           hasOptions: t.strike > 0 ? hasOptDay : true,
           legs,
           status,

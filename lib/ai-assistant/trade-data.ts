@@ -199,13 +199,16 @@ export async function getTradeContext(symbol: string, dateInput: string) {
       note: i.directionNote,
     },
     optionOI: {
-      tradedContract: i.optContractExpiry, // the month the OI metrics track
-      // level vs the contract's own current-cycle average; null right after a monthly expiry
-      levelVsCycleAverage: round(i.optOILevel20d),
-      tradeDayBuildupPct: round(i.optOIChangePctTradeDay, 1), // fresh positioning into the contract
-      change5SessionsPct: round(i.optOIChangePct, 1),
+      // Whole-stock option OI — every strike & expiry, in contracts (the
+      // institutional footprint). NOT specific to the traded strike, so never
+      // attribute these to "the contract".
+      stockwideLevelVsCycleAvg: round(i.optOILevel20d), // null right after a monthly expiry
+      stockwideChange5SessionsPct: round(i.optOIChangePct, 1),
       monthlyExpiryInWindow: i.optExpiryInWindow,
-      perContractDataAvailable: i.optContractDataAvailable,
+      // Traded contract ONLY — the exact month bought; the clean fresh-positioning signal.
+      tradedContract: i.optContractExpiry,
+      tradedContractBuildupPctTradeDay: round(i.optOIChangePctTradeDay, 1),
+      tradedContractDataAvailable: i.optContractDataAvailable,
     },
     futuresOI: {
       levelVs20dAverage: round(i.futOILevel20d), // sustained accumulation signal (TF top picks ~1.25-1.35x)

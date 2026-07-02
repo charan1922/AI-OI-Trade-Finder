@@ -187,15 +187,17 @@ export async function POST(req: Request) {
       }
 
       // Bhavcopy leg — the OI charts' source: market-wide NSE end-of-day totals
-      // (futures OI across all contracts, option OI across all strikes). It's a
+      // (futures OI across all contracts, option OI across all strikes) PLUS each
+      // TF-traded strike's own close/OI (what the option-flow read needs). A
       // SEPARATE source from the Dhan legs above, but the user shouldn't have to
-      // think about that — one "Get all data" click fills both. Idempotent: only
+      // think about that — one "Get all data" click fills them all. Idempotent: only
       // dates not already on disk are fetched, so it's cheap on repeat and the
       // shared dataset tops up for every trade at once.
       if (!clientGone) {
         try {
           send({ type: 'progress', step: 'bhavcopy', symbolIndex: items.length - 1, totalSymbols: items.length });
           const { syncBhavcopy } = await import('@/lib/historify/bhavcopy-service');
+          const { tradedStrikeKeys } = await import('@/lib/backtest/data-downloader');
           // Weekdays from the earliest item's window-start (trade date − 45d)
           // through today, so every downloaded trade's lookback is covered.
           const earliest = items.map((it) => it.date).sort()[0];
@@ -210,7 +212,11 @@ export async function POST(req: Request) {
             cur.setDate(cur.getDate() + 1);
           }
           const days = Math.min(400, weekdays + 5); // buffer + ~18-month safety cap
-          const result = await syncBhavcopy(days);
+          // Capture the TF-traded strikes' daily close/OI on this path too, so the
+          // option-flow read is populated whether the user synced from here or from
+          // the data-downloader's own "Sync NSE data" button (consistent either way).
+          const wantedStrikes = await tradedStrikeKeys();
+          const result = await syncBhavcopy(days, { wantedStrikes });
           totalRows += result.rows;
           send({
             type: 'step-done',

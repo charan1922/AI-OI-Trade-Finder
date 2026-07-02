@@ -11,7 +11,8 @@
 
 import { ADX } from 'trading-signals';
 import { queryRows, getTradeContract } from './backtest-store';
-import { getOptionExpiryOISeries } from '@/lib/historify/bhavcopy-service';
+import { getOptionExpiryOISeries, getStrikeDailySeries } from '@/lib/historify/bhavcopy-service';
+import { getContractsOiByDate } from '@/lib/historify/oi-contracts';
 import { getExpiriesAsc, mostRecentExpiryBefore } from './expiry-calendar';
 import { analyzeWindow, type WindowCalendar } from './trading-calendar';
 import { TF_TRADES, type TFTrade } from './data-downloader';
@@ -283,42 +284,11 @@ export async function getDailyContext(params: {
   const days = params.days ?? 30;
   const contractExpiry = normalizeExpiry(params.expiry); // ISO YYYY-MM-DD or null
 
-  const futRows = (await queryRows(
-    `
-    SELECT date,
-      (SELECT oi FROM backtest_futures f2 WHERE f2.symbol = f.symbol AND f2.date = f.date ORDER BY timestamp DESC LIMIT 1) as eod_oi,
-      (SELECT close FROM backtest_futures f3 WHERE f3.symbol = f.symbol AND f3.date = f.date ORDER BY timestamp DESC LIMIT 1) as eod_close,
-      SUM(volume * close) as turnover, SUM(volume) as volume
-    FROM backtest_futures f
-    WHERE symbol = ? AND date <= ?
-    GROUP BY date ORDER BY date DESC LIMIT ?
-  `,
-    [symbol, date, days],
-  )) as { date: string; eod_oi: number; eod_close: number; turnover: number; volume: number }[];
-
-  const optRows = (await queryRows(
-    `
-    SELECT date,
-      (SELECT oi FROM backtest_options o2 WHERE o2.symbol = o.symbol AND o2.date = o.date AND o2.option_type = o.option_type AND CAST(o2.strike AS REAL) = ? ORDER BY timestamp DESC LIMIT 1) as eod_oi,
-      (SELECT close FROM backtest_options o3 WHERE o3.symbol = o.symbol AND o3.date = o.date AND o3.option_type = o.option_type AND CAST(o3.strike AS REAL) = ? ORDER BY timestamp DESC LIMIT 1) as eod_close,
-      SUM(volume) as volume
-    FROM backtest_options o
-    WHERE symbol = ? AND option_type = ? AND CAST(strike AS REAL) = ? AND date <= ?
-    GROUP BY date ORDER BY date DESC LIMIT ?
-  `,
-    [strike, strike, symbol, optionType, strike, date, days],
-  )) as { date: string; eod_oi: number; eod_close: number; volume: number }[];
-
-  const eqRows = (await queryRows(
-    `
-    SELECT date, SUM(volume * close) as turnover, SUM(volume) as volume,
-      (SELECT close FROM backtest_equity e2 WHERE e2.symbol = e.symbol AND e2.date = e.date ORDER BY timestamp DESC LIMIT 1) as eod_close
-    FROM backtest_equity e
-    WHERE symbol = ? AND date <= ?
-    GROUP BY date ORDER BY date DESC LIMIT ?
-  `,
-    [symbol, date, days],
-  )) as { date: string; turnover: number; volume: number; eod_close: number }[];
+  // NSE bhavcopy is the SOLE source for this context (official EOD). The data-
+  // downloader page no longer downloads per-trade Dhan candles, so we never read the
+  // backtest_{equity,futures,options} tables here — everything below comes from
+  // bhavcopy_days plus the per-expiry / per-strike bhavcopy tables. A day bhavcopy
+  // hasn't covered renders as an honest gap, never a Dhan approximation.
 
   // NSE bhavcopy fallback (official EOD) for days Dhan candles don't cover —
   // e.g. futures of symbols that have since left F&O. Units verified against
@@ -375,10 +345,6 @@ export async function getDailyContext(params: {
     // bhavcopy table absent — Dhan-only context
   }
 
-  const futMap = new Map(futRows.map((r) => [r.date, r]));
-  const optMap = new Map(optRows.map((r) => [r.date, r]));
-  const eqMap = new Map(eqRows.map((r) => [r.date, r]));
-
   // Traded contract's OWN OI series (symbol + exact expiry month). Empty if the
   // per-expiry table hasn't been backfilled for this contract yet → getDailyContext
   // falls back to the summed-total path and flags it.
@@ -389,52 +355,81 @@ export async function getDailyContext(params: {
   }
   const optContractDataAvailable = contractOiByDate.size > 0;
 
-  const allDates = new Set<string>([...futMap.keys(), ...optMap.keys(), ...eqMap.keys(), ...bhavMap.keys()]);
+  // Traded strike's daily premium + OI from NSE bhavcopy (the file's per-strike
+  // close/OI) — the SOLE source for the option-flow read (premium + OI day-over-day).
+  const strikeByDate = new Map<string, { close: number; oi: number }>();
+  if (contractExpiry && strike > 0) {
+    const series = await getStrikeDailySeries(symbol, optionType, strike, contractExpiry, date, days + 5);
+    for (const s of series) strikeByDate.set(s.date, { close: s.close, oi: s.oi });
+  }
+
+  // Stock-wide futures & total-option OI in CONTRACTS (lot-aware). The charts and
+  // the OI level/5-session-change metrics span ~30 sessions; if a lot revision sits
+  // in that window the SHARES total is distorted, so we count contracts (Σ expiry OI
+  // ÷ that expiry's lot) — the same basis as the EOD Movers OI build-up.
+  const contractsOiByDate = await getContractsOiByDate(symbol, date);
+  // Pick ONE unit for the whole window so an average/change never mixes contracts
+  // with shares (which would be meaningless). Decision = does the TRADE DAY itself
+  // have lot-backed per-expiry data? If yes → contracts for every day (a day with no
+  // per-expiry row is a genuine gap → 0, excluded by the > 0 filters downstream). If
+  // no (e.g. old pre-backfill window) → the bhavcopy shares total throughout.
+  const tradeC = contractsOiByDate.get(date);
+  const futUseContracts = tradeC?.fut != null;
+  const optUseContracts = tradeC?.opt != null;
+  // The traded strike's premium/OI come from bhavcopy per-strike; when it doesn't
+  // cover the trade day we show a gap (no Dhan fallback anymore).
+  const useStrikeBhav = strikeByDate.has(date);
+
+  // Window is driven entirely by bhavcopy coverage (days + per-expiry + per-strike).
+  const allDates = new Set<string>([
+    ...bhavMap.keys(),
+    ...contractsOiByDate.keys(),
+    ...strikeByDate.keys(),
+    ...contractOiByDate.keys(),
+  ]);
   const windowDates = [...allDates].sort().slice(-days); // oldest first
 
   const daysArr: DailyContextDay[] = windowDates.map((d) => {
-    const f = futMap.get(d);
-    const o = optMap.get(d);
-    const e = eqMap.get(d);
     const b = bhavMap.get(d);
+    const c = contractsOiByDate.get(d); // lot-aware contracts for this day (or undefined)
+    const sk = strikeByDate.get(d); // bhavcopy per-strike close/OI for the traded strike
 
     const hasBhavFut = (b?.futOi ?? 0) > 0 || (b?.futTurnover ?? 0) > 0;
     const hasBhavOpt = (b?.optOi ?? 0) > 0 || (b?.optVolume ?? 0) > 0;
-    const hasDhanEq = Number(e?.turnover ?? 0) > 0;
     const hasBhavEq = (b?.eqTurnover ?? 0) > 0;
 
-    // Futures OI/turnover AND total option OI/volume come ONLY from NSE bhavcopy —
-    // totals across all contracts/strikes (see fetchFnOBhavcopy). We deliberately
-    // do NOT fall back to Dhan futures: Dhan history is a single contract whose OI
-    // ramps with maturity, a different measurement entirely. Days bhavcopy hasn't
-    // covered show as a gap (src null) — honest, not distorting. Equity has no
-    // contract/expiry, so Dhan equity turnover stays primary.
+    // Everything is NSE bhavcopy. Futures OI/turnover + total option OI/volume are
+    // market-wide totals; the traded strike's premium/OI is the per-strike row. A day
+    // bhavcopy hasn't covered is a genuine gap (0 / src null) — never estimated.
     return {
       date: d,
       isTradeDate: d === date,
-      futOI: hasBhavFut ? (b?.futOi ?? 0) : 0,
+      // One consistent unit across the window (see futUseContracts/optUseContracts):
+      // contracts when the window is contracts-capable, else the bhavcopy shares
+      // total — never a per-day mix. Gap day → 0 (excluded by the > 0 filters below).
+      // Turnover is currency (lot-independent) → unchanged.
+      futOI: hasBhavFut ? (futUseContracts ? (c?.fut ?? 0) : (b?.futOi ?? 0)) : 0,
       futTurnover: hasBhavFut ? (b?.futTurnover ?? 0) : 0,
-      futVolume: Number(f?.volume ?? 0), // Dhan futures volume (shares); not charted, kept for completeness
-      optOI: Number(o?.eod_oi ?? 0), // single traded strike (Dhan) — not charted
-      optVolume: Number(o?.volume ?? 0), // single traded strike (Dhan) — not charted
-      optOITotal: hasBhavOpt ? (b?.optOi ?? 0) : 0,
+      futVolume: 0, // Dhan-only field; no longer sourced (page is bhavcopy-only)
+      // Traded strike's OI — bhavcopy per-strike (0 when uncovered → option-flow flat).
+      optOI: useStrikeBhav ? (sk?.oi ?? 0) : 0,
+      optVolume: 0, // Dhan-only field; no longer sourced
+      optOITotal: hasBhavOpt ? (optUseContracts ? (c?.opt ?? 0) : (b?.optOi ?? 0)) : 0,
       optVolumeTotal: hasBhavOpt ? (b?.optVolume ?? 0) : 0,
       // Traded contract's OI (this exact expiry month, bhavcopy per-expiry table).
       // 0 when not backfilled — drives the expiry-safe oi_level when present.
       optContractOI: contractOiByDate.get(d) ?? 0,
-      // Official NSE bhavcopy traded value is authoritative; the Σ(5-min vol×close)
-      // from Dhan candles is only an approximation, so use it solely as a fallback
-      // for days bhavcopy hasn't covered. (Verified equal to ~0.003% on liquid names.)
-      eqTurnover: hasBhavEq ? (b?.eqTurnover ?? 0) : Number(e?.turnover ?? 0),
-      eqVolume: hasBhavEq ? (b?.eqVolume ?? 0) : Number(e?.volume ?? 0),
-      // Underlying price for direction: bhavcopy EOD close is authoritative; fall
-      // back to the last equity 5-min bar's close when bhavcopy hasn't covered the day.
-      eqClose: (b?.eqClose ?? 0) > 0 ? (b?.eqClose ?? 0) : Number(e?.eod_close ?? 0),
-      futClose: Number(f?.eod_close ?? 0),
-      optClose: Number(o?.eod_close ?? 0),
+      // Official NSE bhavcopy traded value (authoritative).
+      eqTurnover: hasBhavEq ? (b?.eqTurnover ?? 0) : 0,
+      eqVolume: hasBhavEq ? (b?.eqVolume ?? 0) : 0,
+      // Underlying price for direction: bhavcopy EOD close (0 when uncovered → gap).
+      eqClose: b?.eqClose ?? 0,
+      futClose: 0, // Dhan-only field; no longer sourced
+      // Traded strike's premium — bhavcopy per-strike (0 when uncovered).
+      optClose: useStrikeBhav ? (sk?.close ?? 0) : 0,
       futSrc: hasBhavFut ? 'bhavcopy' : null,
       optSrc: hasBhavOpt ? 'bhavcopy' : null,
-      eqSrc: hasBhavEq ? 'bhavcopy' : hasDhanEq ? 'dhan' : null,
+      eqSrc: hasBhavEq ? 'bhavcopy' : null,
     };
   });
 
@@ -542,6 +537,10 @@ export async function getDailyContext(params: {
       // Level vs normal = summed total clipped to the current expiry cycle (null
       // right after an expiry — not enough same-cycle sessions yet).
       optOILevel20d: optOILevelCycle,
+      // Futures: straight 20-day, deliberately NOT cycle-clipped. Total futures OI is
+      // roll-continuous (positions roll near→next), so it only dips ~10-13% at a
+      // monthly expiry vs options' ~60% strike-chain roll-off. Clipping would null the
+      // futures level for 5 sessions after every expiry for a <1% accuracy gain.
       futOILevel20d: oiLevel20('futOI'),
       optExpiryInWindow,
       optContractExpiry: optContractDataAvailable ? contractExpiry : null,

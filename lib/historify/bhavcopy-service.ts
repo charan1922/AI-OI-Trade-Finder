@@ -105,6 +105,83 @@ export async function ensureFutExpiryTable(): Promise<void> {
 }
 
 /**
+ * Per-(symbol, expiry, type, strike) OPTION close/OI table — the single traded
+ * strike's daily premium and OI, straight from the bhavcopy file. This is what the
+ * data-downloader's "option flow" read needs (premium + OI day-over-day), letting
+ * it work WITHOUT the per-trade Dhan download. Scoped at capture time to the strikes
+ * that actually appear in TF trades (~hundreds of keys), so the table stays small.
+ */
+export async function ensureOptionStrikeTable(): Promise<void> {
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS bhavcopy_option_strike (
+      date TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      expiry TEXT NOT NULL,
+      optionType TEXT NOT NULL,
+      strike REAL NOT NULL,
+      close REAL NOT NULL DEFAULT 0,
+      oi REAL NOT NULL DEFAULT 0,
+      volume REAL NOT NULL DEFAULT 0,
+      PRIMARY KEY (symbol, date, expiry, optionType, strike)
+    )
+  `);
+  await prisma.$executeRawUnsafe(
+    `CREATE INDEX IF NOT EXISTS idx_optstrike_lookup ON bhavcopy_option_strike (symbol, optionType, strike, expiry, date)`,
+  );
+}
+
+/**
+ * Daily close + OI for ONE option contract (symbol + expiry + type + strike),
+ * newest first — the bhavcopy-sourced premium/OI series the data-downloader's
+ * option-flow read consumes (replacing the Dhan single-strike candles).
+ */
+export async function getStrikeDailySeries(
+  symbol: string,
+  optionType: string,
+  strike: number,
+  expiry: string,
+  onOrBefore: string,
+  limit: number,
+): Promise<{ date: string; close: number; oi: number }[]> {
+  await ensureOptionStrikeTable();
+  const rows = await prisma.$queryRawUnsafe<{ date: string; close: number; oi: number }[]>(
+    `SELECT date, close, oi FROM bhavcopy_option_strike
+     WHERE symbol = ? AND optionType = ? AND strike = ? AND expiry = ? AND date <= ?
+     ORDER BY date DESC LIMIT ?`,
+    symbol,
+    optionType,
+    strike,
+    expiry,
+    onOrBefore,
+    limit,
+  );
+  return rows.map((r) => ({ date: r.date, close: Number(r.close), oi: Number(r.oi) }));
+}
+
+/**
+ * `${symbol}|${optionType}|${strike}` → set of dates we have a bhavcopy strike row
+ * for. Used by the data-downloader status check so a trade's option leg counts as
+ * present when bhavcopy covers the traded strike (no Dhan download required).
+ */
+export async function getStrikeDateMap(): Promise<Map<string, Set<string>>> {
+  await ensureOptionStrikeTable();
+  const rows = await prisma.$queryRawUnsafe<{ symbol: string; optionType: string; strike: number; date: string }[]>(
+    `SELECT DISTINCT symbol, optionType, strike, date FROM bhavcopy_option_strike`,
+  );
+  const map = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const k = `${r.symbol}|${r.optionType}|${r.strike}`;
+    let s = map.get(k);
+    if (!s) {
+      s = new Set();
+      map.set(k, s);
+    }
+    s.add(r.date);
+  }
+  return map;
+}
+
+/**
  * Daily option OI/volume for ONE contract (symbol + expiry month), newest first.
  * This is a single contract's life — it builds steadily and only resets on its
  * OWN expiry, so a level-vs-average over it never mixes contract cycles.
@@ -133,12 +210,18 @@ export async function getOptionExpiryOISeries(
  */
 export async function syncBhavcopy(
   days = 25,
+  opts: { wantedStrikes?: Set<string> } = {},
 ): Promise<{ dates: number; rows: number; skipped: string[]; elapsed: string }> {
   const startMs = Date.now();
+  // Capture single-strike option close/OI ONLY for these strikes (the data-downloader
+  // passes its TF-traded strikes). Undefined for generic syncs → no per-strike work,
+  // so other callers (e.g. backtest download) are unaffected.
+  const wantedStrikes = opts.wantedStrikes && opts.wantedStrikes.size > 0 ? opts.wantedStrikes : undefined;
 
   await ensureOptionExpiryTable();
   await ensureFutExpiryTable();
   await addColumnIfMissing('bhavcopy_days', 'eqLastPrice');
+  if (wantedStrikes) await ensureOptionStrikeTable();
   const candidateDates = getWeekdayDates(days + 10);
   const existingDays = new Set(
     (await prisma.bhavcopyDay.findMany({ select: { date: true }, distinct: ['date'] })).map((r) => r.date),
@@ -154,6 +237,14 @@ export async function syncBhavcopy(
       )
     ).map((r) => r.date),
   );
+  // Dates that already have per-strike option rows (only relevant when capturing).
+  const existingStrike = wantedStrikes
+    ? new Set(
+        (await prisma.$queryRawUnsafe<{ date: string }[]>(`SELECT DISTINCT date FROM bhavcopy_option_strike`)).map(
+          (r) => r.date,
+        ),
+      )
+    : new Set<string>();
   // A date "has" per-expiry data only once its lot column is populated (lotSize>0).
   // Rows imported before lotSize existed report 0 here, so they get re-fetched and
   // upserted with the real board lot — the contracts math needs the per-expiry lot.
@@ -176,7 +267,13 @@ export async function syncBhavcopy(
   // re-download F&O for those — equity/MTO are skipped since they're present).
   const needDates = candidateDates.filter((d) => {
     const k = formatDate(d);
-    return !existingDays.has(k) || !existingExpiry.has(k) || !existingFutExpiry.has(k) || !existingLastPrice.has(k);
+    return (
+      !existingDays.has(k) ||
+      !existingExpiry.has(k) ||
+      !existingFutExpiry.has(k) ||
+      !existingLastPrice.has(k) ||
+      (wantedStrikes !== undefined && !existingStrike.has(k))
+    );
   });
 
   let totalRows = 0;
@@ -203,8 +300,9 @@ export async function syncBhavcopy(
       `[Bhavcopy] ${dateKey} (days=${needDays}, optExpiry=${needExpiry}, futExpiry=${needFutExpiry}, lastPx=${needLastPrice})...`,
     );
 
+    const needStrike = wantedStrikes !== undefined && !existingStrike.has(dateKey);
     const [fno, eqData, mtoData] = await Promise.all([
-      fetchFnOBhavcopy(date, nseCookie),
+      fetchFnOBhavcopy(date, nseCookie, needStrike ? wantedStrikes : undefined),
       needDays || needLastPrice ? fetchEquityBhavcopy(date, nseCookie) : Promise.resolve(new Map<string, EqData>()),
       needDays ? fetchMTODeliveryData(date, nseCookie) : Promise.resolve(new Map<string, MTOData>()),
     ]);
@@ -291,6 +389,23 @@ export async function syncBhavcopy(
       }
       touched = true;
       console.log(`[Bhavcopy] ${dateKey} — ${futRows.length} futures contract-months (fut_expiry)`);
+    }
+
+    // bhavcopy_option_strike — single-strike close/OI for the TF-traded strikes only.
+    if (needStrike && fno.byStrike.size > 0) {
+      const stRows = [...fno.byStrike.values()].map(
+        (s) =>
+          `('${dateKey}', '${esc(s.symbol)}', '${esc(s.expiry)}', '${esc(s.optionType)}', ${s.strike}, ${s.close}, ${s.oi}, ${s.volume})`,
+      );
+      const CHUNK = 200;
+      for (let i = 0; i < stRows.length; i += CHUNK) {
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO bhavcopy_option_strike (date, symbol, expiry, optionType, strike, close, oi, volume) VALUES ${stRows.slice(i, i + CHUNK).join(',')}
+           ON CONFLICT(symbol, date, expiry, optionType, strike) DO UPDATE SET close=excluded.close, oi=excluded.oi, volume=excluded.volume`,
+        );
+      }
+      touched = true;
+      console.log(`[Bhavcopy] ${dateKey} — ${stRows.length} traded-strike option rows (option_strike)`);
     }
 
     if (touched) datesAdded++;
@@ -518,23 +633,39 @@ interface FutExpiryAgg {
   lot: number; // NewBrdLotQty — that contract's board lot, straight from the file
 }
 
+/** Single option contract's close/OI — captured ONLY for strikes the caller asks
+ *  for (wantedStrikes), so the data-downloader's option-flow read has the traded
+ *  strike's premium + OI without a Dhan download. */
+interface OptionStrikeAgg {
+  symbol: string;
+  expiry: string;
+  optionType: string;
+  strike: number;
+  close: number;
+  oi: number;
+  volume: number;
+}
+
 async function fetchFnOBhavcopy(
   date: Date,
   cookie = '',
+  wantedStrikes?: Set<string>,
 ): Promise<{
   bySymbol: Map<string, FnOData>;
   byExpiry: Map<string, OptionExpiryAgg>;
   byExpiryFut: Map<string, FutExpiryAgg>;
+  byStrike: Map<string, OptionStrikeAgg>;
 }> {
   const dateStr = formatDateForUrl(date);
   const url = `${NSE_BASE}/fo/BhavCopy_NSE_FO_0_0_0_${dateStr}_F_0000.csv.zip`;
   const csv = await downloadAndExtractZip(url, cookie);
-  if (!csv) return { bySymbol: new Map(), byExpiry: new Map(), byExpiryFut: new Map() };
+  if (!csv) return { bySymbol: new Map(), byExpiry: new Map(), byExpiryFut: new Map(), byStrike: new Map() };
 
   const rows = parseCSV(csv);
   const result = new Map<string, FnOData>();
   const byExpiry = new Map<string, OptionExpiryAgg>();
   const byExpiryFut = new Map<string, FutExpiryAgg>();
+  const byStrike = new Map<string, OptionStrikeAgg>();
   const futuresRows = new Map<string, { expiry: string; row: Record<string, string> }[]>();
   const optionsRows: Record<string, string>[] = [];
 
@@ -624,6 +755,21 @@ async function fetchFnOBhavcopy(
       } else {
         byExpiry.set(k, { symbol, expiry, opt_oi: oi, opt_volume: vol, lot });
       }
+
+      // Single-strike close/OI — ONLY for strikes the caller asked for (TF-traded
+      // strikes). One STO row = one strike+expiry+type, so capture directly.
+      const strike = Number.parseFloat(row.StrkPric) || 0;
+      if (wantedStrikes?.has(`${symbol}|${optType}|${strike}`)) {
+        byStrike.set(`${symbol}|${expiry}|${optType}|${strike}`, {
+          symbol,
+          expiry,
+          optionType: optType,
+          strike,
+          close: Number.parseFloat(row.ClsPric) || 0,
+          oi,
+          volume: vol,
+        });
+      }
     }
 
     const existing = result.get(symbol);
@@ -658,7 +804,7 @@ async function fetchFnOBhavcopy(
     }
   }
 
-  return { bySymbol: result, byExpiry, byExpiryFut };
+  return { bySymbol: result, byExpiry, byExpiryFut, byStrike };
 }
 
 async function fetchEquityBhavcopy(date: Date, cookie = ''): Promise<Map<string, EqData>> {
