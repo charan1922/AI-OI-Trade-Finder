@@ -1,22 +1,24 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/db';
 import { todayIST } from '@/lib/dhan/market-feed';
-import { type Candle, deriveSessionContext, getIntradayCandles } from '@/lib/signals/intraday-candles';
-import { fetchAndStoreCandles } from '../_lib/morning-candles';
+import { getFyersCandles, type StoredFyersBar } from '@/lib/fyers/candle-store';
+import { addToUniverse } from '@/lib/fyers/symbols';
+import { deriveSessionContext } from '@/lib/signals/session-context';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /**
- * GET /api/live/candles?symbol=RELIANCE[&date=YYYY-MM-DD][&refresh=1]
+ * GET /api/live/candles?symbol=RELIANCE[&instrument=EQ|FUT]
  *
- * Returns a stock's persisted 5-min intraday candle series — the low-latency,
+ * Returns a stock's 5-min intraday candle series for TODAY — the low-latency,
  * any-time access point for the R-Factor, a chart, or an AI agent / loop engine.
  *
- * Reads are served from the `intraday_candles` store (instant). For TODAY, if the
- * store is empty (or `refresh=1` is passed) it backfills once from Dhan, persists,
- * and serves. Past dates are served from the store only (Dhan intraday is today-
- * scoped). Never fabricates bars — an empty series means we genuinely have none.
+ * Served from the `fyers_candles` store, which the autonomous Fyers poller
+ * fills full-day every 5 minutes (today only — the store clears at day change,
+ * so there is no past-date access). FUT rows carry live open interest per
+ * bucket. A symbol not yet tracked is enrolled into the download universe here
+ * and its full-day series appears within one 5-min cycle. Never fabricates
+ * bars — an empty series means we genuinely have none (yet).
  */
 export async function GET(req: Request) {
   try {
@@ -25,32 +27,28 @@ export async function GET(req: Request) {
     if (!symbol) {
       return NextResponse.json({ success: false, error: 'symbol is required' }, { status: 400 });
     }
-    const date = url.searchParams.get('date') ?? todayIST();
-    const refresh = url.searchParams.get('refresh') === '1';
-    const isToday = date === todayIST();
-
-    let candles: Candle[] = await getIntradayCandles(symbol, date);
-
-    // Backfill from Dhan only for today, and only when needed (empty or forced) —
-    // keeps reads instant by default, fetches just once on a cold symbol.
-    if (isToday && (refresh || candles.length === 0)) {
-      const eq = await prisma.masterContract.findFirst({
-        where: { symbol, segment: 'NSE_EQ' },
-        select: { securityId: true },
-      });
-      if (eq?.securityId) {
-        const fetched = await fetchAndStoreCandles(symbol, Number(eq.securityId));
-        if (fetched.length > 0) candles = fetched;
-      }
+    const instParam = (url.searchParams.get('instrument') ?? 'EQ').trim().toUpperCase();
+    if (instParam !== 'EQ' && instParam !== 'FUT') {
+      return NextResponse.json({ success: false, error: "instrument must be 'EQ' or 'FUT'" }, { status: 400 });
     }
+
+    const date = todayIST();
+    const candles: StoredFyersBar[] = await getFyersCandles(symbol, date, instParam);
+
+    // Cold symbol → enroll it; the next Fyers cycle backfills its full day.
+    if (candles.length === 0) await addToUniverse([symbol], date);
 
     return NextResponse.json({
       success: true,
       symbol,
+      instrument: instParam,
       date,
       count: candles.length,
       candles,
       sessionContext: deriveSessionContext(candles),
+      ...(candles.length === 0 && {
+        note: 'No bars yet — symbol enrolled in the Fyers download universe; series backfills within one 5-min cycle.',
+      }),
     });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });

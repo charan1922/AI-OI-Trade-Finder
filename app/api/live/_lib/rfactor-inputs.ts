@@ -22,7 +22,7 @@
  */
 
 import type { RFactorInput } from '@/lib/r-factor';
-import type { SessionContext } from '@/lib/signals/intraday-candles';
+import type { SessionContext } from '@/lib/signals/session-context';
 import type { RFactorBaseline } from './rfactor-baselines';
 
 /** NSE cash session: 09:15–15:30 IST = 375 minutes. */

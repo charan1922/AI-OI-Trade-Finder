@@ -43,17 +43,36 @@ async function fetchFeedSymbols(feed: 'gainers' | 'losers'): Promise<string[]> {
   }
 }
 
-/**
- * Today's tracked universe: reseed from DB on day change, then merge the
- * current movers FOSec lists. Only ever grows within a day.
- */
-export async function getTrackedUniverse(today: string): Promise<string[]> {
+/** Day-scoped universe set, reseeded from today's recorded rows on day change. */
+async function ensureUniverse(today: string): Promise<Set<string>> {
   if (!g.__fyersUniverse || g.__fyersUniverse.date !== today) {
     const seeded = await getRecordedSymbols(today);
     g.__fyersUniverse = { date: today, symbols: new Set(seeded) };
     if (seeded.length > 0) console.log(`${TAG} Reseeded universe from DB: ${seeded.length} symbols`);
   }
-  const universe = g.__fyersUniverse.symbols;
+  return g.__fyersUniverse.symbols;
+}
+
+/**
+ * Enroll extra symbols (e.g. the /live watchlist) into today's download
+ * universe — the next 5-min cycle backfills them full-day. Fire-and-forget
+ * friendly: never throws.
+ */
+export async function addToUniverse(symbols: string[], today: string): Promise<void> {
+  try {
+    const universe = await ensureUniverse(today);
+    for (const s of symbols) if (s) universe.add(s.toUpperCase());
+  } catch (err) {
+    console.warn(`${TAG} addToUniverse failed: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Today's tracked universe: reseed from DB on day change, then merge the
+ * current movers FOSec lists. Only ever grows within a day.
+ */
+export async function getTrackedUniverse(today: string): Promise<string[]> {
+  const universe = await ensureUniverse(today);
 
   const [gainers, losers] = [await fetchFeedSymbols('gainers'), await fetchFeedSymbols('losers')];
   const fresh = [...gainers, ...losers].filter((s) => !universe.has(s));

@@ -3,7 +3,7 @@ import type { LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { computeRFactor } from '@/lib/r-factor';
-import { upsertLiveBars } from '@/lib/signals/intraday-candles';
+import { addToUniverse } from '@/lib/fyers/symbols';
 import { computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
 import { classifyFno, excludeReasonLabel, loadFnoUniverse } from '../_lib/fno-universe';
 import { ensureMorningContext, getMorningContext } from '../_lib/morning-candles';
@@ -177,21 +177,23 @@ export async function POST(req: Request) {
       };
     });
 
+    // Enroll the whole watchlist in the Fyers download universe (fire-and-forget):
+    // fyers_candles is the candle source now, and the next 5-min Fyers cycle
+    // backfills any newly-seen symbol's full-day series.
+    void addToUniverse(allowed, today);
+
     // Warm the morning-candle context (opening-range breakout reference) for ONLY
     // the top-N names by R-Factor — a fixed cost regardless of how many stocks are
-    // displayed. The rest keep using prior-day high/low. Fire-and-forget on a
-    // rate-limited background chain; the opening range populates over the next poll
-    // or two (R-Factor never blocks on candles). ensureMorningContext de-dupes
-    // across sections (shared per-day cache) and no-ops when fresh/in-flight.
+    // displayed. The rest keep using prior-day high/low. Fire-and-forget; the
+    // opening range populates once the Fyers poller has recorded the symbol
+    // (R-Factor never blocks on candles). ensureMorningContext de-dupes across
+    // sections (shared per-day cache) and no-ops when fresh/in-flight.
     const WARM_TOP_N = 12;
     [...rows]
       .filter((r) => r.rFactor != null)
       .sort((a, b) => (b.rFactor ?? 0) - (a.rFactor ?? 0))
       .slice(0, WARM_TOP_N)
-      .forEach((r) => {
-        const eqId = eqMap.get(r.symbol);
-        if (eqId) ensureMorningContext(r.symbol, Number(eqId));
-      });
+      .forEach((r) => ensureMorningContext(r.symbol));
 
     // Persist this poll into the per-day OI series, then derive intraday urgency
     // (rate of OI build) from the trailing points. Best-effort: a storage hiccup
@@ -223,19 +225,6 @@ export async function POST(req: Request) {
       }
     } catch (e) {
       console.warn('[live/quote] intraday OI capture failed:', (e as Error).message);
-    }
-
-    // Fold this poll's prices into the live 5-min candle store (one batched UPSERT).
-    // Reuses the LTPs we already have — zero extra Dhan calls — keeping each watched
-    // stock's current bar fresh to ~the poll interval. Best-effort, like OI capture.
-    try {
-      await upsertLiveBars(
-        today,
-        rows.map((r) => ({ symbol: r.symbol, price: r.ltp ?? 0 })),
-        now.getTime(),
-      );
-    } catch (e) {
-      console.warn('[live/quote] candle aggregation failed:', (e as Error).message);
     }
 
     return NextResponse.json({

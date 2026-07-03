@@ -1,6 +1,6 @@
 'use client';
 
-import { Activity, Download, Loader2, Pause, Play, RefreshCw, Radio } from 'lucide-react';
+import { Activity, Download, KeyRound, Loader2, Pause, Play, RefreshCw, Radio } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 /** Mirror of lib/fyers/poller.ts CycleSummary / PollerStatus (API response shapes). */
@@ -139,6 +139,23 @@ export default function FyersPage() {
     [refresh],
   );
 
+  // Force a fresh access token (clears cache, re-runs the TOTP login chain).
+  // Daily regeneration is automatic — this is for on-demand recovery/inspection.
+  const regenToken = useCallback(async () => {
+    setActing('token');
+    try {
+      const res = await fetch('/api/fyers/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const j = (await res.json()) as { success: boolean; error?: string };
+      if (!j.success) setError(j.error ?? 'Token generation failed');
+      else setError(null);
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setActing(null);
+    }
+  }, [refresh]);
+
   const last = status?.lastCycle;
 
   return (
@@ -174,6 +191,16 @@ export default function FyersPage() {
           >
             {acting === 'run-once' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
             Run once
+          </button>
+          <button
+            type="button"
+            onClick={() => void regenToken()}
+            disabled={!!acting || !status?.credentialsConfigured}
+            title="Force a fresh Fyers access token via the TOTP login chain (daily regeneration is automatic)"
+            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
+          >
+            {acting === 'token' ? <Loader2 className="h-3 w-3 animate-spin" /> : <KeyRound className="h-3 w-3" />}
+            New token
           </button>
           <button
             type="button"
