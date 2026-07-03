@@ -1,7 +1,7 @@
 'use client';
 
-import { Activity, Download, KeyRound, Loader2, Pause, Play, RefreshCw, Radio } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { Activity, ChevronDown, ChevronRight, Download, KeyRound, Loader2, Pause, Play, RefreshCw, Radio } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 /** Mirror of lib/fyers/poller.ts CycleSummary / PollerStatus (API response shapes). */
 interface CycleError {
@@ -82,10 +82,33 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** One coverage line per symbol: EQ + FUT merged (OI exists only on futures). */
+interface MergedCoverage {
+  symbol: string;
+  eqBars: number;
+  futBars: number;
+  lastBucketTs: number;
+  lastOi: number;
+}
+
+function mergeCoverage(rows: CoverageRow[]): MergedCoverage[] {
+  const bySymbol = new Map<string, MergedCoverage>();
+  for (const r of rows) {
+    const m = bySymbol.get(r.symbol) ?? { symbol: r.symbol, eqBars: 0, futBars: 0, lastBucketTs: 0, lastOi: 0 };
+    if (r.instrument === 'EQ') m.eqBars = r.bars;
+    else m.futBars = r.bars;
+    m.lastBucketTs = Math.max(m.lastBucketTs, r.lastBucketTs);
+    m.lastOi = Math.max(m.lastOi, r.lastOi);
+    bySymbol.set(r.symbol, m);
+  }
+  return [...bySymbol.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
 export default function FyersPage() {
   const [status, setStatus] = useState<PollerStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState<string | null>(null);
+  const [universeOpen, setUniverseOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -157,6 +180,10 @@ export default function FyersPage() {
   }, [refresh]);
 
   const last = status?.lastCycle;
+  const merged = useMemo(() => mergeCoverage(status?.coverage ?? []), [status?.coverage]);
+  // Freshest stored bar across all symbols — proves data exists even right after
+  // a server restart, when the in-memory cycle counter reads zero.
+  const latestStoredTs = useMemo(() => Math.max(0, ...merged.map((m) => m.lastBucketTs)), [merged]);
 
   return (
     <div className="mx-auto max-w-5xl space-y-3 p-3">
@@ -232,7 +259,11 @@ export default function FyersPage() {
               </span>
             </h2>
             {!last ? (
-              <div className="px-1 py-2 text-[11px] text-muted-foreground">No cycle has run yet.</div>
+              <div className="px-1 py-2 text-[11px] text-muted-foreground">
+                {latestStoredTs > 0
+                  ? `No cycle since the server started — today's data through ${fmtBucket(latestStoredTs)} IST is already stored and the next tick continues from there.`
+                  : 'No cycle has run yet.'}
+              </div>
             ) : (
               <>
                 <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
@@ -272,41 +303,53 @@ export default function FyersPage() {
           </div>
 
           <div className="rounded-lg border border-border bg-card p-2.5">
-            <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide">
+            <button
+              type="button"
+              onClick={() => setUniverseOpen((o) => !o)}
+              className="flex w-full items-center gap-1.5 text-left text-[11px] font-semibold uppercase tracking-wide"
+            >
+              {universeOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               Tracked universe
-              <span className="ml-2 font-normal normal-case text-muted-foreground">
+              <span className="font-normal normal-case text-muted-foreground">
                 {status.universe ? `${status.universe.symbols.length} symbols · ${status.universe.date}` : 'not built yet'}
               </span>
-            </h2>
-            <div className="flex flex-wrap gap-1">
-              {(status.universe?.symbols ?? []).map((s) => (
-                <span key={s} className="rounded bg-accent px-1.5 py-0.5 font-mono text-[10px]">
-                  {s}
-                </span>
-              ))}
-            </div>
+            </button>
+            {universeOpen && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {(status.universe?.symbols ?? []).map((s) => (
+                  <span key={s} className="rounded bg-accent px-1.5 py-0.5 font-mono text-[10px]">
+                    {s}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
-          {status.coverage && status.coverage.length > 0 && (
+          {merged.length > 0 && (
             <div className="rounded-lg border border-border bg-card p-2.5">
-              <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide">Today&apos;s coverage</h2>
+              <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide">
+                Today&apos;s coverage
+                <span className="ml-2 font-normal normal-case text-muted-foreground">
+                  {merged.length} symbols · OI is a futures-contract metric (equities have none)
+                </span>
+              </h2>
               <div className="max-h-80 overflow-y-auto">
                 <table className="w-full text-[10px]">
                   <thead className="sticky top-0 bg-card text-left text-muted-foreground">
                     <tr>
                       <th className="px-1.5 py-1 font-medium">Symbol</th>
-                      <th className="px-1.5 py-1 font-medium">Inst</th>
-                      <th className="px-1.5 py-1 text-right font-medium">Bars</th>
+                      <th className="px-1.5 py-1 text-right font-medium">EQ bars</th>
+                      <th className="px-1.5 py-1 text-right font-medium">FUT bars</th>
                       <th className="px-1.5 py-1 text-right font-medium">Last bar (IST)</th>
-                      <th className="px-1.5 py-1 text-right font-medium">Last OI</th>
+                      <th className="px-1.5 py-1 text-right font-medium">Fut OI (latest)</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {status.coverage.map((r) => (
-                      <tr key={`${r.symbol}-${r.instrument}`} className="border-b border-border/30">
+                    {merged.map((r) => (
+                      <tr key={r.symbol} className="border-b border-border/30">
                         <td className="px-1.5 py-0.5 font-mono font-medium">{r.symbol}</td>
-                        <td className="px-1.5 py-0.5">{r.instrument}</td>
-                        <td className="px-1.5 py-0.5 text-right tabular-nums">{r.bars}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">{r.eqBars}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">{r.futBars}</td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">{fmtBucket(r.lastBucketTs)}</td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">
                           {r.lastOi > 0 ? r.lastOi.toLocaleString('en-IN') : '—'}

@@ -20,7 +20,6 @@ NSE has **no published rate limit** for these `/api/*` endpoints; it enforces an
 | `/api/live-analysis-variations?index=gainers\|loosers` | top ~20 per group (`allSec`, `FOSec`, `NIFTY`…) — `ltp`, `perChange`, `turnover` | Movers — Gainers/Losers |
 | `/api/live-analysis-most-active-securities?index=value\|volume` | top 20 — `pChange`, `totalTradedValue` (₹), OHLC | Movers — Most Active |
 | `/api/live-analysis-oi-spurts-underlyings` | **all 216 F&O underlyings** — OI change %, fut/opt value, underlying price | Movers — F&O OI Build-up |
-| `/api/live-analysis-data-52weekhighstock` | ~126 stocks at a 52-wk high | Movers — 52-Week Highs |
 
 ### Working but intraday-only (NOT wired yet)
 | Endpoint | Returns | Note |
