@@ -204,8 +204,9 @@ model OiIntraday {
   @@map("oi_intraday")
 }
 
-/// Fyers live 5-min candles (equity + current-month stock future) for the F&O
-/// movers universe, accumulated per day (created at runtime via raw SQL in
+/// Fyers live 5-min candles (equity + current-month stock future) for the
+/// tradeable F&O universe — all non-index, non-'avoid'-band fno_stocks names
+/// plus explicit enrollments (created at runtime via raw SQL in
 /// lib/fyers/candle-store.ts; declared here so `db push` keeps it). Only
 /// today's rows are retained (pruned each poller cycle). `oi` is live futures
 /// OI attached to the bucket that was current at sample time (FUT rows only,

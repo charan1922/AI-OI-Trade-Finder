@@ -1,15 +1,12 @@
 /**
  * Fyers downloader universe + symbol mapping.
  *
- * Universe = F&O stocks on the /nse/movers page — the NSE variations feed's
- * FOSec group from gainers + losers (~20 each), fetched through the shared 30s
- * pulse cache so this module never adds NSE load on top of the movers page.
- *
- * The universe ACCUMULATES for the trading day: once a symbol makes the movers
- * list it stays tracked until the IST date changes (its candle series must not
- * stop just because it slipped off the top-20). A restart mid-day reseeds from
- * the rows already written to fyers_candles, so nothing is lost. NSE feed
- * failures never shrink the set — they just skip that cycle's refresh.
+ * Universe = ALL tradeable F&O stocks: every `fno_stocks` row that isn't an
+ * index and isn't in the 'avoid' trade band (the bands shown on /fno-lots) —
+ * ~167 names. Seeded once per IST day from the DB; symbols recorded earlier
+ * today (e.g. explicit enrollments via addToUniverse) are kept on restart.
+ * ~167 × 3 calls ≈ 175s per cycle at the 350ms gate — inside the 5-min window
+ * and ~38k calls/day against Fyers' 100k cap.
  *
  * Fyers symbol formats: equity "NSE:RELIANCE-EQ"; current-month stock future
  * "NSE:RELIANCE26JULFUT", with the expiry month resolved from master_contracts
@@ -19,36 +16,32 @@
 
 import { prisma } from '@/lib/db';
 import { getRecordedSymbols } from '@/lib/fyers/candle-store';
-import type { MoverStock } from '@/lib/nse/pulse';
-import { getPulseFeed } from '@/lib/nse/pulse-cache';
 
 const TAG = '[FyersSymbols]';
 const MONTH_CODES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
-type MoversFeed = Record<string, MoverStock[]>;
+/** Bump when the seeding source changes — invalidates the day cache across hot reloads. */
+const SEED_VERSION = 2;
 
 const g = globalThis as unknown as {
-  __fyersUniverse?: { date: string; symbols: Set<string> };
+  __fyersUniverse?: { date: string; seedVersion?: number; symbols: Set<string> };
   __fyersFutCache?: { date: string; map: Map<string, string | null> };
 };
 
-/** FOSec symbols from one movers feed; [] on failure (caller keeps the accumulated set). */
-async function fetchFeedSymbols(feed: 'gainers' | 'losers'): Promise<string[]> {
-  try {
-    const res = await getPulseFeed<MoversFeed>(feed);
-    return (res.data.FOSec ?? []).map((s) => s.symbol).filter(Boolean);
-  } catch (err) {
-    console.warn(`${TAG} ${feed} feed unavailable: ${(err as Error).message}`);
-    return [];
-  }
+/** All non-index, non-'avoid' F&O underlyings — the tradeable universe on /fno-lots. */
+async function loadFnoUniverseSymbols(): Promise<string[]> {
+  const rows = await prisma.$queryRawUnsafe<{ symbol: string }[]>(
+    `SELECT symbol FROM fno_stocks WHERE isIndex = 0 AND tradeBand != 'avoid'`,
+  );
+  return rows.map((r) => r.symbol).filter(Boolean);
 }
 
-/** Day-scoped universe set, reseeded from today's recorded rows on day change. */
+/** Day-scoped universe set: all tradeable F&O names + today's recorded extras. */
 async function ensureUniverse(today: string): Promise<Set<string>> {
-  if (!g.__fyersUniverse || g.__fyersUniverse.date !== today) {
-    const seeded = await getRecordedSymbols(today);
-    g.__fyersUniverse = { date: today, symbols: new Set(seeded) };
-    if (seeded.length > 0) console.log(`${TAG} Reseeded universe from DB: ${seeded.length} symbols`);
+  if (!g.__fyersUniverse || g.__fyersUniverse.date !== today || g.__fyersUniverse.seedVersion !== SEED_VERSION) {
+    const [fno, recorded] = [await loadFnoUniverseSymbols(), await getRecordedSymbols(today)];
+    g.__fyersUniverse = { date: today, seedVersion: SEED_VERSION, symbols: new Set([...fno, ...recorded]) };
+    console.log(`${TAG} Universe seeded: ${fno.length} F&O names + ${recorded.length} recorded today`);
   }
   return g.__fyersUniverse.symbols;
 }
@@ -67,21 +60,9 @@ export async function addToUniverse(symbols: string[], today: string): Promise<v
   }
 }
 
-/**
- * Today's tracked universe: reseed from DB on day change, then merge the
- * current movers FOSec lists. Only ever grows within a day.
- */
+/** Today's tracked universe (seeded once per day; grows only via addToUniverse). */
 export async function getTrackedUniverse(today: string): Promise<string[]> {
-  const universe = await ensureUniverse(today);
-
-  const [gainers, losers] = [await fetchFeedSymbols('gainers'), await fetchFeedSymbols('losers')];
-  const fresh = [...gainers, ...losers].filter((s) => !universe.has(s));
-  for (const s of fresh) universe.add(s);
-  if (gainers.length === 0 && losers.length === 0) {
-    console.warn(`${TAG} universe-refresh-failed — continuing with ${universe.size} accumulated symbols`);
-  }
-
-  return [...universe].sort();
+  return [...(await ensureUniverse(today))].sort();
 }
 
 /** Current accumulated universe without refreshing it (status page / poller). */

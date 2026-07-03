@@ -7,7 +7,6 @@
  *   /api/marketStatus                                  → open/closed, GIFT Nifty, mkt cap
  *   /api/live-analysis-variations?index=gainers|loosers→ top movers by group (FOSec, NIFTY…)
  *   /api/live-analysis-most-active-securities?index=…  → most active by value / volume
- *   /api/live-analysis-data-52weekhighstock            → stocks at a 52-week high
  *   /api/live-analysis-oi-spurts-underlyings           → F&O OI build-up (216 underlyings)
  */
 
@@ -37,13 +36,6 @@ export interface ActiveStock {
   pctChange: number;
   tradedValue: number; // ₹
   volume: number;
-}
-
-export interface WeekHighStock {
-  symbol: string;
-  company: string;
-  ltp: number;
-  pctChange: number;
 }
 
 export interface OiStock {
@@ -144,16 +136,6 @@ export async function fetchMostActiveVolume(): Promise<ActiveStock[]> {
   return mapActive(json);
 }
 
-export async function fetchWeek52High(): Promise<WeekHighStock[]> {
-  const json = await nseApiGet<{ data?: Record<string, unknown>[] }>('/api/live-analysis-data-52weekhighstock');
-  return (json.data ?? []).map((d) => ({
-    symbol: String(d.symbol ?? ''),
-    company: String(d.comapnyName ?? ''), // NSE's field is misspelled
-    ltp: num(d.ltp),
-    pctChange: num(d.pChange),
-  }));
-}
-
 export async function fetchOiSpurts(): Promise<OiStock[]> {
   const json = await nseApiGet<{ data?: Record<string, unknown>[] }>('/api/live-analysis-oi-spurts-underlyings');
   return (json.data ?? [])
@@ -179,7 +161,6 @@ export const FEED_FETCHERS = {
   losers: fetchLosers,
   mostActiveValue: fetchMostActiveValue,
   mostActiveVolume: fetchMostActiveVolume,
-  week52High: fetchWeek52High,
   oiSpurts: fetchOiSpurts,
 } as const;
 

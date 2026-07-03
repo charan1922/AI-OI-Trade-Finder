@@ -7,7 +7,7 @@
  * market hours (9:15–15:30 IST weekdays) and on NSE holidays a tick records a
  * skip and goes back to sleep — the loop itself never stops.
  *
- * Each cycle, per tracked symbol (movers FOSec universe, accumulated all day):
+ * Each cycle, per tracked symbol (all non-'avoid' F&O stocks, ~167 names):
  *   1. equity full-day 5-min history  → upsert 'EQ' rows
  *   2. futures full-day 5-min history → upsert 'FUT' rows
  *   3. live futures OI via depth      → attach to the current 'FUT' bucket

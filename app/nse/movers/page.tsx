@@ -8,7 +8,6 @@ import type {
   MarketStatus,
   MoverStock,
   OiStock,
-  WeekHighStock,
 } from '@/lib/nse/pulse';
 import { MarketStatusStrip } from '@/app/nse/_components/market-status-strip';
 import { fmtCr, fmtNum, fmtPct, pctClass } from '@/app/nse/_lib/heat';
@@ -221,9 +220,8 @@ export default function NseMoversPage() {
   const mvolFeed = useNseFeed<ActiveStock[]>('mostActiveVolume', pollMs, 3);
   const gainersFeed = useNseFeed<Record<string, MoverStock[]>>('gainers', pollMs, 4);
   const losersFeed = useNseFeed<Record<string, MoverStock[]>>('losers', pollMs, 5);
-  const highsFeed = useNseFeed<WeekHighStock[]>('week52High', pollMs, 6);
 
-  const allFeeds = [statusFeed, oiFeed, mavFeed, mvolFeed, gainersFeed, losersFeed, highsFeed];
+  const allFeeds = [statusFeed, oiFeed, mavFeed, mvolFeed, gainersFeed, losersFeed];
   const [refreshingAll, setRefreshingAll] = useState(false);
 
   const refreshAll = async () => {
@@ -244,7 +242,6 @@ export default function NseMoversPage() {
   const activeFeed = activeBy === 'value' ? mavFeed : mvolFeed;
   const active = activeFeed.data ?? [];
   const oi = oiFeed.data ?? [];
-  const highs = highsFeed.data ?? [];
   const oiBuildup = [...oi].sort((a, b) => b.changeInOiPct - a.changeInOiPct);
 
   const segCls = (on: boolean) =>
@@ -260,7 +257,7 @@ export default function NseMoversPage() {
         <h1 className="text-base font-bold text-foreground">NSE Market Movers</h1>
         <span
           className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"
-          title="Live market activity from NSE's public feeds — OI build-up, most active, gainers/losers, 52-week highs."
+          title="Live market activity from NSE's public feeds — OI build-up, most active, gainers/losers."
         >
           Official NSE
         </span>
@@ -352,21 +349,6 @@ export default function NseMoversPage() {
           </PanelBody>
         </Panel>
       </div>
-
-      {/* 4 — 52-week highs */}
-      <Panel
-        title={`52-Week Highs (${highs.length})`}
-        icon={<TrendingUp className="h-3.5 w-3.5 text-emerald-500" />}
-        feed={highsFeed}
-      >
-        <PanelBody loading={highsFeed.loading} error={highsFeed.error} empty={highs.length === 0}>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
-            {highs.slice(0, 30).map((s, i) => (
-              <Row key={s.symbol} i={i} symbol={s.symbol} value={fmtNum(s.ltp)} pct={s.pctChange} />
-            ))}
-          </div>
-        </PanelBody>
-      </Panel>
 
       <p className="text-[10px] text-muted-foreground">
         Live from NSE public feeds — no broker auth. Each panel refreshes on its own timer (every{' '}
