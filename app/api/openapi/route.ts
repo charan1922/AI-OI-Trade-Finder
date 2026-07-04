@@ -142,30 +142,6 @@ const spec = {
     },
 
     // ───────────────────────── Backtest ─────────────────────────
-    '/api/backtest/run': {
-      post: {
-        tags: ['Backtest'],
-        summary: 'Run the vectorbt backtest',
-        description: 'Prepares per-trade signal copies, runs the Python vectorbt engine, persists results, returns per-trade rows + summary.',
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  gateBasis: { type: 'string', enum: ['optOi', 'score'], default: 'optOi' },
-                  gateThreshold: { type: 'number', description: 'Default 1.1 (optOi) or 4 (score)' },
-                  profitTarget: { type: 'number', default: 5000 },
-                  download: { type: 'boolean', default: false },
-                },
-              },
-              example: { gateBasis: 'optOi', gateThreshold: 1.1, profitTarget: 5000, download: false },
-            },
-          },
-        },
-        responses: { '200': ok('{ runId, results, summary, prep }'), '500': errorResponse('Prepare or engine error') },
-      },
-    },
     '/api/backtest/download-stream': {
       post: {
         tags: ['Backtest'],
