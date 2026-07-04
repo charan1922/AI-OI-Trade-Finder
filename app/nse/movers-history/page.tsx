@@ -55,7 +55,7 @@ function Empty() {
 
 function Row({ i, symbol, value, pct }: { i: number; symbol: string; value: string; pct: number }) {
   return (
-    <div className="flex items-center gap-1.5 border-b border-border/30 px-2 py-[3px] text-[11px]">
+    <div className="flex items-center gap-1.5 break-inside-avoid border-b border-border/30 px-2 py-[3px] text-[11px]">
       <span className="w-4 shrink-0 text-right text-[9px] tabular-nums text-muted-foreground">{i + 1}</span>
       <span className="flex-1 truncate font-mono font-medium">{symbol}</span>
       <span className="tabular-nums text-muted-foreground">{value}</span>
@@ -214,7 +214,7 @@ export default function NseMoversHistoryPage() {
             {oiBuildup.length === 0 ? (
               <Empty />
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
+              <div className="columns-2 gap-0 sm:columns-3 lg:columns-4">
                 {oiBuildup.map((s, i) => (
                   <Row key={s.symbol} i={i} symbol={s.symbol} value={fmtNum(s.close)} pct={s.oiPct} />
                 ))}
@@ -240,7 +240,7 @@ export default function NseMoversHistoryPage() {
             {active.length === 0 ? (
               <Empty />
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
+              <div className="columns-2 gap-0 sm:columns-3 lg:columns-4">
                 {active.map((s, i) => (
                   <Row
                     key={s.symbol}
@@ -260,7 +260,7 @@ export default function NseMoversHistoryPage() {
               {gainers.length === 0 ? (
                 <Empty />
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2">
+                <div className="columns-1 gap-0 sm:columns-2">
                   {gainers.map((s, i) => (
                     <Row key={s.symbol} i={i} symbol={s.symbol} value={fmtNum(s.close)} pct={s.pctChange} />
                   ))}
@@ -272,7 +272,7 @@ export default function NseMoversHistoryPage() {
               {losers.length === 0 ? (
                 <Empty />
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2">
+                <div className="columns-1 gap-0 sm:columns-2">
                   {losers.map((s, i) => (
                     <Row key={s.symbol} i={i} symbol={s.symbol} value={fmtNum(s.close)} pct={s.pctChange} />
                   ))}
