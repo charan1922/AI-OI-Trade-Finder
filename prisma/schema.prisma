@@ -6,33 +6,6 @@ datasource db {
   provider = "sqlite"
 }
 
-model Watchlist {
-  id         Int      @id @default(autoincrement())
-  symbol     String
-  exchange   String   @default("NSE")
-  segment    String   @default("EQ")
-  securityId String?
-  addedAt    DateTime @default(now())
-
-  @@unique([symbol, exchange])
-  @@map("watchlist")
-}
-
-model Activity {
-  id        Int      @id @default(autoincrement())
-  symbol    String
-  exchange  String
-  interval  String
-  action    String
-  rowsCount Int      @default(0)
-  status    String
-  createdAt DateTime @default(now())
-
-  @@index([createdAt])
-  @@index([symbol])
-  @@map("activity")
-}
-
 model MasterContract {
   id         Int       @id @default(autoincrement())
   securityId String
@@ -287,49 +260,3 @@ model TradeSuggestion {
   @@map("trade_suggestions")
 }
 
-model OptionTrade {
-  id            Int      @id @default(autoincrement())
-  date          String
-  symbol        String
-  optionType    String
-  strikePrice   Float
-  expiryDate    String
-  securityId    String
-  entryPrice    Float
-  exitPrice     Float?
-  quantity      Int
-  lotSize       Int
-  spotAtEntry   Float
-  grossPnl      Float?
-  charges       Float?
-  netPnl        Float?
-  entryTime     String
-  exitTime      String?
-  exitReason    String?
-  rFactor       Float
-  adx           Float?
-  aiRationale   String
-  aiConfidence  Float
-  paperTrade    Boolean  @default(true)
-  orderId       String?
-  status        String   @default("OPEN")
-
-  @@index([date])
-  @@index([symbol])
-  @@map("option_trades")
-}
-
-model Settings {
-  id              Int     @id @default(1)
-  dhanClientId    String  @default("")
-  dhanAccessToken String  @default("")
-  batchSize       Int     @default(10)
-  rateLimitMs     Int     @default(250)
-  defaultRange    String  @default("30")
-  theme           String  @default("dark")
-  chartHeight     Int     @default(450)
-  autoRefresh     Boolean @default(true)
-  showTooltips    Boolean @default(true)
-
-  @@map("settings")
-}
