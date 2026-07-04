@@ -1,6 +1,17 @@
 'use client';
 
-import { CalendarDays, ChevronLeft, ChevronRight, Flame, Loader2, TrendingDown, TrendingUp } from 'lucide-react';
+import {
+  AlertTriangle,
+  CalendarDays,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Flame,
+  Loader2,
+  TrendingDown,
+  TrendingUp,
+} from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { fmtCr, fmtNum, fmtPct, pctClass } from '@/app/nse/_lib/heat';
 
@@ -20,6 +31,25 @@ interface HistResponse {
   prevDate?: string;
   count?: number;
   stocks?: HistStock[];
+  error?: string;
+}
+
+interface AuditRow {
+  symbol: string;
+  ourPct: number;
+  nsePct: number;
+  deltaPct: number;
+  flagged: boolean;
+}
+
+interface AuditResponse {
+  success: boolean;
+  compared?: number;
+  flaggedCount?: number;
+  threshold?: number;
+  feed?: { fetchedAt: number | null; stale: boolean; error: string | null };
+  note?: string;
+  flagged?: AuditRow[];
   error?: string;
 }
 
@@ -71,6 +101,17 @@ export default function NseMoversHistoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeBy, setActiveBy] = useState<'value' | 'volume'>('value');
+  const [audit, setAudit] = useState<AuditResponse | null>(null);
+  const [auditOpen, setAuditOpen] = useState(false);
+
+  // OI data-integrity check vs NSE's live feed (latest 2 sessions; independent of
+  // the date selector). Best-effort — silently ignored if the feed is unreachable.
+  useEffect(() => {
+    fetch('/api/nse/oi-audit?threshold=5')
+      .then((r) => r.json())
+      .then((d: AuditResponse) => d.success && setAudit(d))
+      .catch(() => {});
+  }, []);
 
   // Load the available session dates once, default to the latest.
   useEffect(() => {
@@ -182,6 +223,75 @@ export default function NseMoversHistoryPage() {
       <div className="rounded-lg border border-border bg-muted/30 px-3 py-1.5 text-[11px] text-muted-foreground">
         Close-to-close vs the prior session{data?.prevDate ? ` (${data.prevDate})` : ''} · {data?.count ?? 0} F&O stocks · official NSE bhavcopy, reconstructed (not the intraday snapshot).
       </div>
+
+      {/* OI data-integrity: our EOD OI% vs NSE's live oi-spurts feed. Only valid for
+          the latest session — NSE's live feed has no history, so it can't cross-check
+          older dates. Hidden when an earlier session is selected. */}
+      {audit && dates.length > 0 && date === dates[0] && (
+        <div
+          className={`rounded-lg border ${
+            audit.flaggedCount
+              ? 'border-amber-500/40 bg-amber-500/10'
+              : 'border-emerald-500/30 bg-emerald-500/5'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => audit.flaggedCount && setAuditOpen((o) => !o)}
+            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] ${
+              audit.flaggedCount ? 'cursor-pointer' : 'cursor-default'
+            }`}
+          >
+            {audit.flaggedCount ? (
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+            ) : (
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+            )}
+            <span className="font-medium text-foreground">
+              {audit.flaggedCount
+                ? `${audit.flaggedCount} OI divergence${audit.flaggedCount > 1 ? 's' : ''} vs NSE live feed`
+                : 'OI matches NSE live feed'}
+            </span>
+            <span className="text-muted-foreground">
+              · latest session · {audit.compared} stocks checked (±{audit.threshold}pt)
+              {audit.feed?.stale ? ' · NSE feed stale' : ''}
+            </span>
+            {audit.flaggedCount ? (
+              <ChevronDown
+                className={`ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${auditOpen ? 'rotate-180' : ''}`}
+              />
+            ) : null}
+          </button>
+          {auditOpen && audit.flagged && audit.flagged.length > 0 && (
+            <div className="border-t border-amber-500/20 px-3 py-2">
+              <div className="mb-1 grid grid-cols-[1fr_auto_auto_auto] gap-x-4 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <span>Symbol</span>
+                <span className="text-right">Ours (EOD)</span>
+                <span className="text-right">NSE live</span>
+                <span className="text-right">Δ</span>
+              </div>
+              {audit.flagged.map((r) => (
+                <div
+                  key={r.symbol}
+                  className="grid grid-cols-[1fr_auto_auto_auto] gap-x-4 border-b border-border/20 py-[3px] text-[11px] last:border-0"
+                >
+                  <span className="font-mono font-medium">{r.symbol}</span>
+                  <span className="text-right tabular-nums">{fmtPct(r.ourPct)}</span>
+                  <span className="text-right tabular-nums">{fmtPct(r.nsePct)}</span>
+                  <span className="text-right font-semibold tabular-nums text-amber-600 dark:text-amber-400">
+                    {fmtPct(r.deltaPct)}
+                  </span>
+                </div>
+              ))}
+              <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+                A divergence is usually a quirk in NSE&apos;s live feed, not our data — our EOD numbers are the official
+                bhavcopy, reconstructed. Verify a flagged stock against the bhavcopy file before treating it as an import
+                bug.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-600 dark:text-red-400">
