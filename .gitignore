@@ -39,3 +39,8 @@ next-env.d.ts
 data/.dhan-token.json
 data/.fyers-token.json
 data/project-r.db
+
+# python venv (notebooks/eda.ipynb — local-only, not committed)
+.venv/
+.ipynb_checkpoints/
+__pycache__/

@@ -137,6 +137,13 @@ export async function recordIntradayOi(
 const toNum = (v: unknown): number => Number(v ?? 0);
 const toNumOrNull = (v: unknown): number | null => (v == null ? null : Number(v));
 
+/** Most recent session date present in the table (rows persist across days). */
+export async function getLatestSnapshotDate(): Promise<string | null> {
+  await ensureOiIntradayTable();
+  const rows = await prisma.$queryRawUnsafe<{ d: string | null }[]>(`SELECT MAX(date) AS d FROM oi_intraday`);
+  return rows[0]?.d ?? null;
+}
+
 /** Read the full intraday series for one symbol on `date`, ascending by time. */
 export async function getIntradaySeries(symbol: string, date: string): Promise<OiPoint[]> {
   await ensureOiIntradayTable();

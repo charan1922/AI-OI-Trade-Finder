@@ -5,6 +5,7 @@ import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } f
 import { computeRFactor } from '@/lib/r-factor';
 import { addToUniverse } from '@/lib/fyers/symbols';
 import { computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
+import { buildClosingSnapshot } from '../_lib/closing-snapshot';
 import { classifyFno, excludeReasonLabel, loadFnoUniverse } from '../_lib/fno-universe';
 import { ensureMorningContext, getMorningContext } from '../_lib/morning-candles';
 import { buildLiveRFactorInput } from '../_lib/rfactor-inputs';
@@ -41,6 +42,12 @@ export async function POST(req: Request) {
     }
 
     if (!isMarketHours()) {
+      // Post-market: serve the last RECORDED state of the most recent session
+      // (oi_intraday + Fyers bars) so the page keeps showing that day's numbers
+      // until the next open. Falls back to the old empty response when nothing
+      // was recorded (e.g. fresh install).
+      const snap = await buildClosingSnapshot(symbols);
+      if (snap) return NextResponse.json(snap);
       return NextResponse.json({ success: true, marketOpen: false, rows: [], symbols });
     }
 

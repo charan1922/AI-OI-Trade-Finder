@@ -42,6 +42,7 @@ const spec = {
     { name: 'Backtest', description: 'Signal scan + vectorbt backtest over TradeFinder trades.' },
     { name: 'Market Data', description: 'NSE bhavcopy sync, trading calendar, F&O lot sizes.' },
     { name: 'Live', description: 'Real-time urgency, intraday OI series, dynamic sector watchlist.' },
+    { name: 'Trade Suggest', description: 'Daily near-ATM option suggestions (09:40–11:00 IST) + same-day scorecard.' },
     { name: 'Heatmap', description: 'F&O sector treemap + cross-check vs official NSE indices.' },
     { name: 'AI Assistant', description: 'Azure OpenAI trade assistant with function calling.' },
     { name: 'Dhan Auth', description: 'Dhan access-token status + TOTP regeneration.' },
@@ -342,6 +343,46 @@ const spec = {
           },
         ],
         responses: { '200': ok('{ picks, meta }'), '400': errorResponse('Unknown source'), '500': errorResponse('Feed / ranking error') },
+      },
+    },
+
+    // ───────────────────────── Trade Suggest ─────────────────────────
+    '/api/trade-suggest': {
+      get: {
+        tags: ['Trade Suggest'],
+        summary: 'Up to 3 near-ATM option suggestions (the /trade-suggest skill endpoint)',
+        description:
+          'Scans the live NSE watchlist feeds, gates on the TradeFinder fingerprint (OI evidence: futures OI ≥1.1× 20-day avg OR NSE combined fut+opt OI change ≥5%; spread ≤0.3%, R-Factor ≥3.6 on the 1–8 scale, turnover ≥1.2× avg, price/bias agreement), scores survivors (R-Factor, OI urgency, opening-range breakout, sector breadth; extended movers ×0.6) and returns the top 3 with nearest listed ATM strike, live option premium (per-lot cost, −40% premium backstop, ₹5k/lot target) + spot-level entry/SL/1:2-target plan. Active 09:40–11:00 IST; force=1 bypasses the window (not market hours). Picks persist to trade_suggestions.',
+        parameters: [
+          { name: 'force', in: 'query', required: false, schema: { type: 'string', enum: ['1'] }, description: 'Bypass the time window (testing)' },
+          { name: 'view', in: 'query', required: false, schema: { type: 'string', enum: ['leaderboard'] }, description: 'EOD TF-style spread-linear leaderboard from bhavcopy (post-market comparator; supports &date=&limit=)' },
+          { name: 'date', in: 'query', required: false, schema: { type: 'string', format: 'date' }, description: 'Leaderboard session (defaults to latest synced bhavcopy)' },
+          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', default: 15 }, description: 'Leaderboard rows' },
+        ],
+        responses: { '200': ok('{ window, marketOpen, scanned, gated, suggestions (each with factors: Supertrend/VWAP/ATR/eqTurnoverRatio/combinedOiLevel), tilt, sectorFlow, earlierToday }'), '500': errorResponse('Engine error') },
+      },
+      post: {
+        tags: ['Trade Suggest'],
+        summary: 'Scorecard (review) or cross-day calibration stats',
+        description:
+          "action:'review' — fills each of today's persisted suggestions with the spot move that followed (max favorable/adverse excursion + close, % vs spot at call) from fyers_candles; must run the same day (the candle store clears at the next session). action:'stats' (+ optional days, default 30) — hit-rate (≥1% favorable), avg excursions, by-rank / by-score-bucket breakdown over all reviewed suggestions.",
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['action'],
+                properties: {
+                  action: { type: 'string', enum: ['review', 'stats'] },
+                  days: { type: 'integer', default: 30, description: "Look-back window for action:'stats'" },
+                },
+              },
+              example: { action: 'review' },
+            },
+          },
+        },
+        responses: { '200': ok('{ date, reviewed, skipped, suggestions } | { stats }'), '400': errorResponse('Unknown action'), '500': errorResponse('Review error') },
       },
     },
 

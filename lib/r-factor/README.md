@@ -1,7 +1,7 @@
 # R-Factor library (`lib/r-factor`)
 
 A **self-contained, dependency-free** library that scores a stock's **R-Factor** — a
-read on institutional-interest **strength** (1.0–5.0, à la TradeFinder) plus a
+read on institutional-interest **strength** (1.0–8.0, à la TradeFinder) plus a
 directional **bias** (buy / sell / neutral) — from market data the caller supplies.
 
 It imports **nothing** from the rest of the app (no Dhan, Prisma, NSE, or Next).

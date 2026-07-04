@@ -150,11 +150,40 @@ export async function fetchHistory5m(fyersSymbol: string, date: string): Promise
 }
 
 /**
- * Live open interest of a derivatives contract via the depth API (the only
- * Fyers endpoint that carries OI; one symbol per call). Null on failure or
- * when the response has no OI field — never fabricated. Throws FyersAuthError.
+ * Live depth snapshot of a futures contract — everything useful the ONE
+ * existing getMarketDepth call carries (verified against a raw response on
+ * this plan, 2026-07-03). OI is the anchor; the rest are nullable extras.
  */
-export async function fetchFutOi(fyersSymbol: string): Promise<number | null> {
+export interface FutDepthSnapshot {
+  /** Open interest (required — the whole snapshot is dropped without it). */
+  oi: number;
+  /** Previous-day OI → day OI change without diffing buckets. */
+  pdoi: number | null;
+  /** Fyers' own OI %-change vs previous day. */
+  oiPct: number | null;
+  /** Day VWAP of the future; turnover ≈ atp × dayVolume (no explicit field exists). */
+  atp: number | null;
+  /** Day cumulative traded volume of the future (shares). */
+  dayVolume: number | null;
+  /** Resting order-book totals → buy/sell pressure. */
+  buyQty: number | null;
+  sellQty: number | null;
+  /** Futures last traded price → basis vs the equity close. */
+  futLtp: number | null;
+}
+
+/** A positive finite number or null — absent fields are never fabricated. */
+function posOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Live futures depth via the depth API (the only Fyers endpoint that carries
+ * OI; one symbol per call). Null on failure or when the response has no OI —
+ * never fabricated. Throws FyersAuthError.
+ */
+export async function fetchFutDepth(fyersSymbol: string): Promise<FutDepthSnapshot | null> {
   const fyers = await getFyers();
   let res: Record<string, unknown>;
   try {
@@ -173,6 +202,17 @@ export async function fetchFutOi(fyersSymbol: string): Promise<number | null> {
 
   const bySymbol = (res.d ?? {}) as Record<string, Record<string, unknown>>;
   const entry = bySymbol[fyersSymbol] ?? Object.values(bySymbol)[0];
-  const oi = Number(entry?.oi);
-  return Number.isFinite(oi) && oi > 0 ? oi : null;
+  const oi = posOrNull(entry?.oi);
+  if (oi === null) return null;
+  return {
+    oi,
+    pdoi: posOrNull(entry?.pdoi),
+    // oipercent can legitimately be 0 or negative — only null when absent
+    oiPct: entry?.oipercent == null || !Number.isFinite(Number(entry.oipercent)) ? null : Number(entry.oipercent),
+    atp: posOrNull(entry?.atp),
+    dayVolume: posOrNull(entry?.v),
+    buyQty: posOrNull(entry?.totalbuyqty),
+    sellQty: posOrNull(entry?.totalsellqty),
+    futLtp: posOrNull(entry?.ltp),
+  };
 }

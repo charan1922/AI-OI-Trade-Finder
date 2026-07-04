@@ -39,11 +39,48 @@ async function autoDaysToCoverBacktest(): Promise<number> {
   return Math.min(MAX_DAYS, Math.max(DEFAULT_DAYS, weekdays + 5)); // buffer + hard cap
 }
 
-/** GET /api/bhavcopy — coverage status of the bhavcopy_days table. */
+/**
+ * The most recent trading session whose bhavcopy should exist by now.
+ * NSE publishes EOD files in the evening — today's file is only "expected"
+ * after 19:00 IST on a trading day; before that, the previous session's is.
+ * Weekends and rows in market_holidays are skipped. Holiday lookup soft-fails
+ * open (treats days as trading days) — worst case the banner nags a day early.
+ */
+async function expectedLatestSession(): Promise<string> {
+  const { prisma } = await import('@/lib/db');
+  let holidays = new Set<string>();
+  try {
+    const rows = await prisma.$queryRawUnsafe<{ date: string }[]>(`SELECT date FROM market_holidays`);
+    holidays = new Set(rows.map((r) => r.date.slice(0, 10)));
+  } catch {
+    // table absent — weekday check only
+  }
+  const ist = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
+  // IST wall-clock date via LOCAL getters (same convention as todayIST() —
+  // toISOString() would read the UTC date, one day behind before 05:30 IST).
+  const dateKey = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // Before 19:00 IST, today's file isn't out yet — start looking from yesterday.
+  if (ist.getHours() < 19) ist.setDate(ist.getDate() - 1);
+  for (let i = 0; i < 10; i++) {
+    const dow = ist.getDay();
+    const key = dateKey(ist);
+    if (dow !== 0 && dow !== 6 && !holidays.has(key)) return key;
+    ist.setDate(ist.getDate() - 1);
+  }
+  return dateKey(ist);
+}
+
+/**
+ * GET /api/bhavcopy — coverage status of the bhavcopy_days table, plus a
+ * staleness verdict (drives the daily sync-reminder banner).
+ */
 export async function GET() {
   try {
     const status = await getBhavcopyStatus();
-    return NextResponse.json({ success: true, data: status });
+    const expectedDate = await expectedLatestSession();
+    const stale = (status.latestDate ?? '') < expectedDate;
+    return NextResponse.json({ success: true, data: { ...status, expectedDate, stale } });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }

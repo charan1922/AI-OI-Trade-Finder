@@ -1,0 +1,8 @@
+# Python deps for notebooks/eda.ipynb and scripts/validate_agent.py
+# Setup:  python -m venv .venv && .venv/Scripts/python.exe -m pip install -r notebooks/requirements.txt
+pandas
+matplotlib
+jupyter
+torch                    # CPU build is fine locally; Colab/Kaggle provide CUDA/TPU builds
+agent-framework-core     # microsoft/agent-framework (validation agent)
+agent-framework-openai   # Azure OpenAI client for agent-framework

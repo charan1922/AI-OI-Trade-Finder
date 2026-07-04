@@ -22,9 +22,10 @@
 import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { prisma } from '@/lib/db';
 import { FyersAuthError, getFyersAccessToken, getFyersTokenStatus, hasFyersAuth } from '@/lib/fyers/auth';
-import { fetchFutOi, fetchHistory5m } from '@/lib/fyers/client';
-import { attachFutOi, fyersBucketFor, pruneToDate, upsertCandles } from '@/lib/fyers/candle-store';
+import { fetchFutDepth, fetchHistory5m } from '@/lib/fyers/client';
+import { attachFutDepth, fyersBucketFor, pruneToDate, upsertCandles } from '@/lib/fyers/candle-store';
 import { getTrackedUniverse, peekUniverse, resolveFutSymbol, toEqSymbol } from '@/lib/fyers/symbols';
+import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
@@ -153,6 +154,9 @@ export async function runFyersCycle(
     const universe = await getTrackedUniverse(today);
     summary.universeSize = universe.length;
 
+    // NSE combined-OI map for this cycle (only useful when attaching live depth)
+    const nseOiPctBySymbol = attachOi ? await getNseCombinedOiPctMap() : new Map<string, number>();
+
     // One retried token regeneration per cycle: the first auth failure clears
     // the cached token; the retry regenerates it. A second failure aborts the
     // cycle — every remaining call would fail the same way.
@@ -189,9 +193,12 @@ export async function runFyersCycle(
 
           if (attachOi) {
             summary.apiCalls += 1;
-            const oi = await withAuthRetry(() => fetchFutOi(futSymbol));
-            if (oi !== null) {
-              await attachFutOi(symbol, date, fyersBucketFor(Date.now()), oi);
+            const depth = await withAuthRetry(() => fetchFutDepth(futSymbol));
+            if (depth !== null) {
+              await attachFutDepth(symbol, date, fyersBucketFor(Date.now()), {
+                ...depth,
+                nseOiPct: nseOiPctBySymbol.get(symbol) ?? null,
+              });
               summary.oiAttached += 1;
             }
           }

@@ -2,22 +2,42 @@
  * Trade Assistant orchestration — the OpenAI Responses API function-calling loop.
  *
  * Flow: send the conversation + tool schemas → if the model emits function_call
- * items, run them (real trade data) and feed the outputs back → repeat until the
- * model answers with text. Tool calls are capped so a loop can't run away.
+ * items, run them (real trade/market data) and feed the outputs back → repeat
+ * until the model answers with text. Tool calls are capped so a loop can't run
+ * away. Tools execute SEQUENTIALLY on purpose — the live ones share Dhan/NSE
+ * rate gates that parallel calls would trip.
  */
 
 import type OpenAI from 'openai';
+import { isMarketHours } from '@/lib/dhan/market-feed';
+import { WINDOW_END_MIN, WINDOW_START_MIN } from '@/lib/trade-suggest/config';
 import { getAzureClient, getChatDeployment } from './azure-client';
-import { SYSTEM_PROMPT } from './system-prompt';
+import { buildSystemPrompt, type SessionInfo } from './system-prompt';
 import { executeTool, TOOL_DEFS } from './tools';
 import type { AssistantResult, ChatMessage, ToolTraceEntry } from './types';
 
-const MAX_TOOL_STEPS = 5;
+/** High enough for multi-tool evidence chains (pulse → snapshot → suggestions). */
+const MAX_TOOL_STEPS = 8;
+
+/** Real IST session facts for the system prompt (local-getter convention, see todayIST). */
+function sessionInfo(): SessionInfo {
+  const ist = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
+  const minuteOfDay = ist.getHours() * 60 + ist.getMinutes();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const marketOpen = isMarketHours();
+  return {
+    nowIST: `${pad(ist.getHours())}:${pad(ist.getMinutes())}:${pad(ist.getSeconds())}`,
+    dateIST: `${ist.getFullYear()}-${pad(ist.getMonth() + 1)}-${pad(ist.getDate())}`,
+    marketOpen,
+    windowActive: marketOpen && minuteOfDay >= WINDOW_START_MIN && minuteOfDay <= WINDOW_END_MIN,
+  };
+}
 
 export async function runAssistant(message: string, history: ChatMessage[] = []): Promise<AssistantResult> {
   const client = getAzureClient();
   const model = getChatDeployment();
   const toolTrace: ToolTraceEntry[] = [];
+  const instructions = buildSystemPrompt(sessionInfo());
 
   const priorTurns = history
     .slice(-8)
@@ -27,7 +47,7 @@ export async function runAssistant(message: string, history: ChatMessage[] = [])
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
     const res = await client.responses.create({
       model,
-      instructions: SYSTEM_PROMPT,
+      instructions,
       input,
       tools: TOOL_DEFS,
       tool_choice: 'auto',
@@ -60,7 +80,7 @@ export async function runAssistant(message: string, history: ChatMessage[] = [])
   // Tool budget exhausted — force a final text answer with no further tool use.
   const final = await client.responses.create({
     model,
-    instructions: SYSTEM_PROMPT,
+    instructions,
     input,
     tools: TOOL_DEFS,
     tool_choice: 'none',

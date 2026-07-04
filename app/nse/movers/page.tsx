@@ -196,7 +196,17 @@ function Row({
   pct: number;
 }) {
   return (
-    <div className="flex items-center gap-1.5 border-b border-border/30 px-2 py-[3px] text-[11px]">
+    <div
+      onClick={() =>
+        window.open(
+          `https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(symbol)}&interval=5`,
+          '_blank',
+          'noopener,noreferrer',
+        )
+      }
+      title={`Open ${symbol} 5-min chart on TradingView`}
+      className="flex cursor-pointer items-center gap-1.5 break-inside-avoid border-b border-border/30 px-2 py-[3px] text-[11px] hover:bg-muted/40"
+    >
       <span className="w-4 shrink-0 text-right text-[9px] tabular-nums text-muted-foreground">{i + 1}</span>
       <span className="flex-1 truncate font-mono font-medium">{symbol}</span>
       <span className="tabular-nums text-muted-foreground">{value}</span>
@@ -282,7 +292,7 @@ export default function NseMoversPage() {
         right={<span className="text-[9px] text-muted-foreground">{oi.length} F&O · top OI gains</span>}
       >
         <PanelBody loading={oiFeed.loading} error={oiFeed.error} empty={oiBuildup.length === 0}>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="columns-2 gap-0 sm:columns-3 lg:columns-4">
             {oiBuildup.slice(0, 24).map((s, i) => (
               <Row key={s.symbol} i={i} symbol={s.symbol} value={fmtNum(s.underlyingValue)} pct={s.changeInOiPct} />
             ))}
@@ -307,7 +317,7 @@ export default function NseMoversPage() {
         }
       >
         <PanelBody loading={activeFeed.loading} error={activeFeed.error} empty={active.length === 0}>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="columns-2 gap-0 sm:columns-3 lg:columns-4">
             {active.map((s, i) => (
               <Row key={s.symbol} i={i} symbol={s.symbol} value={fmtCr(s.tradedValue)} pct={s.pctChange} />
             ))}
@@ -331,7 +341,7 @@ export default function NseMoversPage() {
       <div className="grid gap-2 md:grid-cols-2">
         <Panel title="Top Gainers" icon={<TrendingUp className="h-3.5 w-3.5 text-emerald-500" />} feed={gainersFeed}>
           <PanelBody loading={gainersFeed.loading} error={gainersFeed.error} empty={gainers.length === 0}>
-            <div className="grid grid-cols-1 sm:grid-cols-2">
+            <div className="columns-1 gap-0 sm:columns-2">
               {gainers.map((s, i) => (
                 <Row key={s.symbol} i={i} symbol={s.symbol} value={fmtNum(s.ltp)} pct={s.pctChange} />
               ))}
@@ -341,7 +351,7 @@ export default function NseMoversPage() {
 
         <Panel title="Top Losers" icon={<TrendingDown className="h-3.5 w-3.5 text-red-500" />} feed={losersFeed}>
           <PanelBody loading={losersFeed.loading} error={losersFeed.error} empty={losers.length === 0}>
-            <div className="grid grid-cols-1 sm:grid-cols-2">
+            <div className="columns-1 gap-0 sm:columns-2">
               {losers.map((s, i) => (
                 <Row key={s.symbol} i={i} symbol={s.symbol} value={fmtNum(s.ltp)} pct={s.pctChange} />
               ))}

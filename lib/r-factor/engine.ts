@@ -47,9 +47,11 @@ export interface RFactorConfig {
   weights?: Partial<RFactorWeights>;
 }
 
-/** R-Factor strength is reported on this scale (echoes TradeFinder's 1–5 range). */
+/** R-Factor strength is reported on this scale. TradeFinder's displayed
+ *  R-Factor runs past 5 (1–8); rescaled 2026-07-03 at the user's request —
+ *  raw [0,1] scoring is unchanged, only the presentation span widened. */
 const RF_MIN = 1;
-const RF_MAX = 5;
+const RF_MAX = 8;
 
 /** Compute the full R-Factor result for one symbol from supplied market data. */
 export function computeRFactor(input: RFactorInput, config: RFactorConfig = {}): RFactorResult {

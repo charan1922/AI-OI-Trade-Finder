@@ -223,11 +223,68 @@ model FyersCandle {
   close      Float  @default(0)
   volume     Float  @default(0)
   oi         Float  @default(0)
+  /// Depth-snapshot extras from the same getMarketDepth call as `oi` (FUT
+  /// current bucket only; NULL on EQ rows and unattached buckets):
+  /// pdoi = previous-day OI, oiPct = Fyers' OI %-change, atp = day VWAP
+  /// (turnover ≈ atp × dayVolume), buy/sellQty = resting book totals,
+  /// futLtp = the future's own LTP (basis vs equity close).
+  pdoi       Float?
+  oiPct      Float?
+  atp        Float?
+  dayVolume  Float?
+  buyQty     Float?
+  sellQty    Float?
+  futLtp     Float?
+  /// NSE's combined OI %-change (futures + options) from the oi-spurts feed,
+  /// stored verbatim — the one non-Fyers column (matches /nse/movers).
+  nseOiPct   Float?
   updatedAt  String
 
   @@id([symbol, instrument, date, bucketTs])
   @@index([date, symbol, instrument])
   @@map("fyers_candles")
+}
+
+/// Persisted /trade-suggest calls (created at runtime via raw SQL in
+/// lib/trade-suggest/store.ts; declared here so `db push` keeps it). One row
+/// per (date, symbol, optionType): the FIRST sighting fixes suggestedAt and
+/// spotAtSuggest (what gets scored); re-suggestions bump timesSeen and refresh
+/// the latest signal readings. Outcome columns are filled same-day by
+/// lib/trade-suggest/review.ts from fyers_candles (spot-terms move after the
+/// call: max favorable / adverse excursion + close).
+model TradeSuggestion {
+  date          String
+  symbol        String
+  optionType    String // 'CE' | 'PE'
+  strike        Float   @default(0)
+  expiryDate    String  @default("")
+  spotAtSuggest Float   @default(0)
+  slSpot        Float?
+  targetSpot    Float?
+  lotSize       Int     @default(0)
+  optSecurityId String  @default("")
+  sector        String  @default("")
+  rFactor       Float   @default(0)
+  confidence    Float   @default(0)
+  oiLevel       Float   @default(0)
+  oiUrgency     Float?
+  score            Float   @default(0)
+  rank             Int     @default(0)
+  reasons          String  @default("[]")
+  premiumAtSuggest Float?
+  premiumSl        Float?
+  premiumTarget    Float?
+  suggestedAt      String
+  lastSeenAt       String
+  timesSeen        Int     @default(1)
+  maxUpPct      Float?
+  maxDownPct    Float?
+  closePct      Float?
+  outcomeAt     String?
+
+  @@id([date, symbol, optionType])
+  @@index([date])
+  @@map("trade_suggestions")
 }
 
 model OptionTrade {

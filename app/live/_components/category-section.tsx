@@ -54,7 +54,7 @@ export function CategorySection({
   refreshSignal: number;
   onStatus?: (marketOpen: boolean | null, asOf: string | null) => void;
 }) {
-  const { picks, meta, rows, sectors, marketOpen, asOf, listLoading, quoteLoading, error, refresh } =
+  const { picks, meta, rows, sectors, marketOpen, snapshot, snapshotDate, asOf, listLoading, quoteLoading, error, refresh } =
     useCategoryUrgency(source, staggerIndex);
 
   // Lift market-open / last-update up to the page header. Guarded so it only
@@ -91,14 +91,28 @@ export function CategorySection({
         No tradeable F&amp;O names in this feed right now.
       </div>
     );
+  } else if (marketOpen === false && snapshot && rows.length > 0) {
+    // After hours: the last RECORDED state of the most recent session — real
+    // captured values (OI, R-Factor, price), with the bid/ask book absent
+    // because it no longer exists. Live depth resumes at the next open.
+    body = (
+      <>
+        <p className="border-b border-amber-300/40 bg-amber-50 px-2.5 py-1 text-[10px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+          Closing snapshot · {snapshotDate ?? 'last session'} — the day&apos;s final recorded values (no live
+          order book after close). Live depth resumes at the next open.
+        </p>
+        <UrgencyTable rows={rows} sectors={sectors} />
+      </>
+    );
   } else if (marketOpen === false) {
-    // After hours: show the mover names (NSE data, available off-hours) but no
-    // depth/urgency — the order book doesn't exist, so it's never synthesized.
+    // After hours with nothing recorded (fresh install): show the mover names
+    // (NSE data, available off-hours) — depth/urgency are never synthesized.
     body = (
       <>
         <PickChips picks={picks} />
         <p className="border-t border-border/50 px-2.5 py-1.5 text-[10px] text-muted-foreground">
-          Market closed (NSE 9:15–15:30 IST) — live depth, spread &amp; OI urgency resume at the open.
+          Market closed (NSE 9:15–15:30 IST) — nothing recorded for this list&apos;s names in the last session;
+          live depth, spread &amp; OI urgency resume at the open.
         </p>
       </>
     );

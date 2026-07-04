@@ -1,6 +1,7 @@
 "use client"
 
 import { AppSidebar } from "@/components/app-sidebar"
+import { BhavcopyReminder } from "@/components/bhavcopy-reminder"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
@@ -8,6 +9,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
+        <BhavcopyReminder />
         <header className="flex h-12 items-center gap-2 border-b border-border px-4">
           <SidebarTrigger className="-ml-1" />
         </header>

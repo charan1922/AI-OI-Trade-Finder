@@ -29,6 +29,16 @@ interface CoverageRow {
   bars: number;
   lastBucketTs: number;
   lastOi: number;
+  pdoi: number | null;
+  oiPct: number | null;
+  atp: number | null;
+  dayVolume: number | null;
+  buyQty: number | null;
+  sellQty: number | null;
+  futLtp: number | null;
+  nseOiPct: number | null;
+  eqTurnover: number | null;
+  eqDayVolume: number | null;
 }
 interface PollerStatus {
   success: boolean;
@@ -82,27 +92,69 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** One coverage line per symbol: EQ + FUT merged (OI exists only on futures). */
+/** One coverage line per symbol: EQ + FUT merged (OI/depth exist only on futures). */
 interface MergedCoverage {
   symbol: string;
   eqBars: number;
   futBars: number;
   lastBucketTs: number;
   lastOi: number;
+  oiPct: number | null;
+  atp: number | null;
+  dayVolume: number | null;
+  /** Derived: atp × dayVolume (₹) — Fyers has no explicit turnover field. */
+  turnover: number | null;
+  /** Derived: Σ(close × volume) over today's recorded EQ bars (₹). */
+  eqTurnover: number | null;
+  /** Derived: buyQty ÷ (buyQty + sellQty), resting-book buy pressure [0,1]. */
+  buyPressure: number | null;
+  futLtp: number | null;
+  /** NSE's combined OI %-change (futures + options) — NSE-sourced, not Fyers. */
+  nseOiPct: number | null;
 }
 
 function mergeCoverage(rows: CoverageRow[]): MergedCoverage[] {
   const bySymbol = new Map<string, MergedCoverage>();
   for (const r of rows) {
-    const m = bySymbol.get(r.symbol) ?? { symbol: r.symbol, eqBars: 0, futBars: 0, lastBucketTs: 0, lastOi: 0 };
-    if (r.instrument === 'EQ') m.eqBars = r.bars;
-    else m.futBars = r.bars;
+    const m =
+      bySymbol.get(r.symbol) ??
+      ({
+        symbol: r.symbol,
+        eqBars: 0,
+        futBars: 0,
+        lastBucketTs: 0,
+        lastOi: 0,
+        oiPct: null,
+        atp: null,
+        dayVolume: null,
+        turnover: null,
+        eqTurnover: null,
+        buyPressure: null,
+        futLtp: null,
+        nseOiPct: null,
+      } as MergedCoverage);
+    if (r.instrument === 'EQ') {
+      m.eqBars = r.bars;
+      m.eqTurnover = r.eqTurnover;
+    } else {
+      m.futBars = r.bars;
+      m.oiPct = r.oiPct;
+      m.atp = r.atp;
+      m.dayVolume = r.dayVolume;
+      m.turnover = r.atp != null && r.dayVolume != null ? r.atp * r.dayVolume : null;
+      m.buyPressure = r.buyQty != null && r.sellQty != null && r.buyQty + r.sellQty > 0 ? r.buyQty / (r.buyQty + r.sellQty) : null;
+      m.futLtp = r.futLtp;
+      m.nseOiPct = r.nseOiPct;
+    }
     m.lastBucketTs = Math.max(m.lastBucketTs, r.lastBucketTs);
     m.lastOi = Math.max(m.lastOi, r.lastOi);
     bySymbol.set(r.symbol, m);
   }
   return [...bySymbol.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
+
+const fmtCrore = (v: number | null) => (v == null ? '—' : `₹${(v / 1e7).toFixed(0)} Cr`);
+const fmtPctSigned = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`);
 
 export default function FyersPage() {
   const [status, setStatus] = useState<PollerStatus | null>(null);
@@ -333,15 +385,46 @@ export default function FyersPage() {
                   {merged.length} symbols · OI is a futures-contract metric (equities have none)
                 </span>
               </h2>
-              <div className="max-h-80 overflow-y-auto">
+              <div className="max-h-80 overflow-auto">
                 <table className="w-full text-[10px]">
                   <thead className="sticky top-0 bg-card text-left text-muted-foreground">
                     <tr>
                       <th className="px-1.5 py-1 font-medium">Symbol</th>
                       <th className="px-1.5 py-1 text-right font-medium">EQ bars</th>
                       <th className="px-1.5 py-1 text-right font-medium">FUT bars</th>
-                      <th className="px-1.5 py-1 text-right font-medium">Last bar (IST)</th>
-                      <th className="px-1.5 py-1 text-right font-medium">Fut OI (latest)</th>
+                      <th className="px-1.5 py-1 text-right font-medium">Last bar</th>
+                      <th className="px-1.5 py-1 text-right font-medium">Fut LTP</th>
+                      <th className="px-1.5 py-1 text-right font-medium">Fut OI</th>
+                      <th
+                        className="px-1.5 py-1 text-right font-medium"
+                        title="Fyers: near-month FUTURES contract OI %-change vs previous day"
+                      >
+                        Fut OI Δ%
+                      </th>
+                      <th
+                        className="px-1.5 py-1 text-right font-medium"
+                        title="NSE oi-spurts feed (futures + options combined) — NSE-sourced, matches /nse/movers"
+                      >
+                        NSE OI Δ%
+                      </th>
+                      <th className="px-1.5 py-1 text-right font-medium" title="Day VWAP of the future (atp)">
+                        VWAP
+                      </th>
+                      <th className="px-1.5 py-1 text-right font-medium" title="Derived: VWAP × day volume (futures)">
+                        Fut T/O
+                      </th>
+                      <th
+                        className="px-1.5 py-1 text-right font-medium"
+                        title="Derived: Σ(close × volume) over today's recorded equity 5-min bars"
+                      >
+                        EQ T/O
+                      </th>
+                      <th
+                        className="px-1.5 py-1 text-right font-medium"
+                        title="Resting-book buy pressure: totalbuyqty ÷ (buy+sell). >50% = bid-heavy"
+                      >
+                        Buy%
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -351,8 +434,29 @@ export default function FyersPage() {
                         <td className="px-1.5 py-0.5 text-right tabular-nums">{r.eqBars}</td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">{r.futBars}</td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">{fmtBucket(r.lastBucketTs)}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">{r.futLtp?.toLocaleString('en-IN') ?? '—'}</td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">
                           {r.lastOi > 0 ? r.lastOi.toLocaleString('en-IN') : '—'}
+                        </td>
+                        <td
+                          className={`px-1.5 py-0.5 text-right tabular-nums ${
+                            r.oiPct == null ? '' : r.oiPct >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
+                          }`}
+                        >
+                          {fmtPctSigned(r.oiPct)}
+                        </td>
+                        <td
+                          className={`px-1.5 py-0.5 text-right tabular-nums ${
+                            r.nseOiPct == null ? '' : r.nseOiPct >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
+                          }`}
+                        >
+                          {fmtPctSigned(r.nseOiPct)}
+                        </td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">{r.atp?.toLocaleString('en-IN') ?? '—'}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">{fmtCrore(r.turnover)}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">{fmtCrore(r.eqTurnover)}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">
+                          {r.buyPressure == null ? '—' : `${(r.buyPressure * 100).toFixed(0)}%`}
                         </td>
                       </tr>
                     ))}

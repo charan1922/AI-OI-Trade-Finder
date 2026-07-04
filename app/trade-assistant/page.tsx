@@ -1,16 +1,18 @@
 'use client';
 
-import { Compass, GraduationCap, LineChart, Plus, Send, Sparkles, TrendingUp } from 'lucide-react';
+import { Activity, Gauge, GraduationCap, LineChart, Plus, Send, Sparkles, Target, TrendingUp } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { MessageBubble } from './_components/message-bubble';
 import { useChat } from './_hooks/use-chat';
 
 const SUGGESTIONS = [
-  { icon: LineChart, label: 'Explain a trade', text: 'Explain the PNBHOUSING trade on 29 May 2026.' },
+  { icon: Target, label: 'Scan the market now', text: 'What should I trade right now? Run the live scan and walk me through the evidence.' },
+  { icon: Activity, label: 'Market pulse', text: 'How is the market looking — which sectors and names are moving, and where is OI building?' },
+  { icon: LineChart, label: 'Deep-dive a stock', text: 'How is RELIANCE looking right now — price action, OI and R-Factor?' },
+  { icon: Gauge, label: 'Score my calls', text: "How are the suggester's calls doing overall — hit rate and excursions?" },
   { icon: TrendingUp, label: 'Strongest OI buildup', text: 'Which 5 verified trades had the strongest option OI buildup?' },
-  { icon: GraduationCap, label: 'Define a term', text: 'In simple terms, what is oi_level and why does it matter?' },
-  { icon: Compass, label: 'Direction check', text: 'For the ONGC trade on 9 March 2026, did the data agree with the trade direction?' },
+  { icon: GraduationCap, label: 'Explain a trade', text: 'Explain the PNBHOUSING trade on 29 May 2026.' },
 ];
 
 // One shared column keeps the header, transcript, and composer in a single clean,
@@ -49,7 +51,7 @@ export default function TradeAssistantPage() {
           </div>
           <div className="min-w-0">
             <h1 className="text-[13px] font-semibold leading-tight text-foreground">Trade Coach</h1>
-            <p className="text-[11px] leading-tight text-muted-foreground">Grounded trade analysis</p>
+            <p className="text-[11px] leading-tight text-muted-foreground">Live market + trade-log analysis, grounded</p>
           </div>
           <span className="ml-auto hidden items-center gap-1.5 text-[11px] text-muted-foreground sm:flex">
             <span className="size-1.5 rounded-full bg-emerald-500" />
@@ -94,7 +96,7 @@ export default function TradeAssistantPage() {
                 ref={taRef}
                 value={input}
                 rows={1}
-                placeholder="Ask about a trade, an OI buildup, or a term…"
+                placeholder="Scan the market, deep-dive a stock, or ask about any trade…"
                 onChange={(e) => {
                   setInput(e.target.value);
                   e.target.style.height = 'auto';
@@ -129,14 +131,15 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
         <Sparkles className="size-6" />
       </div>
       <h2 className="ta-rise mt-4 text-[19px] font-semibold tracking-tight text-foreground" style={{ animationDelay: '60ms' }}>
-        Understand any trade, in plain English
+        Your desk analyst — live market &amp; trade history
       </h2>
       <p
-        className="ta-rise mt-2 max-w-sm text-[13px] leading-relaxed text-muted-foreground"
+        className="ta-rise mt-2 max-w-md text-[13px] leading-relaxed text-muted-foreground"
         style={{ animationDelay: '110ms' }}
       >
-        Ask about any TradeFinder trade — I&apos;ll break down the direction, the option-OI buildup, and what it means,
-        citing the real numbers and defining each term.
+        Scan for today&apos;s option picks, read the market pulse, deep-dive any F&amp;O stock, score the
+        suggester&apos;s track record, or break down any TradeFinder trade — every number cited from real data,
+        every term explained.
       </p>
 
       <div className="ta-rise mt-7 grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2" style={{ animationDelay: '170ms' }}>

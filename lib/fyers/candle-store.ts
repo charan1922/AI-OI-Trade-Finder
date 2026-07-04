@@ -14,7 +14,7 @@
  *
  * Candle upserts deliberately use ON CONFLICT DO UPDATE that leaves `oi`
  * untouched (a plain INSERT OR REPLACE would zero previously-attached OI on
- * every full-day refetch); attachFutOi() updates only `oi`. Either write can
+ * every full-day refetch); attachFutDepth() updates only the depth columns. Either write can
  * land first — the row converges to candle OHLCV + latest OI.
  */
 
@@ -27,6 +27,11 @@ export const FYERS_BUCKET_SEC = 300;
 export type FyersInstrument = 'EQ' | 'FUT';
 
 let tableReady = false;
+
+/** Depth-derived columns attached to the current FUT bucket (nullable — EQ
+ *  rows and pre-recorder buckets stay NULL; values come straight from the
+ *  depth response, never derived/fabricated). */
+const DEPTH_COLUMNS = ['pdoi', 'oiPct', 'atp', 'dayVolume', 'buyQty', 'sellQty', 'futLtp', 'nseOiPct'] as const;
 
 /** Lazily create the table + index (idempotent, no migration required). */
 export async function ensureFyersCandlesTable(): Promise<void> {
@@ -43,10 +48,27 @@ export async function ensureFyersCandlesTable(): Promise<void> {
       close      REAL    DEFAULT 0,
       volume     REAL    DEFAULT 0,
       oi         REAL    DEFAULT 0,
+      pdoi       REAL,
+      oiPct      REAL,
+      atp        REAL,
+      dayVolume  REAL,
+      buyQty     REAL,
+      sellQty    REAL,
+      futLtp     REAL,
+      nseOiPct   REAL,
       updatedAt  TEXT    NOT NULL,
       PRIMARY KEY (symbol, instrument, date, bucketTs)
     )
   `);
+  // Pre-existing tables (created before the depth columns) get them ALTERed in;
+  // "duplicate column" failures are the normal already-migrated case.
+  for (const col of DEPTH_COLUMNS) {
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE fyers_candles ADD COLUMN ${col} REAL`);
+    } catch {
+      // column already exists
+    }
+  }
   await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS idx_fyers_candles_date ON fyers_candles (date, symbol, instrument)`,
   );
@@ -100,30 +122,64 @@ export async function upsertCandles(
   return usable.length;
 }
 
+/** The depth-snapshot fields persisted alongside OI (see lib/fyers/client.ts). */
+export interface FutDepthFields {
+  oi: number;
+  pdoi: number | null;
+  oiPct: number | null;
+  atp: number | null;
+  dayVolume: number | null;
+  buyQty: number | null;
+  sellQty: number | null;
+  futLtp: number | null;
+  /** NSE's own combined OI %-change (futures + options, oi-spurts feed) —
+   *  stored verbatim from NSE so the series matches /nse/movers exactly. */
+  nseOiPct: number | null;
+}
+
 /**
- * Attach live futures OI to the current bucket's FUT row. Inserts a zero-OHLCV
+ * Attach the live futures depth snapshot (OI + pdoi/VWAP/day volume/book
+ * totals/LTP) to the current bucket's FUT row. Inserts a zero-OHLCV
  * placeholder if the history write hasn't created the bucket yet (the next
- * candle refresh fills OHLCV without touching oi). Repeat attaches within one
- * bucket overwrite with the latest value.
+ * candle refresh fills OHLCV without touching these columns). Repeat attaches
+ * within one bucket overwrite with the latest values.
  */
-export async function attachFutOi(
+export async function attachFutDepth(
   symbol: string,
   date: string,
   bucketTs: number,
-  oi: number,
+  d: FutDepthFields,
   nowMs: number = Date.now(),
 ): Promise<void> {
   await ensureFyersCandlesTable();
   await prisma.$executeRawUnsafe(
-    `INSERT INTO fyers_candles (symbol, instrument, date, bucketTs, open, high, low, close, volume, oi, updatedAt)
-     VALUES (?, 'FUT', ?, ?, 0, 0, 0, 0, 0, ?, ?)
+    `INSERT INTO fyers_candles
+       (symbol, instrument, date, bucketTs, open, high, low, close, volume,
+        oi, pdoi, oiPct, atp, dayVolume, buyQty, sellQty, futLtp, nseOiPct, updatedAt)
+     VALUES (?, 'FUT', ?, ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(symbol, instrument, date, bucketTs) DO UPDATE SET
        oi = excluded.oi,
+       pdoi = excluded.pdoi,
+       oiPct = excluded.oiPct,
+       atp = excluded.atp,
+       dayVolume = excluded.dayVolume,
+       buyQty = excluded.buyQty,
+       sellQty = excluded.sellQty,
+       futLtp = excluded.futLtp,
+       nseOiPct = excluded.nseOiPct,
        updatedAt = excluded.updatedAt`,
     symbol,
     date,
     bucketTs,
-    oi,
+    d.oi,
+    d.pdoi,
+    d.oiPct,
+    d.atp,
+    d.dayVolume,
+    d.buyQty,
+    d.sellQty,
+    d.futLtp,
+    d.nseOiPct,
     new Date(nowMs).toISOString(),
   );
 }
@@ -171,7 +227,23 @@ export interface FyersCoverageRow {
   bars: number;
   lastBucketTs: number;
   lastOi: number;
+  /** Latest FUT depth snapshot (null on EQ rows / before the first attach). */
+  pdoi: number | null;
+  oiPct: number | null;
+  atp: number | null;
+  dayVolume: number | null;
+  buyQty: number | null;
+  sellQty: number | null;
+  futLtp: number | null;
+  /** NSE's combined OI %-change (futures + options) from the oi-spurts feed. */
+  nseOiPct: number | null;
+  /** DERIVED equity turnover: Σ(close × volume) over today's EQ bars (₹).
+   *  An approximation from recorded 5-min bars, not a broker field. */
+  eqTurnover: number | null;
+  eqDayVolume: number | null;
 }
+
+const toNumOrNull = (v: unknown): number | null => (v == null ? null : Number(v));
 
 /** Per-symbol coverage summary for the /fyers status page. */
 export async function getFyersCoverage(date: string): Promise<FyersCoverageRow[]> {
@@ -183,13 +255,49 @@ export async function getFyersCoverage(date: string): Promise<FyersCoverageRow[]
       ORDER BY symbol ASC, instrument ASC`,
     date,
   );
-  return rows.map((r) => ({
-    symbol: String(r.symbol ?? ''),
-    instrument: String(r.instrument ?? ''),
-    bars: toNum(r.bars),
-    lastBucketTs: toNum(r.lastBucketTs),
-    lastOi: toNum(r.lastOi),
-  }));
+  // Latest depth snapshot per FUT symbol (the newest bucket that has OI).
+  const depthRows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT f.symbol, f.pdoi, f.oiPct, f.atp, f.dayVolume, f.buyQty, f.sellQty, f.futLtp, f.nseOiPct
+       FROM fyers_candles f
+      WHERE f.date = ? AND f.instrument = 'FUT' AND f.oi > 0
+        AND f.bucketTs = (
+          SELECT MAX(b.bucketTs) FROM fyers_candles b
+           WHERE b.date = f.date AND b.symbol = f.symbol AND b.instrument = 'FUT' AND b.oi > 0
+        )`,
+    date,
+  );
+  const depthBySymbol = new Map(depthRows.map((r) => [String(r.symbol), r]));
+
+  // Derived equity turnover per symbol from today's recorded EQ bars.
+  const eqTurnoverRows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT symbol, SUM(close * volume) AS eqTurnover, SUM(volume) AS eqDayVolume
+       FROM fyers_candles WHERE date = ? AND instrument = 'EQ' AND volume > 0
+      GROUP BY symbol`,
+    date,
+  );
+  const eqBySymbol = new Map(eqTurnoverRows.map((r) => [String(r.symbol), r]));
+
+  return rows.map((r) => {
+    const d = r.instrument === 'FUT' ? depthBySymbol.get(String(r.symbol)) : undefined;
+    const eq = r.instrument === 'EQ' ? eqBySymbol.get(String(r.symbol)) : undefined;
+    return {
+      symbol: String(r.symbol ?? ''),
+      instrument: String(r.instrument ?? ''),
+      bars: toNum(r.bars),
+      lastBucketTs: toNum(r.lastBucketTs),
+      lastOi: toNum(r.lastOi),
+      pdoi: toNumOrNull(d?.pdoi),
+      oiPct: toNumOrNull(d?.oiPct),
+      atp: toNumOrNull(d?.atp),
+      dayVolume: toNumOrNull(d?.dayVolume),
+      buyQty: toNumOrNull(d?.buyQty),
+      sellQty: toNumOrNull(d?.sellQty),
+      futLtp: toNumOrNull(d?.futLtp),
+      nseOiPct: toNumOrNull(d?.nseOiPct),
+      eqTurnover: toNumOrNull(eq?.eqTurnover),
+      eqDayVolume: toNumOrNull(eq?.eqDayVolume),
+    };
+  });
 }
 
 /** Distinct symbols already recorded for `date` — reseeds the universe after a restart. */

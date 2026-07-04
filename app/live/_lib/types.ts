@@ -32,7 +32,7 @@ export interface LiveUrgencyRow {
   // ── R-Factor (lib/r-factor, live intraday) ─────────────────────────────────
   // Recomputed every poll from the live snapshot against fixed EOD baselines.
   // Null when there's no usable price. Weights are provisional until calibrated.
-  /** Strength on a 1.0–5.0 scale (TradeFinder-like). Higher = stronger interest. */
+  /** Strength on a 1.0–8.0 scale (TradeFinder-like). Higher = stronger interest. */
   rFactor: number | null;
   /** Net directional read from the voting factors. */
   rFactorBias: 'buy' | 'sell' | 'neutral' | null;
@@ -102,6 +102,10 @@ export interface SectorLeadersResponse {
 export interface LiveQuoteResponse {
   success: boolean;
   marketOpen: boolean;
+  /** True when rows are the persisted end-of-session state (post-market), not live depth. */
+  snapshot?: boolean;
+  /** The session the snapshot rows belong to (YYYY-MM-DD). */
+  snapshotDate?: string;
   asOf?: string;
   date?: string;
   rows: LiveUrgencyRow[];

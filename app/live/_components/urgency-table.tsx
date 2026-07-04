@@ -104,10 +104,11 @@ function RFactorCell({ r }: { r: LiveUrgencyRow }) {
   if (r.rFactor == null) return <span className="text-muted-foreground/50">—</span>;
   const bias = r.rFactorBias ?? 'neutral';
   const b = BIAS_STYLE[bias];
+  // Thresholds on the 1–8 scale (rescaled from the old 1–5: 4/5 → 6.25, 3/5 → 4.5)
   const strengthCls =
-    r.rFactor >= 4
+    r.rFactor >= 6.25
       ? 'font-bold text-emerald-600 dark:text-emerald-400'
-      : r.rFactor >= 3
+      : r.rFactor >= 4.5
         ? 'font-semibold text-amber-600 dark:text-amber-400'
         : 'text-muted-foreground';
 
@@ -120,7 +121,7 @@ function RFactorCell({ r }: { r: LiveUrgencyRow }) {
   const naLabels = factors.filter((f) => !f.available).map((f) => f.label);
 
   const tip = [
-    `R-Factor ${r.rFactor.toFixed(2)} / 5 · bias ${bias} · agreement ${conf}`,
+    `R-Factor ${r.rFactor.toFixed(2)} / 8 · bias ${bias} · agreement ${conf}`,
     r.rFactorAfterEntry === false ? '⚠ before the 09:45 IST entry window — may be opening noise' : '',
     '',
     active,
@@ -268,7 +269,18 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
         </thead>
         <tbody>
           {sorted.map((r) => (
-            <tr key={r.symbol} className="border-t border-border hover:bg-muted/30">
+            <tr
+              key={r.symbol}
+              onClick={() =>
+                window.open(
+                  `https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(r.symbol)}&interval=5`,
+                  '_blank',
+                  'noopener,noreferrer',
+                )
+              }
+              title={`Open ${r.symbol} chart on TradingView`}
+              className="cursor-pointer border-t border-border hover:bg-muted/30"
+            >
               <td className="px-2 py-1 text-right tabular-nums text-[10px] text-muted-foreground">{r.origRank}</td>
               <td className="px-3 py-1 font-medium text-foreground">
                 {r.symbol}

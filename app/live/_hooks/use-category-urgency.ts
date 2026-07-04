@@ -28,10 +28,14 @@ export interface CategoryUrgency {
   /** The F&O-gated mover list for this category, in NSE's ranked order. */
   picks: SectorPick[];
   meta: SectorLeadersResponse['meta'] | null;
-  /** Live depth rows (only while the market is open; never fabricated off-hours). */
+  /** Live depth rows while the market is open; the recorded closing snapshot after. */
   rows: LiveUrgencyRow[];
   sectors: Record<string, string>;
   marketOpen: boolean | null;
+  /** True when rows are the persisted end-of-session state (post-market). */
+  snapshot: boolean;
+  /** The session those snapshot rows belong to (YYYY-MM-DD). */
+  snapshotDate: string | null;
   asOf: string | null;
   listLoading: boolean;
   quoteLoading: boolean;
@@ -53,6 +57,8 @@ export function useCategoryUrgency(source: WatchlistSource, staggerIndex: number
 
   const [rows, setRows] = useState<LiveUrgencyRow[]>([]);
   const [marketOpen, setMarketOpen] = useState<boolean | null>(null);
+  const [snapshot, setSnapshot] = useState(false);
+  const [snapshotDate, setSnapshotDate] = useState<string | null>(null);
   const [asOf, setAsOf] = useState<string | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
@@ -110,6 +116,8 @@ export function useCategoryUrgency(source: WatchlistSource, staggerIndex: number
       const d: LiveQuoteResponse = await scheduleQuote(symbolsKey.split(','));
       if (d.success) {
         setMarketOpen(d.marketOpen);
+        setSnapshot(d.snapshot === true);
+        setSnapshotDate(d.snapshotDate ?? null);
         setRows(d.rows ?? []);
         setAsOf(d.asOf ?? null);
         setQuoteError(null);
@@ -150,6 +158,8 @@ export function useCategoryUrgency(source: WatchlistSource, staggerIndex: number
     rows,
     sectors,
     marketOpen,
+    snapshot,
+    snapshotDate,
     asOf,
     listLoading,
     quoteLoading,

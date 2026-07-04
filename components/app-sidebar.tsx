@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState } from "react"
-import { BarChart2, Bot, BookOpen, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, LineChart, Radio, Table2 } from "lucide-react"
+import { Activity, BarChart2, Bot, BookOpen, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, LineChart, type LucideIcon, Radio, Table2, Target } from "lucide-react"
 
 import {
   Sidebar,
@@ -18,32 +18,109 @@ import {
 } from "@/components/ui/sidebar"
 import { cn } from "@/lib/utils"
 
-const NAV_ITEMS = {
-  label: "Simulator",
-  icon: FlaskConical,
-  children: [
-    { title: "Market Simulator", href: "/market-simulator", icon: BarChart2 },
-    { title: "Data Downloader", href: "/data-downloader", icon: Download },
-    { title: "Trade Viewer", href: "/trade-viewer", icon: Eye },
-    { title: "Trade Assistant", href: "/trade-assistant", icon: Bot },
-    { title: "Backtest", href: "/backtest", icon: LineChart },
-    { title: "Live Urgency", href: "/live", icon: Gauge },
-    { title: "Heatmap", href: "/heatmap", icon: Grid3x3 },
-    { title: "NSE Heatmap", href: "/nse/heatmap", icon: LayoutGrid },
-    { title: "NSE Movers", href: "/nse/movers", icon: Flame },
-    { title: "EOD Movers", href: "/nse/movers-history", icon: History },
-    { title: "Fyers Live", href: "/fyers", icon: Radio },
-    { title: "Market Holidays", href: "/holidays", icon: CalendarDays },
-    { title: "F&O Lot Sizes", href: "/fno-lots", icon: Table2 },
-    { title: "API Docs", href: "/api-docs", icon: BookOpen },
-  ],
+interface NavItem {
+  title: string
+  href: string
+  icon: LucideIcon
+}
+
+interface NavGroup {
+  label: string
+  icon: LucideIcon
+  children: NavItem[]
+}
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: "Live Market",
+    icon: Activity,
+    children: [
+      { title: "Live Urgency", href: "/live", icon: Gauge },
+      { title: "NSE Movers", href: "/nse/movers", icon: Flame },
+      { title: "NSE Heatmap", href: "/nse/heatmap", icon: LayoutGrid },
+      { title: "Heatmap", href: "/heatmap", icon: Grid3x3 },
+      { title: "Fyers Live", href: "/fyers", icon: Radio },
+    ],
+  },
+  {
+    label: "Simulation",
+    icon: FlaskConical,
+    children: [
+      { title: "Market Simulator", href: "/market-simulator", icon: BarChart2 },
+      { title: "Backtest", href: "/backtest", icon: LineChart },
+      { title: "Trade Viewer", href: "/trade-viewer", icon: Eye },
+      { title: "Data Downloader", href: "/data-downloader", icon: Download },
+    ],
+  },
+  {
+    label: "Assistant",
+    icon: Bot,
+    children: [
+      { title: "Trade Assistant", href: "/trade-assistant", icon: Bot },
+      { title: "Trade Suggest", href: "/trade-suggest", icon: Target },
+    ],
+  },
+  {
+    label: "Reference",
+    icon: BookOpen,
+    children: [
+      { title: "EOD Movers", href: "/nse/movers-history", icon: History },
+      { title: "Market Holidays", href: "/holidays", icon: CalendarDays },
+      { title: "F&O Lot Sizes", href: "/fno-lots", icon: Table2 },
+      { title: "API Docs", href: "/api-docs", icon: BookOpen },
+    ],
+  },
+]
+
+/** One collapsible nav group — expanded by default; an active child keeps it open. */
+function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: string }) {
+  const [open, setOpen] = useState(true)
+  const isChildActive = group.children.some((c) => pathname.startsWith(c.href))
+
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel asChild>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider",
+            "text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors cursor-pointer",
+            "group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+          )}
+        >
+          <group.icon className="size-4 shrink-0" />
+          <span className="group-data-[collapsible=icon]:hidden flex-1 text-left">{group.label}</span>
+          {open ? (
+            <ChevronDown className="size-3.5 shrink-0 group-data-[collapsible=icon]:hidden" />
+          ) : (
+            <ChevronRight className="size-3.5 shrink-0 group-data-[collapsible=icon]:hidden" />
+          )}
+        </button>
+      </SidebarGroupLabel>
+
+      {(open || isChildActive) && (
+        <SidebarMenu className="mt-1">
+          {group.children.map((item) => {
+            const active = pathname.startsWith(item.href)
+            return (
+              <SidebarMenuItem key={item.href}>
+                <SidebarMenuButton asChild isActive={active} tooltip={item.title} className="text-xs">
+                  <Link href={item.href}>
+                    <item.icon className="size-4" />
+                    <span>{item.title}</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            )
+          })}
+        </SidebarMenu>
+      )}
+    </SidebarGroup>
+  )
 }
 
 export function AppSidebar() {
   const pathname = usePathname()
-  const [open, setOpen] = useState(true)
-
-  const isChildActive = NAV_ITEMS.children.some((c) => pathname.startsWith(c.href))
 
   return (
     <Sidebar collapsible="icon">
@@ -66,52 +143,9 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        <SidebarGroup>
-          {/* Collapsible group header */}
-          <SidebarGroupLabel asChild>
-            <button
-              onClick={() => setOpen((v) => !v)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium uppercase tracking-wider",
-                "text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors cursor-pointer",
-                "group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
-              )}
-            >
-              <NAV_ITEMS.icon className="size-4 shrink-0" />
-              <span className="group-data-[collapsible=icon]:hidden flex-1 text-left">
-                {NAV_ITEMS.label}
-              </span>
-              {open ? (
-                <ChevronDown className="size-3.5 shrink-0 group-data-[collapsible=icon]:hidden" />
-              ) : (
-                <ChevronRight className="size-3.5 shrink-0 group-data-[collapsible=icon]:hidden" />
-              )}
-            </button>
-          </SidebarGroupLabel>
-
-          {/* Sub-menu items */}
-          {(open || isChildActive) && (
-            <SidebarMenu className="mt-1">
-              {NAV_ITEMS.children.map((item) => {
-                const active = pathname.startsWith(item.href)
-                return (
-                  <SidebarMenuItem key={item.href}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={active}
-                      tooltip={item.title}
-                    >
-                      <Link href={item.href}>
-                        <item.icon className="size-4" />
-                        <span>{item.title}</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                )
-              })}
-            </SidebarMenu>
-          )}
-        </SidebarGroup>
+        {NAV_GROUPS.map((group) => (
+          <NavGroupSection key={group.label} group={group} pathname={pathname} />
+        ))}
       </SidebarContent>
 
       <SidebarRail />
