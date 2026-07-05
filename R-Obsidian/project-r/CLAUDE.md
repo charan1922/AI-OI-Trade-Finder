@@ -47,6 +47,7 @@ R-Obsidian/project-r/
     ├── stocks/          per-symbol pages (UPPERCASE symbol, e.g. RELIANCE.md)
     ├── sectors/         per-sector pages (kebab-case, e.g. pharma.md)
     ├── setups/          setup / pattern pages (kebab-case)
+    ├── trades/          one page per verified trade (see "Trade pages")
     └── sources/         one summary page per ingested source
 ```
 
@@ -58,7 +59,7 @@ R-Obsidian/project-r/
 - **Frontmatter (required on every wiki page)** — Dataview-friendly:
   ```yaml
   ---
-  type: stock | sector | setup | source | overview | synthesis
+  type: stock | sector | setup | trade | source | overview | synthesis
   tags: [searchable, keywords]
   created: 2026-07-05        # first authored (IST date)
   updated: 2026-07-05        # last touched
@@ -67,9 +68,84 @@ R-Obsidian/project-r/
   ```
 - **Dates:** always IST, absolute (`2026-07-05`), never "yesterday"/"last week".
 - **Naming:** stocks = exchange symbol UPPERCASE; sectors/setups = kebab-case;
-  source pages prefixed with date (`2026-07-03-session.md`).
+  source pages prefixed with date (`2026-07-03-session.md`); trade pages
+  `YYYY-MM-DD-SYMBOL-STRIKE-CE|PE.md` (date-first → sorts chronologically).
 - **Provenance:** every non-obvious claim cites its source — a raw source
   (`[[2026-07-03-session]]`) or a verified figure. If it's an inference, say so.
+
+## Trade pages (standard format)
+
+One file per verified trade in `wiki/trades/`. Data sources: the TF ticket
+(`data/tradefinder_platform_trades.json` — verified execution), Trade Viewer
+5-min bars (`backtest_equity`/`backtest_options`), and the NSE-bhavcopy
+trade-context insight. Only real numbers from those sources — anything missing
+is written "not recorded", never estimated.
+
+Frontmatter (with the required keys above):
+
+```yaml
+type: trade
+symbol: ADANIPORTS        # UPPERCASE exchange symbol
+sector: capital-goods     # kebab-case — the app's TF-derived bucket (fno_sectors.json)
+nse_sector: services      # NSE official classification, ONLY when it differs
+trade_date: 2026-06-23
+side: PE                  # CE | PE
+strike: 1780
+expiry: 2026-06-30
+entry_time: "10:20"       # IST 24h
+entry_premium: 6.4663
+exit_time: "12:10"
+exit_premium: 18.70
+lots: 3
+lot_size: 475
+quantity: 1425
+capital_used: 9215
+pnl: 17433
+return_pct: 189.2         # on premium
+hold_minutes: 110
+result: win               # win | loss | scratch
+verified: true            # broker-verified entry/exit exist
+```
+
+Body — fixed heading order (approved 2026-07-06; mirrors the trader's
+[[top-down-smart-money]] method):
+
+1. Title `# SYMBOL STRIKE SIDE — date`, then a one-line bold verdict
+   (result · ₹ · % · hold time · max heat).
+2. `## 1 · Trade Card (verified execution)` — the verified fills as a
+   `| Field | Value |` table; name the verification source.
+3. `## 2 · Top-Down: Market & Sector` — market breadth (our F&O bhavcopy
+   universe up/down counts + avg), sector peer breadth and where the stock
+   ranked (computed from `bhavcopy_days` closes × `fno_sectors.json`), index/
+   VIX if recorded. Label the peer set as the "TF sector-scope bucket" — the
+   map is TradeFinder-derived, not NSE's taxonomy; when NSE's official
+   classification differs, add a dated classification note (e.g. ADANIPORTS:
+   TF bucket capital goods, NSE Services → Transport Infrastructure).
+4. `## 3 · Smart Money Evidence (why this stock)` — futures OI (day-on-day,
+   5-session, 20-session level, quadrant read); futures turnover vs 30-day
+   average; option flow (traded-strike OI change, contract-month OI, OI
+   level); direction-agreement check; R-Factor if recorded for that date.
+5. `## 4 · Entry: Confirmation, not prediction` — minutes after open, what
+   was already established, entry-bar signal state (ADX/±DI), moneyness,
+   premium vs day low.
+6. `## 5 · Exit & Trade Management` — exit vs hold-period best print, max
+   favorable/adverse excursion during the hold (from 5-min bars), points
+   banked vs the day's best case, booked-target vs trailed read.
+7. `## 6 · Risk` — worst case = premium paid vs capital; ticket SL (usually
+   "not recorded"); the ~₹2.5k loss-cap applied to this position (label it
+   derived-from-rule, not from the ticket); return on capital used.
+8. `## 7 · Charts` — the two trade-viewer panels embedded:
+   `![[<date>-<SYMBOL>-<strike>-<side>-option.png]]` and `...-equity.png`.
+   PNGs live in `raw/assets/`, captured from `/trade-viewer` via the
+   Playwright script (parent repo's install; scratchpad
+   `capture-trade-charts.js` pattern) — never hand-drawn or mocked.
+9. `## 8 · Read & Lessons` — the grounded story + reusable pattern notes;
+   every claim tied to a number above; wikilink setups and the stock page.
+10. `## 9 · Sources` — where each number came from.
+
+Tickets without verified entry/exit (`verified: false`) get the Trade Card
+with known fields only, plus Top-Down and Smart Money Evidence. Pilot/
+reference example: `wiki/trades/2026-06-23-ADANIPORTS-1780-PE.md`.
 
 ## Operations
 
