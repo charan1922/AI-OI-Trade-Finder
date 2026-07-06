@@ -68,6 +68,11 @@ dropped 17 video screenshots into raw/assets/ — kept 12 (renamed
 its matching section. Raw layer unchanged: still one verbatim file per video
 (2 sources).
 
+## [2026-07-06] note | Welcome.md rewritten as the vault landing page
+Replaced Obsidian's default boilerplate with a start-here page: links to
+[[index]], [[entry-setups]], [[fno-sector-map]], the pilot trade page and
+[[log]], plus the grow-the-vault workflow and trader context.
+
 ## [2026-07-06] ingest | breakout-secrets video → entry-setups § Breakout confirmation
 User pasted THREE summaries of Aakash's "My 3 ways to find price direction
 after breakout" (youtube 2-3nsNfjyH4, 11:26) + 8 screenshots. Verified frames
