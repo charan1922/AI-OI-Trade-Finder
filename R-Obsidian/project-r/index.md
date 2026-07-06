@@ -13,7 +13,8 @@ query answer. Read it first when answering a question, then drill into the pages
 ## Start here
 
 - [[overview]] — current state of the wiki + entry point
-- [[synthesis]] — the evolving "what works for me" thesis _(created on first ingest)_
+- [[synthesis]] — the evolving "what works for me" thesis _(deferred until
+  enough trade pages exist to support one — few-docs rule)_
 
 ## Stocks
 

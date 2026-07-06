@@ -11,14 +11,10 @@
             "id": "cfb053d75cd5cdd3",
             "type": "leaf",
             "state": {
-              "type": "markdown",
-              "state": {
-                "file": "wiki/setups/entry-setups.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "entry-setups"
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
             }
           }
         ]
@@ -94,7 +90,6 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "wiki/setups/entry-setups.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +99,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for entry-setups"
+              "title": "Backlinks"
             }
           },
           {
@@ -113,12 +108,11 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "wiki/setups/entry-setups.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from entry-setups"
+              "title": "Outgoing links"
             }
           },
           {
@@ -156,13 +150,12 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "wiki/setups/entry-setups.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of entry-setups"
+              "title": "Outline"
             }
           }
         ]
@@ -185,12 +178,22 @@
   },
   "active": "cfb053d75cd5cdd3",
   "lastOpenFiles": [
+    "README.md.tmp.10912.d151361af330",
+    "wiki/overview.md.tmp.10912.947059a7225f",
+    "index.md.tmp.10912.e6a0561e3389",
+    "CLAUDE.md.tmp.10912.f647f9e6dc95",
+    "CLAUDE.md.tmp.10912.135fd6cf2dd5",
+    "CLAUDE.md.tmp.10912.3c3d78674319",
+    "log.md.tmp.10912.ad353e7e001f",
+    "index.md",
+    "wiki/setups/entry-setups.md",
+    "raw/articles/2026-07-06-breakout-secrets-video.md",
+    "raw/assets/2026-06-23-ADANIPORTS-1780-PE-equity.png",
+    "raw/tf-captures/README.md",
+    "log.md.tmp.28324.c1563e088390",
+    "Welcome.md.tmp.28324.53fbe32f9809",
     "index.md.tmp.28324.6dae8220d072",
     "index.md.tmp.28324.67dbc2e2d443",
-    "wiki/setups/entry-setups.md.tmp.28324.a9223c8ae7e4",
-    "wiki/setups/entry-setups.md.tmp.28324.22c1e345b389",
-    "wiki/setups/entry-setups.md.tmp.28324.710f78040924",
-    "raw/articles/2026-07-06-breakout-secrets-video.md",
     "raw/assets/breakout-secrets-09-12-techm-three-levels.png",
     "raw/assets/breakout-secrets-09-41-persistent-two-levels.png",
     "raw/assets/breakout-secrets-04-16-efficient-surge.png",
@@ -200,19 +203,10 @@
     "raw/assets/Screenshot (265).png",
     "raw/assets/Screenshot (264).png",
     "raw/assets/Screenshot (263).png",
-    "raw/assets/Screenshot (262).png",
-    "log.md.tmp.28324.45a42334561f",
-    "log.md.tmp.28324.ad441cbe42f0",
-    "wiki/sectors/fno-sector-map.md.tmp.28324.0b77e1c9d713",
-    "wiki/trades/2026-06-23-ADANIPORTS-1780-PE.md.tmp.28324.df09a3e35eb7",
-    "wiki/trades/2026-06-23-ADANIPORTS-1780-PE.md.tmp.28324.55f4744aade7",
-    "index.md.tmp.28324.5aa0c3a6d8b3",
     "wiki/trades/2026-06-23-ADANIPORTS-1780-PE.md",
-    "wiki/setups/entry-setups.md",
     "raw/articles/2026-07-06-entry-setups-video.md",
     "raw/articles/README.md",
     "wiki/sectors/auto.md",
-    "index.md",
     "log.md",
     "README.md",
     "wiki/sectors/chemicals.md",
@@ -230,7 +224,6 @@
     "wiki/sectors/services.md",
     "wiki/sectors/metals-mining.md",
     "wiki/sectors/power.md",
-    "wiki/sectors/capital-goods.md",
     "Untitled.canvas"
   ]
 }

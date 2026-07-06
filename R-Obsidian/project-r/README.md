@@ -24,9 +24,11 @@ results — following `[[links]]`, checking the graph view, reading updated page
 
 - `CLAUDE.md` — the **schema**: how the LLM maintains this wiki (the key config).
 - `index.md` — catalog of every page. `log.md` — timeline of what happened.
-- `raw/` — your immutable sources (the LLM never edits these).
-- `wiki/` — the LLM-generated pages (`stocks/`, `sectors/`, `setups/`, `sources/`,
-  plus `overview.md` and `synthesis.md`). Starts empty; grows as you ingest.
+- `raw/` — your immutable sources (the LLM never edits these; one verbatim
+  file per source).
+- `wiki/` — the LLM-generated pages (`stocks/`, `sectors/`, `setups/`,
+  `trades/`, plus `overview.md`; `synthesis.md` comes later, once enough trade
+  pages exist). Kept deliberately consolidated — few docs, not many.
 
 ## Optional Obsidian setup (one-time)
 

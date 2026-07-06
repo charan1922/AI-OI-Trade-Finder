@@ -48,7 +48,7 @@ R-Obsidian/project-r/
     ├── sectors/         per-sector pages (kebab-case, e.g. pharma.md)
     ├── setups/          setup / pattern pages (kebab-case)
     ├── trades/          one page per verified trade (see "Trade pages")
-    └── sources/         one summary page per ingested source
+    └── (sources live in raw/ verbatim — no wiki/sources summary pages)
 ```
 
 ## Page conventions
@@ -135,7 +135,8 @@ Body — fixed heading order (approved 2026-07-06; mirrors the trader's
    "not recorded"); the ~₹2.5k loss-cap applied to this position (label it
    derived-from-rule, not from the ticket); return on capital used.
 8. `## 7 · Charts` — the two trade-viewer panels embedded:
-   `![[<date>-<SYMBOL>-<strike>-<side>-option.png]]` and `...-equity.png`.
+   `<date>-<SYMBOL>-<strike>-<side>-option.png` and `...-equity.png`
+   (embed with Obsidian's image-embed syntax).
    PNGs live in `raw/assets/`, captured from `/trade-viewer` via the
    Playwright script (parent repo's install; scratchpad
    `capture-trade-charts.js` pattern) — never hand-drawn or mocked.
@@ -152,7 +153,10 @@ reference example: `wiki/trades/2026-06-23-ADANIPORTS-1780-PE.md`.
 ### Ingest (a new source arrives in `raw/`)
 1. Read the source fully.
 2. Briefly discuss the key takeaways with the user (unless told to batch).
-3. Create `wiki/sources/<date>-<slug>.md` — a summary with frontmatter.
+3. Store the source verbatim under `raw/` (one file per source with a short
+   provenance header). No separate wiki summary page per source — derived
+   understanding goes straight into the affected consolidated pages (the
+   user's few-docs rule; practice settled 2026-07-06).
 4. Update every affected page: the **stocks** named, their **sectors**, any
    **setup** the source illustrates, and the **synthesis** if it shifts the
    thesis. A single source often touches several pages.

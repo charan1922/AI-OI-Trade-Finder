@@ -23,6 +23,25 @@ raw/articles/2026-07-06-tf-video-method-notes.md; derived the method page
 [[top-down-smart-money]] (sector-first funnel, confirmation entries, ~₹2.5k
 loss cap, ₹25–60k capital, hedging use).
 
+## [2026-07-06] note | trade-page format v2 (user-approved, 9 sections)
+Rewrote [[2026-06-23-ADANIPORTS-1780-PE]] to the approved 9-section structure
+(Trade Card / Top-Down / Smart Money / Entry / Exit & Management / Risk /
+Charts / Read & Lessons / Sources). Added real sector + market breadth from
+bhavcopy (capital goods 18/19 red; F&O universe 176/211 red) and the two
+trade-viewer chart captures in raw/assets/ (Playwright, light theme). Schema
+§ Trade pages updated to match. Rule reaffirmed: propose + get approval BEFORE
+ingesting; charts are captured from /trade-viewer, never mocked.
+
+## [2026-07-06] lint | ADANIPORTS sector — TF bucket vs NSE classification
+User challenged "capital goods". Verified: our sector map is
+TradeFinder-derived (`fno_sectors.json`, seed script `sectorSource: 'tf-map'`);
+NSE officially classifies ADANIPORTS as Services → Transport Infrastructure
+(Port & Port Services), and NSE has no capital-goods index (/nse/heatmap shows
+official NSE sectoral indices only). Decision: app map untouched; vault trade
+pages label the peer set "TF sector-scope bucket" and carry an `nse_sector`
+frontmatter key + dated note when classifications differ. Schema updated;
+[[2026-06-23-ADANIPORTS-1780-PE]] relabeled.
+
 ## [2026-07-06] ingest | F&O sector map — 211 stocks × 17 buckets
 Built [[fno-sector-map]] from the fno_stocks DB (TF-derived buckets), the
 /api/nse/heatmap live feed (NSE index inventory, 03-Jul-2026 close), and
@@ -46,6 +65,14 @@ Method note: NSE's per-symbol quote-equity API is bot-blocked server-side
 (plain fetch AND headless Chromium); the NIFTY 500 constituent CSV is the
 reliable path to the same taxonomy.
 
+## [2026-07-06] note | sector map split into 18 per-sector pages (graph shape)
+User: the graph showed one 211-spoke starburst around [[fno-sector-map]].
+Split it: 18 NSE-sector pages under wiki/sectors/ (each with its stock list,
+TF tags, index-to-watch, quirks), and the map slimmed to a hub (tables +
+sector links only). Graph is now map → sectors → stock clusters, mirroring
+the top-down funnel. [[capital-goods]] and [[services]] links on the
+ADANIPORTS trade page now resolve.
+
 ## [2026-07-06] ingest | entry-setups video → wiki/setups/entry-setups
 User pasted a detailed summary of Pro Trader Aakash's "Secret Entry Setup I
 Use Daily — Option Buying" (youtube CXE-RrP5_ys, 20:56) + 15 screenshots.
@@ -68,11 +95,6 @@ dropped 17 video screenshots into raw/assets/ — kept 12 (renamed
 its matching section. Raw layer unchanged: still one verbatim file per video
 (2 sources).
 
-## [2026-07-06] note | Welcome.md rewritten as the vault landing page
-Replaced Obsidian's default boilerplate with a start-here page: links to
-[[index]], [[entry-setups]], [[fno-sector-map]], the pilot trade page and
-[[log]], plus the grow-the-vault workflow and trader context.
-
 ## [2026-07-06] ingest | breakout-secrets video → entry-setups § Breakout confirmation
 User pasted THREE summaries of Aakash's "My 3 ways to find price direction
 after breakout" (youtube 2-3nsNfjyH4, 11:26) + 8 screenshots. Verified frames
@@ -85,29 +107,24 @@ section (no new page). Flagged a refinement, not overwritten: morning-base
 window "first 30 min" (entry-setups video) vs "first 5–15 min, flexible to
 15–20" (this video) — both noted in § Morning Base.
 
-## [2026-07-06] note | sector map split into 18 per-sector pages (graph shape)
-User: the graph showed one 211-spoke starburst around [[fno-sector-map]].
-Split it: 18 NSE-sector pages under wiki/sectors/ (each with its stock list,
-TF tags, index-to-watch, quirks), and the map slimmed to a hub (tables +
-sector links only). Graph is now map → sectors → stock clusters, mirroring
-the top-down funnel. [[capital-goods]] and [[services]] links on the
-ADANIPORTS trade page now resolve.
+## [2026-07-06] note | Welcome.md rewritten as the vault landing page
+Replaced Obsidian's default boilerplate with a start-here page: links to
+[[index]], [[entry-setups]], [[fno-sector-map]], the pilot trade page and
+[[log]], plus the grow-the-vault workflow and trader context.
 
-## [2026-07-06] lint | ADANIPORTS sector — TF bucket vs NSE classification
-User challenged "capital goods". Verified: our sector map is
-TradeFinder-derived (`fno_sectors.json`, seed script `sectorSource: 'tf-map'`);
-NSE officially classifies ADANIPORTS as Services → Transport Infrastructure
-(Port & Port Services), and NSE has no capital-goods index (/nse/heatmap shows
-official NSE sectoral indices only). Decision: app map untouched; vault trade
-pages label the peer set "TF sector-scope bucket" and carry an `nse_sector`
-frontmatter key + dated note when classifications differ. Schema updated;
-[[2026-06-23-ADANIPORTS-1780-PE]] relabeled.
-
-## [2026-07-06] note | trade-page format v2 (user-approved, 9 sections)
-Rewrote [[2026-06-23-ADANIPORTS-1780-PE]] to the approved 9-section structure
-(Trade Card / Top-Down / Smart Money / Entry / Exit & Management / Risk /
-Charts / Read & Lessons / Sources). Added real sector + market breadth from
-bhavcopy (capital goods 18/19 red; F&O universe 176/211 red) and the two
-trade-viewer chart captures in raw/assets/ (Playwright, light theme). Schema
-§ Trade pages updated to match. Rule reaffirmed: propose + get approval BEFORE
-ingesting; charts are captured from /trade-viewer, never mocked.
+## [2026-07-06] lint | full vault review — order restored, stale pages fixed
+User asked "is it aligned with our target? cross check and review". Verified:
+all 18 sector pages sum to 211 and match the fno_stocks DB; all 18 embedded
+frames + 2 chart captures resolve; frontmatter complete on every wiki page;
+trade-page derived figures re-verify; index per-sector counts sum to 211.
+Fixed five findings: (1) this log's entries were out of chronological order
+(inserted at fixed anchors instead of appended) — reordered to true event
+sequence; (2) [[overview]] still claimed "no sources ingested yet" — refreshed
+to current state; (3) [[synthesis]] was promised "on first ingest" but never
+created — deferred explicitly in index/README per the few-docs rule; (4)
+schema § Ingest still required a wiki/sources summary page per source —
+reworded to actual practice (raw verbatim → consolidated pages directly); (5)
+the schema's chart-filename template used embed syntax that rendered as a
+broken image — backticked. The 211 unresolved stock links are intentional
+(future pages). Open items: 46 verified trades pending the user's go;
+NIFTY CEMENT drift in app code still unfixed (out of vault scope).
