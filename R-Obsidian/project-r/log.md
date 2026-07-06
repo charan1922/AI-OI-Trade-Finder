@@ -68,6 +68,18 @@ dropped 17 video screenshots into raw/assets/ — kept 12 (renamed
 its matching section. Raw layer unchanged: still one verbatim file per video
 (2 sources).
 
+## [2026-07-06] ingest | breakout-secrets video → entry-setups § Breakout confirmation
+User pasted THREE summaries of Aakash's "My 3 ways to find price direction
+after breakout" (youtube 2-3nsNfjyH4, 11:26) + 8 screenshots. Verified frames
+against summaries (TECHM success 15/18-May-2026, TCS fakeout 18-May, efficient
+surge, three-level vs two-level breakouts, P&L footer ₹20,700 ≈ ~₹20k claim).
+Kept 6 frames as `breakout-secrets-*.png` (2 duplicates removed). Stored all
+three summaries verbatim in one raw file; per the 1-2-docs rule, derived
+content went INTO [[entry-setups]] as a new "Breakout confirmation — 3 checks"
+section (no new page). Flagged a refinement, not overwritten: morning-base
+window "first 30 min" (entry-setups video) vs "first 5–15 min, flexible to
+15–20" (this video) — both noted in § Morning Base.
+
 ## [2026-07-06] note | sector map split into 18 per-sector pages (graph shape)
 User: the graph showed one 211-spoke starburst around [[fno-sector-map]].
 Split it: 18 NSE-sector pages under wiki/sectors/ (each with its stock list,

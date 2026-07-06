@@ -35,9 +35,10 @@ _None yet — created as sources name them._
 
 - [[entry-setups]] — THE method page (merged): top-down funnel, momentum >
   risk > exit > entry ranking, the four entry triggers (morning base, pivot
-  pullback, flag breakout with mandatory pole, sandwich trap), risk rules
-  (~₹2.5k cap), trading math, MPHASIS worked example — with 12 video frames
-  embedded
+  pullback, flag breakout with mandatory pole, sandwich trap), breakout
+  confirmation (morning-low test, R-Factor as capital efficiency, multi-level
+  breakouts), risk rules (~₹2.5k cap), trading math, MPHASIS + TECHM worked
+  examples — with 18 video frames embedded
 
 ## Trades
 
@@ -52,6 +53,9 @@ _None yet — created as sources name them._
 - [[2026-07-06-entry-setups-video]] — user's verbatim summary of Aakash's
   "Secret Entry Setup" video (+15 screenshots verified at ingest); feeds
   [[entry-setups]]
+- [[2026-07-06-breakout-secrets-video]] — three verbatim user summaries of
+  "My 3 ways to find price direction after breakout" (+8 screenshots, 6 kept);
+  feeds [[entry-setups]] § Breakout confirmation
 
 ---
 

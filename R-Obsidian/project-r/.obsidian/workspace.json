@@ -11,10 +11,14 @@
             "id": "cfb053d75cd5cdd3",
             "type": "leaf",
             "state": {
-              "type": "graph",
-              "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Graph view"
+              "type": "markdown",
+              "state": {
+                "file": "wiki/setups/entry-setups.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "entry-setups"
             }
           }
         ]
@@ -90,6 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
+                "file": "wiki/setups/entry-setups.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -99,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks"
+              "title": "Backlinks for entry-setups"
             }
           },
           {
@@ -108,11 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
+                "file": "wiki/setups/entry-setups.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links"
+              "title": "Outgoing links from entry-setups"
             }
           },
           {
@@ -150,12 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
+                "file": "wiki/setups/entry-setups.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline"
+              "title": "Outline of entry-setups"
             }
           }
         ]
@@ -178,28 +185,29 @@
   },
   "active": "cfb053d75cd5cdd3",
   "lastOpenFiles": [
+    "index.md.tmp.28324.6dae8220d072",
+    "index.md.tmp.28324.67dbc2e2d443",
+    "wiki/setups/entry-setups.md.tmp.28324.a9223c8ae7e4",
+    "wiki/setups/entry-setups.md.tmp.28324.22c1e345b389",
+    "wiki/setups/entry-setups.md.tmp.28324.710f78040924",
+    "raw/articles/2026-07-06-breakout-secrets-video.md",
+    "raw/assets/breakout-secrets-09-12-techm-three-levels.png",
+    "raw/assets/breakout-secrets-09-41-persistent-two-levels.png",
+    "raw/assets/breakout-secrets-04-16-efficient-surge.png",
+    "raw/assets/breakout-secrets-03-17-techm-morning-low.png",
+    "raw/assets/breakout-secrets-02-29-tcs-fakeout.png",
+    "raw/assets/breakout-secrets-01-28-techm-success.png",
+    "raw/assets/Screenshot (265).png",
+    "raw/assets/Screenshot (264).png",
+    "raw/assets/Screenshot (263).png",
+    "raw/assets/Screenshot (262).png",
+    "log.md.tmp.28324.45a42334561f",
+    "log.md.tmp.28324.ad441cbe42f0",
     "wiki/sectors/fno-sector-map.md.tmp.28324.0b77e1c9d713",
     "wiki/trades/2026-06-23-ADANIPORTS-1780-PE.md.tmp.28324.df09a3e35eb7",
     "wiki/trades/2026-06-23-ADANIPORTS-1780-PE.md.tmp.28324.55f4744aade7",
     "index.md.tmp.28324.5aa0c3a6d8b3",
-    "index.md.tmp.28324.45c3bd40d904",
-    "CLAUDE.md.tmp.28324.0a0dccaee20e",
-    "wiki/setups/entry-setups.md.tmp.28324.2102cc82f120",
-    "raw/assets/entry-setups-20-10-sandwich-note.png",
-    "raw/assets/entry-setups-17-58-sandwich-polycab.png",
-    "raw/assets/entry-setups-16-06-flag-godrejprop.png",
-    "raw/assets/entry-setups-12-32-pivot-pullback.png",
-    "raw/assets/entry-setups-10-48-intraday-boost.png",
-    "raw/assets/entry-setups-10-19-sector-scope.png",
-    "raw/assets/entry-setups-09-26-nifty-direction.png",
-    "raw/assets/entry-setups-09-08-fortis-pnl.png",
-    "raw/assets/entry-setups-07-18-morning-base.png",
-    "raw/assets/entry-setups-06-36-four-setups.png",
     "wiki/trades/2026-06-23-ADANIPORTS-1780-PE.md",
-    "log.md.tmp.28324.53e24531e486",
-    "index.md.tmp.28324.27bd2362284c",
-    "index.md.tmp.28324.2ebde93ad39e",
-    "wiki/setups/top-down-smart-money.md.tmp.28324.da1621b52d2e",
     "wiki/setups/entry-setups.md",
     "raw/articles/2026-07-06-entry-setups-video.md",
     "raw/articles/README.md",
@@ -223,7 +231,6 @@
     "wiki/sectors/metals-mining.md",
     "wiki/sectors/power.md",
     "wiki/sectors/capital-goods.md",
-    "wiki/sectors/financial-services.md",
     "Untitled.canvas"
   ]
 }
