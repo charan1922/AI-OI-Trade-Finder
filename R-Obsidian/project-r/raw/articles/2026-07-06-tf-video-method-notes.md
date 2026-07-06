@@ -2,7 +2,7 @@
 
 Provenance: the user analysed the TradeFinder trader's videos and pasted these
 two summaries in chat on 2026-07-06. Stored verbatim below — immutable raw
-source. Derived page: `wiki/setups/top-down-smart-money.md`.
+source. Derived page: `wiki/setups/entry-setups.md` (merged 2026-07-06).
 
 ---
 

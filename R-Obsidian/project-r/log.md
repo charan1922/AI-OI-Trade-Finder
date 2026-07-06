@@ -46,6 +46,28 @@ Method note: NSE's per-symbol quote-equity API is bot-blocked server-side
 (plain fetch AND headless Chromium); the NIFTY 500 constituent CSV is the
 reliable path to the same taxonomy.
 
+## [2026-07-06] ingest | entry-setups video → wiki/setups/entry-setups
+User pasted a detailed summary of Pro Trader Aakash's "Secret Entry Setup I
+Use Daily — Option Buying" (youtube CXE-RrP5_ys, 20:56) + 15 screenshots.
+Verified the summary frame-by-frame against the screenshots before ingest:
+ranking slide (momentum > risk > exit > entry), four-setups slide, MPHASIS
+morning-base frames (07-Apr-2026), pivot-pullback frame, Godrej Prop flag,
+Polycab sandwich, green/red-sandwich note slide, Intraday Boost list (MPHASIS
+R-Factor 3.56 top bullish), day P&L footer ₹15,991.25 ≈ the summary's ~₹15k.
+Stored verbatim as raw/articles/2026-07-06-entry-setups-video.md; derived ONE
+consolidated [[entry-setups]] page (all four setups as sections — decided
+against four micro-pages per the user's "do we really need many files"
+concern). [[top-down-smart-money]] stays the method hub and now links to it.
+
+## [2026-07-06] note | setups consolidated into ONE page + video frames embedded
+Per the user's "1-2 docs, not many": merged [[top-down-smart-money]] INTO
+[[entry-setups]] (single method-plus-entries page) and deleted the former;
+all inbound links repointed (schema, trade page, sector map, index). User
+dropped 17 video screenshots into raw/assets/ — kept 12 (renamed
+`entry-setups-mm-ss-topic.png`), deleted 5 duplicates, embedded each under
+its matching section. Raw layer unchanged: still one verbatim file per video
+(2 sources).
+
 ## [2026-07-06] note | sector map split into 18 per-sector pages (graph shape)
 User: the graph showed one 211-spoke starburst around [[fno-sector-map]].
 Split it: 18 NSE-sector pages under wiki/sectors/ (each with its stock list,

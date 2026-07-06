@@ -8,7 +8,7 @@ sources: 0
 
 # F&O Sector Map — 211 stocks, 18 NSE sectors
 
-The step-1 lookup for the [[top-down-smart-money]] funnel: sector first, then
+The step-1 lookup for the [[entry-setups|top-down]] funnel: sector first, then
 the F&O names inside it. This is the **hub** — each sector below is its own
 page holding the stock list. Grouping is **NSE's official industry
 classification** (NIFTY 500 constituent file; all 211 F&O symbols matched).

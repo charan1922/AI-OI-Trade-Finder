@@ -108,7 +108,7 @@ verified: true            # broker-verified entry/exit exist
 ```
 
 Body — fixed heading order (approved 2026-07-06; mirrors the trader's
-[[top-down-smart-money]] method):
+[[entry-setups]] method):
 
 1. Title `# SYMBOL STRIKE SIDE — date`, then a one-line bold verdict
    (result · ₹ · % · hold time · max heat).

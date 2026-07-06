@@ -33,9 +33,11 @@ _None yet — created as sources name them._
 
 ## Setups
 
-- [[top-down-smart-money]] — the TF trader's method (sector-first funnel,
-  confirmation entries, ~₹2.5k loss cap); the lens every trade page is read
-  against
+- [[entry-setups]] — THE method page (merged): top-down funnel, momentum >
+  risk > exit > entry ranking, the four entry triggers (morning base, pivot
+  pullback, flag breakout with mandatory pole, sandwich trap), risk rules
+  (~₹2.5k cap), trading math, MPHASIS worked example — with 12 video frames
+  embedded
 
 ## Trades
 
@@ -46,7 +48,10 @@ _None yet — created as sources name them._
 ## Sources
 
 - [[2026-07-06-tf-video-method-notes]] — user's verbatim video-analysis of the
-  TF trader's approach (raw/articles); feeds [[top-down-smart-money]]
+  TF trader's approach (raw/articles); feeds [[entry-setups]]
+- [[2026-07-06-entry-setups-video]] — user's verbatim summary of Aakash's
+  "Secret Entry Setup" video (+15 screenshots verified at ingest); feeds
+  [[entry-setups]]
 
 ---
 
