@@ -44,3 +44,4 @@ data/project-r.db
 .venv/
 .ipynb_checkpoints/
 __pycache__/
+.claude/settings.json

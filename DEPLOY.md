@@ -82,11 +82,19 @@ A fresh volume starts empty. Open the app and run the sync pages
 (master contracts, bhavcopy) exactly as you would locally, then let the poller
 accumulate candles during market hours.
 
-### 7. Expose it — **only after the password gate**
+### 7. Expose it — **only after setting the password**
 
-The service isn't public until you click **Generate Domain**. Before you do,
-add the one-password gate (see below) — otherwise your live broker data and
-sync controls are open to anyone with the URL.
+The one-password gate (`middleware.ts`) protects every page and API route with
+HTTP Basic Auth, but it is **only active when `APP_PASSWORD` is set**. Before you
+click **Generate Domain**:
+
+1. Add a service variable `APP_PASSWORD=<a strong password>`.
+2. Redeploy (saving the variable does this).
+3. Generate the public domain. Visiting it prompts for the password (any
+   username; only the password is checked).
+
+Leave `APP_PASSWORD` unset for local dev — the gate is a no-op without it, so
+`pnpm dev` stays password-free.
 
 ## Cost levers (later)
 

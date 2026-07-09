@@ -22,6 +22,9 @@ const envSchema = z.object({
   FYERS_TOTP_SECRET: z.string().optional(), // base32 TOTP secret from Fyers 2FA setup
   FYERS_PIN: z.string().optional(), // 4-digit login PIN
   FYERS_REDIRECT_URI: z.string().optional(), // must exactly match the app's configured redirect
+  // One-password gate (middleware.ts). Set to enable HTTP Basic Auth over the
+  // whole app on a deployed host; leave unset for password-free local dev.
+  APP_PASSWORD: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);
