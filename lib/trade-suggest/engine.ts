@@ -96,6 +96,18 @@ function windowState(): SuggestWindow {
 
 // ─── Candidate gathering (existing routes, same origin) ──────────────────────
 
+/**
+ * Auth header for the internal same-origin fetches below. On the deployed server
+ * the whole app is behind proxy.ts (HTTP Basic Auth via APP_PASSWORD); a
+ * server-to-self fetch carries no browser credentials, so without this the
+ * `/api/live/*` calls 401 and the scan fails. Sends the same password the gate
+ * checks. Empty locally (no APP_PASSWORD → gate is off), so dev is unaffected.
+ */
+function internalAuthHeaders(): Record<string, string> {
+  const pw = process.env.APP_PASSWORD;
+  return pw ? { Authorization: `Basic ${Buffer.from(`x:${pw}`).toString('base64')}` } : {};
+}
+
 async function fetchCandidates(
   origin: string,
   fullUniverse: boolean,
@@ -104,7 +116,10 @@ async function fetchCandidates(
   const oiSpurtSymbols = new Set<string>();
   for (const source of CANDIDATE_SOURCES) {
     try {
-      const res = await fetch(`${origin}/api/live/nse-watchlist?source=${source}`, { cache: 'no-store' });
+      const res = await fetch(`${origin}/api/live/nse-watchlist?source=${source}`, {
+        cache: 'no-store',
+        headers: internalAuthHeaders(),
+      });
       const j = (await res.json()) as SectorLeadersResponse;
       for (const p of j.picks ?? []) {
         if (!p.symbol) continue;
@@ -178,7 +193,7 @@ export async function loadFactorBaselines(
 async function fetchQuotes(origin: string, symbols: string[]): Promise<LiveQuoteResponse> {
   const res = await fetch(`${origin}/api/live/quote`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...internalAuthHeaders() },
     body: JSON.stringify({ symbols }),
     cache: 'no-store',
   });

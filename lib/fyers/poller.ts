@@ -62,6 +62,8 @@ interface PollerState {
   lastCycle: CycleSummary | null;
   nextTickAt: number | null;
   holidayCache: { date: string; holiday: boolean } | null;
+  /** Last date the once-a-day EOD bhavcopy sync ran (autonomous capture). */
+  lastBhavcopyDate: string | null;
 }
 
 const g = globalThis as unknown as { __fyersPoller?: PollerState };
@@ -77,6 +79,7 @@ function getState(): PollerState {
     lastCycle: null,
     nextTickAt: null,
     holidayCache: null,
+    lastBhavcopyDate: null,
   };
   return g.__fyersPoller;
 }
@@ -219,9 +222,54 @@ export async function runFyersCycle(
         `${summary.eqBars} eq bars, ${summary.futBars} fut bars, ${summary.oiAttached} OI, ` +
         `${summary.apiCalls} calls, ${summary.errors.length} errors, ${Date.now() - startedMs}ms`,
     );
+
+    // Autonomous in-process capture (deployed server only). Drives the same
+    // endpoints that otherwise only persist when a browser/loop hits them, so
+    // /trade-suggest, the OI-urgency series and the Trade Log fill hands-off —
+    // no external cron. Gated to live market hours today; never blocks/breaks
+    // the poller (fire-and-forget, own error handling).
+    if (!opts.dateOverride && attachOi && process.env.RAILWAY_ENVIRONMENT_NAME) {
+      void runAutonomousCapture(today, state);
+    }
     return finish();
   } finally {
     state.cycleRunning = false;
+  }
+}
+
+/**
+ * In-process market-data capture, replacing the external scan/bhavcopy cron
+ * (Railway-only, no GitHub Actions). Runs the trade-suggest scan every cycle
+ * (records `oi_intraday` urgency + persists picks; self-limits picks to the
+ * 09:40–11:00 window) and syncs EOD bhavcopy once a day. Best-effort — any
+ * failure is logged and swallowed so the recorder is never affected.
+ */
+async function runAutonomousCapture(today: string, state: PollerState): Promise<void> {
+  const origin = `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
+  try {
+    const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
+    await runTradeSuggest(origin); // internal /api/live/* fetches carry APP_PASSWORD auth
+  } catch (err) {
+    console.warn(`${TAG} autonomous scan failed: ${(err as Error).message}`);
+  }
+  // EOD bhavcopy — once per day (only fetches the sessions it's missing).
+  if (state.lastBhavcopyDate !== today) {
+    try {
+      const auth: Record<string, string> = process.env.APP_PASSWORD
+        ? { Authorization: `Basic ${Buffer.from(`x:${process.env.APP_PASSWORD}`).toString('base64')}` }
+        : {};
+      const res = await fetch(`${origin}/api/bhavcopy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: '{}',
+      });
+      if (res.ok) {
+        state.lastBhavcopyDate = today;
+        console.log(`${TAG} EOD bhavcopy synced`);
+      }
+    } catch (err) {
+      console.warn(`${TAG} bhavcopy sync failed: ${(err as Error).message}`);
+    }
   }
 }
 
