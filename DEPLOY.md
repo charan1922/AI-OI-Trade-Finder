@@ -142,38 +142,78 @@ Fyers poller, password gate).
 deploy → **Redeploy**. The tag on each release commit tells you exactly what that
 version contained.
 
-## Market-hours sleep (cost saver)
+## Market-hours autoscale (cost saver)
 
 The service only needs to run during Indian market hours (~09:15–15:30 IST,
-weekdays). Sleeping it nights/weekends cuts runtime ~70%. Two pieces:
+weekdays). `.github/workflows/market-hours.yml` scales it **up (1 replica) at
+08:15 IST and down (0 replicas) at 16:10 IST, Mon–Fri** via `railway scale`, so
+it runs continuously through the session and is **fully off** (no compute
+billing) nights + all weekend (Fri evening → Mon morning). Deterministic, so —
+unlike traffic-based sleeping — there is no cold-start churn mid-session and the
+Fyers poller records reliably.
 
-1. **Railway Serverless (app sleeping)** — service Settings → filter for
-   `serverless` / `sleep` → enable. The service now sleeps when idle (no billing
-   while asleep) and wakes on the next request (~seconds cold start).
-2. **Keep-alive ping** (`.github/workflows/keep-awake.yml`) — a GitHub Actions
-   cron pings `/api/health` every 5 min, 08:30–16:25 IST Mon–Fri, keeping the
-   service awake during market hours so the poller records. Outside those hours
-   nothing pings it → it sleeps.
+While the service is up the poller records **on its own** — no browser or local
+machine needed (it boots from `instrumentation.ts`). See "What records
+automatically vs. on-request" below for the exact scope.
 
-`/api/health` is the one route the password gate leaves public (so the pinger
-can wake the app without the password); it leaks nothing sensitive.
+### One-time setup: the API token
 
-A brief nap is harmless: the poller refetches the full day each cycle, so a
-missed tick self-heals on the next wake.
+The workflow needs a Railway token to scale from CI:
 
-### To DISABLE market-hours sleep (run 24/7 again)
+1. Railway → **Account → Tokens** (<https://railway.com/account/tokens>) → create
+   a token → copy it.
+2. GitHub repo → **Settings → Secrets and variables → Actions → New repository
+   secret** → name **`RAILWAY_API_TOKEN`**, value = the token.
 
-Do **either** (either one alone is enough; do both to fully revert):
+The workflow lives on the **default branch (`main`)** — that's where GitHub runs
+scheduled workflows from.
 
-- **Turn OFF Railway Serverless** — service Settings → the Serverless/App
-  Sleeping toggle → off. The service stays up 24/7 regardless of the pinger.
-- **Disable the keep-alive workflow** — GitHub repo → **Actions** tab →
-  *keep-awake* → **⋯ → Disable workflow**. (Or delete
-  `.github/workflows/keep-awake.yml` and push.)
+### Make the server up (or down) whenever you want
 
-If you leave Serverless ON but disable the pinger, the app will sleep during
-market hours too whenever no one has the dashboard open — so the poller would
-stop recording. So: **Serverless ON requires the pinger ON.**
+GitHub repo → **Actions → market-hours → Run workflow** → pick **up** or **down**.
+Manual scale-up/down anytime, e.g. to use the app on a weekend or sync data in
+the evening.
+
+> GitHub cron is UTC and best-effort (can lag or, rarely, skip). The workflow
+> has a backup fire for each direction; scaling up-when-up / down-when-down is a
+> harmless no-op. The public URL returns 502 while scaled to 0 — that's the
+> service being off, expected.
+
+### To DISABLE autoscale (run 24/7 again)
+
+GitHub repo → **Actions → market-hours → ⋯ → Disable workflow**, then run it once
+manually as **up** so the service is on. (Or delete the workflow file and push.)
+
+## What records automatically vs. on-request
+
+While the service is **up**:
+
+- **Autonomous (server-side, no browser/machine):** the Fyers poller records
+  5-min **equity + futures candles + futures OI** for the whole tracked universe,
+  every 5 min during market hours (`instrumentation.ts` → `lib/fyers/poller.ts`).
+  This is the persistent candle history `/trade-suggest` and `/fyers` rely on.
+- **On-request (needs the page open, OR a scheduled poll, OR a `/trade-suggest`
+  run):** the live NSE movers feeds (`/live`, `/nse/movers`), the intraday **OI
+  urgency** series (`oi_intraday`, written by `/api/live/quote`), and
+  `/trade-suggest` picks. These are fetched live and only *persisted* when
+  something calls the endpoint — nobody watching means the movers feeds aren't
+  archived and the urgency series isn't filled (beyond the poller's futures OI).
+
+So: candles record hands-off; the urgency/movers/picks capture needs a trigger.
+The `/loop 5m /trade-suggest` (run from Claude Code on your machine) is one such
+trigger. For fully machine-independent capture, a Railway-side cron hitting
+`/api/trade-suggest` every 5 min during the up-window would do it (not set up by
+default — ask if you want it).
+
+## EOD data sync (bhavcopy)
+
+`POST /api/bhavcopy` syncs NSE EOD bhavcopy (the R-Factor 20-day baselines). It
+only fetches dates it doesn't already have, so it's cheap. EOD data for a day is
+published in the evening — so the natural time to sync is the **next morning**,
+which falls inside the autoscale up-window: a cron that `POST`s `/api/bhavcopy`
+(with the `APP_PASSWORD` header) shortly after the 08:15 IST scale-up would keep
+baselines fresh at **no extra cost** (the service is already up then). Not wired
+by default — ask to add it (needs `APP_PASSWORD` as a second GitHub secret).
 
 ## Cost levers (later)
 

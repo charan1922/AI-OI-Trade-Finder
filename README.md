@@ -3,7 +3,7 @@
 [![app](https://img.shields.io/website?url=https%3A%2F%2Fproject-r-simulator-production.up.railway.app%2Fapi%2Fhealth&label=app&up_message=live&down_message=down)](https://project-r-simulator-production.up.railway.app)
 [![deployed on Railway](https://img.shields.io/badge/deployed_on-Railway-8b5cf6?logo=railway&logoColor=white)](https://railway.app)
 [![healthcheck](https://img.shields.io/badge/healthcheck-%2Fapi%2Fhealth-brightgreen)](https://project-r-simulator-production.up.railway.app/api/health)
-[![keep-awake](https://github.com/charan1922/Project-R-simulator/actions/workflows/keep-awake.yml/badge.svg)](https://github.com/charan1922/Project-R-simulator/actions/workflows/keep-awake.yml)
+[![market-hours autoscale](https://github.com/charan1922/Project-R-simulator/actions/workflows/market-hours.yml/badge.svg)](https://github.com/charan1922/Project-R-simulator/actions/workflows/market-hours.yml)
 
 [![last commit](https://img.shields.io/github/last-commit/charan1922/Project-R-simulator/main)](https://github.com/charan1922/Project-R-simulator/commits/main)
 [![release](https://img.shields.io/github/v/tag/charan1922/Project-R-simulator?label=release&sort=semver)](https://github.com/charan1922/Project-R-simulator/tags)
