@@ -39,7 +39,14 @@ ENV NODE_ENV=production
 RUN mkdir -p /app/data
 
 EXPOSE 5001
-# The volume is present at start (runtime) — so create/upgrade the SQLite schema
-# HERE, then boot Next on Railway's injected $PORT. `db push` is idempotent, so
-# running it on every start is safe and self-heals the schema.
-CMD ["sh", "-c", "pnpm prisma db push --config prisma/prisma.config.ts && pnpm exec next start -p ${PORT:-5001} -H 0.0.0.0"]
+# Start sequence (the volume is mounted at runtime, so all of this sees it):
+#   1. One-time DB import hook — if project-r.db.import exists on the volume
+#      (uploaded via `railway volume files upload`), swap it into place BEFORE
+#      anything opens the DB. Corruption-safe (nothing holds the file yet), and
+#      harmless when the import file is absent. Clears stale WAL/SHM so the new
+#      DB opens clean. Left in permanently so future migrations are just:
+#      upload a fresh project-r.db.import, then redeploy.
+#   2. `prisma db push` — create/upgrade the schema (idempotent; a no-op on an
+#      already-populated migrated DB).
+#   3. Boot Next on Railway's injected $PORT.
+CMD ["sh", "-c", "if [ -f /app/data/project-r.db.import ]; then echo '[import] swapping migrated DB into place'; rm -f /app/data/project-r.db /app/data/project-r.db-wal /app/data/project-r.db-shm; mv /app/data/project-r.db.import /app/data/project-r.db; fi; pnpm prisma db push --config prisma/prisma.config.ts && pnpm exec next start -p ${PORT:-5001} -H 0.0.0.0"]
