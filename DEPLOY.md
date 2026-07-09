@@ -117,9 +117,30 @@ Instead of `railway up` from your machine, connect the repo so a push deploys:
    Railway builds and deploys automatically. A push to `main` does nothing, so
    day-to-day commits don't trigger a deploy.
 
-Optional: tag each release (`git tag v1.0.0 && git push --tags`) for a
-human-readable version history and easy rollback reference. Tags do NOT trigger
-Railway deploys — the `prod` branch push is the trigger; tags are just markers.
+Tags do NOT trigger Railway deploys — the `prod` branch push is the trigger;
+tags are just human-readable release markers. See the release workflow below.
+
+### Release workflow
+
+```bash
+# 1. Work on main (commits here do NOT deploy)
+git add -A && git commit -m "…" && git push origin main
+
+# 2. Ship: fast-forward prod to main and push → Railway auto-deploys prod
+git checkout prod && git merge --ff-only main && git push origin prod
+git checkout main
+
+# 3. Mark the release (bump the version each time)
+git tag -a v1.1.0 -m "v1.1.0 — <what changed>"
+git push origin v1.1.0
+```
+
+Current release: **v1.0.0** — initial Railway deployment (Next.js + SQLite +
+Fyers poller, password gate).
+
+**Rollback:** Railway → the service → **Deployments** → pick a prior successful
+deploy → **Redeploy**. The tag on each release commit tells you exactly what that
+version contained.
 
 ## Cost levers (later)
 
