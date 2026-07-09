@@ -3,8 +3,16 @@
 [![app](https://img.shields.io/website?url=https%3A%2F%2Fproject-r-simulator-production.up.railway.app%2Fapi%2Fhealth&label=app&up_message=live&down_message=down)](https://project-r-simulator-production.up.railway.app)
 [![deployed on Railway](https://img.shields.io/badge/deployed_on-Railway-8b5cf6?logo=railway&logoColor=white)](https://railway.app)
 [![healthcheck](https://img.shields.io/badge/healthcheck-%2Fapi%2Fhealth-brightgreen)](https://project-r-simulator-production.up.railway.app/api/health)
+[![keep-awake](https://github.com/charan1922/Project-R-simulator/actions/workflows/keep-awake.yml/badge.svg)](https://github.com/charan1922/Project-R-simulator/actions/workflows/keep-awake.yml)
+
+[![last commit](https://img.shields.io/github/last-commit/charan1922/Project-R-simulator/main)](https://github.com/charan1922/Project-R-simulator/commits/main)
+[![release](https://img.shields.io/github/v/tag/charan1922/Project-R-simulator?label=release&sort=semver)](https://github.com/charan1922/Project-R-simulator/tags)
+
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
 [![TypeScript 5](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![pnpm 10](https://img.shields.io/badge/pnpm-10-f69220?logo=pnpm&logoColor=white)](https://pnpm.io)
+[![Prisma 7](https://img.shields.io/badge/Prisma-7-2d3748?logo=prisma&logoColor=white)](https://www.prisma.io)
+[![Tailwind 4](https://img.shields.io/badge/Tailwind-4-06b6d4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 
 Live F&O market-intelligence + options-trade assistant for the Indian market
 (NSE), plus TradeFinder trade downloading and an AI trade coach. Data is
