@@ -84,26 +84,52 @@ accumulate candles during market hours.
 
 ### 7. Expose it — **only after setting the password**
 
-The one-password gate (`middleware.ts`) protects every page and API route with
-HTTP Basic Auth, but it is **only active when `APP_PASSWORD` is set**. Before you
+The one-password gate (`proxy.ts`) protects every page and API route with HTTP
+Basic Auth, but it is **only active when `APP_PASSWORD` is set**. Before you
 click **Generate Domain**:
 
 1. Add a service variable `APP_PASSWORD=<a strong password>`.
 2. Redeploy (saving the variable does this).
-3. Generate the public domain. Visiting it prompts for the password (any
-   username; only the password is checked).
+3. Generate the public domain, and set the **target port to `5001`** (see the
+   port note below). Visiting the URL prompts for the password (any username;
+   only the password is checked).
 
 Leave `APP_PASSWORD` unset for local dev — the gate is a no-op without it, so
 `pnpm dev` stays password-free.
+
+### Port: pin `PORT=5001`
+
+Railway injects `PORT=8080` by default, but this app's start command and the
+generated domain both expect **5001**. So set a service variable `PORT=5001` and
+enter `5001` as the domain's target port. If they disagree you get a **502 Bad
+Gateway** (Railway routing to a port nothing listens on). The start command
+honours `$PORT` either way — the only requirement is that the variable, the
+domain target port, and each other agree.
+
+## Auto-deploy from GitHub (the `prod` branch)
+
+Instead of `railway up` from your machine, connect the repo so a push deploys:
+
+1. Railway service → **Settings → Source** → **Connect Repo** →
+   `charan1922/Project-R-simulator`.
+2. Set the **deploy branch to `prod`** (not `main`).
+3. Now: develop on `main`, and when you want to ship, merge/push to `prod` —
+   Railway builds and deploys automatically. A push to `main` does nothing, so
+   day-to-day commits don't trigger a deploy.
+
+Optional: tag each release (`git tag v1.0.0 && git push --tags`) for a
+human-readable version history and easy rollback reference. Tags do NOT trigger
+Railway deploys — the `prod` branch push is the trigger; tags are just markers.
 
 ## Cost levers (later)
 
 - **Sleep outside market hours** — the poller only needs to run ~09:00–15:45 IST
   on weekdays. Pausing the service nights/weekends cuts runtime ~70%.
-- **Trim resident memory** — lazy-load DuckDB, slim the poller universe.
+- **Trim resident memory** — slim the poller universe.
 
 ## Notes
 
-- Railway injects `$PORT`; the start command honours it (`next start -p $PORT`).
+- `PORT=5001` is pinned as a service variable; the start command binds to it
+  (`next start -p $PORT`) and the domain target port matches it.
 - `next.config.ts` externalises the native modules — do not change that.
 - The build needs no secrets; every env var is optional at build time.
