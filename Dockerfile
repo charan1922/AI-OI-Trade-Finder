@@ -46,7 +46,12 @@ EXPOSE 5001
 #      harmless when the import file is absent. Clears stale WAL/SHM so the new
 #      DB opens clean. Left in permanently so future migrations are just:
 #      upload a fresh project-r.db.import, then redeploy.
-#   2. `prisma db push` — create/upgrade the schema (idempotent; a no-op on an
-#      already-populated migrated DB).
+#   2. `prisma db push` — ONLY when the DB file doesn't exist yet (fresh-volume
+#      bootstrap). On an existing/migrated DB we skip it: the Prisma-modeled
+#      tables are already there, and db push would try to DROP the app's
+#      runtime-created raw-SQL tables (backtest_*, bhavcopy_*_expiry,
+#      market_holidays, feature_toggles, …) to match the schema — destroying
+#      real data. The app creates those raw tables itself at runtime
+#      (CREATE TABLE IF NOT EXISTS).
 #   3. Boot Next on Railway's injected $PORT.
-CMD ["sh", "-c", "if [ -f /app/data/project-r.db.import ]; then echo '[import] swapping migrated DB into place'; rm -f /app/data/project-r.db /app/data/project-r.db-wal /app/data/project-r.db-shm; mv /app/data/project-r.db.import /app/data/project-r.db; fi; pnpm prisma db push --config prisma/prisma.config.ts && pnpm exec next start -p ${PORT:-5001} -H 0.0.0.0"]
+CMD ["sh", "-c", "if [ -f /app/data/project-r.db.import ]; then echo '[import] swapping migrated DB into place'; rm -f /app/data/project-r.db /app/data/project-r.db-wal /app/data/project-r.db-shm; mv /app/data/project-r.db.import /app/data/project-r.db; fi; if [ ! -f /app/data/project-r.db ]; then echo '[schema] fresh DB - running prisma db push'; pnpm prisma db push --config prisma/prisma.config.ts; else echo '[schema] existing DB - skipping db push'; fi; pnpm exec next start -p ${PORT:-5001} -H 0.0.0.0"]
