@@ -1,0 +1,33 @@
+# Market-hours keep-alive.
+#
+# Pairs with Railway "Serverless" (app sleeping): the service sleeps when idle
+# (nights / weekends → no billing), and this workflow pings it every 5 minutes
+# during Indian market hours so it stays awake and the Fyers poller records.
+# Outside these hours nothing pings it, so it sleeps.
+#
+# GitHub Actions cron is UTC and best-effort (can be delayed a few minutes under
+# load). A brief nap is harmless: the poller refetches the full day each cycle,
+# so a missed tick self-heals on the next wake.
+#
+# To DISABLE: either turn OFF Railway Serverless (service runs 24/7 again), or
+# disable this workflow in the GitHub Actions tab — see DEPLOY.md.
+name: keep-awake
+
+on:
+  schedule:
+    # Every 5 min, 03:00–10:55 UTC  =  08:30–16:25 IST, Mon–Fri.
+    # (Market is 09:15–15:30 IST; the margin covers pre-open + close.)
+    - cron: '*/5 3-10 * * 1-5'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      # Any response (even 401) proves the container woke; --max-time caps a cold
+      # start; `|| true` keeps a slow wake from failing the run.
+      - name: Wake the service
+        run: |
+          curl -fsS --max-time 40 \
+            https://project-r-simulator-production.up.railway.app/api/health \
+            || true

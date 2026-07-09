@@ -142,10 +142,41 @@ Fyers poller, password gate).
 deploy → **Redeploy**. The tag on each release commit tells you exactly what that
 version contained.
 
+## Market-hours sleep (cost saver)
+
+The service only needs to run during Indian market hours (~09:15–15:30 IST,
+weekdays). Sleeping it nights/weekends cuts runtime ~70%. Two pieces:
+
+1. **Railway Serverless (app sleeping)** — service Settings → filter for
+   `serverless` / `sleep` → enable. The service now sleeps when idle (no billing
+   while asleep) and wakes on the next request (~seconds cold start).
+2. **Keep-alive ping** (`.github/workflows/keep-awake.yml`) — a GitHub Actions
+   cron pings `/api/health` every 5 min, 08:30–16:25 IST Mon–Fri, keeping the
+   service awake during market hours so the poller records. Outside those hours
+   nothing pings it → it sleeps.
+
+`/api/health` is the one route the password gate leaves public (so the pinger
+can wake the app without the password); it leaks nothing sensitive.
+
+A brief nap is harmless: the poller refetches the full day each cycle, so a
+missed tick self-heals on the next wake.
+
+### To DISABLE market-hours sleep (run 24/7 again)
+
+Do **either** (either one alone is enough; do both to fully revert):
+
+- **Turn OFF Railway Serverless** — service Settings → the Serverless/App
+  Sleeping toggle → off. The service stays up 24/7 regardless of the pinger.
+- **Disable the keep-alive workflow** — GitHub repo → **Actions** tab →
+  *keep-awake* → **⋯ → Disable workflow**. (Or delete
+  `.github/workflows/keep-awake.yml` and push.)
+
+If you leave Serverless ON but disable the pinger, the app will sleep during
+market hours too whenever no one has the dashboard open — so the poller would
+stop recording. So: **Serverless ON requires the pinger ON.**
+
 ## Cost levers (later)
 
-- **Sleep outside market hours** — the poller only needs to run ~09:00–15:45 IST
-  on weekdays. Pausing the service nights/weekends cuts runtime ~70%.
 - **Trim resident memory** — slim the poller universe.
 
 ## Notes

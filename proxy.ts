@@ -16,6 +16,10 @@
 import { type NextRequest, NextResponse } from 'next/server';
 
 export function proxy(req: NextRequest): NextResponse {
+  // Health check stays public so the market-hours keep-alive pinger can wake the
+  // app (Railway Serverless) without a password. It leaks nothing sensitive.
+  if (req.nextUrl.pathname === '/api/health') return NextResponse.next();
+
   const password = process.env.APP_PASSWORD;
   // Gate disabled when no password is configured (local dev, or opt-out).
   if (!password) return NextResponse.next();
