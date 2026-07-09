@@ -47,6 +47,25 @@ convention) as the MAX-LOSS exit, plus the TF-style premium target that books
 ~₹5,000/lot. Every pick is persisted to `trade_suggestions` — the first
 sighting is what gets scored later.
 
+## Where to run it (base URL + auth)
+
+Two possible targets — pick per the situation:
+
+- **Deployed app (default for the loop).** The Railway instance records data
+  24/7, so it has candles even when the local machine was off:
+  `BASE=https://project-r-simulator-production.up.railway.app`. It's behind the
+  one-password gate, so add `-u "x:$APP_PASSWORD"` to every curl, where
+  `APP_PASSWORD` is read from `.env.local` (add it there if missing — same value
+  as the Railway `APP_PASSWORD` variable). A `401` means the password is
+  wrong/missing.
+- **Local dev.** `BASE=http://localhost:5001`, no auth (local has no
+  `APP_PASSWORD`). Requires `pnpm dev` running. Connection refused → tell the
+  user to start it. Do not retry more than once.
+
+The curl examples below use `localhost:5001` for brevity — when hitting the
+deployed app, swap in the Railway `BASE` and add the `-u "x:$APP_PASSWORD"`
+flag. `/api/health` is the only unauthenticated route.
+
 ## Procedure
 
 1. Fetch the scan:
