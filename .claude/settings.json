@@ -6,6 +6,7 @@
     ]
   },
   "enabledPlugins": {
-    "vercel@claude-plugins-official": true
+    "vercel@claude-plugins-official": true,
+    "railway@railway-skills": true
   }
 }
