@@ -221,6 +221,9 @@ by default — ask to add it (needs `APP_PASSWORD` as a second GitHub secret).
 
 ## Notes
 
+- **Database changes / schema evolution / backups** → see **[DB.md](DB.md)**.
+  Local and server DBs are independent files; after go-live the server DB is the
+  source of truth — never blind-overwrite it. Back up before any schema change.
 - `PORT=5001` is pinned as a service variable; the start command binds to it
   (`next start -p $PORT`) and the domain target port matches it.
 - `next.config.ts` externalises the native modules — do not change that.

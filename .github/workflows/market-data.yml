@@ -1,0 +1,54 @@
+# Autonomous market-data capture — drives the two endpoints that only persist
+# data when something calls them (see DEPLOY.md "What records automatically vs.
+# on-request"). Runs entirely inside the market-hours autoscale window, so no
+# extra server cost. Both hit the password-gated API, so they need a repo secret
+# APP_PASSWORD (same value as the Railway APP_PASSWORD variable).
+#
+#   - scan     : GET /api/trade-suggest every 10 min during market hours →
+#                captures the OI-urgency series (oi_intraday) + persists picks to
+#                the Trade Log, WITHOUT your machine. No analysis (that's /loop).
+#                10-min (not 5) keeps this under a private repo's free Actions
+#                minutes; if you want tighter/reliable 5-min capture, the clean
+#                path is in-process (extend the Fyers poller) — ask.
+#   - bhavcopy : POST /api/bhavcopy once each morning → pulls the prior day's NSE
+#                EOD bhavcopy (R-Factor 20-day baselines). Only fetches missing
+#                dates, so it's cheap.
+#
+# GitHub cron is UTC and best-effort (may lag/skip). --retry rides out the brief
+# cold-start gap right after the 08:15 IST scale-up. IST = UTC + 5:30.
+name: market-data
+
+on:
+  schedule:
+    - cron: '*/10 3-10 * * 1-5'   # every 10 min, ~08:30–16:29 IST Mon–Fri — scan
+    - cron: '5 3 * * 1-5'         # ~08:35 IST Mon–Fri — EOD bhavcopy sync
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Manual run: scan or bhavcopy'
+        required: true
+        default: scan
+        type: choice
+        options: [scan, bhavcopy]
+
+jobs:
+  hit:
+    runs-on: ubuntu-latest
+    env:
+      BASE: https://project-r-simulator-production.up.railway.app
+      APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+    steps:
+      - name: Call the endpoint
+        run: |
+          if [ "${{ github.event.schedule }}" = "5 3 * * 1-5" ] || [ "${{ github.event.inputs.action }}" = "bhavcopy" ]; then
+            echo "→ EOD bhavcopy sync (POST /api/bhavcopy)"
+            curl -sS --max-time 600 --retry 5 --retry-all-errors --retry-delay 20 \
+              -X POST -u "x:$APP_PASSWORD" \
+              -H 'content-type: application/json' -d '{}' \
+              "$BASE/api/bhavcopy" -o /dev/null -w "HTTP %{http_code}\n" || true
+          else
+            echo "→ trade-suggest scan (GET /api/trade-suggest)"
+            curl -sS --max-time 120 --retry 3 --retry-all-errors --retry-delay 15 \
+              -u "x:$APP_PASSWORD" \
+              "$BASE/api/trade-suggest" -o /dev/null -w "HTTP %{http_code}\n" || true
+          fi
