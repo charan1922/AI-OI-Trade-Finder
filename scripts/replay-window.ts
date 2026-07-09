@@ -30,6 +30,28 @@ const VARIANTS: Variant[] = [
     name: 'breakout-heavy-weights',
     weights: { rFactor: 0.15, confidence: 0.05, oiUrgency: 0.15, oiLevel: 0.1, orBreakout: 0.35, imbalanceAlign: 0.05, sectorBreadth: 0.1, setupStrong: 0.05 },
   },
+  // Candidate feature under evaluation: the price/base-breakout bypass of the OI
+  // gate (breakout-bypass.ts, gated OFF in prod by USE_BREAKOUT_BYPASS). Tracks
+  // shipped + this path every recorded day. Accept only after several days show
+  // ΣR and target/SL both improve vs shipped (2026-07-07, N=1: +3.00 vs +1.00,
+  // caught the NAUKRI breakout the OI gate blocked, no junk added).
+  { ...SHIPPED_VARIANT, name: 'breakout-bypass (R>=3.6)', breakoutBypass: true, breakoutMinRFactor: 3.6 },
+  // Candidate feature: require the options-led OI path (NSE combined ≥5%) to be
+  // ACTIVELY building — combined-OI slope over the trailing ~30 min (from the
+  // per-5-min nseOiPct series) — instead of accepting a stale morning print.
+  // Live carries the slope as display evidence only until this earns its place.
+  { ...SHIPPED_VARIANT, name: 'oi-slope>=0', minNseOiSlope: 0 },
+  { ...SHIPPED_VARIANT, name: 'oi-slope>=1', minNseOiSlope: 1 },
+  // Candidate feature: drop candidates fighting their sector's turnover-weighted
+  // move (the heatmap aggregation; flat sectors pass). Display-only in prod.
+  { ...SHIPPED_VARIANT, name: 'sector-align-gate', requireSectorAlign: true },
+  // Candidate feature under evaluation: the trend-aligned bypass of the extended
+  // ban (extended-bypass.ts, gated OFF in prod by USE_EXTENDED_TREND_BYPASS).
+  // Re-admits a genuine trend-day continuation (breakout + VWAP + Supertrend) that
+  // EXCLUDE_EXTENDED throws away — e.g. KALYANKJIL 2026-07-09 (+4.5%→+17.5%).
+  // Accept only after several days show ΣR improves vs shipped WITHOUT re-admitting
+  // the 0-for-5 chase losers (2026-07-03 must stay flat/better).
+  { ...SHIPPED_VARIANT, name: 'extended-trend-bypass', extendedTrendBypass: true },
 ];
 
 const day = loadDay(DATE);

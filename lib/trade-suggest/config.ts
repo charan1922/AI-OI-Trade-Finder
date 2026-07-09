@@ -16,6 +16,13 @@ export const WINDOW_START_MIN = 9 * 60 + 40;
 export const WINDOW_END_MIN = 11 * 60;
 export const WINDOW_LABEL = { opensAt: '09:40 IST', closesAt: '11:00 IST' };
 
+/** When true, scans run any time the market is open — the 09:40–11:00 window
+ *  becomes advisory instead of a gate. OFF by default: entries outside the
+ *  window are unproven for this strategy (TF's real tickets cluster
+ *  10:00–10:40), and out-of-window picks persist into trade_suggestions and
+ *  dilute the scorecard stats. Runtime-flippable from /config. */
+export const SCAN_OUTSIDE_WINDOW = false;
+
 /** Hard gates — a candidate must clear ALL of these. */
 export const MIN_RFACTOR = 3.6; // 1–8 scale (was 2.5 on 1–5; same raw cutoff 0.375)
 export const MIN_CONFIDENCE = 0.2; // directional-factor agreement [0,1]
@@ -28,6 +35,27 @@ export const MIN_OI_LEVEL = 1.1; // futures OI ÷ 20d avg — the TF minimum fin
  * EITHER futures level ≥ MIN_OI_LEVEL OR NSE combined ≥ this %.
  */
 export const MIN_NSE_OI_PCT = 5;
+
+/**
+ * EXPERIMENTAL third OI-gate path — the price/base-breakout BYPASS.
+ * Off by default. When on, a candidate with NO OI evidence (futures level < 1.1×
+ * AND NSE combined < 5%) still clears the OI gate if it shows a confirmed
+ * opening-range breakout in the trade direction, trend agreement, and R-Factor
+ * ≥ BREAKOUT_BYPASS_MIN_RFACTOR (logic in breakout-bypass.ts). Rationale:
+ * breakout winners can lead their OI (ADANIENSOL 2026-07-06, NAUKRI 2026-07-07
+ * were confirmed breakouts with zero OI build that the gate blocked). Enable
+ * only once the replay benchmark (scripts/replay-window.ts) shows it catches
+ * those winners across several days without letting no-evidence junk through.
+ */
+export const USE_BREAKOUT_BYPASS = false;
+/** R-Factor floor for the bypass. Set to the base MIN_RFACTOR: the confirmed
+ *  trend-aligned breakout is the real discriminator, not an inflated R-Factor.
+ *  Evidence (replay, 2026-07-07, N=1): at 4.0 the bypass was inert (NAUKRI sat
+ *  at 3.6–4.0 at its 10:00 entry); at 3.6 it caught NAUKRI (+2R) and still
+ *  excluded the no-breakout junk EXIDEIND (ΣR +1.00 → +3.00). */
+export const BREAKOUT_BYPASS_MIN_RFACTOR = 3.6;
+export const BREAKOUT_BYPASS_REQUIRE_TREND = true;
+
 export const MAX_SPREAD_PCT = 0.3; // execution-cost ceiling (matches setup-score)
 /**
  * Third TF pillar: turnover ≥ 1.2× its (time-adjusted) 20-day average.
@@ -61,8 +89,11 @@ export const WEIGHTS = {
   setupStrong: 0.05,
 } as const;
 
-/** Max picks per run — the user asked for at most 3. */
-export const MAX_PICKS = 3;
+/** Max picks per run. Was 3 (the original ask); raised to 7 on the user's
+ *  2026-07-08 instruction ("don't limit to 3 … make 7"). Quiet days still
+ *  produce 1–2 — the gates, not this cap, are the usual constraint. With the
+ *  user's ₹50–60k only the top 1–3 are actionable; the tail is watch-only. */
+export const MAX_PICKS = 7;
 
 /** The user's F&O capital (₹). A pick whose single lot costs more than this is
  *  skipped in favor of the next qualified candidate — suggestions must be
@@ -95,12 +126,55 @@ export const EXTENDED_SCORE_MULT = 0.6;
  *  0-for-5 (live 2026-07-03: MUTHOOTFIN/POLICYBZR/MARICO all stopped; replay
  *  benchmark same day: banning was the ONLY variant that improved ΣR, +1.00
  *  vs 0.00). Revisit if a recorded day shows extended continuation working —
- *  flip to false to fall back to the ×0.6 penalty. */
+ *  flip to false to fall back to the ×0.6 penalty, or leave ON and use the
+ *  trend-aligned bypass below to admit only genuine trend-day continuations. */
 export const EXCLUDE_EXTENDED = true;
 
-/** Candidate pool = exactly what the /nse/movers page surfaces (the user's
- *  primary hunting ground): OI spurts, F&O gainers/losers, most active by
- *  value and by volume. All F&O-gated server-side. */
+/** Extended-trend bypass (opt-in). When EXCLUDE_EXTENDED hard-gates a name that
+ *  has run ≥3% from open, this lets a genuine TREND-day continuation back in —
+ *  breakout still extending AND price holding VWAP AND Supertrend(10,3) aligned.
+ *  Evidence FOR: KALYANKJIL 2026-07-09 gap-open +4.5% → +17.5% with <2.2%
+ *  pullbacks, refused on all 91 scans. The guard it preserves: the 0-for-5 chase
+ *  losers (MUTHOOTFIN/POLICYBZR/MARICO, 2026-07-03) reversed — they lost
+ *  VWAP/Supertrend, so the predicate still rejects them. Score keeps the extended
+ *  ×0.6 penalty, so a bypassed name ranks conservatively. OFF by default.
+ *  REPLAY RESULT (2026-07-09, N=1): turning this ON made the day WORSE —
+ *  ΣR +0.00 vs shipped +2.00. The predicate DID admit KALYANKJIL correctly
+ *  (breakout+VWAP+Supertrend all aligned), but the TRADE still stopped out −1R:
+ *  the 10:20 entry @420 was late (+10.6% from open) and the tight last-candle SL
+ *  (₹417) was run by a routine 1.1% pullback before the stock resumed to +17.5%.
+ *  PAGEIND (also extended, admitted) stopped too. Lesson: admitting extended
+ *  trends is not enough — they need a WIDER (opening-range/ATR) stop to survive
+ *  normal pullbacks. Keep OFF until that pairing is built and re-validated.
+ *  See extended-bypass.ts. */
+export const USE_EXTENDED_TREND_BYPASS = false;
+/** R-Factor floor for the extended-trend bypass. = base MIN_RFACTOR (extended
+ *  survivors already cleared it); the breakout + VWAP + Supertrend trend is the
+ *  real discriminator, so no extra R bar is imposed by default. */
+export const EXTENDED_BYPASS_MIN_RFACTOR = 3.6;
+/** Require an actually-computed, aligned Supertrend(10,3) for the bypass (not just
+ *  VWAP). True also blocks the first ~1h of raw-spike noise before the trend
+ *  proves itself — the conservative default when overriding a 0-for-5 ban. */
+export const EXTENDED_BYPASS_REQUIRE_SUPERTREND = true;
+
+/** Candidate pool switch. When true, the scan quotes the FULL tradeable F&O
+ *  universe (fno_stocks, non-index, non-'avoid' — ~166 names, the same list
+ *  the Fyers recorder tracks) merged with the movers feeds below (still
+ *  fetched for the OI-spurt-list marker). Widening the pool changes NO gate —
+ *  it removes the blind spot where a name with real OI/turnover evidence was
+ *  never scanned because it didn't crack a top-20/24 movers list, and it makes
+ *  each scan record oi_intraday for the whole universe (exactly the universe
+ *  the replay benchmark replays — scripts/replay-lib.ts loads "symbols in
+ *  oi_intraday for the date"). One batched quote either way (the quote route
+ *  accepts ≤200 symbols per request). Runtime-flippable from /config.
+ *  Default OFF (2026-07-09, user call): scan only the ~80 movers-feed names —
+ *  the same stocks the /nse/movers panels surface — flip ON for all ~166. */
+export const SCAN_FULL_UNIVERSE = false;
+
+/** Movers-feed candidate sources = exactly what the /nse/movers page surfaces
+ *  (the user's primary hunting ground): OI spurts, F&O gainers/losers, most
+ *  active by value and by volume. All F&O-gated server-side. The whole pool
+ *  when SCAN_FULL_UNIVERSE is off; the OI-spurt marker source always. */
 export const CANDIDATE_SOURCES = [
   'nse-oi',
   'nse-gainers',

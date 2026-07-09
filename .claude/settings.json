@@ -4,5 +4,8 @@
       "PowerShell(pnpm remove adm-zip)",
       "PowerShell(pnpm remove @types/adm-zip)"
     ]
+  },
+  "enabledPlugins": {
+    "vercel@claude-plugins-official": true
   }
 }

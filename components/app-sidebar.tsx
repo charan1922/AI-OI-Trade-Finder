@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState } from "react"
-import { Activity, BarChart2, Bot, BookOpen, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, type LucideIcon, Radio, Table2, Target } from "lucide-react"
+import { Activity, BarChart2, Bot, BookOpen, CalendarClock, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, type LucideIcon, NotebookText, Radio, Table2, Target } from "lucide-react"
 
 import {
   Sidebar,
@@ -57,6 +57,7 @@ const NAV_GROUPS: NavGroup[] = [
     children: [
       { title: "Trade Assistant", href: "/trade-assistant", icon: Bot },
       { title: "Trade Suggest", href: "/trade-suggest", icon: Target },
+      { title: "Trade Log", href: "/trade-suggest/history", icon: NotebookText },
     ],
   },
   {
@@ -64,6 +65,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: BookOpen,
     children: [
       { title: "EOD Movers", href: "/nse/movers-history", icon: History },
+      { title: "EOD Live Urgency", href: "/live/history", icon: CalendarClock },
       { title: "Market Holidays", href: "/holidays", icon: CalendarDays },
       { title: "F&O Lot Sizes", href: "/fno-lots", icon: Table2 },
       { title: "API Docs", href: "/api-docs", icon: BookOpen },

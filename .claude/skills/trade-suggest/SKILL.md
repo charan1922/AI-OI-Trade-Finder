@@ -4,7 +4,7 @@ description: >
   Daily near-ATM options suggester for the Project-R simulator. Use when the
   user asks for option trade suggestions, ATM picks, "what to trade today",
   the 9:40–11:00 morning scan, or runs this in a loop (/loop 10m
-  /trade-suggest). Fetches up to 3 ranked stock picks (buy CE for bullish,
+  /trade-suggest). Fetches up to 7 ranked stock picks (buy CE for bullish,
   PE for bearish) from the simulator's live R-Factor + OI-urgency + opening-
   range engine, presents entry/SL/target plans, and after 15:30 runs the
   same-day scorecard of how the calls played out.
@@ -25,14 +25,17 @@ WHY a gate/threshold exists or wants to tune them.
 
 ## What backs this
 
-The endpoint (code in `lib/trade-suggest/`) scans the live NSE watchlist feeds
-(F&O-only, non-'avoid' names), gates them on the TradeFinder-derived
+The endpoint (code in `lib/trade-suggest/`) scans the full tradeable F&O
+universe (~166 non-index, non-'avoid' names — the same list the Fyers recorder
+tracks) merged with the live NSE movers feeds (which still provide the
+OI-spurt-list marker); the `SCAN_FULL_UNIVERSE` toggle on /config drops it
+back to movers-only (~48 names). Candidates are gated on the TradeFinder-derived
 fingerprint (OI evidence: futures OI ≥ 1.1× its 20-day average OR NSE combined
 futures+options OI change ≥ 5% — options-led builds count too; turnover ≥ 1.2×
 average, spread ≤ 0.3%, R-Factor ≥ 3.6 on the 1–8 scale with a non-neutral
 bias, price agreeing with the bias), scores the survivors (R-Factor strength/confidence, intraday OI
 urgency, opening-range breakout, order-book alignment, sector breadth), picks
-the top 3, resolves the nearest listed ATM strike on the nearest monthly
+the top 7 (MAX_PICKS), resolves the nearest listed ATM strike on the nearest monthly
 expiry (≥3 DTE), and LIVE-QUOTES each picked contract — real premium, per-lot
 cost, option-book spread, contract OI/volume. Contracts whose single lot
 costs more than the user's capital budget (₹60,000 in
@@ -64,12 +67,17 @@ sighting is what gets scored later.
      scanned; 18 failed OI level, 12 neutral bias"). If `note` mentions the
      quote path or `/api/dhan/token`, surface that.
    - **`window.active: false`, market open** → outside the 09:40–11:00 window.
-     If it's after 15:30 OR `earlierToday` is non-empty and it's past 11:00,
+     If `suggestions` is non-empty anyway, the SCAN_OUTSIDE_WINDOW toggle is ON
+     (or the call was forced) — present the picks per step 3 but LEAD with the
+     `note`'s warning that out-of-window entries are unproven. Otherwise: if
+     it's after 15:30 OR `earlierToday` is non-empty and it's past 11:00,
      offer/run the scorecard (step 4). Do NOT call with `force=1` unless the
      user explicitly asks for an out-of-window scan.
    - **market closed** → say so; nothing to do until the next session.
 
-3. Present at most 3 picks, each in this shape (compact, scannable):
+3. Present at most 7 picks (MAX_PICKS in config.ts), each in this shape
+   (compact, scannable). With the user's ₹50–60k only the top 1–3 are
+   actionable — present ranks 4+ compactly as watch-only:
 
    > **#1 RELIANCE — BUY 1400 CE** (exp 2026-07-28, lot 500) · score 0.71
    > Premium ₹42.50 → ₹21,250/lot (fits ₹60k budget) · opt spread 0.8%
@@ -90,7 +98,12 @@ sighting is what gets scored later.
      went 0/3 on the replay benchmark), session VWAP side, ATR(14) as the
      noise unit, `eqTurnoverRatio` (vs time-adjusted 20-day pace; mornings
      over-read ~2×), `combinedOiLevel` (derived fut+opt OI vs 20-day avg),
-     `onOiSpurtList`. Mention the misalignments, don't hide them.
+     `combinedOiSlope30m` (combined-OI build RATE over the trailing ~30 min in
+     pct-points — positive = the build is live right now, negative = it's
+     unwinding; evidence only, not yet a gate), `onOiSpurtList`, and sector
+     alignment (`sectorPct` turnover-weighted move + `sectorAdvanceRatio` +
+     `sectorAligned` — ⚠ when the pick fights its sector's direction; evidence
+     only, not a gate). Mention the misalignments, don't hide them.
    - The response's `tilt` (market breadth among candidates, since-open) and
      `sectorFlow` (per-sector avg move + OI-list counts) give the session
      context — one line each. Context only; a tilt gate would have blocked

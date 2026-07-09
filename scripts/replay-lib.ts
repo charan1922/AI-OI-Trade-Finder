@@ -31,11 +31,17 @@ import type { LiveUrgencyRow } from '../app/live/_lib/types';
 import { buildLiveRFactorInput } from '../app/api/live/_lib/rfactor-inputs';
 import type { RFactorBaseline } from '../app/api/live/_lib/rfactor-baselines';
 import { computeRFactor, DEFAULT_WEIGHTS as RF_DEFAULT_WEIGHTS, type RFactorWeights } from '../lib/r-factor';
+import { aggregateSectors, type SectorAggregate } from '../lib/sector/aggregate';
+import { combinedOiSlope } from '../lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '../lib/signals/indicators';
 import { computeOiUrgency, type OiPoint } from '../lib/signals/oi-intraday';
 import { deriveSessionContext } from '../lib/signals/session-context';
 import {
+  BREAKOUT_BYPASS_MIN_RFACTOR,
+  BREAKOUT_BYPASS_REQUIRE_TREND,
   EXCLUDE_EXTENDED,
+  EXTENDED_BYPASS_MIN_RFACTOR,
+  EXTENDED_BYPASS_REQUIRE_SUPERTREND,
   EXTENDED_SCORE_MULT,
   MAX_PICKS,
   MAX_SPREAD_PCT,
@@ -46,8 +52,12 @@ import {
   MIN_TURNOVER_SCORE,
   SL_ATR_MULT,
   TARGET_RR,
+  USE_BREAKOUT_BYPASS,
+  USE_EXTENDED_TREND_BYPASS,
   WEIGHTS,
 } from '../lib/trade-suggest/config';
+import { qualifiesByBreakout } from '../lib/trade-suggest/breakout-bypass';
+import { qualifiesExtendedTrend } from '../lib/trade-suggest/extended-bypass';
 import { buildSpotPlan, computeCompositeScore, type ScoreWeights } from '../lib/trade-suggest/scoring';
 
 const db = new Database('./data/project-r.db', { readonly: true });
@@ -58,6 +68,11 @@ export interface Variant {
   atrMult: number; // risk floor = max(0.35%, atrMult × ATR14)
   extendedMult: number; // score multiplier for ≥3%-moved names (flag-off path)
   banExtended: boolean; // hard-skip extended movers at pick time (EXCLUDE_EXTENDED)
+  /** Trend-aligned bypass of the extended ban (see extended-bypass.ts). Optional;
+   *  undefined = off, so existing variant literals need no change. */
+  extendedTrendBypass?: boolean;
+  extendedBypassMinRFactor?: number;
+  extendedBypassRequireSupertrend?: boolean;
   weights: ScoreWeights;
   /** The R-Factor engine's INTERNAL 12-factor blend — searchable per variant
    *  (the engine renormalizes over available factors, so no sum constraint). */
@@ -67,6 +82,21 @@ export interface Variant {
   minConfidence: number;
   minOiLevel: number;
   minNseOiPct: number;
+  /** Price/base-breakout bypass of the OI gate (see breakout-bypass.ts). */
+  breakoutBypass: boolean;
+  /** R-Factor floor for the bypass (higher than minRFactor since OI is absent). */
+  breakoutMinRFactor: number;
+  /** Require trend agreement (Supertrend/VWAP) for the bypass. */
+  breakoutRequireTrend: boolean;
+  /** When non-null, the options-led OI path (nseOiPct ≥ minNseOiPct) ALSO
+   *  requires the combined-OI slope over the trailing ~30 min to be ≥ this
+   *  (pct-points; lib/signals/combined-oi-slope.ts) — "the build must be
+   *  live, not a stale morning print". Null = off (prod has no slope gate). */
+  minNseOiSlope: number | null;
+  /** When true, drop candidates fighting their sector's turnover-weighted move
+   *  (lib/sector/aggregate.ts; flat sectors <0.1% pass). False in prod —
+   *  sector alignment is display evidence until this variant earns its place. */
+  requireSectorAlign: boolean;
 }
 
 /** Mirrors the production config — the loop's baseline. */
@@ -75,12 +105,20 @@ export const SHIPPED_VARIANT: Variant = {
   atrMult: SL_ATR_MULT,
   extendedMult: EXTENDED_SCORE_MULT,
   banExtended: EXCLUDE_EXTENDED,
+  extendedTrendBypass: USE_EXTENDED_TREND_BYPASS,
+  extendedBypassMinRFactor: EXTENDED_BYPASS_MIN_RFACTOR,
+  extendedBypassRequireSupertrend: EXTENDED_BYPASS_REQUIRE_SUPERTREND,
   weights: WEIGHTS,
   rfWeights: RF_DEFAULT_WEIGHTS,
   minRFactor: MIN_RFACTOR,
   minConfidence: MIN_CONFIDENCE,
   minOiLevel: MIN_OI_LEVEL,
   minNseOiPct: MIN_NSE_OI_PCT,
+  breakoutBypass: USE_BREAKOUT_BYPASS,
+  breakoutMinRFactor: BREAKOUT_BYPASS_MIN_RFACTOR,
+  breakoutRequireTrend: BREAKOUT_BYPASS_REQUIRE_TREND,
+  minNseOiSlope: null,
+  requireSectorAlign: false,
 };
 
 // ─── Day data ────────────────────────────────────────────────────────────────
@@ -237,6 +275,11 @@ export interface ReplayPick {
   spreadPct: number | null;
   imbalance: number | null;
   nseOiPct: number | null;
+  /** Combined-OI build rate over the trailing ~30 min (pct-points) as of the tick. */
+  nseOiSlope30m: number | null;
+  /** Sector turnover-weighted % move as of the tick + whether it agrees with the trade. */
+  sectorPct: number | null;
+  sectorAligned: boolean | null;
   // Factor-alignment context (for the evidence report, not the score):
   vwapAligned: boolean | null;
   supertrendAligned: boolean | null;
@@ -271,6 +314,25 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
     const survivors: Surv[] = [];
     let upCount = 0;
     let downCount = 0;
+
+    // Sector strength as-of this tick (turnover-weighted move + breadth, the
+    // heatmap's aggregation) — for the requireSectorAlign gate + pick evidence.
+    const sectorTiles: { sector: string; pct: number; turnover: number }[] = [];
+    for (const s of day.symbols) {
+      const series = (day.oiSeries.get(s) ?? []).filter((p) => p.bucketTs <= tick);
+      const snap = series[series.length - 1];
+      const sector = day.sectorBySymbol.get(s);
+      if (snap && snap.ltp > 0 && sector) {
+        sectorTiles.push({ sector, pct: snap.changePctOpen ?? 0, turnover: snap.futTurnover > 0 ? snap.futTurnover : 0 });
+      }
+    }
+    const sectorAgg = new Map<string, SectorAggregate>(aggregateSectors(sectorTiles).map((a) => [a.sector, a]));
+    const alignmentOf = (sector: string, direction: 'bullish' | 'bearish'): { sa: SectorAggregate | null; aligned: boolean | null } => {
+      const sa = sectorAgg.get(sector) ?? null;
+      const aligned =
+        sa == null || Math.abs(sa.weightedPct) < 0.1 ? null : direction === 'bullish' ? sa.weightedPct > 0 : sa.weightedPct < 0;
+      return { sa, aligned };
+    };
 
     for (const s of day.symbols) {
       const series = (day.oiSeries.get(s) ?? []).filter((p) => p.bucketTs <= tick);
@@ -348,10 +410,38 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
         bump('lowConfidence');
         continue;
       }
+      // direction + breakout are computed BEFORE the OI gate so the breakout
+      // bypass can use them (they're used again below for the pick, unchanged).
+      const direction = row.rFactorBias === 'buy' ? 'bullish' : 'bearish';
+      const orBreakout =
+        sc.openRangeComplete &&
+        (direction === 'bullish' ? sc.openRangeHigh != null && snap.ltp > sc.openRangeHigh : sc.openRangeLow != null && snap.ltp < sc.openRangeLow);
+
       const futOiOk = (row.oiLevel ?? 0) >= variant.minOiLevel;
       const nseRows = (day.nseOiByBucket.get(s) ?? []).filter((b) => b.bucketTs <= tick && b.nseOiPct != null);
       const nseOiPct = nseRows.length > 0 ? nseRows[nseRows.length - 1].nseOiPct : null;
-      if (!futOiOk && !(nseOiPct != null && nseOiPct >= variant.minNseOiPct)) {
+      let nseOiOk = nseOiPct != null && nseOiPct >= variant.minNseOiPct;
+      // Slope refinement of the options-led path: the combined-OI build must
+      // still be moving over the trailing ~30 min, not just a stale level.
+      if (nseOiOk && variant.minNseOiSlope != null) {
+        const slope = combinedOiSlope(nseRows, tick);
+        nseOiOk = slope != null && slope >= variant.minNseOiSlope;
+      }
+      // Fourth OI-gate path — a confirmed, trend-aligned, high-R breakout with
+      // NO OI evidence still clears (breakout-bypass.ts). Evaluated only when OI
+      // evidence is absent AND the variant enables it.
+      let breakoutOk = false;
+      if (variant.breakoutBypass && !futOiOk && !nseOiOk && orBreakout) {
+        const vw = sessionVwap(bars);
+        const st = supertrend(bars);
+        const vwapAligned = vw == null ? null : direction === 'bullish' ? snap.ltp > vw : snap.ltp < vw;
+        const supertrendAligned = st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
+        breakoutOk = qualifiesByBreakout(
+          { orBreakout, supertrendAligned, vwapAligned, rFactor: row.rFactor },
+          { minRFactor: variant.breakoutMinRFactor, requireTrendAlign: variant.breakoutRequireTrend },
+        );
+      }
+      if (!futOiOk && !nseOiOk && !breakoutOk) {
         bump('lowOiLevel');
         continue;
       }
@@ -360,13 +450,14 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
         bump('lowTurnover');
         continue;
       }
-      const direction = row.rFactorBias === 'buy' ? 'bullish' : 'bearish';
-      const orBreakout =
-        sc.openRangeComplete &&
-        (direction === 'bullish' ? sc.openRangeHigh != null && snap.ltp > sc.openRangeHigh : sc.openRangeLow != null && snap.ltp < sc.openRangeLow);
       const chg = snap.changePctOpen ?? 0;
       if (!(direction === 'bullish' ? chg > 0 || orBreakout : chg < 0 || orBreakout)) {
         bump('directionDisagree');
+        continue;
+      }
+      // Sector-alignment gate (variant experiment; flat/unknown sectors pass).
+      if (variant.requireSectorAlign && alignmentOf(day.sectorBySymbol.get(s) ?? '', direction).aligned === false) {
+        bump('sectorMisaligned');
         continue;
       }
       if (verdict.level === 'quiet') {
@@ -414,7 +505,27 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
 
     const tiltUp = upCount > downCount * 1.5;
     const tiltDown = downCount > upCount * 1.5;
-    const eligible = variant.banExtended ? survivors.filter((sv) => !sv.extended) : survivors;
+    const eligible = variant.banExtended
+      ? survivors.filter((sv) => {
+          if (!sv.extended) return true;
+          // Extended + ban on. Trend-aligned bypass (variant experiment): re-admit
+          // only genuine trend-day continuations — breakout + VWAP + Supertrend —
+          // exactly as the live engine does (lib/trade-suggest/extended-bypass.ts).
+          if (!variant.extendedTrendBypass) return false;
+          const ltp = sv.row.ltp ?? 0;
+          const vw = sessionVwap(sv.bars);
+          const st = supertrend(sv.bars);
+          const vwapAligned = vw == null ? null : sv.direction === 'bullish' ? ltp > vw : ltp < vw;
+          const supertrendAligned = st == null ? null : sv.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
+          return qualifiesExtendedTrend(
+            { orBreakout: sv.orBreakout, supertrendAligned, vwapAligned, rFactor: sv.row.rFactor },
+            {
+              minRFactor: variant.extendedBypassMinRFactor ?? EXTENDED_BYPASS_MIN_RFACTOR,
+              requireSupertrend: variant.extendedBypassRequireSupertrend ?? EXTENDED_BYPASS_REQUIRE_SUPERTREND,
+            },
+          );
+        })
+      : survivors;
     for (const sv of eligible.slice(0, MAX_PICKS)) {
       const side: 'CE' | 'PE' = sv.direction === 'bullish' ? 'CE' : 'PE';
       const key = `${sv.row.symbol}:${side}`;
@@ -431,6 +542,9 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
       const frac = Math.min(1, Math.max(0.02, (istMin - (9 * 60 + 15)) / 375));
       const nseRows = (day.nseOiByBucket.get(sv.row.symbol) ?? []).filter((b) => b.bucketTs <= tick && b.nseOiPct != null);
       const nsePct = nseRows.length > 0 ? nseRows[nseRows.length - 1].nseOiPct : null;
+      const nseSlope = combinedOiSlope(nseRows, tick);
+      const { sa: pickSa, aligned: pickSectorAligned } = alignmentOf(sv.sector, sv.direction);
+      const pickSectorPct = pickSa == null ? null : Math.round(pickSa.weightedPct * 100) / 100;
       const asOfMin = Math.round(istMin);
       const asOfIST = `${String(Math.floor(asOfMin / 60)).padStart(2, '0')}:${String(asOfMin % 60).padStart(2, '0')}`;
       const eqTurnoverRatio =
@@ -450,6 +564,7 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
         nsePct != null
           ? `NSE combined OI ${nsePct >= 0 ? '+' : ''}${nsePct.toFixed(1)}% (fut+opt)`
           : 'NSE combined OI not recorded at this tick',
+        ...(nseSlope != null ? [`combined-OI slope ${nseSlope >= 0 ? '+' : ''}${nseSlope.toFixed(1)} pts / ~30 min`] : []),
         ...(combinedOiLevel != null ? [`combined fut+opt OI ≈${combinedOiLevel.toFixed(2)}× 20-day avg (derived)`] : []),
         `change from open ${r.changePctOpen != null ? `${r.changePctOpen >= 0 ? '+' : ''}${r.changePctOpen.toFixed(2)}%` : 'n/a'}`,
         sv.orBreakout ? 'trading beyond the opening range (breakout confirmed)' : 'inside the opening range (no breakout yet)',
@@ -457,6 +572,11 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
           ? `Supertrend(10,3) ${st.direction}${supertrendAligned ? ' — agrees' : ' — DISAGREES with the trade'}`
           : 'Supertrend unavailable',
         vw != null ? `${vwapAligned ? 'favorable' : 'wrong'} side of session VWAP ${vw.toFixed(2)}` : 'VWAP unavailable',
+        ...(pickSa != null && pickSectorAligned != null
+          ? [
+              `sector ${sv.sector} ${pickSectorPct! >= 0 ? '+' : ''}${pickSectorPct!.toFixed(2)}% (turnover-weighted, ${pickSa.advancers}↑/${pickSa.decliners}↓) — ${pickSectorAligned ? 'agrees' : 'FIGHTING the sector'}`,
+            ]
+          : []),
         ...(eqTurnoverRatio != null ? [`equity turnover ≈${eqTurnoverRatio.toFixed(1)}× time-adjusted 20-day pace`] : []),
         `spread ${r.spreadPct != null ? `${r.spreadPct.toFixed(3)}%` : 'n/a'}`,
       ];
@@ -481,6 +601,9 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
         spreadPct: r.spreadPct,
         imbalance: r.imbalance,
         nseOiPct: nsePct,
+        nseOiSlope30m: nseSlope,
+        sectorPct: pickSectorPct,
+        sectorAligned: pickSectorAligned,
         vwapAligned,
         supertrendAligned,
         tiltAligned: tiltUp || tiltDown ? (side === 'CE' ? tiltUp : tiltDown) : null,

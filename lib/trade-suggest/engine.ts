@@ -25,14 +25,20 @@ import { setupScore } from '@/app/live/_lib/setup-score';
 import type { LiveQuoteResponse, LiveUrgencyRow, SectorLeadersResponse } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { bestBidAsk, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
-import { getFyersCandles, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
+import { getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
 import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
+import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
+import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
+  BREAKOUT_BYPASS_MIN_RFACTOR,
+  BREAKOUT_BYPASS_REQUIRE_TREND,
   CANDIDATE_SOURCES,
   CAPITAL_BUDGET,
   EXCLUDE_EXTENDED,
+  EXTENDED_BYPASS_MIN_RFACTOR,
+  EXTENDED_BYPASS_REQUIRE_SUPERTREND,
   MAX_OPT_SPREAD_PCT,
   MAX_PICKS,
   MAX_SPREAD_PCT,
@@ -44,12 +50,19 @@ import {
   MIN_TURNOVER_SCORE,
   PICK_OVERSAMPLE,
   PREMIUM_SL_PCT,
+  SCAN_FULL_UNIVERSE,
+  SCAN_OUTSIDE_WINDOW,
   SL_ATR_MULT,
   TF_LOT_TARGET_RUPEES,
+  USE_BREAKOUT_BYPASS,
+  USE_EXTENDED_TREND_BYPASS,
   WINDOW_END_MIN,
   WINDOW_LABEL,
   WINDOW_START_MIN,
 } from '@/lib/trade-suggest/config';
+import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
+import { qualifiesByBreakout } from '@/lib/trade-suggest/breakout-bypass';
+import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
 import { buildSpotPlan, computeCompositeScore } from '@/lib/trade-suggest/scoring';
 import { getSuggestions, upsertSuggestions } from '@/lib/trade-suggest/store';
 import type {
@@ -85,6 +98,7 @@ function windowState(): SuggestWindow {
 
 async function fetchCandidates(
   origin: string,
+  fullUniverse: boolean,
 ): Promise<{ sectorBySymbol: Map<string, string>; oiSpurtSymbols: Set<string> }> {
   const sectorBySymbol = new Map<string, string>();
   const oiSpurtSymbols = new Set<string>();
@@ -99,6 +113,22 @@ async function fetchCandidates(
       }
     } catch (err) {
       console.warn(`${TAG} watchlist source ${source} failed: ${(err as Error).message}`);
+    }
+  }
+  // SCAN_FULL_UNIVERSE: merge the whole tradeable F&O universe (same list the
+  // Fyers recorder tracks — fno_stocks, non-index, non-'avoid') so a name with
+  // real OI/turnover evidence isn't invisible just because it missed the
+  // movers lists. Gates unchanged; the quote stays one batched call (≤200).
+  if (fullUniverse) {
+    try {
+      const rows = await prisma.$queryRawUnsafe<{ symbol: string; sector: string | null }[]>(
+        `SELECT symbol, sector FROM fno_stocks WHERE isIndex = 0 AND tradeBand != 'avoid'`,
+      );
+      for (const r of rows) {
+        if (r.symbol && !sectorBySymbol.has(r.symbol)) sectorBySymbol.set(r.symbol, r.sector ?? '');
+      }
+    } catch (err) {
+      console.warn(`${TAG} full-universe merge failed (movers-only pool this pass): ${(err as Error).message}`);
     }
   }
   return { sectorBySymbol, oiSpurtSymbols };
@@ -253,19 +283,35 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
     earlierToday: await getSuggestions(date),
   };
 
-  if (!window.active && !opts.force) {
+  // SCAN_OUTSIDE_WINDOW turns the 09:40–11:00 gate advisory: scans run any
+  // time the market is open. Resolved before the early return; the market-
+  // closed guard below still applies (no live quotes = no suggestions).
+  const scanOutsideWindow = await getToggle('SCAN_OUTSIDE_WINDOW', SCAN_OUTSIDE_WINDOW);
+  if (!window.active && !opts.force && !(scanOutsideWindow && base.marketOpen)) {
     base.note = base.marketOpen
       ? `Outside the suggestion window (${WINDOW_LABEL.opensAt}–${WINDOW_LABEL.closesAt}).`
       : 'Market is closed.';
     return base;
+  }
+  if (!window.active && base.marketOpen) {
+    base.note = `Out-of-window scan (${scanOutsideWindow ? 'SCAN_OUTSIDE_WINDOW is ON' : 'forced'}) — entries outside ${WINDOW_LABEL.opensAt}–${WINDOW_LABEL.closesAt} are unproven for this strategy.`;
   }
   if (!base.marketOpen) {
     base.note = 'Market is closed — live quotes unavailable, no suggestions possible.';
     return base;
   }
 
-  // 1. Candidates from the live NSE feeds (F&O-gated, sector attached)
-  const { sectorBySymbol, oiSpurtSymbols } = await fetchCandidates(origin);
+  // Runtime feature toggles (flipped from /config; config.ts values are the
+  // defaults/fallback). Resolved once here, not per-candidate.
+  const scanFullUniverse = await getToggle('SCAN_FULL_UNIVERSE', SCAN_FULL_UNIVERSE);
+  const useBreakoutBypass = await getToggle('USE_BREAKOUT_BYPASS', USE_BREAKOUT_BYPASS);
+  const excludeExtended = await getToggle('EXCLUDE_EXTENDED', EXCLUDE_EXTENDED);
+  const useExtendedTrendBypass = await getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS);
+  const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
+
+  // 1. Candidates from the live NSE feeds (F&O-gated, sector attached),
+  //    widened to the full tracked universe when SCAN_FULL_UNIVERSE is on
+  const { sectorBySymbol, oiSpurtSymbols } = await fetchCandidates(origin, scanFullUniverse);
   const symbols = [...sectorBySymbol.keys()];
   base.scanned = symbols.length;
   if (symbols.length === 0) {
@@ -324,6 +370,23 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
     }))
     .sort((a, b) => (b.avgChgPct ?? 0) - (a.avgChgPct ?? 0));
 
+  // Sector STRENGTH per the heatmap's own aggregation (turnover-weighted move
+  // + advance/decline breadth — lib/sector/aggregate.ts), from the quote rows
+  // already in hand. DISPLAY EVIDENCE on picks, deliberately not a gate or
+  // score input until the replay benchmark proves it (same rule as the
+  // combined-OI slope; a market-wide tilt gate already failed that test).
+  const sectorAgg = new Map<string, SectorAggregate>(
+    aggregateSectors(
+      quotes.rows
+        .map((r) => ({
+          sector: sectorBySymbol.get(r.symbol) ?? '',
+          pct: r.changePctOpen ?? 0,
+          turnover: r.turnover ?? 0,
+        }))
+        .filter((t) => t.sector),
+    ).map((a) => [a.sector, a]),
+  );
+
   // 3. Gate + enrich
   const gated: Record<string, number> = {
     noPrice: 0,
@@ -346,6 +409,8 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
     setupLevel: string;
     setupReasons: string[];
     extended: boolean;
+    /** True when an extended name was re-admitted by the trend-aligned bypass. */
+    extendedBypassed?: boolean;
     nseOiPct: number | null;
     score: number;
   }
@@ -374,13 +439,38 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
       gated.lowConfidence++;
       continue;
     }
-    // OI evidence, two paths: sustained futures positioning (level vs 20-day
-    // avg) OR an options-led build that futures-only OI misses (NSE combined
-    // OI change — the SUNPHARMA lesson, 2026-07-03).
+    // Direction + candles + breakout are computed here (before the OI gate) so
+    // the breakout bypass below can use them; they're reused unchanged for the
+    // pick's plan.
+    const direction = row.rFactorBias === 'buy' ? 'bullish' : 'bearish';
+    const bars = await getFyersCandles(row.symbol, date, 'EQ');
+    const sc = deriveSessionContext(bars);
+    const orBreakout =
+      sc.openRangeComplete &&
+      (direction === 'bullish'
+        ? sc.openRangeHigh != null && ltp > sc.openRangeHigh
+        : sc.openRangeLow != null && ltp < sc.openRangeLow);
+
+    // OI evidence, three paths: sustained futures positioning (level vs 20-day
+    // avg) OR an options-led build futures-only OI misses (NSE combined OI
+    // change — the SUNPHARMA lesson, 2026-07-03) OR, when USE_BREAKOUT_BYPASS
+    // is on, a confirmed trend-aligned breakout with no OI yet (the price leads
+    // its OI — ADANIENSOL/NAUKRI; see breakout-bypass.ts).
     const futOiOk = (row.oiLevel ?? 0) >= MIN_OI_LEVEL;
     const nseOiPct = nseOiMap.get(row.symbol) ?? null;
     const nseOiOk = nseOiPct != null && nseOiPct >= MIN_NSE_OI_PCT;
-    if (!futOiOk && !nseOiOk) {
+    let breakoutOk = false;
+    if (useBreakoutBypass && !futOiOk && !nseOiOk && orBreakout) {
+      const vw = sessionVwap(bars);
+      const st = supertrend(bars);
+      const vwapAligned = vw == null ? null : direction === 'bullish' ? ltp > vw : ltp < vw;
+      const supertrendAligned = st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
+      breakoutOk = qualifiesByBreakout(
+        { orBreakout, supertrendAligned, vwapAligned, rFactor: row.rFactor },
+        { minRFactor: BREAKOUT_BYPASS_MIN_RFACTOR, requireTrendAlign: BREAKOUT_BYPASS_REQUIRE_TREND },
+      );
+    }
+    if (!futOiOk && !nseOiOk && !breakoutOk) {
       gated.lowOiLevel++;
       continue;
     }
@@ -392,15 +482,6 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
       gated.lowTurnover++;
       continue;
     }
-
-    const direction = row.rFactorBias === 'buy' ? 'bullish' : 'bearish';
-    const bars = await getFyersCandles(row.symbol, date, 'EQ');
-    const sc = deriveSessionContext(bars);
-    const orBreakout =
-      sc.openRangeComplete &&
-      (direction === 'bullish'
-        ? sc.openRangeHigh != null && ltp > sc.openRangeHigh
-        : sc.openRangeLow != null && ltp < sc.openRangeLow);
 
     // Price must agree with the bias: moving the right way since open, or an OR breakout.
     const chg = row.changePctOpen ?? 0;
@@ -463,13 +544,33 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
   //    EXCLUDE_EXTENDED — 0-for-5 evidence, see config.
   const shortlist = survivors
     .filter((s) => {
-      if (EXCLUDE_EXTENDED && s.extended) {
-        gated.extendedMover = (gated.extendedMover ?? 0) + 1;
-        return false;
+      // Not gated (not extended, or the hard ban is off) → keep.
+      if (!(excludeExtended && s.extended)) return true;
+      // Extended AND the hard ban is on. Trend-aligned bypass (opt-in): a genuine
+      // trend-day continuation — breakout still extending, price holding VWAP,
+      // Supertrend aligned — is re-admitted; a spent spike that lost VWAP/Supertrend
+      // is not (the 0-for-5 chase profile). The score still carries the extended
+      // ×0.6 penalty (computed above), so a bypassed name ranks conservatively.
+      if (useExtendedTrendBypass) {
+        const ltp = s.row.ltp ?? 0;
+        const vw = sessionVwap(s.bars);
+        const st = supertrend(s.bars);
+        const vwapAligned = vw == null ? null : s.direction === 'bullish' ? ltp > vw : ltp < vw;
+        const supertrendAligned = st == null ? null : s.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
+        if (
+          qualifiesExtendedTrend(
+            { orBreakout: s.orBreakout, supertrendAligned, vwapAligned, rFactor: s.row.rFactor },
+            { minRFactor: EXTENDED_BYPASS_MIN_RFACTOR, requireSupertrend: EXTENDED_BYPASS_REQUIRE_SUPERTREND },
+          )
+        ) {
+          s.extendedBypassed = true;
+          return true;
+        }
       }
-      return true;
+      gated.extendedMover = (gated.extendedMover ?? 0) + 1;
+      return false;
     })
-    .slice(0, MAX_PICKS + PICK_OVERSAMPLE);
+    .slice(0, maxPicks + PICK_OVERSAMPLE);
   const factorBaselines = await loadFactorBaselines(shortlist.map((s) => s.row.symbol));
   const sessionFrac = Math.min(1, Math.max(0.02, (istNow().minuteOfDay - (9 * 60 + 15)) / 375));
   const optionBySymbol = new Map<string, OptionPlan | null>();
@@ -482,7 +583,7 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
   const picks: TradeSuggestion[] = [];
   let skippedUnaffordable = 0;
   for (const s of shortlist) {
-    if (picks.length >= MAX_PICKS) break;
+    if (picks.length >= maxPicks) break;
     const r = s.row;
     const ltp = r.ltp ?? 0;
     const side: 'CE' | 'PE' = s.direction === 'bullish' ? 'CE' : 'PE';
@@ -513,6 +614,26 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
       fb?.combinedOiPrev != null && fb.combinedOi20dAvg != null && s.nseOiPct != null
         ? Math.round(((fb.combinedOiPrev * (1 + s.nseOiPct / 100)) / fb.combinedOi20dAvg) * 1000) / 1000
         : null;
+    // Combined-OI build RATE over the trailing ~30 min, from the per-5-min
+    // nseOiPct series the poller persists — distinguishes "building right now"
+    // from a stale morning print (the snapshot above can't). Display evidence,
+    // not a gate, until the replay benchmark says otherwise.
+    let combinedOiSlope30m: number | null = null;
+    try {
+      combinedOiSlope30m = combinedOiSlope(await getNseOiSeries(r.symbol, date), Math.floor(Date.now() / 1000));
+    } catch (err) {
+      console.warn(`${TAG} combined-OI slope failed for ${r.symbol}: ${(err as Error).message}`);
+    }
+    // Sector alignment: is the pick swimming with its sector's turnover-weighted
+    // move? Null when the sector is missing or too flat (<0.1%) to call.
+    const sa = sectorAgg.get(s.sector) ?? null;
+    const sectorPct = sa == null ? null : Math.round(sa.weightedPct * 100) / 100;
+    const sectorAligned =
+      sa == null || Math.abs(sa.weightedPct) < 0.1
+        ? null
+        : s.direction === 'bullish'
+          ? sa.weightedPct > 0
+          : sa.weightedPct < 0;
     const factors = {
       vwap: vw == null ? null : Math.round(vw * 100) / 100,
       vwapAligned: vw == null ? null : side === 'CE' ? ltp > vw : ltp < vw,
@@ -523,13 +644,21 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
       atrPct: a14 == null || ltp <= 0 ? null : Math.round((a14 / ltp) * 10000) / 100,
       eqTurnoverRatio,
       combinedOiLevel,
+      combinedOiSlope30m,
       nseOiPct: s.nseOiPct,
       onOiSpurtList: oiSpurtSymbols.has(r.symbol),
+      sectorPct,
+      sectorAdvanceRatio: sa?.advanceRatio == null ? null : Math.round(sa.advanceRatio * 100) / 100,
+      sectorAligned,
     };
 
     const reasons = [
       ...(s.extended
-        ? [`⚠ already moved ${(r.changePctOpen ?? 0) >= 0 ? '+' : ''}${(r.changePctOpen ?? 0).toFixed(1)}% from open — late to chase, score penalized`]
+        ? [
+            s.extendedBypassed
+              ? `⚠ extended ${(r.changePctOpen ?? 0) >= 0 ? '+' : ''}${(r.changePctOpen ?? 0).toFixed(1)}% from open but trend-aligned (breakout + Supertrend + VWAP) — extended-trend bypass admitted it, score still penalized`
+              : `⚠ already moved ${(r.changePctOpen ?? 0) >= 0 ? '+' : ''}${(r.changePctOpen ?? 0).toFixed(1)}% from open — late to chase, score penalized`,
+          ]
         : []),
       `R-Factor ${r.rFactor?.toFixed(2)} (${s.direction}, confidence ${((r.rFactorConfidence ?? 0) * 100).toFixed(0)}%)`,
       `futures OI ${r.oiLevel?.toFixed(2)}× 20-day avg${r.oiUrgency != null && r.oiUrgency > 0 ? `, urgency ${r.oiUrgency.toFixed(1)}/10` : ''}`,
@@ -539,6 +668,11 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
       ...(combinedOiLevel != null && combinedOiLevel >= 1.1
         ? [`combined fut+opt OI ≈${combinedOiLevel.toFixed(2)}× 20-day avg (derived from bhavcopy + NSE live %)`]
         : []),
+      ...(combinedOiSlope30m != null && combinedOiSlope30m >= 1
+        ? [`combined OI +${combinedOiSlope30m.toFixed(1)} pts in the last ~30 min — build is live, not a stale print`]
+        : combinedOiSlope30m != null && combinedOiSlope30m <= -1
+          ? [`⚠ combined OI ${combinedOiSlope30m.toFixed(1)} pts in the last ~30 min — the build is unwinding`]
+          : []),
       s.orBreakout ? 'trading beyond the opening range (breakout confirmed)' : 'inside opening range — breakout not yet confirmed',
       ...(st != null
         ? [
@@ -552,6 +686,13 @@ export async function runTradeSuggest(origin: string, opts: { force?: boolean } 
         ? [`equity turnover ≈${eqTurnoverRatio.toFixed(1)}× its time-adjusted 20-day pace (mornings naturally over-read ~2×)`]
         : []),
       ...(factors.onOiSpurtList ? ["on NSE's OI build-up list (big-player positioning)"] : []),
+      ...(sa != null && sectorAligned != null
+        ? [
+            sectorAligned
+              ? `sector agrees: ${s.sector} ${sectorPct! >= 0 ? '+' : ''}${sectorPct!.toFixed(2)}% (turnover-weighted), ${sa.advancers}↑/${sa.decliners}↓`
+              : `⚠ fighting its sector: ${s.sector} ${sectorPct! >= 0 ? '+' : ''}${sectorPct!.toFixed(2)}% (turnover-weighted), ${sa.advancers}↑/${sa.decliners}↓`,
+          ]
+        : []),
       ...(breadth.get(`${s.sector}:${s.direction}`) ?? 1) > 1
         ? [`sector confirmation: ${breadth.get(`${s.sector}:${s.direction}`)} ${s.sector} names moving ${s.direction}`]
         : [],

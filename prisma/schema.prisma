@@ -177,6 +177,18 @@ model OiIntraday {
   @@map("oi_intraday")
 }
 
+/// App-wide feature toggles flipped from the /config page (created at runtime
+/// via raw SQL in lib/config/feature-toggles.ts; declared here so `db push`
+/// keeps it). The registry + defaults live in that file; this table only stores
+/// overrides. value is 0/1.
+model FeatureToggle {
+  key       String @id
+  value     Int
+  updatedAt String
+
+  @@map("feature_toggles")
+}
+
 /// Fyers live 5-min candles (equity + current-month stock future) for the
 /// tradeable F&O universe — all non-index, non-'avoid'-band fno_stocks names
 /// plus explicit enrollments (created at runtime via raw SQL in
@@ -258,5 +270,40 @@ model TradeSuggestion {
   @@id([date, symbol, optionType])
   @@index([date])
   @@map("trade_suggestions")
+}
+
+/// Permanent EOD copy of the /live "Live Urgency" board (created at runtime via
+/// raw SQL in lib/signals/live-urgency-eod.ts; declared here so `db push` keeps
+/// it). One row per (date, symbol) — the first post-market capture of a session
+/// wins and is never overwritten (dayHigh/dayLow come from fyers_candles, which
+/// only retains TODAY, so a later re-capture for an older date must not clobber
+/// the good first write with nulls). bid/ask/hasDepth aren't stored — the order
+/// book no longer exists at EOD, same as the live closing-snapshot response.
+model LiveUrgencyEod {
+  date               String
+  symbol             String
+  ltp                Float   @default(0)
+  changePctOpen      Float?
+  spreadPct          Float?
+  imbalance          Float?
+  futOi              Float?
+  oiLevel            Float?
+  turnover           Float?
+  dayHigh            Float?
+  dayLow             Float?
+  sessionOiChangePct Float?
+  oiVelocity         Float?
+  oiAccel            Float?
+  oiUrgency          Float?
+  rFactor            Float?
+  rFactorBias        String?
+  rFactorConfidence  Float?
+  rFactorAfterEntry  Int?
+  rFactors           String  @default("[]")
+  capturedAt         String
+
+  @@id([date, symbol])
+  @@index([date])
+  @@map("live_urgency_eod")
 }
 

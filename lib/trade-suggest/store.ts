@@ -108,13 +108,9 @@ export async function upsertSuggestions(date: string, picks: TradeSuggestion[], 
 const toNum = (v: unknown): number => Number(v ?? 0);
 const toNumOrNull = (v: unknown): number | null => (v == null ? null : Number(v));
 
-export async function getSuggestions(date: string): Promise<StoredSuggestion[]> {
-  await ensureSuggestionsTable();
-  const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
-    `SELECT * FROM trade_suggestions WHERE date = ? ORDER BY suggestedAt ASC, rank ASC`,
-    date,
-  );
-  return rows.map((r) => ({
+/** One DB row → the typed StoredSuggestion (shared by single-day and history reads). */
+function rowToStored(r: Record<string, unknown>): StoredSuggestion {
+  return {
     date: String(r.date),
     symbol: String(r.symbol),
     optionType: r.optionType === 'PE' ? 'PE' : 'CE',
@@ -143,6 +139,58 @@ export async function getSuggestions(date: string): Promise<StoredSuggestion[]> 
     maxDownPct: toNumOrNull(r.maxDownPct),
     closePct: toNumOrNull(r.closePct),
     outcomeAt: r.outcomeAt == null ? null : String(r.outcomeAt),
+  };
+}
+
+export async function getSuggestions(date: string): Promise<StoredSuggestion[]> {
+  await ensureSuggestionsTable();
+  const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT * FROM trade_suggestions WHERE date = ? ORDER BY suggestedAt ASC, rank ASC`,
+    date,
+  );
+  return rows.map(rowToStored);
+}
+
+/** One trading day's worth of persisted suggestions, newest day first. */
+export interface SuggestionDay {
+  date: string;
+  suggestions: StoredSuggestion[];
+  /** Rows whose EOD scorecard has run (outcomeAt set). */
+  reviewed: number;
+  /** Reviewed rows that moved ≥1% in the suggested direction (CE up / PE down). */
+  hits: number;
+}
+
+/**
+ * Full daywise history over the trailing `days` window — every persisted
+ * suggestion grouped by trading day (newest first), each day carrying a
+ * reviewed/hit tally. Backs the Trade Log page. Rows persist across days
+ * (only the intraday candle store clears), so this is the durable record.
+ */
+export async function getSuggestionHistory(days = 30): Promise<SuggestionDay[]> {
+  await ensureSuggestionsTable();
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT * FROM trade_suggestions WHERE date >= ? ORDER BY date DESC, suggestedAt ASC, rank ASC`,
+    since,
+  );
+  const byDay = new Map<string, StoredSuggestion[]>();
+  for (const raw of rows) {
+    const s = rowToStored(raw);
+    const arr = byDay.get(s.date) ?? [];
+    arr.push(s);
+    byDay.set(s.date, arr);
+  }
+  const isHit = (s: StoredSuggestion) => {
+    if (s.outcomeAt == null) return false;
+    const favorable = s.optionType === 'PE' ? -(s.maxDownPct ?? 0) : (s.maxUpPct ?? 0);
+    return favorable >= 1;
+  };
+  return [...byDay.entries()].map(([date, suggestions]) => ({
+    date,
+    suggestions,
+    reviewed: suggestions.filter((s) => s.outcomeAt != null).length,
+    hits: suggestions.filter(isHit).length,
   }));
 }
 

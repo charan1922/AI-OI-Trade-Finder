@@ -57,9 +57,11 @@ export const TOOL_DEFS: OpenAI.Responses.Tool[] = [
     type: 'function',
     name: 'get_live_suggestions',
     description:
-      'Run the LIVE near-ATM options scan (the /trade-suggest engine) NOW and return up to 3 evidence-backed picks: ' +
+      'Run the LIVE near-ATM options scan (the /trade-suggest engine) NOW over the full ~166-name tradeable F&O ' +
+      'universe and return up to MAX_PICKS (default 7, /config-tunable) evidence-backed picks: ' +
       'contract (strike/expiry/lot), spot entry/SL/target, real premium + per-lot cost, R-Factor (1–8), OI evidence ' +
-      '(futures level or NSE combined), opening-range breakout, and per-pick reasons. Use for "what should I trade ' +
+      '(futures level or NSE combined), combined-OI build rate (~30 min), opening-range breakout, sector alignment ' +
+      '(turnover-weighted), and per-pick reasons. Use for "what should I trade ' +
       'now / today\'s picks / scan the market" questions. Only meaningful during market hours; the 09:40–11:00 IST ' +
       'window is the proven entry zone — outside it the response says so (never force unless the user explicitly asks). ' +
       'NEVER invent numbers beyond what this returns.',

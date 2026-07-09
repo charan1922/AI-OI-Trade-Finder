@@ -43,6 +43,9 @@ const spec = {
     { name: 'Market Data', description: 'NSE bhavcopy sync, trading calendar, F&O lot sizes.' },
     { name: 'Live', description: 'Real-time urgency, intraday OI series, dynamic sector watchlist.' },
     { name: 'Trade Suggest', description: 'Daily near-ATM option suggestions (09:40–11:00 IST) + same-day scorecard.' },
+    { name: 'Config', description: 'Runtime feature toggles + numeric settings (the /config page).' },
+    { name: 'Fyers', description: 'Fyers auth + the autonomous 5-min candle/OI recorder.' },
+    { name: 'NSE', description: 'Official NSE data: indices heatmap, pulse feeds, EOD movers, OI audit.' },
     { name: 'Heatmap', description: 'F&O sector treemap + cross-check vs official NSE indices.' },
     { name: 'AI Assistant', description: 'Azure OpenAI trade assistant with function calling.' },
     { name: 'Dhan Auth', description: 'Dhan access-token status + TOTP regeneration.' },
@@ -322,20 +325,39 @@ const spec = {
       },
     },
 
+    '/api/live/candles': {
+      get: {
+        tags: ['Live'],
+        summary: "Today's 5-min candle series for one stock (from the Fyers recorder)",
+        description:
+          "A stock's intraday 5-min bars for TODAY from the fyers_candles store (the autonomous poller refills it full-day every 5 min; the store clears at day change — no past dates). instrument=FUT rows carry live open interest per bucket. A symbol not yet tracked is enrolled here and appears within one cycle. Empty series = genuinely no data yet, never fabricated.",
+        parameters: [
+          { name: 'symbol', in: 'query', required: true, schema: { type: 'string' }, description: 'NSE underlying, e.g. RELIANCE' },
+          { name: 'instrument', in: 'query', required: false, schema: { type: 'string', enum: ['EQ', 'FUT'], default: 'EQ' } },
+        ],
+        responses: { '200': ok('{ symbol, instrument, date, bars }'), '400': errorResponse('symbol required') },
+      },
+    },
+
     // ───────────────────────── Trade Suggest ─────────────────────────
     '/api/trade-suggest': {
       get: {
         tags: ['Trade Suggest'],
-        summary: 'Up to 3 near-ATM option suggestions (the /trade-suggest skill endpoint)',
+        summary: 'Up to MAX_PICKS near-ATM option suggestions (the /trade-suggest skill endpoint)',
         description:
-          'Scans the live NSE watchlist feeds, gates on the TradeFinder fingerprint (OI evidence: futures OI ≥1.1× 20-day avg OR NSE combined fut+opt OI change ≥5%; spread ≤0.3%, R-Factor ≥3.6 on the 1–8 scale, turnover ≥1.2× avg, price/bias agreement), scores survivors (R-Factor, OI urgency, opening-range breakout, sector breadth; extended movers ×0.6) and returns the top 3 with nearest listed ATM strike, live option premium (per-lot cost, −40% premium backstop, ₹5k/lot target) + spot-level entry/SL/1:2-target plan. Active 09:40–11:00 IST; force=1 bypasses the window (not market hours). Picks persist to trade_suggestions.',
+          'Scans the full tradeable F&O universe (~166 names; SCAN_FULL_UNIVERSE toggle drops back to the ~48 movers-feed names) merged with the NSE movers feeds, gates on the TradeFinder fingerprint (OI evidence: futures OI ≥1.1× 20-day avg OR NSE combined fut+opt OI change ≥5%, plus the experimental USE_BREAKOUT_BYPASS path; spread ≤0.3%, R-Factor ≥3.6 on the 1–8 scale, turnover ≥1.2× avg, price/bias agreement), scores survivors (R-Factor, OI urgency, opening-range breakout, sector breadth) and returns the top MAX_PICKS (default 7, /config-tunable 1–10) with nearest listed ATM strike, live option premium (per-lot cost, −40% premium backstop, ₹5k/lot target) + spot-level entry/SL/1:2-target plan. Extended movers (≥3% from open) are hard-skipped while EXCLUDE_EXTENDED is on. Active 09:40–11:00 IST; force=1 bypasses the window (not market hours). Picks persist to trade_suggestions.',
         parameters: [
           { name: 'force', in: 'query', required: false, schema: { type: 'string', enum: ['1'] }, description: 'Bypass the time window (testing)' },
           { name: 'view', in: 'query', required: false, schema: { type: 'string', enum: ['leaderboard'] }, description: 'EOD TF-style spread-linear leaderboard from bhavcopy (post-market comparator; supports &date=&limit=)' },
           { name: 'date', in: 'query', required: false, schema: { type: 'string', format: 'date' }, description: 'Leaderboard session (defaults to latest synced bhavcopy)' },
           { name: 'limit', in: 'query', required: false, schema: { type: 'integer', default: 15 }, description: 'Leaderboard rows' },
         ],
-        responses: { '200': ok('{ window, marketOpen, scanned, gated, suggestions (each with factors: Supertrend/VWAP/ATR/eqTurnoverRatio/combinedOiLevel), tilt, sectorFlow, earlierToday }'), '500': errorResponse('Engine error') },
+        responses: {
+          '200': ok(
+            '{ window, marketOpen, scanned, gated, suggestions (each with factors: Supertrend/VWAP/ATR/eqTurnoverRatio/combinedOiLevel/combinedOiSlope30m (build rate, pct-pts per ~30 min)/sectorPct + sectorAdvanceRatio + sectorAligned (turnover-weighted sector alignment)), tilt, sectorFlow, earlierToday }',
+          ),
+          '500': errorResponse('Engine error'),
+        },
       },
       post: {
         tags: ['Trade Suggest'],
@@ -359,6 +381,134 @@ const spec = {
           },
         },
         responses: { '200': ok('{ date, reviewed, skipped, suggestions } | { stats }'), '400': errorResponse('Unknown action'), '500': errorResponse('Review error') },
+      },
+    },
+
+    // ───────────────────────── Fyers ─────────────────────────
+    '/api/fyers/token': {
+      get: {
+        tags: ['Fyers'],
+        summary: 'Fyers access-token status (fetches via TOTP login if none cached)',
+        description:
+          'Current Fyers token: masked preview + expiry. Fetches and caches a token via the TOTP login chain when none is loaded — hit this first to validate the auth setup in isolation. Needs FYERS_ID/APP_ID/SECRET_KEY/TOTP_SECRET/PIN/REDIRECT_URI in .env.local.',
+        responses: { '200': ok('{ tokenPreview, expiresAt, expiresInMinutes }'), '400': errorResponse('Credentials not configured'), '500': errorResponse('Login chain failed') },
+      },
+      post: {
+        tags: ['Fyers'],
+        summary: 'Force a FRESH Fyers token (clears cache, re-runs TOTP login)',
+        description: 'Optional body { reveal?: boolean } — full token returned only when reveal is true (masked by default; it is a live credential).',
+        responses: { '200': ok('{ tokenPreview | token, expiresAt }'), '500': errorResponse('Login chain failed') },
+      },
+    },
+    '/api/fyers/poller': {
+      get: {
+        tags: ['Fyers'],
+        summary: '5-min recorder status (state, last cycle, universe, token expiry)',
+        description:
+          'Downloader loop status: started/paused, last cycle summary (universe size ~166, bars written, OI attached, errors), next tick. `?coverage=1` adds per-symbol bar counts for today. Also (re)starts the loop defensively.',
+        parameters: [{ name: 'coverage', in: 'query', required: false, schema: { type: 'string', enum: ['1'] }, description: 'Add per-symbol bar coverage for today' }],
+        responses: { '200': ok('{ started, paused, cycles, lastCycle, universe, token }'), '500': errorResponse('Status error') },
+      },
+      post: {
+        tags: ['Fyers'],
+        summary: 'Control the recorder loop',
+        description:
+          "Body { action: 'pause' | 'resume' | 'run-once', date? }. run-once executes a full cycle immediately bypassing the market-hours guard; with `date` it backfills that day's candles (testing; pruned by the next regular cycle).",
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['action'],
+                properties: {
+                  action: { type: 'string', enum: ['pause', 'resume', 'run-once'] },
+                  date: { type: 'string', format: 'date', description: 'Backfill target for run-once' },
+                },
+              },
+              example: { action: 'run-once' },
+            },
+          },
+        },
+        responses: { '200': ok('{ state }'), '400': errorResponse('Unknown action') },
+      },
+    },
+
+    // ───────────────────────── Config ─────────────────────────
+    '/api/config/toggles': {
+      get: {
+        tags: ['Config'],
+        summary: 'Runtime feature toggles + numeric settings (the /config page)',
+        description:
+          'Every registered switch (USE_BREAKOUT_BYPASS, SCAN_FULL_UNIVERSE, EXCLUDE_EXTENDED) and numeric setting (MAX_PICKS, 1–10) with its default, effective value and last-changed time. Stored overrides live in the feature_toggles table; config.ts constants are the defaults/fallback.',
+        responses: { '200': ok('{ data: ToggleState[], numbers: NumberState[] }'), '500': errorResponse('DB error') },
+      },
+      post: {
+        tags: ['Config'],
+        summary: 'Set one toggle (boolean) or numeric setting (number)',
+        description:
+          'Body { key, value }. Boolean value flips a registered toggle; number value sets a registered numeric setting (validated against its min/max). Unknown keys are rejected — the registries in lib/config/feature-toggles.ts are the allowlist. Takes effect on the next scan.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['key', 'value'],
+                properties: {
+                  key: { type: 'string' },
+                  value: { oneOf: [{ type: 'boolean' }, { type: 'number' }] },
+                },
+              },
+              example: { key: 'MAX_PICKS', value: 7 },
+            },
+          },
+        },
+        responses: { '200': ok('{ data, numbers } (fresh lists)'), '400': errorResponse('Unknown key / bad value') },
+      },
+    },
+
+    // ───────────────────────── NSE (official data) ─────────────────────────
+    '/api/nse/heatmap': {
+      get: {
+        tags: ['NSE'],
+        summary: 'Official NSE indices (139) + market status for the /nse/heatmap page',
+        description:
+          'All NSE indices (sectoral, broad-market, derivatives-eligible) with % change vs previous close, advances/declines — the OFFICIAL free-float index numbers (includes the overnight gap, unlike /api/heatmap which is since-open F&O-universe derived). Sequential upstream calls, 60s cache, serves last-good payload flagged stale on NSE failure.',
+        responses: { '200': ok('{ asOf, count, indices, marketStatus, stale }'), '502': errorResponse('NSE unreachable and no cached payload') },
+      },
+    },
+    '/api/nse/pulse/{feed}': {
+      get: {
+        tags: ['NSE'],
+        summary: 'One NSE market-pulse feed (oiSpurts, gainers, losers, activeValue, activeVolume, …)',
+        description:
+          'A single NSE pulse list fetched independently — one upstream call per feed through a 30s shared in-process cache (same data the /nse/movers page and the trade-suggest candidate builder use). On failure serves the last good value flagged stale, else 502. Never fabricates.',
+        parameters: [{ name: 'feed', in: 'path', required: true, schema: { type: 'string' }, description: 'Feed key (e.g. oiSpurts, gainers, losers, activeValue, activeVolume, week52High)' }],
+        responses: { '200': ok('{ data, asOf, stale }'), '400': errorResponse('Unknown feed'), '502': errorResponse('NSE unreachable, nothing cached') },
+      },
+    },
+    '/api/nse/movers-history': {
+      get: {
+        tags: ['NSE'],
+        summary: 'EOD movers reconstructed from synced bhavcopy (pure DB read)',
+        description:
+          'Per-stock close-to-close stats for a session: pctChange, turnover, volume, and oiPct = day-over-day TOTAL derivatives OI change (futures+options, counted in CONTRACTS — the same basis as NSE’s live OI-spurts). ?dates=true lists available sessions. No NSE/Dhan calls.',
+        parameters: [
+          { name: 'dates', in: 'query', required: false, schema: { type: 'string', enum: ['true'] }, description: 'List available session dates instead' },
+          { name: 'date', in: 'query', required: false, schema: { type: 'string', format: 'date' }, description: 'Session to reconstruct (defaults to latest)' },
+        ],
+        responses: { '200': ok('{ date, rows } | { dates }'), '400': errorResponse('Bhavcopy not synced for the date') },
+      },
+    },
+    '/api/nse/oi-audit': {
+      get: {
+        tags: ['NSE'],
+        summary: 'Data-integrity check: our EOD OI% vs NSE’s live oi-spurts feed',
+        description:
+          'Per F&O stock, compares day-over-day OI% reconstructed from the last two synced bhavcopy sessions (contracts basis) against NSE’s live feed. Rows over ?threshold (default 5 pct-points) are flagged — usually an NSE live-feed quirk, not local corruption (verified precedent: TECHM 2026-07-02→03).',
+        parameters: [{ name: 'threshold', in: 'query', required: false, schema: { type: 'integer', default: 5 }, description: 'Flag |ours − NSE| above this many points' }],
+        responses: { '200': ok('{ compared, flagged, rows }'), '400': errorResponse('Need 2 synced bhavcopy sessions') },
       },
     },
 

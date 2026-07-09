@@ -221,6 +221,20 @@ export async function getFyersCandles(
   }));
 }
 
+/** One symbol's per-5-min NSE combined OI %-change series for `date` (FUT
+ *  rows' nseOiPct, attached each poller cycle), ascending — the input to
+ *  lib/signals/combined-oi-slope.ts. Rows with no attach yet carry null. */
+export async function getNseOiSeries(symbol: string, date: string): Promise<{ bucketTs: number; nseOiPct: number | null }[]> {
+  await ensureFyersCandlesTable();
+  const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT bucketTs, nseOiPct FROM fyers_candles
+      WHERE symbol = ? AND instrument = 'FUT' AND date = ? ORDER BY bucketTs ASC`,
+    symbol,
+    date,
+  );
+  return rows.map((r) => ({ bucketTs: toNum(r.bucketTs), nseOiPct: r.nseOiPct == null ? null : Number(r.nseOiPct) }));
+}
+
 export interface FyersCoverageRow {
   symbol: string;
   instrument: string;

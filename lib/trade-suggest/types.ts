@@ -72,8 +72,19 @@ export interface PickFactors {
   combinedOiLevel: number | null;
   /** NSE's combined OI %-change (the oi-spurts feed), verbatim. */
   nseOiPct: number | null;
+  /** Change in nseOiPct over the trailing ~30 min (pct-points), from the
+   *  per-5-min series the Fyers poller persists — the combined-OI build RATE
+   *  (lib/signals/combined-oi-slope.ts). Null when the series is too short. */
+  combinedOiSlope30m: number | null;
   /** On NSE's OI build-up list this scan (big-player activity marker). */
   onOiSpurtList: boolean;
+  /** The pick's sector: turnover-weighted % move among scanned names (the
+   *  heatmap's aggregation — lib/sector/aggregate.ts), advance ratio in [0,1],
+   *  and whether the sector's direction agrees with the trade. Aligned is null
+   *  when the sector is missing or too flat (<0.1%) to call. Evidence only. */
+  sectorPct: number | null;
+  sectorAdvanceRatio: number | null;
+  sectorAligned: boolean | null;
 }
 
 /** One suggestion, fully assembled. */

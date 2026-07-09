@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
 import { computeEodLeaderboard } from '@/lib/trade-suggest/eod-leaderboard';
 import { reviewToday } from '@/lib/trade-suggest/review';
-import { getStats } from '@/lib/trade-suggest/store';
+import { getStats, getSuggestionHistory } from '@/lib/trade-suggest/store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -30,6 +30,14 @@ export async function GET(req: Request) {
       );
       if (!board) return NextResponse.json({ success: false, error: 'No bhavcopy sessions synced' }, { status: 400 });
       return NextResponse.json({ success: true, ...board });
+    }
+    // ?view=history[&days=N] — the daywise Trade Log: every persisted
+    // suggestion grouped by trading day (newest first) with a hit tally.
+    if (url.searchParams.get('view') === 'history') {
+      const daysParam = Number(url.searchParams.get('days'));
+      const days = Number.isFinite(daysParam) && daysParam > 0 ? Math.min(daysParam, 365) : 30;
+      const board = await getSuggestionHistory(days);
+      return NextResponse.json({ success: true, days, days_returned: board.length, board });
     }
     const force = url.searchParams.get('force') === '1';
     const result = await runTradeSuggest(url.origin, { force });
