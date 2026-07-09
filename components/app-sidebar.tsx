@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState } from "react"
-import { Activity, BarChart2, Bot, BookOpen, CalendarClock, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, type LucideIcon, NotebookText, Radio, Table2, Target } from "lucide-react"
+import { Activity, Bot, BookOpen, CalendarClock, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, type LucideIcon, NotebookText, Radio, Table2, Target } from "lucide-react"
 
 import {
   Sidebar,
@@ -46,7 +46,6 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Simulation",
     icon: FlaskConical,
     children: [
-      { title: "Market Simulator", href: "/market-simulator", icon: BarChart2 },
       { title: "Trade Viewer", href: "/trade-viewer", icon: Eye },
       { title: "Data Downloader", href: "/data-downloader", icon: Download },
     ],

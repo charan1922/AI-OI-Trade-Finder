@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
   // Native modules used by the server-side data layer (DuckDB Parquet store +
   // Prisma better-sqlite3 adapter) must not be bundled — keep them external so
   // they're require()'d from node_modules at runtime. Turbopack honors this.
-  serverExternalPackages: ["@duckdb/node-api", "@prisma/client", ".prisma/client", "better-sqlite3", "fyers-api-v3"],
+  serverExternalPackages: ["@prisma/client", ".prisma/client", "better-sqlite3", "fyers-api-v3"],
   turbopack: {
     root: projectRoot,
   },
