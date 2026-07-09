@@ -1,0 +1,29 @@
+# Keep the build context small and free of local state / secrets.
+.git
+node_modules
+.next
+dist
+out
+
+# Local persistent state — the DB, token caches and parquet live on the Railway
+# volume at runtime, never baked into the image (also keeps secrets out).
+data
+
+# Secrets — set these as Railway service variables instead.
+.env
+.env.*
+*.local
+
+# Dev-only standalone tooling (tsx scripts, replay harness). Not part of the
+# deployable app, and some import dev-only modules (e.g. dotenv) that aren't
+# dependencies — keeping them out of the image avoids type-checking them in the
+# production `next build`. Nothing in app/lib/components imports from here.
+scripts
+
+# Logs, OS cruft, scratch
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db
+*_test.ts
