@@ -215,3 +215,8 @@ export function clearCachedToken(): void {
 export function hasDhanAuth(): boolean {
   return hasTotpCredentials() || !!(process.env.DHAN_CLIENT_ID && process.env.DHAN_ACCESS_TOKEN);
 }
+
+/** Current token status for the health indicator (never exposes the token). */
+export function getDhanTokenStatus(): { cached: boolean; expiresAt: number | null } {
+  return { cached: !!getToken(), expiresAt: getToken() ? getExpiry() : null };
+}
