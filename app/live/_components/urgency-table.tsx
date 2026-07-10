@@ -95,7 +95,7 @@ const BIAS_STYLE: Record<'buy' | 'sell' | 'neutral', { arrow: string; cls: strin
 };
 
 /**
- * R-Factor cell — the live institutional-interest score (1.0–5.0) plus its
+ * R-Factor cell — the live institutional-interest score (1.0–8.0) plus its
  * directional bias arrow, colored by strength. The hover tooltip breaks down every
  * contributing factor. Values are provisional until the blend weights are
  * calibrated to TradeFinder. "—" when there's no usable price (never fabricated).
@@ -247,7 +247,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               label="R-Factor"
               col="rFactor"
               align="right"
-              title="Live institutional-interest score 1.0–5.0 (higher = stronger) + bias arrow. Recomputed every poll from live OI/spread/breakout against fixed EOD baselines. Hover a value for the factor breakdown. Provisional until calibrated to TradeFinder."
+              title="Live institutional-interest score 1.0–8.0 (higher = stronger) + bias arrow. Recomputed every poll from live OI/spread/breakout against fixed EOD baselines. Hover a value for the factor breakdown. Provisional until calibrated to TradeFinder."
               {...th}
             />
             <Th label="Setup" col="setup" align="left" title="Combined verdict — see 'How to read'. Click to rank strongest first." {...th} />
