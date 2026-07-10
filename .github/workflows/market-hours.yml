@@ -1,20 +1,19 @@
 # Market-hours autoscale — run the Railway service ONLY during Indian market
-# hours, fully off (0 replicas, no compute billing) nights + weekends.
-#
-# The Fyers poller runs from the server (instrumentation.ts) whenever the service
-# is up — no browser needed. So "up during market hours" = the poller records and
-# /trade-suggest, /live, /nse/movers, /fyers all have fresh data autonomously.
+# hours, fully off (0 replicas, no compute billing, brokers not polled) nights +
+# weekends. Data capture is IN-PROCESS (the Fyers poller), so this workflow does
+# ONLY the on/off scaling — nothing hits Dhan/Fyers from CI.
 #
 # Deterministic (not traffic-based): the service stays continuously UP across the
 # whole window — no cold-start churn mid-session — then scales to 0 for the night.
 # Weekends (Sat/Sun) never scale up, so the service is off Fri evening → Mon morning.
 #
-# Requires a repo secret RAILWAY_API_TOKEN (Railway → Account → Tokens; then
-# GitHub repo → Settings → Secrets and variables → Actions). See DEPLOY.md.
+# Requires repo secret RAILWAY_API_TOKEN (Railway → Account → Tokens; then GitHub
+# repo → Settings → Secrets and variables → Actions). See DEPLOY.md. This
+# workflow lives on the default branch (main) — GitHub runs schedules from there.
 #
 # GitHub cron is UTC and best-effort (can be delayed/occasionally skipped under
-# load) — hence a backup fire for each direction. Scaling up when already up (or
-# down when already down) is a harmless no-op. IST = UTC + 5:30.
+# load) — hence a backup fire for each direction. Scaling up-when-up (or
+# down-when-down) is a harmless no-op. IST = UTC + 5:30.
 name: market-hours
 
 on:

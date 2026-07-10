@@ -44,7 +44,7 @@ const SECTOR_TO_NSE_INDEX: Record<string, string> = {
 
 interface HeatmapResponse {
   success: boolean;
-  source?: 'live' | 'eod';
+  source?: 'live' | 'eod' | 'session';
   marketOpen?: boolean;
   asOf?: string;
   sessionDate?: string;
@@ -303,6 +303,9 @@ export default function HeatmapPage() {
   const isLiveStale = data?.source === 'live' && data.stale === true;
   const isEodClosed = data?.source === 'eod' && !data.marketOpen;
   const isEodNoLive = data?.source === 'eod' && data.marketOpen; // open, but no live snapshot yet
+  // TODAY's completed session, built from the Fyers 5-min candles the poller
+  // records — shown right after the 15:30 close, before the evening bhavcopy.
+  const isSessionClosed = data?.source === 'session';
 
   // Selected stock-tile metric. Sector headlines are independent (always NSE/proxy
   // vs prev close — NSE gives no intraday).
@@ -343,6 +346,15 @@ export default function HeatmapPage() {
             title="Market closed — showing the last synced session vs the one before it. Live colors resume at 9:15 IST."
           >
             EOD · {data?.sessionDate} vs {data?.baseDate}
+          </span>
+        )}
+        {/* SESSION · today's completed session (post-close, from live candles) */}
+        {isSessionClosed && (
+          <span
+            className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:bg-sky-500/10 dark:text-sky-400"
+            title="Market closed — showing TODAY's completed session, built from the recorded 5-min candles (open→close of the day). The official NSE bhavcopy view takes over once it's synced this evening."
+          >
+            TODAY · {data?.sessionDate} (session)
           </span>
         )}
         {/* EOD · market open but no live snapshot yet (e.g. just after 9:15, or
@@ -557,6 +569,8 @@ export default function HeatmapPage() {
             ` — last good live snapshot${ageMs != null ? ` (${fmtAgo(ageMs)})` : ''}; the latest quote call failed, so this is held while we retry every 15s. Still today’s real figures — just not the newest tick.`}
           {isEodClosed &&
             ' — official NSE bhavcopy (market closed). Live colors resume automatically at 9:15 IST; EOD view updates when you sync NSE data.'}
+          {isSessionClosed &&
+            ` — today’s completed session (${data.sessionDate}), built from the recorded 5-min candles (day open→close, turnover summed). Shown right after the 15:30 close; the official NSE bhavcopy view takes over once synced this evening.`}
           {isEodNoLive &&
             ` — yesterday’s NSE bhavcopy (${data.sessionDate}) shown as a placeholder: the live feed couldn’t be reached yet. Retrying every 15s; live colors appear once a quote succeeds.`}{' '}
           {nseActive

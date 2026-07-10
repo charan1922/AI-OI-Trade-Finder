@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { dhanMarketFeed, isMarketHours, type MarketFeedQuote } from '@/lib/dhan/market-feed';
+import { dhanMarketFeed, isMarketHours, todayIST, type MarketFeedQuote } from '@/lib/dhan/market-feed';
 import { aggregateSectors } from '@/lib/sector/aggregate';
 import { loadSectorMap } from '@/lib/sector/sector-map';
 
@@ -123,6 +123,71 @@ export async function GET() {
         });
       }
       // No live snapshot yet this session → genuine EOD fallback below.
+    }
+
+    // ── Same-day POST-CLOSE path: TODAY's session from the Fyers 5-min candles
+    // the poller records autonomously (no browser needed). NSE EOD bhavcopy
+    // isn't published until the evening, so right after the 15:30 close this
+    // shows TODAY's heatmap instead of falling back to yesterday's session.
+    // Gated to market-closed ONLY: during market hours a live-feed failure must
+    // keep the existing retry/EOD-placeholder behavior above, not surface a
+    // partial intraday session here. (fyers_candles retains only today's rows,
+    // so this naturally applies to the current session; older/non-trading days
+    // fall through to bhavcopy.)
+    const today = todayIST();
+    if (!isMarketHours()) {
+      try {
+      const eqDay = await prisma.$queryRawUnsafe<
+        { symbol: string; dayOpen: number; dayClose: number; turnover: number }[]
+      >(
+        `WITH bounds AS (
+           SELECT symbol, MIN(bucketTs) AS firstTs, MAX(bucketTs) AS lastTs, SUM(close * volume) AS turnover
+             FROM fyers_candles WHERE instrument = 'EQ' AND date = ? AND open > 0
+            GROUP BY symbol
+         )
+         SELECT b.symbol, o.open AS dayOpen, cl.close AS dayClose, b.turnover
+           FROM bounds b
+           JOIN fyers_candles o  ON o.symbol = b.symbol  AND o.instrument = 'EQ' AND o.date = ? AND o.bucketTs = b.firstTs
+           JOIN fyers_candles cl ON cl.symbol = b.symbol AND cl.instrument = 'EQ' AND cl.date = ? AND cl.bucketTs = b.lastTs`,
+        today,
+        today,
+        today,
+      );
+      const usable = eqDay.filter((r) => sectors[r.symbol] && r.dayOpen > 0 && r.dayClose > 0 && r.turnover > 0);
+      if (usable.length > 0) {
+        // Previous close (for the vs-prev-close %) from the most recent bhavcopy
+        // session before today; falls back to the intraday move if unavailable.
+        const prevRows = await prisma.$queryRawUnsafe<{ symbol: string; eqClose: number }[]>(
+          `SELECT symbol, eqClose FROM bhavcopy_days
+            WHERE date = (SELECT MAX(date) FROM bhavcopy_days WHERE date < ?) AND eqClose > 0`,
+          today,
+        );
+        const prevBySym = new Map(prevRows.map((r) => [r.symbol, r.eqClose]));
+        const tiles: HeatTile[] = usable.map((r) => {
+          const intradayPct = ((r.dayClose - r.dayOpen) / r.dayOpen) * 100;
+          const base = prevBySym.get(r.symbol) ?? 0;
+          return {
+            symbol: r.symbol,
+            sector: sectors[r.symbol],
+            pct: base > 0 ? ((r.dayClose - base) / base) * 100 : intradayPct,
+            intradayPct,
+            turnover: r.turnover,
+            price: r.dayClose,
+          };
+        });
+        return NextResponse.json({
+          success: true,
+          source: 'session', // today's completed session, from live candles (post-close)
+          marketOpen: false,
+          sessionDate: today,
+          liveError,
+          tiles,
+          sectors: aggregateSectors(tiles),
+        });
+      }
+      } catch (e) {
+        console.warn('[Heatmap] session-candles path failed, falling back to bhavcopy:', (e as Error).message);
+      }
     }
 
     // ── EOD path (closed market, or live failed): NSE bhavcopy ──────────────

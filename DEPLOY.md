@@ -50,8 +50,15 @@ Add these (copy the values from your local `.env.local`):
   `FYERS_PIN`, `FYERS_REDIRECT_URI`.
   ⚠️ **`FYERS_REDIRECT_URI` must stay exactly as registered in your Fyers app** —
   it is validated against the Fyers app registration, not the Railway URL.
-- **`DHAN_*`** (optional, legacy): `DHAN_ACCESS_TOKEN`, `DHAN_PIN`,
-  `DHAN_TOTP_SECRET`.
+- **`DHAN_*`** — for live equity/futures quotes + option chain (heatmap live
+  path, live/quote). TOTP auto-generation needs **all three** of
+  `DHAN_CLIENT_ID` + `DHAN_PIN` + `DHAN_TOTP_SECRET` (⚠️ `DHAN_CLIENT_ID` is
+  required — without it the app reports "No Dhan credentials configured" and
+  falls back to the static, soon-expired `DHAN_ACCESS_TOKEN`). Add
+  `DHAN_ACCESS_TOKEN` too as a static fallback.
+- **`APP_PASSWORD`** — the one-password gate (and the auth the in-process
+  capture uses for its internal API calls). Required for the deployed app.
+- **`PORT=5001`** — see the port note below.
 - **`DATABASE_URL`** set to the absolute volume path (not your local value):
 
   ```
@@ -60,6 +67,9 @@ Add these (copy the values from your local `.env.local`):
 
   The runtime always uses `/app/data/project-r.db`; this makes the Prisma CLI's
   `db push` target the same file — no ambiguity.
+
+> Tip: if your `.env.local` starts with a UTF-8 BOM, the first var's name gets a
+> hidden `﻿` prefix — paste values carefully or the first key won't match.
 
 ### 4. Redeploy so the volume + vars take effect
 

@@ -64,6 +64,9 @@ interface PollerState {
   holidayCache: { date: string; holiday: boolean } | null;
   /** Last date the once-a-day EOD bhavcopy sync ran (autonomous capture). */
   lastBhavcopyDate: string | null;
+  /** Guards against a slow autonomous capture overlapping the next one — so the
+   *  scan's Dhan/NSE calls can never be issued concurrently (rate-limit safety). */
+  captureRunning: boolean;
 }
 
 const g = globalThis as unknown as { __fyersPoller?: PollerState };
@@ -80,6 +83,7 @@ function getState(): PollerState {
     nextTickAt: null,
     holidayCache: null,
     lastBhavcopyDate: null,
+    captureRunning: false,
   };
   return g.__fyersPoller;
 }
@@ -245,31 +249,40 @@ export async function runFyersCycle(
  * failure is logged and swallowed so the recorder is never affected.
  */
 async function runAutonomousCapture(today: string, state: PollerState): Promise<void> {
+  // Never let a slow capture overlap the next cycle's — this serializes the
+  // scan's Dhan/NSE calls (rate-limit safety). A skipped pass self-heals next
+  // cycle (the scan is idempotent; repeats just bump timesSeen).
+  if (state.captureRunning) return;
+  state.captureRunning = true;
   const origin = `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
   try {
-    const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
-    await runTradeSuggest(origin); // internal /api/live/* fetches carry APP_PASSWORD auth
-  } catch (err) {
-    console.warn(`${TAG} autonomous scan failed: ${(err as Error).message}`);
-  }
-  // EOD bhavcopy — once per day (only fetches the sessions it's missing).
-  if (state.lastBhavcopyDate !== today) {
     try {
-      const auth: Record<string, string> = process.env.APP_PASSWORD
-        ? { Authorization: `Basic ${Buffer.from(`x:${process.env.APP_PASSWORD}`).toString('base64')}` }
-        : {};
-      const res = await fetch(`${origin}/api/bhavcopy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...auth },
-        body: '{}',
-      });
-      if (res.ok) {
-        state.lastBhavcopyDate = today;
-        console.log(`${TAG} EOD bhavcopy synced`);
-      }
+      const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
+      await runTradeSuggest(origin); // internal /api/live/* fetches carry APP_PASSWORD auth
     } catch (err) {
-      console.warn(`${TAG} bhavcopy sync failed: ${(err as Error).message}`);
+      console.warn(`${TAG} autonomous scan failed: ${(err as Error).message}`);
     }
+    // EOD bhavcopy — once per day (only fetches the sessions it's missing).
+    if (state.lastBhavcopyDate !== today) {
+      try {
+        const auth: Record<string, string> = process.env.APP_PASSWORD
+          ? { Authorization: `Basic ${Buffer.from(`x:${process.env.APP_PASSWORD}`).toString('base64')}` }
+          : {};
+        const res = await fetch(`${origin}/api/bhavcopy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...auth },
+          body: '{}',
+        });
+        if (res.ok) {
+          state.lastBhavcopyDate = today;
+          console.log(`${TAG} EOD bhavcopy synced`);
+        }
+      } catch (err) {
+        console.warn(`${TAG} bhavcopy sync failed: ${(err as Error).message}`);
+      }
+    }
+  } finally {
+    state.captureRunning = false;
   }
 }
 
