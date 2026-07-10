@@ -55,8 +55,12 @@ const SYSTEM = [
   '- Use ONLY numbers present in the JSON. Never invent premiums, Greeks, win-rates or targets.',
   '- If there are no suggestions, say so plainly and summarise why (the gated reasons / breadth).',
   '- Be specific and scannable. Markdown is fine (bold, bullets, ---). No hype, no disclaimers, no preamble.',
-  '- Prefer compact inline deltas over tables — e.g. "R-Factor 4.02↑ from 3.88", "Entry 11,593 (was 11,474)".',
-  '  Only use a markdown table if truly needed and keep it to ≤3 narrow columns.',
+  '- NEVER output a markdown table (no "| a | b |" rows, no "|---|" separators). Tables are hard to read',
+  '  on a phone mid-trade. Put EACH metric on its own bullet with the change inline instead, e.g.:',
+  '    • OI urgency 6.9/10 ↑ big jump (was 4.0)',
+  '    • R-Factor 6.07 ↑↑ (was 5.82 → 5.99)',
+  '    • Spot 1424 — rangebound (1424.7 → 1427.9 → 1424)',
+  '  One fact per bullet, latest value first, then the trend arrow and the prior value in parentheses.',
   '- Order the stock sections best-first (the Top pick is the first section). Max ~220 words.',
 ].join('\n');
 
