@@ -68,6 +68,15 @@ export const MIN_TURNOVER_SCORE = 0.1;
  *  (Indian option-buying convention is 40–50%; the SPOT SL remains the primary,
  *  signal-based exit). */
 export const PREMIUM_SL_PCT = 40;
+/**
+ * Hard ₹ cap on the loss PER LOT. The premium stop is placed at
+ * max(−PREMIUM_SL_PCT%, −this/lot) — i.e. the TIGHTER of the 40% backstop and
+ * this rupee budget — so a single lot can never lose more than this. The SPOT SL
+ * stays the structure-based (last-candle / support) exit; this only bounds the ₹.
+ * User call 2026-07-10: the flat 40% stop risked ₹11k+/lot on pricey options to
+ * make the ₹5k/lot target (a 0.45:1 R:R). At ₹3,000 the R:R is ~1.7:1.
+ */
+export const MAX_LOSS_PER_LOT_RUPEES = 3000;
 /** TF-style profit objective per lot (₹) — translated to a premium target. */
 export const TF_LOT_TARGET_RUPEES = 5000;
 /** Option-liquidity warnings: bid-ask spread of the OPTION itself above this %

@@ -2,7 +2,7 @@
 
 import { ChevronDown, ChevronRight, ExternalLink, Loader2, NotebookText, RefreshCw } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { CAPITAL_BUDGET } from '@/lib/trade-suggest/config';
+import { CAPITAL_BUDGET, MAX_LOSS_PER_LOT_RUPEES } from '@/lib/trade-suggest/config';
 
 /** Mirrors lib/trade-suggest/store.ts StoredSuggestion (the persisted row). */
 interface StoredRow {
@@ -114,7 +114,12 @@ function planOutcome(s: StoredRow): { basis: Basis; plPerShare: number | null } 
   const targetHit = s.targetSpot != null && (ce ? hi != null && hi >= s.targetSpot : lo != null && lo <= s.targetSpot);
   const slHit = s.slSpot != null && (ce ? lo != null && lo <= s.slSpot : hi != null && hi >= s.slSpot);
   const tgtPL = s.premiumTarget != null && s.premiumAtSuggest != null ? s.premiumTarget - s.premiumAtSuggest : null;
-  const slPL = s.premiumSl != null && s.premiumAtSuggest != null ? s.premiumSl - s.premiumAtSuggest : null;
+  // Cap the modeled loss at the ₹ per-lot budget — a losing trade that hit the old
+  // 40% stop necessarily passed through this tighter level first, so recomputing
+  // historical rows at the cap is honest (and new rows are already stored capped).
+  const capPerShare = s.lotSize > 0 ? MAX_LOSS_PER_LOT_RUPEES / s.lotSize : null;
+  const rawSlPL = s.premiumSl != null && s.premiumAtSuggest != null ? s.premiumSl - s.premiumAtSuggest : null;
+  const slPL = rawSlPL == null ? null : capPerShare == null ? rawSlPL : Math.max(rawSlPL, -capPerShare);
   if (targetHit && slHit) return { basis: 'BOTH', plPerShare: slPL };
   if (targetHit) return { basis: 'TGT', plPerShare: tgtPL };
   if (slHit) return { basis: 'SL', plPerShare: slPL };
@@ -391,10 +396,11 @@ export default function TradeLogPage() {
         Every pick the <code className="rounded bg-muted px-1">/trade-suggest</code> scan persisted, grouped by trading day
         (newest first). <b>Entry</b> = first call time · <b>Exit</b> = which level the spot hit (target / stop / open) at the
         15:30 review. <b>Lots</b> sized to ₹{(CAPITAL_BUDGET / 1000).toFixed(0)}k capital, capped at {MAX_LOTS}. <b>P/L</b> is
-        the plan outcome — if the spot reached your Target or SL, marked at the plan&apos;s real Target/SL premium × lots;{' '}
-        <b>open</b> = neither was touched (no exit, so no ₹ claimed). <b>Move</b> = best spot move in the suggested direction
-        at close. <b>⚠ stop*</b> = both target and stop were touched intraday — counted as the stop, since a disciplined exit
-        takes the stop first. Signal analysis only; no order is placed.
+        the plan outcome — target hit → +₹5,000/lot; stop hit → loss capped at{' '}
+        <b>₹{MAX_LOSS_PER_LOT_RUPEES.toLocaleString('en-IN')}/lot</b> (the spot SL sits at the structure level — last
+        candle / support — this only bounds the ₹ if it&apos;s wide); <b>open</b> = neither touched (no ₹ claimed).{' '}
+        <b>Move</b> = best spot move in the suggested direction at close. <b>⚠ stop*</b> = both target and stop were touched
+        intraday — counted as the stop, since a disciplined exit takes the stop first. Signal analysis only; no order is placed.
       </p>
 
       {error && <div className="rounded border border-red-300 px-3 py-2 text-[11px] text-red-600">{error}</div>}

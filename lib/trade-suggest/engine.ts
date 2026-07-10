@@ -39,6 +39,7 @@ import {
   EXCLUDE_EXTENDED,
   EXTENDED_BYPASS_MIN_RFACTOR,
   EXTENDED_BYPASS_REQUIRE_SUPERTREND,
+  MAX_LOSS_PER_LOT_RUPEES,
   MAX_OPT_SPREAD_PCT,
   MAX_PICKS,
   MAX_SPREAD_PCT,
@@ -281,7 +282,11 @@ async function attachPremiums(options: OptionPlan[]): Promise<void> {
         volume,
         oi,
         perLotCost: Math.round(ltp * o.lotSize * 100) / 100,
-        slPremium: Math.round(ltp * (1 - PREMIUM_SL_PCT / 100) * 100) / 100,
+        // Stop premium = the TIGHTER of the 40% backstop and the ₹ per-lot cap,
+        // so a lot can't lose more than MAX_LOSS_PER_LOT_RUPEES (higher premium = smaller loss).
+        slPremium: Math.round(
+          Math.max(0, Math.max(ltp * (1 - PREMIUM_SL_PCT / 100), ltp - MAX_LOSS_PER_LOT_RUPEES / o.lotSize)) * 100,
+        ) / 100,
         targetPremium: Math.round((ltp + TF_LOT_TARGET_RUPEES / o.lotSize) * 100) / 100,
         liquidityWarning: warnings.length > 0 ? warnings.join('; ') : null,
       };
