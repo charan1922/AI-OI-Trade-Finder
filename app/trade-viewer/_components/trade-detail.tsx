@@ -166,7 +166,7 @@ export function TradeDetailSection() {
       {detail?.dataAvailable && selected && (
         <div className="space-y-4">
           {/* Trade Info Cards */}
-          <div className="grid grid-cols-7 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
             <InfoCard label="Stock" value={`${detail.symbol} ${detail.tf.optionType} ${detail.tf.strike}`} />
             <InfoCard label="Date" value={detail.date} />
             <InfoCard
