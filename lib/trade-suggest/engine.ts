@@ -97,6 +97,18 @@ function windowState(): SuggestWindow {
 // ─── Candidate gathering (existing routes, same origin) ──────────────────────
 
 /**
+ * Loopback base for server-side self-fetches. A container CANNOT reach its own
+ * PUBLIC URL from inside (Railway doesn't route the public host back to the
+ * instance) — using it yields "fetch failed". 127.0.0.1:$PORT always works and
+ * still passes through proxy.ts's gate (hence internalAuthHeaders). runTradeSuggest
+ * uses THIS for its internal fetches, ignoring the caller's request origin, so no
+ * caller (HTTP route or poller) can accidentally pass the unreachable public URL.
+ */
+export function internalOrigin(): string {
+  return `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
+}
+
+/**
  * Auth header for the internal same-origin fetches below. On the deployed server
  * the whole app is behind proxy.ts (HTTP Basic Auth via APP_PASSWORD); a
  * server-to-self fetch carries no browser credentials, so without this the
@@ -284,7 +296,10 @@ async function attachPremiums(options: OptionPlan[]): Promise<void> {
 // (Composite score + spot-plan math live in scoring.ts, shared with the
 //  offline replay harness — scripts/replay-window.ts.)
 
-export async function runTradeSuggest(origin: string, opts: { force?: boolean } = {}): Promise<SuggestResponse> {
+export async function runTradeSuggest(_origin: string, opts: { force?: boolean } = {}): Promise<SuggestResponse> {
+  // Internal fetches always go to loopback (the container can't reach its own
+  // public URL) — the caller's origin is accepted for signature compat but ignored.
+  const origin = internalOrigin();
   const date = todayIST();
   const window = windowState();
   const base: SuggestResponse = {
