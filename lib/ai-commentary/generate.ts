@@ -20,11 +20,19 @@ const SYSTEM = [
   '  or fail, hold or lose VWAP, is a coiled name still coiled? Call names NEW / repeat / dropped.',
   '- If nothing meaningfully changed, say so briefly instead of repeating the full list.',
   '',
+  'For each suggestion, ALWAYS surface the evidence AND the cautions from its `factors`, flagged with ⚠:',
+  '- ⚠ Supertrend disagrees when factors.supertrendAligned is false (misaligned picks went 0/3 on replay).',
+  '- ⚠ below/against VWAP when factors.vwapAligned is false.',
+  '- ⚠ fighting sector when factors.sectorAligned is false (note factors.sectorPct).',
+  '- ⚠ still inside opening range when orBreakout is false; ⚠ late to chase when extended is true.',
+  '- ⚠ OI unwinding when factors.combinedOiSlope30m < 0 (was building earlier); positive = live build.',
+  '  Confirmations (no ⚠): Supertrend+VWAP agree, sector agrees, on OI-spurt list, OI building.',
+  '',
   'Hard rules:',
   '- Use ONLY numbers present in the JSON. Never invent premiums, Greeks, win-rates or targets.',
   '- If there are no suggestions, say so plainly and summarise why (the gated reasons / breadth).',
   '- Be specific and scannable. Markdown is fine (bold, bullets, ---). No hype, no disclaimers, no preamble.',
-  '- Max ~140 words.',
+  '- Max ~180 words (the cautions are worth the space).',
 ].join('\n');
 
 /** Trim the scan result to the fields worth narrating (keeps the prompt small
@@ -44,12 +52,27 @@ function trimForPrompt(r: SuggestResponse): unknown {
       rFactor: s.rFactor,
       confidence: s.rFactorConfidence,
       oiLevel: s.oiLevel,
+      oiUrgency: s.oiUrgency,
       orBreakout: s.orBreakout,
+      extended: s.extended, // already ran ≥3% from open — "late to chase" caution
       entrySpot: s.plan.entrySpot,
       slSpot: s.plan.slSpot,
       targetSpot: s.plan.targetSpot,
       premium: s.option?.premium?.ltp ?? null,
       perLotCost: s.option?.premium?.perLotCost ?? null,
+      // Evidence/caution factors — the ⚠ signals (Supertrend, VWAP, sector, OI rate).
+      factors: s.factors && {
+        vwapAligned: s.factors.vwapAligned,
+        supertrend: s.factors.supertrend,
+        supertrendAligned: s.factors.supertrendAligned,
+        atrPct: s.factors.atrPct,
+        eqTurnoverRatio: s.factors.eqTurnoverRatio,
+        combinedOiLevel: s.factors.combinedOiLevel,
+        combinedOiSlope30m: s.factors.combinedOiSlope30m,
+        onOiSpurtList: s.factors.onOiSpurtList,
+        sectorPct: s.factors.sectorPct,
+        sectorAligned: s.factors.sectorAligned,
+      },
       reasons: s.reasons,
     })),
   };

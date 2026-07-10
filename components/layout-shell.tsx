@@ -33,7 +33,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
             <span>Settings</span>
           </Link>
         </header>
-        <main className="flex-1 p-6">{children}</main>
+        <main className="min-w-0 flex-1 p-3 sm:p-6">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   )

@@ -3,6 +3,24 @@
 import { Bot, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { Fragment, type ReactNode, useCallback, useEffect, useState } from 'react';
 
+type ChipTone = 'good' | 'warn' | 'info';
+interface Chip {
+  label: string;
+  value: string;
+  tone: ChipTone;
+}
+interface StoredPick {
+  symbol: string;
+  side: string;
+  strike: number | null;
+  expiry: string | null;
+  lot: number | null;
+  direction: 'bullish' | 'bearish';
+  score: number;
+  changePctOpen: number | null;
+  extended: boolean;
+  chips: Chip[];
+}
 interface CommentaryRow {
   id: number;
   date: string;
@@ -11,9 +29,9 @@ interface CommentaryRow {
   picksCount: number;
   model: string;
   text: string;
+  picks: StoredPick[];
   createdAt: string;
 }
-
 interface ApiResponse {
   success: boolean;
   configured?: boolean;
@@ -30,6 +48,53 @@ function fmtTime(s: string): string {
   return Number.isNaN(d.getTime())
     ? s
     : d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+}
+
+// ── The app's pill (matches /trade-suggest) ──────────────────────────────────
+function Pill({ label, value, tone }: Chip) {
+  const toneCls =
+    tone === 'good'
+      ? 'border-emerald-400/50 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+      : tone === 'warn'
+        ? 'border-amber-400/50 bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'
+        : 'border-border bg-muted/40 text-muted-foreground';
+  return (
+    <span className={`inline-flex items-baseline gap-1 rounded border px-1.5 py-0.5 ${toneCls}`}>
+      <span className="text-[9px] uppercase tracking-wide opacity-75">{label}</span>
+      <span className="text-[10.5px] font-semibold tabular-nums">{value}</span>
+    </span>
+  );
+}
+
+function PickBlock({ p }: { p: StoredPick }) {
+  const bull = p.direction === 'bullish';
+  return (
+    <div className="rounded-lg border bg-muted/20 p-2.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-mono text-[13px] font-bold text-foreground">{p.symbol}</span>
+        <span
+          className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${bull ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300'}`}
+        >
+          BUY {p.strike != null ? `${p.strike} ${p.side}` : p.side}
+        </span>
+        {p.expiry && <span className="text-[10px] text-muted-foreground">exp {p.expiry}{p.lot ? ` · lot ${p.lot}` : ''}</span>}
+        <span className="ml-auto text-[10px] text-muted-foreground">
+          score {p.score.toFixed(3)}
+          {p.changePctOpen != null && (
+            <span className={p.changePctOpen >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+              {' '}· {p.changePctOpen >= 0 ? '+' : ''}
+              {p.changePctOpen.toFixed(1)}% since open
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        {p.chips.map((c, i) => (
+          <Pill key={`${c.label}-${i}`} {...c} />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ── Lightweight markdown (no deps): **bold**, - bullets, # headings, --- rule.
@@ -125,32 +190,23 @@ export default function TradeCommentaryPage() {
     } catch (e) {
       setGenError((e as Error).message);
     } finally {
+      setLoading(false);
       setGenerating(false);
     }
   }, [load]);
 
-  // Group by day (newest day first); within a day oldest→newest so it reads as a
-  // running conversation. The API returns newest-first.
+  // Newest first (latest on top). API already returns newest-first; add subtle
+  // day dividers when the date changes.
   const rows = data?.rows ?? [];
-  const byDay = new Map<string, CommentaryRow[]>();
-  for (const r of rows) {
-    const arr = byDay.get(r.date) ?? [];
-    arr.push(r);
-    byDay.set(r.date, arr);
-  }
-  const days = [...byDay.entries()].map(([date, list]) => ({
-    date,
-    turns: [...list].sort((a, b) => a.id - b.id),
-  }));
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4 p-4">
+    <div className="mx-auto max-w-3xl space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Bot className="h-5 w-5 text-primary" />
-        <h1 className="text-lg font-bold text-foreground">Trade Commentary</h1>
+        <Bot className="h-5 w-5 shrink-0 text-primary" />
+        <h1 className="text-base font-bold text-foreground sm:text-lg">Trade Commentary</h1>
         <span
           className="rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary"
-          title="This page is powered exclusively by Xiaomi MiMo — no OpenAI/Azure. The picks themselves are deterministic; MiMo only narrates them."
+          title="Powered exclusively by Xiaomi MiMo — no OpenAI/Azure. The picks are deterministic; MiMo only narrates them."
         >
           ⚡ Xiaomi MiMo · {data?.model ?? 'mimo-v2.5-pro'}
         </span>
@@ -162,7 +218,8 @@ export default function TradeCommentaryPage() {
             className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >
             {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-            Generate now
+            <span className="hidden sm:inline">Generate now</span>
+            <span className="sm:hidden">Generate</span>
           </button>
           <button
             type="button"
@@ -175,12 +232,11 @@ export default function TradeCommentaryPage() {
         </div>
       </div>
 
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
         A running per-day narration of the deterministic scan picks — each read builds on the day’s earlier ones (what
-        broke out, what held, what’s new), and each new day starts fresh. Generated in-process during market hours (per
-        the /config window), so it fills even when the app isn’t open. Narration by <strong>Xiaomi MiMo</strong> (
-        {data?.model ?? 'mimo-v2.5-pro'}); it only describes numbers the scanner computed and never places orders. Not
-        financial advice.
+        broke out, what held, what’s new); each new day starts fresh. Generated in-process during market hours (per the
+        /config window), so it fills even when the app isn’t open. Narration by <strong>Xiaomi MiMo</strong>; it only
+        describes what the scanner computed and never places orders. Not financial advice.
       </p>
 
       {data?.configured === false && (
@@ -194,42 +250,50 @@ export default function TradeCommentaryPage() {
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Loading…
         </div>
-      ) : days.length === 0 ? (
+      ) : rows.length === 0 ? (
         <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
           No commentary yet. It generates automatically during market hours, or hit “Generate now”.
         </div>
       ) : (
-        <div className="space-y-6">
-          {days.map((day) => (
-            <Fragment key={day.date}>
-              <div className="sticky top-0 z-10 -mx-1 bg-background/80 px-1 py-1 text-xs font-semibold text-muted-foreground backdrop-blur">
-                {day.date}
-              </div>
-              <div className="space-y-3">
-                {day.turns.map((r) => (
-                  <div key={r.id} className="flex gap-2.5">
-                    <div className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-primary to-primary/70 text-primary-foreground">
-                      <Sparkles className="h-3 w-3" />
-                    </div>
-                    <div className="min-w-0 flex-1 rounded-lg border bg-card p-3 shadow-sm">
-                      <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-                        <span className="font-medium text-foreground">{fmtTime(r.asOf)} IST</span>
-                        {r.windowActive && (
-                          <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
-                            in window
-                          </span>
-                        )}
-                        <span className="ml-auto">
-                          {r.picksCount} pick{r.picksCount === 1 ? '' : 's'}
-                        </span>
-                      </div>
-                      <RichText content={r.text} />
-                    </div>
+        <div className="space-y-3">
+          {rows.map((r, idx) => {
+            const showDay = idx === 0 || rows[idx - 1].date !== r.date;
+            return (
+              <Fragment key={r.id}>
+                {showDay && (
+                  <div className="sticky top-0 z-10 -mx-1 bg-background/85 px-1 py-1 text-xs font-semibold text-muted-foreground backdrop-blur">
+                    {r.date}
                   </div>
-                ))}
-              </div>
-            </Fragment>
-          ))}
+                )}
+                <div className="rounded-xl border bg-card p-3 shadow-sm">
+                  <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-primary to-primary/70 text-primary-foreground">
+                      <Sparkles className="h-3 w-3" />
+                    </span>
+                    <span className="font-semibold text-foreground">{fmtTime(r.asOf)} IST</span>
+                    {r.windowActive && (
+                      <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                        in window
+                      </span>
+                    )}
+                    <span className="ml-auto">
+                      {r.picksCount} pick{r.picksCount === 1 ? '' : 's'}
+                    </span>
+                  </div>
+
+                  {r.picks?.length > 0 && (
+                    <div className="mb-2.5 space-y-2">
+                      {r.picks.map((p, i) => (
+                        <PickBlock key={`${p.symbol}-${i}`} p={p} />
+                      ))}
+                    </div>
+                  )}
+
+                  <RichText content={r.text} />
+                </div>
+              </Fragment>
+            );
+          })}
         </div>
       )}
     </div>

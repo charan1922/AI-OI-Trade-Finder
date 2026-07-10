@@ -11,6 +11,7 @@ import { todayIST } from '@/lib/dhan/market-feed';
 import { hasMimo } from '@/lib/env';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { generateCommentary } from './generate';
+import { buildPicks } from './picks';
 import { getCommentary, insertCommentary } from './store';
 
 export interface RunCommentaryOutcome {
@@ -37,6 +38,7 @@ export async function runAndStoreCommentary(result: SuggestResponse): Promise<Ru
     picksCount: result.suggestions?.length ?? 0,
     model: c.model,
     text: c.text,
+    picks: buildPicks(result),
     promptTokens: c.promptTokens,
     completionTokens: c.completionTokens,
   });
