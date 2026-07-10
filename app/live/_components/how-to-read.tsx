@@ -20,7 +20,10 @@ export function HowToRead() {
           How to read
         </button>
       </SheetTrigger>
-      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-2xl">
+      <SheetContent
+        side="right"
+        className="w-full overflow-y-auto data-[side=right]:sm:max-w-3xl data-[side=right]:lg:max-w-4xl"
+      >
         <SheetHeader>
           <SheetTitle>How to read Live Urgency</SheetTitle>
           <SheetDescription>
