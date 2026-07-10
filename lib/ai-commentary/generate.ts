@@ -10,15 +10,21 @@ import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { getMimoClient, getMimoModel } from './client';
 
 const SYSTEM = [
-  'You are a concise Indian F&O options desk assistant. You are given the JSON output of a',
-  'deterministic intraday options scanner (R-Factor + open-interest urgency + opening-range',
-  'breakout). Write a SHORT market read for the trader.',
+  'You are a concise Indian F&O options desk assistant giving a RUNNING intraday commentary',
+  'for ONE trading day. Each turn you get the JSON output of a deterministic options scanner',
+  '(R-Factor + open-interest urgency + opening-range breakout) plus your OWN earlier reads from',
+  'today. Continue the conversation — do not start fresh each time.',
+  '',
+  'Continuity rules:',
+  '- Build on your earlier reads: note what CHANGED since the last one — did a prior pick break out',
+  '  or fail, hold or lose VWAP, is a coiled name still coiled? Call names NEW / repeat / dropped.',
+  '- If nothing meaningfully changed, say so briefly instead of repeating the full list.',
   '',
   'Hard rules:',
   '- Use ONLY numbers present in the JSON. Never invent premiums, Greeks, win-rates or targets.',
   '- If there are no suggestions, say so plainly and summarise why (the gated reasons / breadth).',
-  '- Be specific and scannable. No hype, no financial-advice disclaimers, no preamble.',
-  '- Max ~120 words. Plain text, short lines or a tight bullet list.',
+  '- Be specific and scannable. Markdown is fine (bold, bullets, ---). No hype, no disclaimers, no preamble.',
+  '- Max ~140 words.',
 ].join('\n');
 
 /** Trim the scan result to the fields worth narrating (keeps the prompt small
@@ -57,22 +63,38 @@ export interface CommentaryResult {
 }
 
 /**
- * Generate the narration. Budgets enough tokens for the reasoning model's
+ * Generate the narration as the next turn of the day's running conversation.
+ * `priorReads` are today's earlier commentary texts, OLDEST first — passed as
+ * prior assistant turns so the model builds on them (references what changed,
+ * marks names new/held/dropped). Budgets enough tokens for the reasoning model's
  * thinking + the answer, and reads `content` (the answer), never the reasoning.
  * Throws on API failure — the caller decides whether to swallow it.
  */
-export async function generateCommentary(result: SuggestResponse): Promise<CommentaryResult> {
+export async function generateCommentary(
+  result: SuggestResponse,
+  priorReads: string[] = [],
+): Promise<CommentaryResult> {
   const client = getMimoClient();
   const model = getMimoModel();
+  // Cap the carried history so the prompt stays small (the last few reads hold
+  // the relevant intraday context; older ones are summarised by those).
+  const recent = priorReads.slice(-6);
+  const priorTurns = recent.map((text) => ({ role: 'assistant' as const, content: text }));
   const resp = await client.chat.completions.create(
     {
       model,
       messages: [
         { role: 'system', content: SYSTEM },
-        { role: 'user', content: JSON.stringify(trimForPrompt(result)) },
+        ...priorTurns,
+        {
+          role: 'user',
+          content:
+            (recent.length ? 'Latest scan — continue the running commentary:\n' : 'First scan of the day:\n') +
+            JSON.stringify(trimForPrompt(result)),
+        },
       ],
       temperature: 0.3,
-      // Reasoning model: leave headroom for reasoning_content + the ~120-word answer.
+      // Reasoning model: leave headroom for reasoning_content + the ~140-word answer.
       max_tokens: 1600,
     },
     { timeout: 90_000 },

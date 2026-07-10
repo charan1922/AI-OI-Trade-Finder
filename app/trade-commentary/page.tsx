@@ -1,7 +1,7 @@
 'use client';
 
 import { Bot, Loader2, RefreshCw, Sparkles } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, type ReactNode, useCallback, useEffect, useState } from 'react';
 
 interface CommentaryRow {
   id: number;
@@ -24,13 +24,57 @@ interface ApiResponse {
 
 const POLL_MS = 60_000;
 
-/** IST time-of-day from an ISO/"date HH:MM:SS" string, best-effort. */
 function fmtTime(s: string): string {
-  const iso = s.includes('T') ? s : s.replace(' ', 'T') + '+05:30';
+  const iso = s.includes('T') ? s : `${s.replace(' ', 'T')}+05:30`;
   const d = new Date(iso);
   return Number.isNaN(d.getTime())
     ? s
     : d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+}
+
+// ── Lightweight markdown (no deps): **bold**, - bullets, # headings, --- rule.
+function renderInline(text: string, key: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  text.split(/(\*\*[^*]+\*\*)/g).forEach((seg, i) => {
+    if (seg.startsWith('**') && seg.endsWith('**')) {
+      out.push(
+        <strong key={`${key}-b${i}`} className="font-semibold text-foreground">
+          {seg.slice(2, -2)}
+        </strong>,
+      );
+    } else if (seg) {
+      out.push(<span key={`${key}-t${i}`}>{seg}</span>);
+    }
+  });
+  return out;
+}
+
+function RichText({ content }: { content: string }) {
+  return (
+    <div className="space-y-1.5 text-[13.5px] leading-relaxed text-foreground/90">
+      {content.split('\n').map((raw, i) => {
+        const t = raw.trim();
+        if (!t) return null;
+        if (/^(---|___|\*\*\*)$/.test(t)) return <hr key={i} className="my-2 border-border/60" />;
+        if (/^[-•*]\s+/.test(t)) {
+          return (
+            <div key={i} className="flex gap-2 pl-1">
+              <span className="mt-[8px] h-1 w-1 shrink-0 rounded-full bg-primary/60" />
+              <span>{renderInline(t.replace(/^[-•*]\s+/, ''), `l${i}`)}</span>
+            </div>
+          );
+        }
+        if (/^#{1,4}\s+/.test(t)) {
+          return (
+            <div key={i} className="pt-1 text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {renderInline(t.replace(/^#{1,4}\s+/, ''), `h${i}`)}
+            </div>
+          );
+        }
+        return <p key={i}>{renderInline(t, `p${i}`)}</p>;
+      })}
+    </div>
+  );
 }
 
 export default function TradeCommentaryPage() {
@@ -41,7 +85,7 @@ export default function TradeCommentaryPage() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch('/api/trade-commentary?limit=50', { cache: 'no-store' });
+      const res = await fetch('/api/trade-commentary?limit=100', { cache: 'no-store' });
       setData((await res.json()) as ApiResponse);
     } catch (e) {
       setData({ success: false, error: (e as Error).message });
@@ -85,18 +129,31 @@ export default function TradeCommentaryPage() {
     }
   }, [load]);
 
+  // Group by day (newest day first); within a day oldest→newest so it reads as a
+  // running conversation. The API returns newest-first.
   const rows = data?.rows ?? [];
+  const byDay = new Map<string, CommentaryRow[]>();
+  for (const r of rows) {
+    const arr = byDay.get(r.date) ?? [];
+    arr.push(r);
+    byDay.set(r.date, arr);
+  }
+  const days = [...byDay.entries()].map(([date, list]) => ({
+    date,
+    turns: [...list].sort((a, b) => a.id - b.id),
+  }));
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4">
       <div className="flex flex-wrap items-center gap-2">
         <Bot className="h-5 w-5 text-primary" />
         <h1 className="text-lg font-bold text-foreground">Trade Commentary</h1>
-        {data?.model && (
-          <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-            {data.model}
-          </span>
-        )}
+        <span
+          className="rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary"
+          title="This page is powered exclusively by Xiaomi MiMo — no OpenAI/Azure. The picks themselves are deterministic; MiMo only narrates them."
+        >
+          ⚡ Xiaomi MiMo · {data?.model ?? 'mimo-v2.5-pro'}
+        </span>
         <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
@@ -119,9 +176,11 @@ export default function TradeCommentaryPage() {
       </div>
 
       <p className="text-[11px] text-muted-foreground">
-        AI narration of the deterministic scan picks — generated in-process during market hours (per the /config window),
-        so this fills even when the app isn’t open. The model only describes numbers the scanner computed; it never places
-        orders. Not financial advice.
+        A running per-day narration of the deterministic scan picks — each read builds on the day’s earlier ones (what
+        broke out, what held, what’s new), and each new day starts fresh. Generated in-process during market hours (per
+        the /config window), so it fills even when the app isn’t open. Narration by <strong>Xiaomi MiMo</strong> (
+        {data?.model ?? 'mimo-v2.5-pro'}); it only describes numbers the scanner computed and never places orders. Not
+        financial advice.
       </p>
 
       {data?.configured === false && (
@@ -135,28 +194,41 @@ export default function TradeCommentaryPage() {
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Loading…
         </div>
-      ) : rows.length === 0 ? (
+      ) : days.length === 0 ? (
         <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
           No commentary yet. It generates automatically during market hours, or hit “Generate now”.
         </div>
       ) : (
-        <div className="space-y-3">
-          {rows.map((r) => (
-            <div key={r.id} className="rounded-lg border bg-card p-3 shadow-sm">
-              <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                <span className="font-medium text-foreground">{r.date}</span>
-                <span>· {fmtTime(r.asOf)} IST</span>
-                {r.windowActive && (
-                  <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
-                    in window
-                  </span>
-                )}
-                <span className="ml-auto">
-                  {r.picksCount} pick{r.picksCount === 1 ? '' : 's'}
-                </span>
+        <div className="space-y-6">
+          {days.map((day) => (
+            <Fragment key={day.date}>
+              <div className="sticky top-0 z-10 -mx-1 bg-background/80 px-1 py-1 text-xs font-semibold text-muted-foreground backdrop-blur">
+                {day.date}
               </div>
-              <p className="whitespace-pre-wrap text-sm text-foreground">{r.text}</p>
-            </div>
+              <div className="space-y-3">
+                {day.turns.map((r) => (
+                  <div key={r.id} className="flex gap-2.5">
+                    <div className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-primary to-primary/70 text-primary-foreground">
+                      <Sparkles className="h-3 w-3" />
+                    </div>
+                    <div className="min-w-0 flex-1 rounded-lg border bg-card p-3 shadow-sm">
+                      <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <span className="font-medium text-foreground">{fmtTime(r.asOf)} IST</span>
+                        {r.windowActive && (
+                          <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                            in window
+                          </span>
+                        )}
+                        <span className="ml-auto">
+                          {r.picksCount} pick{r.picksCount === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <RichText content={r.text} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Fragment>
           ))}
         </div>
       )}

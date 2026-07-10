@@ -11,7 +11,7 @@ import { todayIST } from '@/lib/dhan/market-feed';
 import { hasMimo } from '@/lib/env';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { generateCommentary } from './generate';
-import { insertCommentary } from './store';
+import { getCommentary, insertCommentary } from './store';
 
 export interface RunCommentaryOutcome {
   generated: boolean;
@@ -23,10 +23,16 @@ export async function runAndStoreCommentary(result: SuggestResponse): Promise<Ru
   if (!hasMimo()) return { generated: false, reason: 'MiMo not configured' };
   if ((result.scanned ?? 0) <= 0) return { generated: false, reason: 'no scan this pass (out of window per config)' };
 
-  const c = await generateCommentary(result);
+  // Carry forward TODAY's earlier reads so this is the next turn of a running
+  // conversation (oldest first). New day → empty → a fresh conversation.
+  const today = todayIST();
+  const priorToday = await getCommentary({ date: today, limit: 30 });
+  const priorReads = priorToday.map((r) => r.text).reverse(); // store returns newest-first
+
+  const c = await generateCommentary(result, priorReads);
   await insertCommentary({
-    date: todayIST(),
-    asOf: result.window?.nowIST ? `${todayIST()} ${result.window.nowIST}` : new Date().toISOString(),
+    date: today,
+    asOf: result.window?.nowIST ? `${today} ${result.window.nowIST}` : new Date().toISOString(),
     windowActive: Boolean(result.window?.active),
     picksCount: result.suggestions?.length ?? 0,
     model: c.model,
