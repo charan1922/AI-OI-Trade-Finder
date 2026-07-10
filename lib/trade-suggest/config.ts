@@ -74,9 +74,10 @@ export const PREMIUM_SL_PCT = 40;
  * this rupee budget — so a single lot can never lose more than this. The SPOT SL
  * stays the structure-based (last-candle / support) exit; this only bounds the ₹.
  * User call 2026-07-10: the flat 40% stop risked ₹11k+/lot on pricey options to
- * make the ₹5k/lot target (a 0.45:1 R:R). At ₹3,000 the R:R is ~1.7:1.
+ * make the ₹5k/lot target (a 0.45:1 R:R). At ₹1,500 the R:R is ~3.3:1 (2 lots →
+ * −₹3,000 max). Tight stop — near-ATM ~5% premium move — expect more stop-outs.
  */
-export const MAX_LOSS_PER_LOT_RUPEES = 3000;
+export const MAX_LOSS_PER_LOT_RUPEES = 1500;
 /** TF-style profit objective per lot (₹) — translated to a premium target. */
 export const TF_LOT_TARGET_RUPEES = 5000;
 /** Option-liquidity warnings: bid-ask spread of the OPTION itself above this %
