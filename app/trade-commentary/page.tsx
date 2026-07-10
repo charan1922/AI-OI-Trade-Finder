@@ -19,6 +19,12 @@ interface StoredPick {
   score: number;
   changePctOpen: number | null;
   extended: boolean;
+  entrySpot: number | null;
+  slSpot: number | null;
+  targetSpot: number | null;
+  slBasis: string;
+  premium: number | null;
+  perLotCost: number | null;
   chips: Chip[];
 }
 interface CommentaryRow {
@@ -50,49 +56,72 @@ function fmtTime(s: string): string {
     : d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
 }
 
-// ── The app's pill (matches /trade-suggest) ──────────────────────────────────
+// ── The app's pill (matches /trade-suggest), compact ─────────────────────────
 function Pill({ label, value, tone }: Chip) {
   const toneCls =
     tone === 'good'
-      ? 'border-emerald-400/50 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+      ? 'border-emerald-500/60 bg-emerald-100 text-emerald-800 dark:border-emerald-500/50 dark:bg-emerald-500/25 dark:text-emerald-200'
       : tone === 'warn'
-        ? 'border-amber-400/50 bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'
-        : 'border-border bg-muted/40 text-muted-foreground';
+        ? 'border-amber-500/60 bg-amber-100 text-amber-800 dark:border-amber-500/50 dark:bg-amber-500/25 dark:text-amber-200'
+        : 'border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-200';
   return (
-    <span className={`inline-flex items-baseline gap-1 rounded border px-1.5 py-0.5 ${toneCls}`}>
-      <span className="text-[9px] uppercase tracking-wide opacity-75">{label}</span>
-      <span className="text-[10.5px] font-semibold tabular-nums">{value}</span>
+    <span className={`inline-flex items-baseline gap-1 rounded border px-1 py-px ${toneCls}`}>
+      <span className="text-[8.5px] font-medium uppercase tracking-wide opacity-90">{label}</span>
+      <span className="text-[10.5px] font-bold tabular-nums">{value}</span>
     </span>
   );
 }
 
+function Stat({ label, value, cls = '' }: { label: string; value: number | null; cls?: string }) {
+  return (
+    <span className="inline-flex items-baseline gap-1">
+      <span className="text-[8.5px] uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className={`text-[11.5px] font-semibold tabular-nums ${cls || 'text-foreground'}`}>
+        {value == null ? '—' : value.toLocaleString('en-IN')}
+      </span>
+    </span>
+  );
+}
+
+// One pick: name + badge, its pills, and its plan — grouped as one unit.
 function PickBlock({ p }: { p: StoredPick }) {
   const bull = p.direction === 'bullish';
   return (
-    <div className="rounded-lg border bg-muted/20 p-2.5">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="font-mono text-[13px] font-bold text-foreground">{p.symbol}</span>
+    <div className="border-t border-border/50 pt-2 first:border-t-0 first:pt-0">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+        <span className="font-mono text-[12.5px] font-bold text-foreground">{p.symbol}</span>
         <span
-          className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${bull ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300'}`}
+          className={`rounded px-1 py-px text-[10px] font-bold ${bull ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300'}`}
         >
           BUY {p.strike != null ? `${p.strike} ${p.side}` : p.side}
         </span>
-        {p.expiry && <span className="text-[10px] text-muted-foreground">exp {p.expiry}{p.lot ? ` · lot ${p.lot}` : ''}</span>}
-        <span className="ml-auto text-[10px] text-muted-foreground">
+        {p.expiry && <span className="text-[9px] text-muted-foreground">exp {p.expiry}{p.lot ? ` · lot ${p.lot}` : ''}</span>}
+        <span className="ml-auto text-[9.5px] text-muted-foreground">
           score {p.score.toFixed(3)}
           {p.changePctOpen != null && (
             <span className={p.changePctOpen >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
               {' '}· {p.changePctOpen >= 0 ? '+' : ''}
-              {p.changePctOpen.toFixed(1)}% since open
+              {p.changePctOpen.toFixed(1)}%
             </span>
           )}
         </span>
       </div>
-      <div className="mt-1.5 flex flex-wrap gap-1">
+      <div className="mt-1 flex flex-wrap gap-1">
         {p.chips.map((c, i) => (
           <Pill key={`${c.label}-${i}`} {...c} />
         ))}
       </div>
+      {p.entrySpot != null && (
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+          <Stat label="Entry" value={p.entrySpot} />
+          <Stat label={`SL·${p.slBasis}`} value={p.slSpot} cls="text-red-600 dark:text-red-400" />
+          <Stat label="Target" value={p.targetSpot} cls="text-emerald-600 dark:text-emerald-400" />
+          {p.premium != null && <Stat label="Prem" value={p.premium} />}
+          {p.perLotCost != null && (
+            <span className="text-[10.5px] text-muted-foreground">₹{Math.round(p.perLotCost).toLocaleString('en-IN')}/lot</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -114,32 +143,143 @@ function renderInline(text: string, key: string): ReactNode[] {
   return out;
 }
 
-function RichText({ content }: { content: string }) {
+const isTableRow = (t: string) => t.startsWith('|') && t.endsWith('|') && t.length > 1;
+const isSeparatorRow = (cells: string[]) => cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
+const splitRow = (t: string) =>
+  t
+    .slice(1, -1)
+    .split('|')
+    .map((c) => c.trim());
+
+// Render a run of `| a | b |` lines as a compact table (the model occasionally
+// emits a now/prior comparison this way). Scrolls horizontally on narrow screens.
+function MdTable({ rows, k }: { rows: string[]; k: string }) {
+  const parsed = rows.map(splitRow);
+  const hasHeader = parsed.length > 1 && isSeparatorRow(parsed[1]);
+  const header = hasHeader ? parsed[0] : null;
+  const body = parsed.filter((cells, i) => !(hasHeader && i <= 1) && !isSeparatorRow(cells));
   return (
-    <div className="space-y-1.5 text-[13.5px] leading-relaxed text-foreground/90">
-      {content.split('\n').map((raw, i) => {
-        const t = raw.trim();
-        if (!t) return null;
-        if (/^(---|___|\*\*\*)$/.test(t)) return <hr key={i} className="my-2 border-border/60" />;
-        if (/^[-•*]\s+/.test(t)) {
-          return (
-            <div key={i} className="flex gap-2 pl-1">
-              <span className="mt-[8px] h-1 w-1 shrink-0 rounded-full bg-primary/60" />
-              <span>{renderInline(t.replace(/^[-•*]\s+/, ''), `l${i}`)}</span>
-            </div>
-          );
-        }
-        if (/^#{1,4}\s+/.test(t)) {
-          return (
-            <div key={i} className="pt-1 text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {renderInline(t.replace(/^#{1,4}\s+/, ''), `h${i}`)}
-            </div>
-          );
-        }
-        return <p key={i}>{renderInline(t, `p${i}`)}</p>;
-      })}
+    <div className="overflow-x-auto">
+      <table className="w-auto border-collapse text-[11px] tabular-nums">
+        {header && (
+          <thead>
+            <tr>
+              {header.map((c, i) => (
+                <th
+                  key={`${k}-h${i}`}
+                  className={`whitespace-nowrap border-b border-border/60 py-0.5 text-left font-semibold text-muted-foreground ${i === 0 ? 'pr-4' : 'px-3'}`}
+                >
+                  {renderInline(c, `${k}-h${i}`)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>
+          {body.map((cells, r) => (
+            <tr key={`${k}-r${r}`} className="border-b border-border/30 last:border-0">
+              {cells.map((c, i) => (
+                <td
+                  key={`${k}-r${r}c${i}`}
+                  className={`whitespace-nowrap py-0.5 ${i === 0 ? 'pr-4 font-medium text-foreground' : 'px-3'}`}
+                >
+                  {renderInline(c, `${k}-r${r}c${i}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
+}
+
+function RichText({ content }: { content: string }) {
+  const lines = content.split('\n');
+  const out: ReactNode[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t) continue;
+    if (isTableRow(t)) {
+      const tbl: string[] = [];
+      while (i < lines.length && isTableRow(lines[i].trim())) tbl.push(lines[i++].trim());
+      i--; // for-loop will ++ back
+      if (tbl.length) out.push(<MdTable key={`t${i}`} rows={tbl} k={`t${i}`} />);
+      continue;
+    }
+    if (/^(---|___|\*\*\*)$/.test(t)) {
+      out.push(<hr key={i} className="my-1.5 border-border/50" />);
+      continue;
+    }
+    if (/^[-•*]\s+/.test(t)) {
+      out.push(
+        <div key={i} className="flex gap-1.5 pl-0.5">
+          <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-primary/50" />
+          <span>{renderInline(t.replace(/^[-•*]\s+/, ''), `l${i}`)}</span>
+        </div>,
+      );
+      continue;
+    }
+    if (/^#{1,4}\s+/.test(t)) {
+      out.push(
+        <div key={i} className="pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {renderInline(t.replace(/^#{1,4}\s+/, ''), `h${i}`)}
+        </div>,
+      );
+      continue;
+    }
+    out.push(<p key={i}>{renderInline(t, `p${i}`)}</p>);
+  }
+  // Single column so wide tables (now/prior, running tally) get the full band
+  // width and never need horizontal scroll.
+  return <div className="space-y-1 text-[12px] leading-relaxed text-foreground/90">{out}</div>;
+}
+
+// Split the read into a market header (before the first per-stock heading), one
+// section per suggested ticker, and a closing "Bottom line" section — so each
+// stock's analysis renders directly under its own pick card. Falls back to one
+// block (whole text as intro) for older rows that predate the structured prompt.
+function splitByStock(text: string, symbols: string[]): { intro: string; perStock: Record<string, string>; closing: string } {
+  const lines = text.split('\n');
+  const headIdx: number[] = [];
+  lines.forEach((l, i) => {
+    if (/^#{1,4}\s+/.test(l.trim())) headIdx.push(i);
+  });
+  if (headIdx.length === 0) return { intro: text, perStock: {}, closing: '' };
+
+  const intro = lines.slice(0, headIdx[0]).join('\n').trim();
+  const perStock: Record<string, string> = {};
+  const closingParts: string[] = [];
+  for (let h = 0; h < headIdx.length; h++) {
+    const start = headIdx[h];
+    const end = headIdx[h + 1] ?? lines.length;
+    const seg = lines.slice(start, end).join('\n').trim();
+    const headText = lines[start].replace(/^#{1,4}\s+/, '').replace(/\*\*/g, '').toUpperCase();
+    const match = symbols.find((s) => new RegExp(`\\b${s.toUpperCase()}\\b`).test(headText));
+    if (match && !perStock[match]) perStock[match] = seg;
+    else closingParts.push(seg);
+  }
+  return { intro, perStock, closing: closingParts.join('\n\n') };
+}
+
+// Drop the leading "### TICKER — " heading line from a per-stock section, keeping
+// just the verdict text (the card above already shows the ticker) so it renders
+// as a clean lead-in rather than a redundant uppercase heading.
+function stripHeadingTicker(seg: string, symbol: string): string {
+  const lines = seg.split('\n');
+  if (lines.length && /^#{1,4}\s+/.test(lines[0].trim())) {
+    let h = lines[0].replace(/^#{1,4}\s+/, '').replace(/\*\*/g, '').trim();
+    // Prefer the verdict after the first dash ("BIOCON CE 420 — Losing conviction" → "Losing conviction");
+    // else drop just the leading "TICKER CE/PE 420" token.
+    const dash = h.match(/[—–]|\s-\s/);
+    if (dash && dash.index !== undefined) {
+      h = h.slice(dash.index + dash[0].length).trim();
+    } else {
+      h = h.replace(new RegExp(`^${symbol}\\b\\s*(?:CE|PE)?\\s*[\\d.]*\\s*`, 'i'), '').trim();
+    }
+    lines[0] = h ? `**${h}**` : '';
+  }
+  return lines.join('\n').trim();
 }
 
 export default function TradeCommentaryPage() {
@@ -200,7 +340,7 @@ export default function TradeCommentaryPage() {
   const rows = data?.rows ?? [];
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className="mx-auto max-w-5xl space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Bot className="h-5 w-5 shrink-0 text-primary" />
         <h1 className="text-base font-bold text-foreground sm:text-lg">Trade Commentary</h1>
@@ -258,6 +398,9 @@ export default function TradeCommentaryPage() {
         <div className="space-y-3">
           {rows.map((r, idx) => {
             const showDay = idx === 0 || rows[idx - 1].date !== r.date;
+            const picks = r.picks ?? [];
+            const split = splitByStock(r.text, picks.map((p) => p.symbol));
+            const structured = Object.keys(split.perStock).length > 0;
             return (
               <Fragment key={r.id}>
                 {showDay && (
@@ -265,14 +408,14 @@ export default function TradeCommentaryPage() {
                     {r.date}
                   </div>
                 )}
-                <div className="rounded-xl border bg-card p-3 shadow-sm">
-                  <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-primary to-primary/70 text-primary-foreground">
-                      <Sparkles className="h-3 w-3" />
+                <div className="rounded-xl border bg-card p-2.5 shadow-sm">
+                  <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                    <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-gradient-to-br from-primary to-primary/70 text-primary-foreground">
+                      <Sparkles className="h-2.5 w-2.5" />
                     </span>
                     <span className="font-semibold text-foreground">{fmtTime(r.asOf)} IST</span>
                     {r.windowActive && (
-                      <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                      <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
                         in window
                       </span>
                     )}
@@ -281,15 +424,49 @@ export default function TradeCommentaryPage() {
                     </span>
                   </div>
 
-                  {r.picks?.length > 0 && (
-                    <div className="mb-2.5 space-y-2">
-                      {r.picks.map((p, i) => (
-                        <PickBlock key={`${p.symbol}-${i}`} p={p} />
+                  {structured ? (
+                    <div className="space-y-2">
+                      {/* Market header — the scan status, no ticker */}
+                      {split.intro && (
+                        <div className="rounded-lg bg-muted/30 px-2 py-1.5">
+                          <RichText content={split.intro} />
+                        </div>
+                      )}
+                      {/* Each stock: pills + plan, then its own analysis directly below */}
+                      {picks.map((p, i) => (
+                        <div key={`${p.symbol}-${i}`} className="rounded-lg border border-border/50 bg-muted/10 p-2">
+                          <PickBlock p={p} />
+                          {split.perStock[p.symbol] && (
+                            <div className="mt-1.5 border-t border-border/40 pt-1.5">
+                              <RichText content={stripHeadingTicker(split.perStock[p.symbol], p.symbol)} />
+                            </div>
+                          )}
+                        </div>
                       ))}
+                      {/* Bottom line — overall verdict / end-of-day retrospective */}
+                      {split.closing && (
+                        <div className="rounded-lg bg-primary/5 px-2 py-1.5">
+                          <RichText content={split.closing} />
+                        </div>
+                      )}
                     </div>
+                  ) : (
+                    <>
+                      {picks.length > 0 && (
+                        <div className="mb-2 space-y-2 rounded-lg bg-muted/20 p-2">
+                          {picks.map((p, i) => (
+                            <PickBlock key={`${p.symbol}-${i}`} p={p} />
+                          ))}
+                        </div>
+                      )}
+                      <div className="rounded-lg bg-muted/30 px-2 py-1.5">
+                        <div className="mb-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+                          AI read
+                        </div>
+                        <RichText content={r.text} />
+                      </div>
+                    </>
                   )}
-
-                  <RichText content={r.text} />
                 </div>
               </Fragment>
             );

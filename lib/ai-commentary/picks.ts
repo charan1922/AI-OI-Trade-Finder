@@ -23,6 +23,13 @@ export interface StoredPick {
   score: number;
   changePctOpen: number | null;
   extended: boolean;
+  // Plan (spot-level) + premium — the "suggestion" shown under the stock.
+  entrySpot: number | null;
+  slSpot: number | null;
+  targetSpot: number | null;
+  slBasis: string;
+  premium: number | null;
+  perLotCost: number | null;
   chips: Chip[];
 }
 
@@ -78,6 +85,12 @@ export function buildPicks(result: SuggestResponse): StoredPick[] {
       score: p.score,
       changePctOpen: p.changePctOpen,
       extended: p.extended,
+      entrySpot: p.plan.entrySpot,
+      slSpot: p.plan.slSpot,
+      targetSpot: p.plan.targetSpot,
+      slBasis: p.plan.slBasis,
+      premium: p.option?.premium?.ltp ?? null,
+      perLotCost: p.option?.premium?.perLotCost ?? null,
       chips,
     };
   });
