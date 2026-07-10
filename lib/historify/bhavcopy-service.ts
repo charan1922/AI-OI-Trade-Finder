@@ -457,12 +457,16 @@ function formatDateForUrl(date: Date): string {
 function getWeekdayDates(count: number): Date[] {
   const dates: Date[] = [];
   const current = new Date();
+  // Start from TODAY (not yesterday) so a post-publish evening sync picks up the
+  // current session. Before NSE publishes, today's fetch just no-ops (skipped)
+  // and is retried on the next sync — needDates only requests dates not already
+  // stored, so an unavailable today is cheap and self-heals.
   while (dates.length < count) {
-    current.setDate(current.getDate() - 1);
     const day = current.getDay();
     if (day !== 0 && day !== 6) {
       dates.push(new Date(current));
     }
+    current.setDate(current.getDate() - 1);
   }
   return dates.reverse(); // oldest first
 }

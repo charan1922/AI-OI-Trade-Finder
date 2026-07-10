@@ -140,7 +140,16 @@ export async function runFyersCycle(
 
   if (state.cycleRunning) return finish('overlap');
   if (state.paused && !opts.force) return finish('paused');
-  if (!opts.force && !isMarketHours()) return finish('market-closed');
+  if (!opts.force && !isMarketHours()) {
+    // Post-market: NSE publishes the EOD bhavcopy in the evening (~19:00 IST), so
+    // the daily sync can only succeed AFTER close — not during the market-hours
+    // capture. On the deployed server, run it once per trading day here. The Fyers
+    // candle cycle itself stays skipped; we only want the EOD file.
+    if (process.env.RAILWAY_ENVIRONMENT_NAME && !(await isMarketHoliday(summary.date))) {
+      void runEodCapture(todayIST(), state);
+    }
+    return finish('market-closed');
+  }
   if (!opts.force && (await isMarketHoliday(summary.date))) return finish('holiday');
   if (!hasFyersAuth()) {
     summary.errors.push({ symbol: '*', stage: 'cycle', message: 'Fyers credentials not configured (.env.local)' });
@@ -271,25 +280,49 @@ async function runAutonomousCapture(today: string, state: PollerState): Promise<
     } catch (err) {
       console.warn(`${TAG} autonomous scan failed: ${(err as Error).message}`);
     }
-    // EOD bhavcopy — once per day (only fetches the sessions it's missing).
-    if (state.lastBhavcopyDate !== today) {
-      try {
-        const auth: Record<string, string> = process.env.APP_PASSWORD
-          ? { Authorization: `Basic ${Buffer.from(`x:${process.env.APP_PASSWORD}`).toString('base64')}` }
-          : {};
-        const res = await fetch(`${origin}/api/bhavcopy`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...auth },
-          body: '{}',
-        });
-        if (res.ok) {
-          state.lastBhavcopyDate = today;
-          console.log(`${TAG} EOD bhavcopy synced`);
-        }
-      } catch (err) {
-        console.warn(`${TAG} bhavcopy sync failed: ${(err as Error).message}`);
+    // NOTE: EOD bhavcopy is NOT synced here — NSE only publishes it after close,
+    // so it runs in runEodCapture() from the post-market branch instead.
+  } finally {
+    state.captureRunning = false;
+  }
+}
+
+/**
+ * Post-market EOD capture (Railway-only). NSE publishes the day's bhavcopy in the
+ * evening, so this runs from the market-closed branch after ~19:00 IST, once per
+ * trading day. Retries every 5-min tick until today's file is actually stored
+ * (NSE can publish late) — `lastBhavcopyDate` is only advanced once the sync
+ * reports today as the latest session. Best-effort; never throws to the poller.
+ */
+async function runEodCapture(today: string, state: PollerState): Promise<void> {
+  if (state.lastBhavcopyDate === today) return; // already have today's EOD file
+  // Don't bother before NSE's evening publish window.
+  const istHour = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000).getHours();
+  if (istHour < 19) return;
+  if (state.captureRunning) return;
+  state.captureRunning = true;
+  const origin = `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
+  try {
+    const auth: Record<string, string> = process.env.APP_PASSWORD
+      ? { Authorization: `Basic ${Buffer.from(`x:${process.env.APP_PASSWORD}`).toString('base64')}` }
+      : {};
+    const res = await fetch(`${origin}/api/bhavcopy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: '{}',
+    });
+    if (res.ok) {
+      const j = (await res.json().catch(() => ({}))) as { status?: { latestDate?: string } };
+      const latest = j.status?.latestDate ?? null;
+      if (latest === today) {
+        state.lastBhavcopyDate = today;
+        console.log(`${TAG} EOD bhavcopy synced (${today})`);
+      } else {
+        console.log(`${TAG} EOD bhavcopy: ${today} not published yet (latest ${latest}) — will retry next tick`);
       }
     }
+  } catch (err) {
+    console.warn(`${TAG} EOD bhavcopy sync failed: ${(err as Error).message}`);
   } finally {
     state.captureRunning = false;
   }
