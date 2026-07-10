@@ -2,6 +2,7 @@
 
 import { ChevronDown, ChevronRight, ExternalLink, Loader2, NotebookText, RefreshCw } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useState } from 'react';
+import { CAPITAL_BUDGET } from '@/lib/trade-suggest/config';
 
 /** Mirrors lib/trade-suggest/store.ts StoredSuggestion (the persisted row). */
 interface StoredRow {
@@ -49,9 +50,17 @@ interface HistoryResp {
 
 const DAY_OPTIONS = [7, 30, 90] as const;
 
+/** Position sizing for the log: ≥1 lot, capped at 2 (user's ₹50–60k account). */
+const MAX_LOTS = 2;
+
 const pctCls = (v: number | null) =>
   v == null ? 'text-muted-foreground' : v >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400';
 const fmtPct = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`);
+/** Signed ₹ (P/L). */
+const fmtSignedRs = (v: number | null) =>
+  v == null ? '—' : `${v >= 0 ? '+' : '−'}₹${Math.abs(Math.round(v)).toLocaleString('en-IN')}`;
+/** Unsigned ₹ (cost). */
+const fmtRs = (v: number | null) => (v == null ? '—' : `₹${Math.round(v).toLocaleString('en-IN')}`);
 
 /** ISO instant → IST clock time (HH:mm). */
 const fmtIST = (iso: string | null) =>
@@ -82,14 +91,52 @@ function SymbolLink({ symbol }: { symbol: string }) {
   );
 }
 
-/** Favorable / adverse move in the SUGGESTED direction (CE up, PE down). */
-function outcomeCells(s: StoredRow): { fav: number | null; adv: number | null; close: number | null; pending: boolean } {
-  if (s.outcomeAt == null) return { fav: null, adv: null, close: null, pending: true };
-  const fav = s.optionType === 'PE' ? -(s.maxDownPct ?? 0) : (s.maxUpPct ?? 0);
-  const adv = s.optionType === 'PE' ? (s.maxUpPct ?? 0) : -(s.maxDownPct ?? 0);
-  const close = (s.closePct ?? 0) * (s.optionType === 'PE' ? -1 : 1);
-  return { fav, adv, close, pending: false };
+type Basis = 'TGT' | 'SL' | 'BOTH' | 'OPEN' | 'PENDING';
+
+/** Lots to trade: capital ÷ per-lot cost, floored, ≥1, capped at MAX_LOTS. */
+function lotsFor(s: StoredRow): number {
+  const perLot = (s.premiumAtSuggest ?? 0) * s.lotSize;
+  if (perLot <= 0) return 1;
+  return Math.min(MAX_LOTS, Math.max(1, Math.floor(CAPITAL_BUDGET / perLot)));
 }
+
+/**
+ * Plan outcome — did the SPOT reach the plan's Target or SL (tracked from Fyers
+ * 5-min candles)? If so, the trade is marked at the plan's real Target/SL premium.
+ * Both touched → conservatively counted as the stop (we can't know which hit first).
+ * Neither → 'OPEN' (no clean exit; the option wasn't executed, so no ₹ is claimed).
+ */
+function planOutcome(s: StoredRow): { basis: Basis; plPerShare: number | null } {
+  if (s.outcomeAt == null) return { basis: 'PENDING', plPerShare: null };
+  const ce = s.optionType === 'CE';
+  const hi = s.maxUpPct == null ? null : s.spotAtSuggest * (1 + s.maxUpPct / 100);
+  const lo = s.maxDownPct == null ? null : s.spotAtSuggest * (1 + s.maxDownPct / 100);
+  const targetHit = s.targetSpot != null && (ce ? hi != null && hi >= s.targetSpot : lo != null && lo <= s.targetSpot);
+  const slHit = s.slSpot != null && (ce ? lo != null && lo <= s.slSpot : hi != null && hi >= s.slSpot);
+  const tgtPL = s.premiumTarget != null && s.premiumAtSuggest != null ? s.premiumTarget - s.premiumAtSuggest : null;
+  const slPL = s.premiumSl != null && s.premiumAtSuggest != null ? s.premiumSl - s.premiumAtSuggest : null;
+  if (targetHit && slHit) return { basis: 'BOTH', plPerShare: slPL };
+  if (targetHit) return { basis: 'TGT', plPerShare: tgtPL };
+  if (slHit) return { basis: 'SL', plPerShare: slPL };
+  return { basis: 'OPEN', plPerShare: null };
+}
+
+/** Full P/L view for a row: lots, capital deployed, realized ₹ + basis. */
+function plView(s: StoredRow): { lots: number; cost: number | null; rupees: number | null; basis: Basis } {
+  const lots = lotsFor(s);
+  const cost = s.premiumAtSuggest != null ? s.premiumAtSuggest * s.lotSize * lots : null;
+  const { basis, plPerShare } = planOutcome(s);
+  const rupees = plPerShare == null ? null : plPerShare * s.lotSize * lots;
+  return { lots, cost, rupees, basis };
+}
+
+const BASIS_BADGE: Record<Basis, { label: string; cls: string }> = {
+  TGT: { label: 'target', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' },
+  SL: { label: 'stop', cls: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300' },
+  BOTH: { label: '⚠ stop*', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' },
+  OPEN: { label: 'open', cls: 'bg-muted text-muted-foreground' },
+  PENDING: { label: 'pending', cls: 'bg-muted text-muted-foreground' },
+};
 
 function DaySection({ day }: { day: DayGroup }) {
   const [open, setOpen] = useState(true);
@@ -102,69 +149,73 @@ function DaySection({ day }: { day: DayGroup }) {
       return next;
     });
 
-  const hitRate = day.reviewed > 0 ? Math.round((day.hits / day.reviewed) * 100) : null;
+  // Day total realized P/L (resolved rows only).
+  const dayPL = day.suggestions.reduce((sum, s) => {
+    const { rupees } = plView(s);
+    return rupees == null ? sum : sum + rupees;
+  }, 0);
+  const hasRealized = day.suggestions.some((s) => plView(s).rupees != null);
 
   return (
     <div className="rounded-lg border border-border bg-card">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
-      >
+      <button type="button" onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
         {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
         <span className="text-[12px] font-semibold">{fmtDate(day.date)}</span>
         <span className="text-[10px] text-muted-foreground">
           {day.suggestions.length} {day.suggestions.length === 1 ? 'trade' : 'trades'}
         </span>
-        <span className="ml-auto text-[10px] text-muted-foreground">
-          {day.reviewed > 0 ? (
-            <>
-              reviewed {day.reviewed}/{day.suggestions.length} ·{' '}
-              <span className={hitRate != null && hitRate >= 50 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
-                {day.hits} hit{day.hits === 1 ? '' : 's'} {hitRate != null && `(${hitRate}%)`}
-              </span>
-            </>
-          ) : (
-            'not yet reviewed'
+        <span className="ml-auto flex items-center gap-3 text-[10px] text-muted-foreground">
+          <span>reviewed {day.reviewed}/{day.suggestions.length}</span>
+          {hasRealized && (
+            <span className="font-semibold">
+              Day P/L <span className={pctCls(dayPL)}>{fmtSignedRs(dayPL)}</span>
+            </span>
           )}
         </span>
       </button>
 
       {open && (
         <div className="overflow-x-auto border-t border-border/60">
-          <table className="w-full text-[10px]">
+          <table className="w-full text-[10.5px]">
             <thead className="text-left text-muted-foreground">
-              <tr>
-                <th className="px-1.5 py-1 font-medium">Start</th>
-                <th className="px-1.5 py-1 font-medium">Last seen</th>
-                <th className="px-1.5 py-1 font-medium">Contract</th>
-                <th className="px-1.5 py-1 font-medium">Sector</th>
-                <th className="px-1.5 py-1 text-right font-medium">Spot@call</th>
-                <th className="px-1.5 py-1 text-right font-medium">SL / Target</th>
-                <th className="px-1.5 py-1 text-right font-medium">Premium</th>
-                <th className="px-1.5 py-1 text-right font-medium">R / Score</th>
-                <th className="px-1.5 py-1 text-right font-medium">Max fav / adv</th>
-                <th className="px-1.5 py-1 text-right font-medium">Close</th>
-                <th className="px-1.5 py-1 font-medium">Why</th>
+              <tr className="border-b border-border/50">
+                <th className="px-2 py-1.5 font-medium">Entry</th>
+                <th className="px-2 py-1.5 font-medium">Exit</th>
+                <th className="px-2 py-1.5 font-medium">Option</th>
+                <th className="px-2 py-1.5 font-medium">Strike</th>
+                <th className="px-2 py-1.5 text-right font-medium">Spot@call</th>
+                <th className="px-2 py-1.5 text-right font-medium">SL / Target</th>
+                <th className="px-2 py-1.5 text-right font-medium">Lots</th>
+                <th className="px-2 py-1.5 text-right font-medium">Cost</th>
+                <th className="px-2 py-1.5 text-right font-medium">P / L</th>
+                <th className="px-2 py-1.5 text-right font-medium">Move</th>
+                <th className="px-2 py-1.5 text-right font-medium">R / Score</th>
+                <th className="px-2 py-1.5 font-medium">Why</th>
               </tr>
             </thead>
             <tbody>
               {day.suggestions.map((s) => {
                 const key = `${s.symbol}-${s.optionType}-${s.strike}`;
                 const isOpen = expanded.has(key);
-                const o = outcomeCells(s);
                 const ce = s.optionType === 'CE';
+                const { lots, cost, rupees, basis } = plView(s);
+                const badge = BASIS_BADGE[basis];
+                // Real tracked spot move at close, in the suggested direction.
+                const spotFav = s.closePct == null ? null : s.closePct * (ce ? 1 : -1);
                 return (
                   <Fragment key={key}>
                     <tr className="border-b border-border/30 align-top">
-                      <td className="px-1.5 py-0.5 tabular-nums text-muted-foreground">{fmtIST(s.suggestedAt)}</td>
-                      <td className="px-1.5 py-0.5 tabular-nums text-muted-foreground">
-                        {fmtIST(s.lastSeenAt)} <span className="opacity-60">×{s.timesSeen}</span>
+                      <td className="px-2 py-1 tabular-nums">{fmtIST(s.suggestedAt)}</td>
+                      <td className="px-2 py-1 tabular-nums">
+                        <span className={`rounded px-1 py-0.5 text-[9px] font-semibold ${badge.cls}`}>{badge.label}</span>
+                        {s.outcomeAt && <span className="ml-1 text-muted-foreground">{fmtIST(s.outcomeAt)}</span>}
                       </td>
-                      <td className="px-1.5 py-0.5 font-mono font-medium">
-                        <SymbolLink symbol={s.symbol} />{' '}
+                      <td className="px-2 py-1 font-mono font-medium">
+                        <SymbolLink symbol={s.symbol} />
+                      </td>
+                      <td className="px-2 py-1">
                         <span
-                          className={`rounded px-1 py-0.5 text-[9px] font-bold ${
+                          className={`rounded px-1 py-0.5 font-mono text-[10px] font-bold ${
                             ce
                               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
                               : 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300'
@@ -172,33 +223,46 @@ function DaySection({ day }: { day: DayGroup }) {
                         >
                           {s.strike} {s.optionType}
                         </span>
-                        <span className="ml-1 text-muted-foreground">lot {s.lotSize}</span>
                       </td>
-                      <td className="px-1.5 py-0.5 text-muted-foreground">{s.sector || '—'}</td>
-                      <td className="px-1.5 py-0.5 text-right tabular-nums">{s.spotAtSuggest || '—'}</td>
-                      <td className="px-1.5 py-0.5 text-right tabular-nums">
-                        {s.slSpot ?? '—'} / {s.targetSpot ?? '—'}
+                      <td className="px-2 py-1 text-right tabular-nums">{s.spotAtSuggest || '—'}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">
+                        <span className="text-red-600 dark:text-red-400">{s.slSpot ?? '—'}</span>
+                        <span className="text-muted-foreground"> / </span>
+                        <span className="text-emerald-600 dark:text-emerald-400">{s.targetSpot ?? '—'}</span>
                       </td>
-                      <td className="px-1.5 py-0.5 text-right tabular-nums">
-                        {s.premiumAtSuggest != null ? `₹${s.premiumAtSuggest}` : '—'}
+                      <td className="px-2 py-1 text-right tabular-nums">
+                        {lots}
+                        <span className="ml-0.5 text-[9px] text-muted-foreground">×{s.lotSize}</span>
                       </td>
-                      <td className="px-1.5 py-0.5 text-right tabular-nums">
-                        {s.rFactor.toFixed(2)} / {s.score.toFixed(3)}
-                      </td>
-                      <td className="px-1.5 py-0.5 text-right tabular-nums">
-                        {o.pending ? (
-                          <span className="text-muted-foreground">pending</span>
-                        ) : (
-                          <>
-                            <span className={pctCls(o.fav)}>{fmtPct(o.fav)}</span> /{' '}
-                            <span className={pctCls(o.adv == null ? null : -o.adv)}>{fmtPct(o.adv)}</span>
-                          </>
+                      <td className="px-2 py-1 text-right tabular-nums">
+                        {fmtRs(cost)}
+                        {s.premiumAtSuggest != null && (
+                          <div className="text-[9px] text-muted-foreground">@₹{s.premiumAtSuggest}</div>
                         )}
                       </td>
-                      <td className={`px-1.5 py-0.5 text-right tabular-nums ${o.pending ? 'text-muted-foreground' : pctCls(o.close)}`}>
-                        {o.pending ? '—' : fmtPct(o.close)}
+                      <td className="px-2 py-1 text-right tabular-nums">
+                        {rupees != null ? (
+                          <>
+                            <span className={`font-semibold ${pctCls(rupees)}`}>{fmtSignedRs(rupees)}</span>
+                            {cost != null && cost > 0 && (
+                              <div className={`text-[9px] ${pctCls(rupees)}`}>{fmtPct((rupees / cost) * 100)}</div>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
                       </td>
-                      <td className="px-1.5 py-0.5">
+                      <td
+                        className={`px-2 py-1 text-right tabular-nums ${spotFav == null ? 'text-muted-foreground' : pctCls(spotFav)}`}
+                        title="Best spot move in the suggested direction, at close"
+                      >
+                        {spotFav == null ? '—' : fmtPct(spotFav)}
+                      </td>
+                      <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                        {s.rFactor.toFixed(2)}
+                        <span className="text-[9px]"> / {s.score.toFixed(2)}</span>
+                      </td>
+                      <td className="px-2 py-1">
                         {s.reasons.length > 0 ? (
                           <button
                             type="button"
@@ -215,7 +279,25 @@ function DaySection({ day }: { day: DayGroup }) {
                     </tr>
                     {isOpen && (
                       <tr className="border-b border-border/30 bg-muted/30">
-                        <td colSpan={11} className="px-3 py-1.5">
+                        <td colSpan={12} className="px-3 py-1.5">
+                          <div className="mb-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] text-muted-foreground">
+                            <span>
+                              Entry prem <b className="text-foreground">{s.premiumAtSuggest != null ? `₹${s.premiumAtSuggest}` : '—'}</b>
+                            </span>
+                            <span>
+                              SL prem <b className="text-foreground">{s.premiumSl != null ? `₹${s.premiumSl}` : '—'}</b>
+                            </span>
+                            <span>
+                              Target prem <b className="text-foreground">{s.premiumTarget != null ? `₹${s.premiumTarget}` : '—'}</b>
+                            </span>
+                            <span>
+                              OI level <b className="text-foreground">{s.oiLevel ? `${s.oiLevel.toFixed(2)}×` : '—'}</b>
+                            </span>
+                            <span>{s.sector || '—'}</span>
+                            <span>
+                              last seen {fmtIST(s.lastSeenAt)} · ×{s.timesSeen}
+                            </span>
+                          </div>
                           <ul className="space-y-0.5 text-[10px] leading-relaxed text-muted-foreground">
                             {s.reasons.map((r) => (
                               <li key={r}>· {r}</li>
@@ -273,7 +355,7 @@ export default function TradeLogPage() {
   const totalTrades = (data?.board ?? []).reduce((n, d) => n + d.suggestions.length, 0);
 
   return (
-    <div className="mx-auto max-w-6xl space-y-3 p-3">
+    <div className="mx-auto max-w-5xl space-y-3 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="flex items-center gap-2 text-sm font-semibold">
           <NotebookText className="h-4 w-4 text-primary" />
@@ -305,11 +387,14 @@ export default function TradeLogPage() {
         </div>
       </div>
 
-      <p className="text-[10.5px] text-muted-foreground">
+      <p className="text-[10.5px] leading-relaxed text-muted-foreground">
         Every pick the <code className="rounded bg-muted px-1">/trade-suggest</code> scan persisted, grouped by trading day
-        (newest first). <b>Start</b> = first sighting, <b>Last seen</b> = last scan it re-appeared in (×N = times seen).
-        Outcomes (max favorable / adverse move, close) fill after the same-day 15:30 review. Signal analysis only — no order
-        is ever placed.
+        (newest first). <b>Entry</b> = first call time · <b>Exit</b> = which level the spot hit (target / stop / open) at the
+        15:30 review. <b>Lots</b> sized to ₹{(CAPITAL_BUDGET / 1000).toFixed(0)}k capital, capped at {MAX_LOTS}. <b>P/L</b> is
+        the plan outcome — if the spot reached your Target or SL, marked at the plan&apos;s real Target/SL premium × lots;{' '}
+        <b>open</b> = neither was touched (no exit, so no ₹ claimed). <b>Move</b> = best spot move in the suggested direction
+        at close. <b>⚠ stop*</b> = both target and stop were touched intraday — counted as the stop, since a disciplined exit
+        takes the stop first. Signal analysis only; no order is placed.
       </p>
 
       {error && <div className="rounded border border-red-300 px-3 py-2 text-[11px] text-red-600">{error}</div>}
