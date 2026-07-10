@@ -25,6 +25,11 @@ const envSchema = z.object({
   // One-password gate (middleware.ts). Set to enable HTTP Basic Auth over the
   // whole app on a deployed host; leave unset for password-free local dev.
   APP_PASSWORD: z.string().optional(),
+  // Xiaomi MiMo (OpenAI-compatible) — powers the /trade-commentary AI narration
+  // of the deterministic scan picks. Reasoning model; see lib/ai-commentary/.
+  MIMO_API_KEY: z.string().optional(),
+  MIMO_BASE_URL: z.string().optional(),
+  MIMO_MODEL: z.string().optional(), // default 'mimo-v2.5-pro'
 });
 
 export const env = envSchema.parse(process.env);
@@ -52,4 +57,9 @@ export function hasAzureOpenAI(): boolean {
 
 export function isVercel(): boolean {
   return env.VERCEL === '1';
+}
+
+/** True when the MiMo commentary model is configured (key + base URL). */
+export function hasMimo(): boolean {
+  return !!env.MIMO_API_KEY && !!env.MIMO_BASE_URL;
 }

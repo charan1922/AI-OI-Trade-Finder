@@ -258,7 +258,16 @@ async function runAutonomousCapture(today: string, state: PollerState): Promise<
   try {
     try {
       const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
-      await runTradeSuggest(origin); // internal /api/live/* fetches carry APP_PASSWORD auth
+      const result = await runTradeSuggest(origin); // internal /api/live/* fetches carry APP_PASSWORD auth
+      // AI commentary (MiMo) — narrates the picks per the config window. Fully
+      // isolated: a commentary failure never affects the scan or the recorder.
+      try {
+        const { runAndStoreCommentary } = await import('@/lib/ai-commentary/run');
+        const outcome = await runAndStoreCommentary(result);
+        if (outcome.generated) console.log(`${TAG} AI commentary generated`);
+      } catch (err) {
+        console.warn(`${TAG} commentary failed: ${(err as Error).message}`);
+      }
     } catch (err) {
       console.warn(`${TAG} autonomous scan failed: ${(err as Error).message}`);
     }
