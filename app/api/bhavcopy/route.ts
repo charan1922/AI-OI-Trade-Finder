@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { tradedStrikeKeys } from '@/lib/backtest/data-downloader';
+import { EOD_PUBLISH_HOUR_IST } from '@/lib/dhan/market-feed';
 import { getBhavcopyStatus, syncBhavcopy } from '@/lib/historify/bhavcopy-service';
 
 export const dynamic = 'force-dynamic';
@@ -41,10 +42,11 @@ async function autoDaysToCoverBacktest(): Promise<number> {
 
 /**
  * The most recent trading session whose bhavcopy should exist by now.
- * NSE publishes EOD files in the evening — today's file is only "expected"
- * after 19:00 IST on a trading day; before that, the previous session's is.
- * Weekends and rows in market_holidays are skipped. Holiday lookup soft-fails
- * open (treats days as trading days) — worst case the banner nags a day early.
+ * NSE finalises EOD files OVERNIGHT (post-midnight), not the same evening — so a
+ * session's file is only "expected" from EOD_PUBLISH_HOUR_IST on the FOLLOWING
+ * day. today's file is never expected same-day; yesterday's becomes expected
+ * once we're past that hour. Weekends and rows in market_holidays are skipped.
+ * Holiday lookup soft-fails open (treats days as trading days).
  */
 async function expectedLatestSession(): Promise<string> {
   const { prisma } = await import('@/lib/db');
@@ -60,8 +62,10 @@ async function expectedLatestSession(): Promise<string> {
   // toISOString() would read the UTC date, one day behind before 05:30 IST).
   const dateKey = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  // Before 19:00 IST, today's file isn't out yet — start looking from yesterday.
-  if (ist.getHours() < 19) ist.setDate(ist.getDate() - 1);
+  // A session publishes overnight, never same-day — step back one day; and before
+  // the publish hour, that day's file is still pending too, so step back one more.
+  ist.setDate(ist.getDate() - 1);
+  if (ist.getHours() < EOD_PUBLISH_HOUR_IST) ist.setDate(ist.getDate() - 1);
   for (let i = 0; i < 10; i++) {
     const dow = ist.getDay();
     const key = dateKey(ist);

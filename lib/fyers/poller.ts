@@ -19,7 +19,7 @@
  * rationale as lib/dhan/market-feed.ts's gate).
  */
 
-import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { EOD_PUBLISH_HOUR_IST, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { prisma } from '@/lib/db';
 import { FyersAuthError, getFyersAccessToken, getFyersTokenStatus, hasFyersAuth } from '@/lib/fyers/auth';
 import { fetchFutDepth, fetchHistory5m } from '@/lib/fyers/client';
@@ -141,13 +141,12 @@ export async function runFyersCycle(
   if (state.cycleRunning) return finish('overlap');
   if (state.paused && !opts.force) return finish('paused');
   if (!opts.force && !isMarketHours()) {
-    // Post-market: NSE publishes the EOD bhavcopy in the evening (~19:00 IST), so
-    // the daily sync can only succeed AFTER close — not during the market-hours
-    // capture. On the deployed server, run it once per trading day here. The Fyers
-    // candle cycle itself stays skipped; we only want the EOD file.
-    if (process.env.RAILWAY_ENVIRONMENT_NAME && !(await isMarketHoliday(summary.date))) {
-      void runEodCapture(todayIST(), state);
-    }
+    // Post-market: NSE publishes the day's bhavcopy overnight, so the daily EOD
+    // sync runs from here on the deployed server (see runEodCapture — once per
+    // calendar day after ~01:00 IST, NOT a 5-min poll). Runs even on weekends/
+    // holidays since it backfills the last completed session. The Fyers candle
+    // cycle itself stays skipped.
+    if (process.env.RAILWAY_ENVIRONMENT_NAME) void runEodCapture(state);
     return finish('market-closed');
   }
   if (!opts.force && (await isMarketHoliday(summary.date))) return finish('holiday');
@@ -294,15 +293,19 @@ async function runAutonomousCapture(today: string, state: PollerState): Promise<
  * (NSE can publish late) — `lastBhavcopyDate` is only advanced once the sync
  * reports today as the latest session. Best-effort; never throws to the poller.
  */
-async function runEodCapture(today: string, state: PollerState): Promise<void> {
-  if (state.lastBhavcopyDate === today) return; // already have today's EOD file
-  // Don't bother before NSE's evening publish window.
-  const istHour = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000).getHours();
-  if (istHour < 19) return;
+async function runEodCapture(state: PollerState): Promise<void> {
+  // NSE publishes the day's bhavcopy overnight, so only attempt after the publish
+  // hour, and only ONCE per calendar day (NOT a 5-min poll). syncBhavcopy grabs
+  // every missing available session in its window, so one nightly run backfills
+  // the last completed day; a rare miss self-heals on the next night's run.
+  const istNow = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
+  if (istNow.getHours() < EOD_PUBLISH_HOUR_IST) return;
+  const istToday = `${istNow.getFullYear()}-${String(istNow.getMonth() + 1).padStart(2, '0')}-${String(istNow.getDate()).padStart(2, '0')}`;
+  if (state.lastBhavcopyDate === istToday) return; // already ran once this calendar day
   if (state.captureRunning) return;
   state.captureRunning = true;
-  const origin = `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
   try {
+    const origin = `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
     const auth: Record<string, string> = process.env.APP_PASSWORD
       ? { Authorization: `Basic ${Buffer.from(`x:${process.env.APP_PASSWORD}`).toString('base64')}` }
       : {};
@@ -313,13 +316,8 @@ async function runEodCapture(today: string, state: PollerState): Promise<void> {
     });
     if (res.ok) {
       const j = (await res.json().catch(() => ({}))) as { status?: { latestDate?: string } };
-      const latest = j.status?.latestDate ?? null;
-      if (latest === today) {
-        state.lastBhavcopyDate = today;
-        console.log(`${TAG} EOD bhavcopy synced (${today})`);
-      } else {
-        console.log(`${TAG} EOD bhavcopy: ${today} not published yet (latest ${latest}) — will retry next tick`);
-      }
+      state.lastBhavcopyDate = istToday; // mark done for today, on a successful run
+      console.log(`${TAG} EOD bhavcopy sync ran (latest ${j.status?.latestDate ?? '?'})`);
     }
   } catch (err) {
     console.warn(`${TAG} EOD bhavcopy sync failed: ${(err as Error).message}`);

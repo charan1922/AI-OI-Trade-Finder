@@ -128,6 +128,15 @@ export function depthImbalance(q: MarketFeedQuote | undefined | null): number | 
 }
 
 /**
+ * IST hour at/after which a trading day's NSE EOD bhavcopy is treated as
+ * published. NSE finalises the day's files overnight (post-midnight), NOT in the
+ * evening — so both the autonomous EOD sync (lib/fyers/poller.ts) and the
+ * staleness banner (app/api/bhavcopy) only expect a session's file from this
+ * hour on the FOLLOWING calendar day. 1 = 01:00 IST (small buffer past midnight).
+ */
+export const EOD_PUBLISH_HOUR_IST = 1;
+
+/**
  * Check if Indian market is currently open.
  * IST = UTC+5:30, market hours 9:15–15:30.
  */
