@@ -45,3 +45,6 @@ data/project-r.db
 .ipynb_checkpoints/
 __pycache__/
 .claude/settings.json
+data/parquet/
+data/project-r.db-wal
+data/project-r.db-shm
