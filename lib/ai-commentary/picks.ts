@@ -57,6 +57,17 @@ export function buildPicks(result: SuggestResponse): StoredPick[] {
     if (f?.eqTurnoverRatio != null)
       chips.push({ label: 'EQ Turn', value: `${f.eqTurnoverRatio.toFixed(1)}×`, tone: f.eqTurnoverRatio >= 3 ? 'good' : 'info' });
     chips.push({ label: 'OR', value: p.orBreakout ? 'breakout' : 'inside', tone: p.orBreakout ? 'good' : 'info' });
+    if (p.tfBreakout != null && p.tfBreakout.grade !== 'none') {
+      const b = p.tfBreakout;
+      // e.g. "strong 2L ↑" / "fakeout? 1L ↓" — the TF 3-check verdict at a glance.
+      const label = b.grade === 'fakeout-risk' ? 'fakeout?' : b.grade;
+      const arrow = b.direction === 'bullish' ? ' ↑' : b.direction === 'bearish' ? ' ↓' : '';
+      chips.push({
+        label: 'TF BO',
+        value: `${label}${b.levelsCleared > 0 ? ` ${b.levelsCleared}L` : ''}${arrow}`,
+        tone: b.grade === 'strong' || b.grade === 'confirmed' ? 'good' : b.grade === 'fakeout-risk' ? 'warn' : 'info',
+      });
+    }
     if (f?.supertrend != null)
       chips.push({
         label: 'Supertrend',

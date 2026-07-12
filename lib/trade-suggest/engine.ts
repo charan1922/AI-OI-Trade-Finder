@@ -57,6 +57,7 @@ import {
   TF_LOT_TARGET_RUPEES,
   USE_BREAKOUT_BYPASS,
   USE_EXTENDED_TREND_BYPASS,
+  USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
   WINDOW_LABEL,
   WINDOW_START_MIN,
@@ -342,11 +343,22 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
   const useBreakoutBypass = await getToggle('USE_BREAKOUT_BYPASS', USE_BREAKOUT_BYPASS);
   const excludeExtended = await getToggle('EXCLUDE_EXTENDED', EXCLUDE_EXTENDED);
   const useExtendedTrendBypass = await getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS);
+  const useTfBreakoutGate = await getToggle('USE_TF_BREAKOUT_GATE', USE_TF_BREAKOUT_GATE);
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
 
   // 1. Candidates from the live NSE feeds (F&O-gated, sector attached),
   //    widened to the full tracked universe when SCAN_FULL_UNIVERSE is on
   const { sectorBySymbol, oiSpurtSymbols } = await fetchCandidates(origin, scanFullUniverse);
+  // Names suggested EARLIER today stay in the quote batch even after they drop
+  // off the movers lists / below the gates: an open position needs its live
+  // price all day so the commentary can call HOLD / EXIT with real numbers
+  // (Jul-10 lesson: "OFSS, KPITTECH — DROPPED from screen entirely" left the
+  // narrator blind on open calls). ≤ a handful of extra symbols in the same
+  // single batched Dhan request — no extra API calls.
+  const earlierToday = await getSuggestions(date);
+  for (const e of earlierToday) {
+    if (!sectorBySymbol.has(e.symbol)) sectorBySymbol.set(e.symbol, e.sector ?? '');
+  }
   const symbols = [...sectorBySymbol.keys()];
   base.scanned = symbols.length;
   if (symbols.length === 0) {
@@ -364,6 +376,19 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
   // NSE combined (futures + options) OI map — one shared-cache call; the
   // alternate OI-evidence path for options-led builds.
   const nseOiMap = await getNseCombinedOiPctMap();
+
+  // Position-management feed: every earlier-today call with its live price,
+  // regardless of whether the name still clears any gate this scan.
+  base.tracked = earlierToday.map((e) => ({
+    symbol: e.symbol,
+    side: e.optionType,
+    direction: e.optionType === 'CE' ? ('bullish' as const) : ('bearish' as const),
+    entrySpot: e.spotAtSuggest,
+    slSpot: e.slSpot,
+    targetSpot: e.targetSpot,
+    ltp: quotes.rows.find((r) => r.symbol === e.symbol)?.ltp ?? null,
+    suggestedAt: e.suggestedAt,
+  }));
 
   // Market tilt + sector flow among the scanned candidates — CONTEXT ONLY,
   // never a gate (replay 2026-07-03: a tilt gate would have blocked the day's
@@ -528,6 +553,21 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     if (verdict.level === 'quiet') {
       gated.quietSetup++;
       continue;
+    }
+
+    // EXPERIMENTAL TF-breakout gate (USE_TF_BREAKOUT_GATE, off by default):
+    // require the TF 3-check verdict — morning level held + ≥1 named level
+    // cleared — in the trade's direction. The verdict rides in on the live row
+    // (computed by /api/live/quote from lib/breakout); null (candles not
+    // recorded yet) fails the gate, transparently counted. Evidence status in
+    // config.ts — do not enable without a replay A/B.
+    if (useTfBreakoutGate) {
+      const b = row.breakout;
+      const tfOk = b != null && (b.grade === 'confirmed' || b.grade === 'strong') && b.direction === direction;
+      if (!tfOk) {
+        gated.tfBreakoutGate = (gated.tfBreakoutGate ?? 0) + 1;
+        continue;
+      }
     }
 
     survivors.push({
@@ -709,6 +749,13 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
           ? [`⚠ combined OI ${combinedOiSlope30m.toFixed(1)} pts in the last ~30 min — the build is unwinding`]
           : []),
       s.orBreakout ? 'trading beyond the opening range (breakout confirmed)' : 'inside opening range — breakout not yet confirmed',
+      ...(r.breakout != null && r.breakout.grade !== 'none'
+        ? [
+            r.breakout.grade === 'fakeout-risk'
+              ? `⚠ TF breakout check: ${r.breakout.detail}`
+              : `TF breakout check (${r.breakout.grade}): ${r.breakout.detail}`,
+          ]
+        : []),
       ...(st != null
         ? [
             factors.supertrendAligned
@@ -750,6 +797,7 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
       spreadPct: r.spreadPct,
       imbalance: r.imbalance,
       orBreakout: s.orBreakout,
+      tfBreakout: r.breakout ?? null,
       setupLevel: s.setupLevel,
       extended: s.extended,
       factors,

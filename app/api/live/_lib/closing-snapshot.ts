@@ -21,10 +21,12 @@
  */
 
 import type { LiveUrgencyRow } from '@/app/live/_lib/types';
+import { deriveBreakoutContext, evaluateBreakout, type BreakoutSignal } from '@/lib/breakout';
 import { prisma } from '@/lib/db';
 import { todayIST } from '@/lib/dhan/market-feed';
 import { getFyersCandles } from '@/lib/fyers/candle-store';
 import { computeRFactor } from '@/lib/r-factor';
+import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   computeOiUrgency,
   getIntradaySeriesForSymbols,
@@ -79,14 +81,30 @@ async function computeClosingRows(
     if (!last || last.ltp <= 0) continue; // nothing recorded for this name — skip, don't invent
 
     // Day high/low from the recorded 5-min bars — same-day only (Fyers store
-    // clears at the next session's first poll).
+    // clears at the next session's first poll). The same bars also freeze the
+    // session's final TF-breakout context (morning test + levels cleared);
+    // it's evaluated below once the recomputed R-Factor is known.
     let dayHigh: number | null = null;
     let dayLow: number | null = null;
+    let breakoutCtx: ReturnType<typeof deriveBreakoutContext> = null;
     if (isToday) {
       const bars = (await getFyersCandles(s, snapshotDate, 'EQ')).filter((b) => b.high > 0);
       if (bars.length > 0) {
         dayHigh = Math.max(...bars.map((b) => b.high));
         dayLow = Math.min(...bars.map((b) => b.low));
+        const sc = deriveSessionContext(bars);
+        const base0 = baselines.get(s);
+        breakoutCtx = deriveBreakoutContext(bars, {
+          openRangeHigh: sc.openRangeHigh,
+          openRangeLow: sc.openRangeLow,
+          openRangeComplete: sc.openRangeComplete,
+          priorDayHigh: base0?.priorDayHigh ?? null,
+          priorDayLow: base0?.priorDayLow ?? null,
+          high5d: base0?.high5d ?? null,
+          low5d: base0?.low5d ?? null,
+          high20d: base0?.high20d ?? null,
+          low20d: base0?.low20d ?? null,
+        });
       }
     }
 
@@ -109,6 +127,12 @@ async function computeClosingRows(
       closeClock,
     );
     const r = rf ? computeRFactor(rf) : null;
+
+    // Final TF-breakout verdict at the close (efficiency check uses the
+    // recomputed R-Factor). Null for non-today snapshots — bars are gone.
+    const breakout: BreakoutSignal | null = breakoutCtx
+      ? evaluateBreakout(breakoutCtx, last.ltp, r?.rFactor ?? null, last.changePctOpen)
+      : null;
 
     rows.push({
       symbol: s,
@@ -138,6 +162,7 @@ async function computeClosingRows(
           available: f.available,
           detail: f.detail,
         })) ?? null,
+      breakout,
       dayHigh,
       dayLow,
     });

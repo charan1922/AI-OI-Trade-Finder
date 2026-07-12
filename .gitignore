@@ -48,3 +48,6 @@ __pycache__/
 data/parquet/
 data/project-r.db-wal
 data/project-r.db-shm
+
+# commentary replay-bench run artifacts (regenerable via scripts/replay-commentary.ts)
+data/replay-commentary/

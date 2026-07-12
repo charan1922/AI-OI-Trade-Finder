@@ -48,6 +48,22 @@ export const MIN_NSE_OI_PCT = 5;
  * those winners across several days without letting no-evidence junk through.
  */
 export const USE_BREAKOUT_BYPASS = false;
+
+/**
+ * EXPERIMENTAL hard gate on the TF 3-check breakout verdict (lib/breakout).
+ * Off by default. When on, a candidate must grade `confirmed` (or `strong`) in
+ * the trade's direction — morning test held + ≥1 named level cleared — to be
+ * suggested; watch/fakeout-risk/none/no-candles are gated out (reported as
+ * gated.tfBreakoutGate).
+ *
+ * Why OFF: the 320-trade TF-book backtest (scripts/backtest-breakout.ts)
+ * validated the signal's DIRECTION (91.4%) and timing (98% ≤10:30), but its
+ * grades did NOT separate TF's wins from losses (their edge is exit discipline
+ * — only 6/25 losses were un-confirmed at entry, and entry-time fakeout flags
+ * were all wins). Enable only after a replay A/B over recorded live sessions
+ * (the full scan universe, not TF's curated book) shows the gate improves picks.
+ */
+export const USE_TF_BREAKOUT_GATE = false;
 /** R-Factor floor for the bypass. Set to the base MIN_RFACTOR: the confirmed
  *  trend-aligned breakout is the real discriminator, not an inflated R-Factor.
  *  Evidence (replay, 2026-07-07, N=1): at 4.0 the bypass was inert (NAUKRI sat

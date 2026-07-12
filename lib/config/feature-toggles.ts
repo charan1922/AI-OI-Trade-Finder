@@ -20,6 +20,7 @@ import {
   SCAN_OUTSIDE_WINDOW,
   USE_BREAKOUT_BYPASS,
   USE_EXTENDED_TREND_BYPASS,
+  USE_TF_BREAKOUT_GATE,
 } from '@/lib/trade-suggest/config';
 
 export interface ToggleDef {
@@ -40,7 +41,15 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: USE_BREAKOUT_BYPASS,
     description:
-      'Lets a stock qualify on a clean price breakout even when it has no open-interest (OI) build yet. It catches fast breakout winners — like NAUKRI or ADANIENSOL — that the normal OI rule throws away. Experimental: so far it has only been checked on one day, so keep it OFF until the daily benchmark proves it earns its place.',
+      'Normally a stock is only suggested when open interest (OI) shows big players building positions in it. But some fast movers break out on PRICE first and the OI shows up only later — the normal rule throws those away. ON: a stock with no OI evidence yet can still qualify, but only if price has clearly broken out of its opening range in the trade direction, the trend tools (Supertrend / VWAP) agree, and its R-Factor is strong. OFF (default): OI evidence is always required. Trade-off: ON finds early breakout winners but with weaker proof behind them — keep OFF until the daily benchmark shows it picks more winners than junk.',
+  },
+  {
+    key: 'USE_TF_BREAKOUT_GATE',
+    label: 'TF breakout gate',
+    category: 'Trade Suggest',
+    default: USE_TF_BREAKOUT_GATE,
+    description:
+      'An extra strictness filter on top of all the normal rules. ON: a stock is only suggested when its Breakout badge (the /live column) says the breakout is CONFIRMED in the same direction as the trade — meaning the morning low (for buys) or morning high (for sells) held all day, AND price has already cleared at least one important level such as the opening-range high, yesterday’s high, or a multi-day high. Stocks whose base is still forming, that look like a fakeout, or that have no candle data yet are all dropped (the scan shows how many). OFF (default): the badge is shown as information only and never blocks a suggestion. Keep OFF for now — backtesting proved the breakout signal points the right way at the right time, but has NOT yet proven that filtering on it produces better trades.',
   },
   {
     key: 'SCAN_FULL_UNIVERSE',
@@ -48,7 +57,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: SCAN_FULL_UNIVERSE,
     description:
-      'OFF (default): scans only the stocks on NSE’s movers lists — OI spurts, gainers, losers, most active — the same names the /nse/movers page shows (typically 50–80 after overlap). ON: checks all ~166 tradeable F&O names instead. Every quality gate still applies — this only widens who gets LOOKED at. ON also records intraday data for the whole universe, which the nightly replay benchmark needs.',
+      'How many stocks the scanner even looks at. OFF (default): only the stocks already on NSE’s movers lists — OI spurts, top gainers, top losers, most active — the same names the /nse/movers page shows (typically 50–80). ON: it checks all ~166 tradeable F&O stocks instead. Every quality rule still applies either way — this only widens who gets LOOKED at, not who qualifies. ON also records intraday data for the whole universe, which the nightly replay benchmark needs.',
   },
   {
     key: 'SCAN_OUTSIDE_WINDOW',
@@ -56,7 +65,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: SCAN_OUTSIDE_WINDOW,
     description:
-      'Lets the scanner produce suggestions any time the market is open, not just the proven 09:40–11:00 morning window. OFF is the safe default: the strategy was built and validated on morning entries (TradeFinder’s real trades cluster 10:00–10:40), and out-of-window picks get stored and mixed into the daily scorecard stats. Turn ON only when you deliberately want all-day scanning.',
+      'When the scanner is allowed to suggest trades. OFF (safe default): only during the proven morning window, 09:40–11:00 — the whole strategy was built and tested on morning entries, which is when the best moves start. ON: it will suggest trades any time the market is open. Be aware: out-of-window picks get saved and mixed into the daily scorecard, so they affect your stats. Turn ON only when you deliberately want all-day scanning.',
   },
   {
     key: 'EXCLUDE_EXTENDED',
@@ -64,7 +73,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: EXCLUDE_EXTENDED,
     description:
-      'Refuses to suggest a stock that has already moved 3% or more from the day’s open. Chasing those late has been a losing bet in testing (0 of 5 worked). ON is the safe default; turning it OFF lets the scanner chase big early movers.',
+      'ON (safe default): skips any stock that has already moved 3% or more from today’s open — by the time you’d enter, the move has mostly happened, and chasing late has been a losing bet in our testing (0 of 5 chased picks worked). OFF: the scanner is allowed to suggest those big early movers too. Keep ON unless you deliberately want to chase.',
   },
   {
     key: 'USE_EXTENDED_TREND_BYPASS',
@@ -72,7 +81,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: USE_EXTENDED_TREND_BYPASS,
     description:
-      'Works WITH “Skip already-extended movers”: normally a stock already 3%+ from the open is thrown away (chasing spent spikes lost 5 of 5). This lets a genuine TREND-day back in — but ONLY when it is still breaking to new highs/lows, holding the right side of VWAP, and its Supertrend agrees. It would have caught the gap-and-go runner KALYANKJIL (+4.5%→+17.5% on 2026-07-09) while still rejecting fades that lost VWAP. Bypassed names keep the extended score penalty, so they rank cautiously. Experimental: OFF by default — turn ON to accumulate evidence on the Trade Log before trusting it live.',
+      'Works WITH “Skip already-extended movers”. That rule throws away every stock already 3%+ from the open — but on a genuine TREND day, a stock can keep running much further all day. ON: such a stock is let back in, and ONLY while it is still pushing to fresh highs/lows, holding the right side of VWAP, and its Supertrend agrees with the direction — a spike that has stalled or lost VWAP stays excluded. Let-back-in stocks still carry the “extended” score penalty, so they rank cautiously. OFF (default): every 3%+ mover stays excluded, full stop. Experimental — turn ON only to gather evidence on the Trade Log before trusting it.',
   },
 ];
 

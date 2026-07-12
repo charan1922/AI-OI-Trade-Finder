@@ -61,6 +61,16 @@ export function HowToRead() {
                 The <b>combined verdict</b> so you don&apos;t have to weigh every column yourself — Strong / Watch / Quiet
                 / Illiquid, with a ↑/↓ for direction (full rules below). This is the default sort: strongest at the top.
               </Def>
+              <Def term="Breakout">
+                The <b>TradeFinder 3-check breakout verdict</b> (full logic below):{' '}
+                <span className="text-emerald-600 dark:text-emerald-400">Strong BO</span> /{' '}
+                <span className="text-emerald-600 dark:text-emerald-400">Breakout</span> /{' '}
+                <span className="text-sky-600 dark:text-sky-400">Base held</span> /{' '}
+                <span className="text-orange-600 dark:text-orange-400">Fakeout?</span>, plus how many resistance levels
+                price has cleared (e.g. <b>2L</b>) and ↑/↓ for the side. &quot;…&quot; = the first 15 minutes are still
+                forming; &quot;—&quot; = no candles recorded yet or nothing qualifying. <b>Hover the badge</b> for the
+                morning-test state, the cleared levels by name, and the next level overhead.
+              </Def>
               <Def term="LTP / Chg%">
                 <b>LTP</b> = last traded price. <b>Chg%</b> = how far it&apos;s moved since today&apos;s <b>open</b> —
                 your <b>direction</b> input (up or down).
@@ -128,6 +138,56 @@ export function HowToRead() {
             <p className="mt-2">
               A <b>live setup</b> = tight spread + price and book pointing the same way + OI Lvl ≥1.25× (or a fast build)
               + heavy turnover. Any one failing is a reason to pass.
+            </p>
+          </section>
+
+          {/* TF breakout legend */}
+          <section>
+            <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wide text-foreground">
+              The Breakout flag (TradeFinder 3 checks)
+            </h3>
+            <p className="mb-2">
+              Will a breakout <b>sustain or fail</b>? Smart money can&apos;t build size in one shot without spiking the
+              price, so it accumulates quietly — the breakout only comes once positions are full. Three checks tell you
+              whose breakout it is:
+            </p>
+            <ol className="list-decimal space-y-1.5 pl-4">
+              <li>
+                <b>Morning test.</b> Bullish: the <b>first-15-minute low is never broken</b> all day — buyers absorbing
+                every dip. If it broke early and the stock later &quot;breaks out&quot; anyway, that&apos;s the classic{' '}
+                <b>fakeout</b>: buyers burned their capital fighting in the morning. Bearish mirror: a fiercely-defended
+                morning <b>high</b>.
+              </li>
+              <li>
+                <b>Capital efficiency.</b> The R-Factor as the efficiency read — institutions moving price smoothly
+                (high) vs burning money into resistance (low). A breakout on an inefficient name is skipped.
+              </li>
+              <li>
+                <b>Multi-level aggression.</b> The strongest breakouts clear <b>several levels at once</b> — OR high,
+                prev-day high, a multi-day base top (5d/20d), swing highs. Three levels &gt; two levels &gt; one.
+              </li>
+            </ol>
+            <ul className="mt-2 space-y-1.5">
+              <li className="flex items-center gap-2">
+                <Dot cls="bg-emerald-500" /> <b className="text-foreground">Strong BO</b> — morning test held + ≥2 levels
+                cleared + R-Factor efficient. The full TF profile.
+              </li>
+              <li className="flex items-center gap-2">
+                <Dot cls="bg-emerald-500/50" /> <b className="text-foreground">Breakout</b> — morning test held + ≥1
+                level cleared.
+              </li>
+              <li className="flex items-center gap-2">
+                <Dot cls="bg-sky-500" /> <b className="text-foreground">Base held</b> — morning test held, no level
+                cleared yet. The base is intact; a clean breakout from here is the one worth taking.
+              </li>
+              <li className="flex items-center gap-2">
+                <Dot cls="bg-orange-500" /> <b className="text-foreground">Fakeout?</b> — clearing levels <b>but</b> the
+                morning test broke earlier. The TCS profile: late breakouts from a broken morning tend to die sideways.
+              </li>
+            </ul>
+            <p className="mt-1.5 text-[11px] text-muted-foreground/70">
+              Instant invalidation: if the morning level breaks after you enter, the setup has failed — cut it small.
+              Levels come from 5-min candles refreshed every ~5 minutes; the price testing them is live.
             </p>
           </section>
 

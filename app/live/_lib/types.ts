@@ -1,3 +1,5 @@
+import type { BreakoutSignal } from '@/lib/breakout';
+
 export interface LiveUrgencyRow {
   symbol: string;
   ltp: number | null;
@@ -42,6 +44,12 @@ export interface LiveUrgencyRow {
   rFactorAfterEntry: boolean | null;
   /** Per-factor breakdown for the tooltip. */
   rFactors: RFactorRowDetail[] | null;
+
+  // ── TradeFinder breakout (lib/breakout) ────────────────────────────────────
+  /** 3-check TF verdict: morning test · R-Factor efficiency · levels cleared.
+   *  Live LTP against 5-min-cached levels. Null until candles are recorded
+   *  (optional so older row producers/consumers are unaffected). */
+  breakout?: BreakoutSignal | null;
 }
 
 /** One factor's contribution, surfaced to the UI tooltip. */

@@ -5,6 +5,8 @@ import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } f
 import { computeRFactor } from '@/lib/r-factor';
 import { addToUniverse } from '@/lib/fyers/symbols';
 import { computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
+import { evaluateBreakout } from '@/lib/breakout';
+import { ensureBreakoutContext, getBreakoutContext } from '../_lib/breakout-context';
 import { buildClosingSnapshot } from '../_lib/closing-snapshot';
 import { classifyFno, excludeReasonLabel, loadFnoUniverse } from '../_lib/fno-universe';
 import { ensureMorningContext, getMorningContext } from '../_lib/morning-candles';
@@ -160,6 +162,11 @@ export async function POST(req: Request) {
       );
       const r = rf ? computeRFactor(rf) : null;
 
+      // TradeFinder breakout: FAST half — live LTP + live R-Factor against the
+      // 5-min-cached morning-test + level ladder. Null until the symbol's
+      // candles are recorded (never fabricated). Context warms below.
+      const breakout = evaluateBreakout(getBreakoutContext(s), ltp, r?.rFactor ?? null, changePctOpen);
+
       return {
         symbol: s,
         ltp,
@@ -181,6 +188,7 @@ export async function POST(req: Request) {
         rFactorConfidence: r?.confidence ?? null,
         rFactorAfterEntry: r?.afterEntryWindow ?? null,
         rFactors: r?.factors.map((f) => ({ label: f.label, score: f.score, vote: f.vote, available: f.available, detail: f.detail })) ?? null,
+        breakout,
       };
     });
 
@@ -201,6 +209,11 @@ export async function POST(req: Request) {
       .sort((a, b) => (b.rFactor ?? 0) - (a.rFactor ?? 0))
       .slice(0, WARM_TOP_N)
       .forEach((r) => ensureMorningContext(r.symbol));
+
+    // Warm the TF breakout context for EVERY displayed symbol (fire-and-forget,
+    // local SQLite only, per-symbol 5-min refresh cap — see breakout-context.ts
+    // for why this warm is wider than the morning-context one).
+    for (const s of allowed) ensureBreakoutContext(s, baselines.get(s));
 
     // Persist this poll into the per-day OI series, then derive intraday urgency
     // (rate of OI build) from the trailing points. Best-effort: a storage hiccup

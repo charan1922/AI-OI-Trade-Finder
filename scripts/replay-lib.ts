@@ -157,6 +157,12 @@ const avg = (values: number[]): number | null => {
 };
 const pos = (v: unknown): number | null => (v != null && Number(v) > 0 ? Number(v) : null);
 const bucketOf = (ts: number): number => ts - (ts % 300);
+/** Extreme of the newest ≤n positive values (rows are newest-first); null when none. */
+const extremeOf = (values: number[], n: number, mode: 'max' | 'min'): number | null => {
+  const xs = values.filter((v) => v > 0).slice(0, n);
+  if (xs.length === 0) return null;
+  return mode === 'max' ? Math.max(...xs) : Math.min(...xs);
+};
 
 /** Load one recorded session; null when nothing was recorded for the date. */
 export function loadDay(date: string): DayData | null {
@@ -232,6 +238,10 @@ export function loadDay(date: string): DayData | null {
           return c > 0 && h >= l && h > 0 ? (h - l) / c : 0;
         }),
       ),
+      high5d: extremeOf(rs.map((r) => Number(r.eqHigh ?? 0)), 5, 'max'),
+      low5d: extremeOf(rs.map((r) => Number(r.eqLow ?? 0)), 5, 'min'),
+      high20d: extremeOf(rs.map((r) => Number(r.eqHigh ?? 0)), 20, 'max'),
+      low20d: extremeOf(rs.map((r) => Number(r.eqLow ?? 0)), 20, 'min'),
       eqTurnover20dAvg: avg(rs.map((r) => Number(r.eqTurnover ?? 0))),
       combinedOiPrev: pos(Number(prev.futOi ?? 0) + Number(prev.optOi ?? 0)),
       combinedOi20dAvg: avg(rs.map((r) => Number(r.futOi ?? 0) + Number(r.optOi ?? 0))),

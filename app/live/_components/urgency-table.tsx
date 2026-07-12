@@ -2,6 +2,7 @@
 
 import { ArrowDown, ArrowUp, ChevronsUpDown } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import type { BreakoutGrade } from '@/lib/breakout';
 import { setupScore, type SetupVerdict } from '../_lib/setup-score';
 import type { LiveUrgencyRow } from '../_lib/types';
 
@@ -88,6 +89,59 @@ function SetupBadge({ v }: { v: SetupVerdict }) {
   );
 }
 
+/** TF-breakout badge styling per grade (see lib/breakout). */
+const BREAKOUT_STYLE: Record<BreakoutGrade, { cls: string; label: string }> = {
+  strong: { cls: 'bg-emerald-500/20 font-bold text-emerald-700 dark:text-emerald-300', label: 'Strong BO' },
+  confirmed: { cls: 'bg-emerald-500/10 font-semibold text-emerald-700 dark:text-emerald-300', label: 'Breakout' },
+  watch: { cls: 'bg-sky-500/10 text-sky-700 dark:text-sky-300', label: 'Base held' },
+  'fakeout-risk': { cls: 'bg-orange-500/15 font-semibold text-orange-700 dark:text-orange-300', label: 'Fakeout?' },
+  none: { cls: '', label: '' },
+};
+
+/** Sortable rank for the TF-breakout verdict (grade first, then levels cleared). */
+export function breakoutRank(r: LiveUrgencyRow): number {
+  const b = r.breakout;
+  if (b == null || b.grade === 'none') return 0;
+  const base: Record<BreakoutGrade, number> = { strong: 4, confirmed: 3, watch: 2, 'fakeout-risk': 1, none: 0 };
+  return base[b.grade] + Math.min(b.levelsCleared, 9) / 10;
+}
+
+/**
+ * TradeFinder breakout cell — the 3-check verdict (morning test · R-Factor
+ * efficiency · levels cleared) with the level count and direction arrow.
+ * "—" until today's candles are recorded (never fabricated).
+ */
+function BreakoutCell({ r }: { r: LiveUrgencyRow }) {
+  const b = r.breakout;
+  if (b == null) return <span className="text-muted-foreground/50">—</span>;
+  if (b.grade === 'none') {
+    return (
+      <span className="text-muted-foreground/50" title={b.detail}>
+        {b.morningTest === 'pending' ? '…' : '—'}
+      </span>
+    );
+  }
+  const s = BREAKOUT_STYLE[b.grade];
+  const arrow = b.direction === 'bullish' ? ' ↑' : b.direction === 'bearish' ? ' ↓' : '';
+  const tip = [
+    `TF breakout — ${b.grade}${b.direction ? ` (${b.direction})` : ''}`,
+    `Morning test: ${b.morningTest}`,
+    `Levels cleared: ${b.levelsCleared}${b.clearedNames.length ? ` (${b.clearedNames.join(', ')})` : ''}`,
+    b.nextLevel ? `Next level: ${b.nextLevel.name} @ ${b.nextLevel.price.toFixed(2)}` : '',
+    '',
+    b.detail,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return (
+    <span className={`inline-block cursor-help rounded px-1.5 py-0.5 text-[10px] ${s.cls}`} title={tip}>
+      {s.label}
+      {b.levelsCleared > 0 ? ` ${b.levelsCleared}L` : ''}
+      {arrow}
+    </span>
+  );
+}
+
 const BIAS_STYLE: Record<'buy' | 'sell' | 'neutral', { arrow: string; cls: string }> = {
   buy: { arrow: '▲', cls: 'text-emerald-600 dark:text-emerald-400' },
   sell: { arrow: '▼', cls: 'text-red-600 dark:text-red-400' },
@@ -144,6 +198,7 @@ type SortKey =
   | 'setup'
   | 'symbol'
   | 'rFactor'
+  | 'breakout'
   | 'ltp'
   | 'changePctOpen'
   | 'spreadPct'
@@ -203,6 +258,7 @@ const sortValue = (r: Row, key: SortKey): number | string => {
   if (key === 'setup') return r.verdict.rank;
   if (key === 'symbol') return r.symbol;
   if (key === 'rFactor') return r.rFactor ?? Number.NEGATIVE_INFINITY;
+  if (key === 'breakout') return breakoutRank(r);
   return (r[key] as number | null) ?? Number.NEGATIVE_INFINITY;
 };
 
@@ -251,6 +307,13 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               {...th}
             />
             <Th label="Setup" col="setup" align="left" title="Combined verdict — see 'How to read'. Click to rank strongest first." {...th} />
+            <Th
+              label="Breakout"
+              col="breakout"
+              align="left"
+              title="TradeFinder 3-check breakout: (1) morning test — first-15-min low held all day = smart money absorbing dips; (2) R-Factor efficiency; (3) levels cleared at once (OR high, prev-day high, 5d/20d base, swing highs). 'Fakeout?' = clearing levels but the morning test broke earlier — the failed-breakout profile. Hover a badge for the breakdown."
+              {...th}
+            />
             <Th label="LTP" col="ltp" align="right" title="Last price" {...th} />
             <Th label="Chg%" col="changePctOpen" align="right" title="Change since the day's open" {...th} />
             <Th label="Spread%" col="spreadPct" align="right" title="(ask − bid) ÷ mid. Tight = liquid / cheap to execute." {...th} />
@@ -306,6 +369,9 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
                   )}
                 </div>
               </td>
+              <td className="px-2 py-1">
+                <BreakoutCell r={r} />
+              </td>
               <td className="px-2 py-1 text-right tabular-nums">{r.ltp != null ? `₹${num(r.ltp)}` : '—'}</td>
               <td
                 className={`px-2 py-1 text-right tabular-nums ${
@@ -340,7 +406,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
           ))}
           {sorted.length === 0 && (
             <tr>
-              <td colSpan={12} className="px-3 py-8 text-center text-muted-foreground">
+              <td colSpan={13} className="px-3 py-8 text-center text-muted-foreground">
                 No data.
               </td>
             </tr>

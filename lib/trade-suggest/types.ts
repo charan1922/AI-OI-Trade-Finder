@@ -2,6 +2,8 @@
  * Shared shapes for the /trade-suggest engine (see engine.ts for the flow).
  */
 
+import type { BreakoutSignal } from '@/lib/breakout';
+
 export type OptionSide = 'CE' | 'PE';
 
 /** Live quote of the picked option contract (one extra batched Dhan call). */
@@ -105,6 +107,10 @@ export interface TradeSuggestion {
   spreadPct: number | null;
   imbalance: number | null;
   orBreakout: boolean;
+  /** TradeFinder 3-check breakout verdict from the live row (lib/breakout):
+   *  morning test · R-Factor efficiency · named levels cleared. Display
+   *  evidence, not a gate — null until the symbol's candles are recorded. */
+  tfBreakout: BreakoutSignal | null;
   setupLevel: string;
   /** Already moved ≥3% from open at suggestion time. With EXCLUDE_EXTENDED
    *  these are gated out (0-for-5 evidence); kept for the flag-off path. */
@@ -131,6 +137,23 @@ export interface SectorFlow {
   avgChgPct: number | null;
   /** How many of the sector's names are on NSE's OI build-up list. */
   oiSpurts: number;
+}
+
+/** An earlier-today call with its LIVE price — the position-management feed.
+ *  Stays populated even after the name drops off the movers lists / below the
+ *  gates, so the commentary can decide HOLD / MOVE SL / EXIT with real numbers
+ *  all day (a dropped pick must never leave an open position blind). */
+export interface TrackedPosition {
+  symbol: string;
+  side: OptionSide;
+  direction: 'bullish' | 'bearish';
+  /** Spot when first suggested + the original plan levels. */
+  entrySpot: number;
+  slSpot: number | null;
+  targetSpot: number | null;
+  /** Live spot this scan (null only if the quote batch missed it). */
+  ltp: number | null;
+  suggestedAt: string;
 }
 
 /** A persisted suggestion read back from trade_suggestions. */
@@ -187,6 +210,8 @@ export interface SuggestResponse {
   sectorFlow?: SectorFlow[];
   /** Everything persisted earlier today (continuity across loop iterations). */
   earlierToday: StoredSuggestion[];
+  /** Earlier calls + live price — the position-management feed (see TrackedPosition). */
+  tracked?: TrackedPosition[];
   note?: string;
   error?: string;
 }

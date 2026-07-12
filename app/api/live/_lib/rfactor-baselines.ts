@@ -24,6 +24,11 @@ export interface RFactorBaseline {
   priorDayClose: number | null;
   /** 20-day average of (eqHigh−eqLow)/eqClose — the range-expansion baseline. */
   rangeSpread20dAvg: number | null;
+  /** Multi-day extremes (5/20 sessions) — the TF breakout detector's base levels. */
+  high5d: number | null;
+  low5d: number | null;
+  high20d: number | null;
+  low20d: number | null;
 }
 
 interface BhavRow {
@@ -44,6 +49,13 @@ const MIN_POINTS = 5; // fewer than this and an average is too noisy to trust
 function avg(values: number[]): number | null {
   const xs = values.filter((v) => v > 0).slice(0, WINDOW);
   return xs.length >= MIN_POINTS ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+}
+
+/** Extreme of the newest ≤n positive values; null when none. */
+function extreme(values: number[], n: number, mode: 'max' | 'min'): number | null {
+  const xs = values.filter((v) => v > 0).slice(0, n);
+  if (xs.length === 0) return null;
+  return mode === 'max' ? Math.max(...xs) : Math.min(...xs);
 }
 
 const pos = (v: number | null | undefined): number | null => (v != null && Number(v) > 0 ? Number(v) : null);
@@ -78,6 +90,8 @@ export async function loadRFactorBaselines(symbols: string[]): Promise<Map<strin
         const l = Number(r.eqLow ?? 0);
         return c > 0 && h >= l && h > 0 ? (h - l) / c : 0;
       });
+      const highs = rs.map((r) => Number(r.eqHigh ?? 0));
+      const lows = rs.map((r) => Number(r.eqLow ?? 0));
       out.set(symbol, {
         futOiPrev: pos(prev?.futOi),
         futOi20dAvg: avg(rs.map((r) => Number(r.futOi ?? 0))),
@@ -87,6 +101,10 @@ export async function loadRFactorBaselines(symbols: string[]): Promise<Map<strin
         priorDayLow: pos(prev?.eqLow),
         priorDayClose: pos(prev?.eqClose),
         rangeSpread20dAvg: avg(rangeRatios),
+        high5d: extreme(highs, 5, 'max'),
+        low5d: extreme(lows, 5, 'min'),
+        high20d: extreme(highs, WINDOW, 'max'),
+        low20d: extreme(lows, WINDOW, 'min'),
       });
     }
   } catch {
