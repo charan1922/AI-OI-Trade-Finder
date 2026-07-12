@@ -2,6 +2,7 @@
 
 import { Bot, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { Fragment, type ReactNode, useCallback, useEffect, useState } from 'react';
+import { useRole } from '@/lib/auth/use-role';
 
 type ChipTone = 'good' | 'warn' | 'info';
 interface Chip {
@@ -287,6 +288,7 @@ export default function TradeCommentaryPage() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const { readOnly } = useRole();
 
   const load = useCallback(async () => {
     try {
@@ -354,7 +356,8 @@ export default function TradeCommentaryPage() {
           <button
             type="button"
             onClick={generateNow}
-            disabled={generating || data?.configured === false}
+            disabled={generating || data?.configured === false || readOnly}
+            title={readOnly ? 'Read-only session — generating commentary needs the operator login' : undefined}
             className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >
             {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}

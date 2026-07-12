@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
+import { TF_VALIDATE_WRITE_ACTIONS } from '@/lib/auth/rbac';
+import { isReadOnlyRequest, readOnlyForbidden } from '@/lib/auth/server';
 import { getDailyContext, getTradeDetail, runFullBacktest, simulateTrade } from '@/lib/backtest/backtest-evaluator';
 import { downloadAllTFData, downloadSymbols, loadAllTFTrades, TF_TRADES } from '@/lib/backtest/data-downloader';
 import { getBhavcopyDateMap, getRowCount, getTradeContract } from '@/lib/backtest/backtest-store';
@@ -18,6 +20,13 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const action = body.action ?? 'status';
+
+    // Mixed endpoint: the proxy lets every POST through (it can't see bodies),
+    // so the read/write split is enforced here — download actions hit external
+    // APIs and write the candle store; everything else is a read/compute.
+    if (TF_VALIDATE_WRITE_ACTIONS.has(action) && isReadOnlyRequest(req)) {
+      return readOnlyForbidden(action);
+    }
 
     if (action === 'download') {
       const logs: string[] = [];

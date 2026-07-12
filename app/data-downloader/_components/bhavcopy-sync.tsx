@@ -2,6 +2,7 @@
 
 import { CloudDownload } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useRole } from '@/lib/auth/use-role';
 
 interface BhavStatus {
   rows: number;
@@ -25,6 +26,7 @@ export function BhavcopySync({ onSynced }: { onSynced?: () => void }) {
   const [status, setStatus] = useState<BhavStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const { readOnly } = useRole();
 
   useEffect(() => {
     let ignore = false;
@@ -78,9 +80,11 @@ export function BhavcopySync({ onSynced }: { onSynced?: () => void }) {
       <button
         type="button"
         onClick={sync}
-        disabled={syncing}
+        disabled={syncing || readOnly}
         title={
-          status
+          readOnly
+            ? 'Read-only session — syncing NSE data needs the operator login'
+            : status
             ? `Sync official NSE end-of-day data (bhavcopy) — the GLOBAL source behind the Futures OI & Turnover charts. One file covers ALL stocks, so it's shared by every trade. Current through ${status.latestDate ? fmtDate(status.latestDate) : '—'} (${status.dates} days). Click to fetch newer days; only downloads dates not already on disk.`
             : 'Sync official NSE end-of-day data (bhavcopy) — the global source behind the Futures OI & Turnover charts (covers all stocks). Click to fetch the latest days.'
         }

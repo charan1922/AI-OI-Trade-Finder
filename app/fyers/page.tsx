@@ -2,6 +2,7 @@
 
 import { Activity, ChevronDown, ChevronRight, Download, KeyRound, Loader2, Pause, Play, RefreshCw, Radio } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRole } from '@/lib/auth/use-role';
 
 /** Mirror of lib/fyers/poller.ts CycleSummary / PollerStatus (API response shapes). */
 interface CycleError {
@@ -161,6 +162,7 @@ export default function FyersPage() {
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState<string | null>(null);
   const [universeOpen, setUniverseOpen] = useState(false);
+  const { readOnly } = useRole();
 
   const refresh = useCallback(async () => {
     try {
@@ -256,7 +258,8 @@ export default function FyersPage() {
           <button
             type="button"
             onClick={() => void act(status?.paused ? 'resume' : 'pause')}
-            disabled={!!acting || !status}
+            disabled={!!acting || !status || readOnly}
+            title={readOnly ? 'Read-only session — poller control needs the operator login' : undefined}
             className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
           >
             {status?.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
@@ -265,7 +268,8 @@ export default function FyersPage() {
           <button
             type="button"
             onClick={() => void act('run-once')}
-            disabled={!!acting || !status}
+            disabled={!!acting || !status || readOnly}
+            title={readOnly ? 'Read-only session — poller control needs the operator login' : undefined}
             className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
           >
             {acting === 'run-once' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
@@ -274,8 +278,12 @@ export default function FyersPage() {
           <button
             type="button"
             onClick={() => void regenToken()}
-            disabled={!!acting || !status?.credentialsConfigured}
-            title="Force a fresh Fyers access token via the TOTP login chain (daily regeneration is automatic)"
+            disabled={!!acting || !status?.credentialsConfigured || readOnly}
+            title={
+              readOnly
+                ? 'Read-only session — token management needs the operator login'
+                : 'Force a fresh Fyers access token via the TOTP login chain (daily regeneration is automatic)'
+            }
             className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
           >
             {acting === 'token' ? <Loader2 className="h-3 w-3 animate-spin" /> : <KeyRound className="h-3 w-3" />}

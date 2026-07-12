@@ -1,30 +1,51 @@
 /**
- * One-password gate (HTTP Basic Auth) — Next 16 proxy convention.
+ * Password gate + RBAC (HTTP Basic Auth) — Next 16 proxy convention.
  *
- * A single shared password protects the whole app — every page and API route —
- * so the deployed instance isn't an open door to live broker data and the sync
- * controls. It's intentionally minimal: one env var, no login page, no user db.
+ * Two passwords, two roles (policy + role catalog in lib/auth/rbac.ts):
+ *   APP_PASSWORD          → admin  (full access — the original operator login)
+ *   APP_READONLY_PASSWORD → viewer (every page + every read API; any state-
+ *                                   changing / paid / download action → 403)
  *
- * Enforced ONLY when APP_PASSWORD is set. Unset (e.g. local dev) → the gate is a
- * no-op, so `pnpm dev` on your machine stays password-free. Set APP_PASSWORD as
- * a Railway service variable to turn it on in production.
+ * Enforced ONLY when APP_PASSWORD is set. Unset (e.g. local dev) → the gate is
+ * a no-op and every request runs as admin, so `pnpm dev` stays password-free.
+ * Set both as Railway service variables to enable the split in production;
+ * APP_READONLY_PASSWORD alone does nothing (the gate keys off APP_PASSWORD).
  *
- * The browser's native Basic-Auth prompt collects the password (any username is
- * accepted — only the password is checked). Uses atob (available on both the
- * Edge and Node runtimes) so it works regardless of how Next runs the proxy.
+ * The browser's native Basic-Auth prompt collects the password (any username
+ * is accepted — only the password picks the role). The resolved role is
+ * stamped on the forwarded request as `x-app-role` AFTER stripping any
+ * client-supplied value, so route handlers can trust the header (see
+ * lib/auth/server.ts). Uses atob (Edge + Node runtimes) so it works regardless
+ * of how Next runs the proxy.
  */
 import { type NextRequest, NextResponse } from 'next/server';
+import { requiredPermission, resolveRole, ROLE_HEADER, roleHas, type Role } from '@/lib/auth/rbac';
+
+/** Forward the request with the TRUSTED role header (spoof-proof: always overwritten). */
+function forwardAs(req: NextRequest, role: Role): NextResponse {
+  const headers = new Headers(req.headers);
+  headers.set(ROLE_HEADER, role);
+  return NextResponse.next({ request: { headers } });
+}
 
 export function proxy(req: NextRequest): NextResponse {
-  // Health check stays public so the market-hours keep-alive pinger can wake the
-  // app (Railway Serverless) without a password. It leaks nothing sensitive.
-  if (req.nextUrl.pathname === '/api/health') return NextResponse.next();
+  const { pathname, searchParams } = req.nextUrl;
+
+  // Health check stays public so the market-hours keep-alive pinger can wake
+  // the app (Railway Serverless) without a password. It leaks nothing
+  // sensitive — but still strip a spoofed role header before forwarding.
+  if (pathname === '/api/health') {
+    const headers = new Headers(req.headers);
+    headers.delete(ROLE_HEADER);
+    return NextResponse.next({ request: { headers } });
+  }
 
   const password = process.env.APP_PASSWORD;
   // Gate disabled when no password is configured (local dev, or opt-out).
-  if (!password) return NextResponse.next();
+  if (!password) return forwardAs(req, 'admin');
 
   const header = req.headers.get('authorization');
+  let role: Role | null = null;
   if (header?.startsWith('Basic ')) {
     let decoded = '';
     try {
@@ -33,16 +54,33 @@ export function proxy(req: NextRequest): NextResponse {
       decoded = '';
     }
     // Format is "username:password" — only the password is checked.
-    const supplied = decoded.slice(decoded.indexOf(':') + 1);
-    if (decoded.includes(':') && supplied === password) {
-      return NextResponse.next();
+    if (decoded.includes(':')) {
+      const supplied = decoded.slice(decoded.indexOf(':') + 1);
+      role = resolveRole(supplied, password, process.env.APP_READONLY_PASSWORD);
     }
   }
 
-  return new NextResponse('Authentication required.', {
-    status: 401,
-    headers: { 'WWW-Authenticate': 'Basic realm="Project-R Simulator", charset="UTF-8"' },
-  });
+  if (!role) {
+    return new NextResponse('Authentication required.', {
+      status: 401,
+      headers: { 'WWW-Authenticate': 'Basic realm="Project-R Simulator", charset="UTF-8"' },
+    });
+  }
+
+  const permission = requiredPermission(req.method, pathname, searchParams);
+  if (permission && !roleHas(role, permission)) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Read-only access — this action needs the operator (admin) login.',
+        role,
+        requiredPermission: permission,
+      },
+      { status: 403 },
+    );
+  }
+
+  return forwardAs(req, role);
 }
 
 /**

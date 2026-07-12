@@ -56,8 +56,13 @@ Add these (copy the values from your local `.env.local`):
   required — without it the app reports "No Dhan credentials configured" and
   falls back to the static, soon-expired `DHAN_ACCESS_TOKEN`). Add
   `DHAN_ACCESS_TOKEN` too as a static fallback.
-- **`APP_PASSWORD`** — the one-password gate (and the auth the in-process
+- **`APP_PASSWORD`** — the password gate (and the auth the in-process
   capture uses for its internal API calls). Required for the deployed app.
+  Grants the **admin** role (full access).
+- **`APP_READONLY_PASSWORD`** *(optional)* — a second password granting the
+  **viewer** role: every page and read API works, but any state-changing /
+  paid / download action returns 403 and its UI control is disabled. Policy
+  lives in `lib/auth/rbac.ts`; only meaningful alongside `APP_PASSWORD`.
 - **`PORT=5001`** — see the port note below.
 - **`DATABASE_URL`** set to the absolute volume path (not your local value):
 
@@ -94,15 +99,17 @@ accumulate candles during market hours.
 
 ### 7. Expose it — **only after setting the password**
 
-The one-password gate (`proxy.ts`) protects every page and API route with HTTP
+The password gate (`proxy.ts`) protects every page and API route with HTTP
 Basic Auth, but it is **only active when `APP_PASSWORD` is set**. Before you
 click **Generate Domain**:
 
 1. Add a service variable `APP_PASSWORD=<a strong password>`.
-2. Redeploy (saving the variable does this).
-3. Generate the public domain, and set the **target port to `5001`** (see the
+2. Optionally add `APP_READONLY_PASSWORD=<a different password>` for read-only
+   guests (see the variable list above).
+3. Redeploy (saving the variables does this).
+4. Generate the public domain, and set the **target port to `5001`** (see the
    port note below). Visiting the URL prompts for the password (any username;
-   only the password is checked).
+   the password decides the role: admin or viewer).
 
 Leave `APP_PASSWORD` unset for local dev — the gate is a no-op without it, so
 `pnpm dev` stays password-free.

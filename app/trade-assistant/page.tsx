@@ -3,6 +3,7 @@
 import { Activity, Gauge, GraduationCap, LineChart, Plus, Send, Sparkles, Target, TrendingUp } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { useRole } from '@/lib/auth/use-role';
 import { MessageBubble } from './_components/message-bubble';
 import { useChat } from './_hooks/use-chat';
 
@@ -24,6 +25,7 @@ const COL_W = { maxWidth: '46rem' } as const;
 export default function TradeAssistantPage() {
   const { messages, loading, send, reset } = useChat();
   const [input, setInput] = useState('');
+  const { readOnly } = useRole();
   const bottomRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -33,7 +35,7 @@ export default function TradeAssistantPage() {
 
   const submit = (text: string) => {
     const t = text.trim();
-    if (!t || loading) return;
+    if (!t || loading || readOnly) return;
     send(t);
     setInput('');
     if (taRef.current) taRef.current.style.height = 'auto';
@@ -96,7 +98,12 @@ export default function TradeAssistantPage() {
                 ref={taRef}
                 value={input}
                 rows={1}
-                placeholder="Scan the market, deep-dive a stock, or ask about any trade…"
+                disabled={readOnly}
+                placeholder={
+                  readOnly
+                    ? 'Read-only session — chatting with Trade Coach needs the operator login.'
+                    : 'Scan the market, deep-dive a stock, or ask about any trade…'
+                }
                 onChange={(e) => {
                   setInput(e.target.value);
                   e.target.style.height = 'auto';
@@ -110,7 +117,7 @@ export default function TradeAssistantPage() {
                 }}
                 className="max-h-40 flex-1 resize-none bg-transparent py-1.5 text-[13.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
               />
-              <Button type="submit" size="icon" disabled={!input.trim() || loading} className="mb-0.5 rounded-full" aria-label="Send">
+              <Button type="submit" size="icon" disabled={!input.trim() || loading || readOnly} className="mb-0.5 rounded-full" aria-label="Send">
                 <Send />
               </Button>
             </div>

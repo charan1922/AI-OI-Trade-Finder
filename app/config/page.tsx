@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react"
 import { Info, Loader2 } from "lucide-react"
 
+import { ReadOnlyBanner } from "@/components/read-only-banner"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { useRole } from "@/lib/auth/use-role"
 import { cn } from "@/lib/utils"
 
 interface ToggleState {
@@ -34,6 +36,7 @@ export default function ConfigPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { readOnly } = useRole()
 
   useEffect(() => {
     fetch("/api/config/toggles")
@@ -98,6 +101,8 @@ export default function ConfigPage() {
           </p>
         </header>
 
+        <ReadOnlyBanner note="Toggle and setting changes need the operator login." />
+
         {loading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" /> Loading…
@@ -149,7 +154,7 @@ export default function ConfigPage() {
                     </div>
                     <Switch
                       checked={t.value}
-                      disabled={saving === t.key}
+                      disabled={saving === t.key || readOnly}
                       onChange={(v) => flip(t.key, v)}
                       label={t.label}
                     />
@@ -188,7 +193,7 @@ export default function ConfigPage() {
                       value={n.value}
                       min={n.min}
                       max={n.max}
-                      disabled={saving === n.key}
+                      disabled={saving === n.key || readOnly}
                       onChange={(v) => step(n.key, v)}
                       label={n.label}
                     />

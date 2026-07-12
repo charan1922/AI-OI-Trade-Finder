@@ -22,9 +22,13 @@ const envSchema = z.object({
   FYERS_TOTP_SECRET: z.string().optional(), // base32 TOTP secret from Fyers 2FA setup
   FYERS_PIN: z.string().optional(), // 4-digit login PIN
   FYERS_REDIRECT_URI: z.string().optional(), // must exactly match the app's configured redirect
-  // One-password gate (middleware.ts). Set to enable HTTP Basic Auth over the
-  // whole app on a deployed host; leave unset for password-free local dev.
+  // Password gate + RBAC (proxy.ts, policy in lib/auth/rbac.ts). APP_PASSWORD
+  // enables HTTP Basic Auth over the whole app and grants the admin role;
+  // leave unset for password-free local dev. APP_READONLY_PASSWORD (optional,
+  // only meaningful alongside APP_PASSWORD) grants the read-only viewer role:
+  // every page and read API, but all state-changing actions 403.
   APP_PASSWORD: z.string().optional(),
+  APP_READONLY_PASSWORD: z.string().optional(),
   // Xiaomi MiMo (OpenAI-compatible) — powers the /trade-commentary AI narration
   // of the deterministic scan picks. Reasoning model; see lib/ai-commentary/.
   MIMO_API_KEY: z.string().optional(),
