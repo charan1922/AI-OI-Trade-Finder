@@ -433,3 +433,20 @@ model LiveUrgencyEod {
   @@map("live_urgency_eod")
 }
 
+/// Rank tracker — per-5-min leaderboard rank of each F&O name in each NSE pulse
+/// feed (the "running race"). Runtime-created in lib/signals/rank-tracker.ts;
+/// mirrored here so `db push` on a fresh volume keeps it. Retention: today only.
+model RankSnapshot {
+  date       String
+  bucketTs   Int
+  feed       String
+  symbol     String
+  rank       Int
+  value      Float?
+  capturedAt String
+
+  @@id([date, bucketTs, feed, symbol])
+  @@index([date, feed, bucketTs])
+  @@map("rank_snapshots")
+}
+

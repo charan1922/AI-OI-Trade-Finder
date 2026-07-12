@@ -3,15 +3,16 @@ import type { LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { computeRFactor } from '@/lib/r-factor';
+import { getNseOiLatestForSymbols } from '@/lib/fyers/candle-store';
 import { addToUniverse } from '@/lib/fyers/symbols';
-import { computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
+import { changeSinceEntryWindow, computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
 import { evaluateBreakout } from '@/lib/breakout';
 import { ensureBreakoutContext, getBreakoutContext } from '../_lib/breakout-context';
 import { buildClosingSnapshot } from '../_lib/closing-snapshot';
 import { classifyFno, excludeReasonLabel, loadFnoUniverse } from '../_lib/fno-universe';
 import { ensureMorningContext, getMorningContext } from '../_lib/morning-candles';
 import { cachedQuoteResponse } from '../_lib/quote-response-cache';
-import { buildLiveRFactorInput } from '../_lib/rfactor-inputs';
+import { buildLiveRFactorInput, MIN_SESSION_FRACTION, sessionFractionElapsed } from '../_lib/rfactor-inputs';
 import { loadRFactorBaselines } from '../_lib/rfactor-baselines';
 
 export const dynamic = 'force-dynamic';
@@ -135,6 +136,13 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
 
   const today = todayIST();
   const now = new Date();
+  // NSE's combined (fut+opt) OI % per symbol — recorded per 5-min FUT bar by the
+  // Fyers poller from the oi-spurts feed. DB-only, one batched query; names not
+  // in that feed are simply absent (shown as "—", never faked).
+  const nseOi = await getNseOiLatestForSymbols(allowed, today).catch(() => new Map<string, never>());
+  // Fraction of the session elapsed — the Turn-Lvl divisor (same math the
+  // R-Factor turnover factor uses, surfaced as its own column).
+  const sessionFrac = sessionFractionElapsed(now);
   const rows: LiveUrgencyRow[] = allowed.map((s) => {
     const eqId = eqMap.get(s);
     const futId = futMap.get(s)?.securityId;
@@ -155,6 +163,13 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
       futQ?.average_price != null && futQ?.volume != null && futQ.average_price > 0
         ? futQ.average_price * futQ.volume
         : null;
+    // Turnover pace: cumulative turnover ÷ (20d full-day avg × session fraction).
+    // Decays through the day if the flow dies — unlike raw cumulative turnover.
+    const turnoverLvl =
+      turnover != null && base?.futTurnover20dAvg != null && base.futTurnover20dAvg > 0 && sessionFrac > MIN_SESSION_FRACTION
+        ? turnover / (base.futTurnover20dAvg * sessionFrac)
+        : null;
+    const oiFeed = nseOi.get(s);
 
     // R-Factor: score the live snapshot against the baselines + whatever morning
     // context is already cached (opening-range breakout). Candles are warmed only
@@ -195,6 +210,10 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
       oiLevel,
       turnover,
       hasDepth: ba != null,
+      sinceEntryPct: null, // filled from the recorded intraday series below
+      turnoverLvl,
+      nseOiPct: oiFeed?.nseOiPct ?? null,
+      nseOiSlope30m: oiFeed?.slope30m ?? null,
       sessionOiChangePct: null,
       oiVelocity: null,
       oiAccel: null,
@@ -251,13 +270,16 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
     );
     const seriesMap = await getIntradaySeriesForSymbols(today, allowed);
     for (const r of rows) {
-      const u = computeOiUrgency(seriesMap.get(r.symbol) ?? []);
+      const series = seriesMap.get(r.symbol) ?? [];
+      const u = computeOiUrgency(series);
       if (u.ok) {
         r.sessionOiChangePct = u.sessionOiChangePct;
         r.oiVelocity = u.oiVelocity;
         r.oiAccel = u.oiAccel;
         r.oiUrgency = u.urgencyScore;
       }
+      // Move freshness: price change since the entry window opened (09:45 IST).
+      r.sinceEntryPct = changeSinceEntryWindow(series, r.ltp);
     }
   } catch (e) {
     console.warn('[live/quote] intraday OI capture failed:', (e as Error).message);

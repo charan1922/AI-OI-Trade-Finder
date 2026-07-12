@@ -29,10 +29,10 @@ import type { RFactorBaseline } from './rfactor-baselines';
 const SESSION_START_MIN = 9 * 60 + 15;
 const SESSION_MINUTES = 375;
 /** Don't time-adjust turnover until this fraction of the session has elapsed. */
-const MIN_FRACTION = 0.02;
+export const MIN_SESSION_FRACTION = 0.02;
 
 /** Fraction of the trading session elapsed at `now`, in [0,1] (IST). */
-function sessionFractionElapsed(now: Date): number {
+export function sessionFractionElapsed(now: Date): number {
   const istSec = now.getTime() / 1000 + 5.5 * 3600;
   const minuteOfDay = Math.floor(((istSec % 86400) + 86400) % 86400 / 60);
   return Math.max(0, Math.min(1, (minuteOfDay - SESSION_START_MIN) / SESSION_MINUTES));
@@ -77,7 +77,7 @@ export function buildLiveRFactorInput(
   // fraction of the 20-day full-day average that should have traded by now.
   const frac = sessionFractionElapsed(now);
   const turnover20dAvgAdj =
-    baseline?.futTurnover20dAvg != null && frac > MIN_FRACTION ? baseline.futTurnover20dAvg * frac : undefined;
+    baseline?.futTurnover20dAvg != null && frac > MIN_SESSION_FRACTION ? baseline.futTurnover20dAvg * frac : undefined;
 
   // Breakout reference: the opening range once it's fully formed (the intraday ORB
   // trigger), else prior-day high/low.

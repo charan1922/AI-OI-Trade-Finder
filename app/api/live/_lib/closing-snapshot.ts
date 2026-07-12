@@ -24,15 +24,16 @@ import type { LiveUrgencyRow } from '@/app/live/_lib/types';
 import { deriveBreakoutContext, evaluateBreakout, type BreakoutSignal } from '@/lib/breakout';
 import { prisma } from '@/lib/db';
 import { todayIST } from '@/lib/dhan/market-feed';
-import { getFyersCandles } from '@/lib/fyers/candle-store';
+import { getFyersCandles, getNseOiLatestForSymbols, type NseOiLatest } from '@/lib/fyers/candle-store';
 import { computeRFactor } from '@/lib/r-factor';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
+  changeSinceEntryWindow,
   computeOiUrgency,
   getIntradaySeriesForSymbols,
   getLatestSnapshotDate,
 } from '@/lib/signals/oi-intraday';
-import { type EodRow, hasEodCapture, insertEodRows } from '@/lib/signals/live-urgency-eod';
+import { type EodRow, getEodForDate, hasEodCapture, insertEodRows } from '@/lib/signals/live-urgency-eod';
 import { classifyFno, excludeReasonLabel, loadFnoUniverse } from './fno-universe';
 import { getMorningContext } from './morning-candles';
 import { buildLiveRFactorInput } from './rfactor-inputs';
@@ -66,12 +67,19 @@ async function computeClosingRows(
   allowed: string[],
   snapshotDate: string,
 ): Promise<{ rows: EodRow[]; lastTs: number }> {
+  // Baselines strictly BEFORE the snapshot date — once this day's bhavcopy
+  // syncs overnight, the unbounded query would compare the day against itself
+  // (see loadRFactorBaselines). No-op on the session's own evening.
   const [seriesMap, baselines] = await Promise.all([
     getIntradaySeriesForSymbols(snapshotDate, allowed),
-    loadRFactorBaselines(allowed),
+    loadRFactorBaselines(allowed, snapshotDate),
   ]);
 
   const isToday = snapshotDate === todayIST();
+  // NSE combined-OI feed values live in fyers_candles, which keeps today only.
+  const nseOi: Map<string, NseOiLatest> = isToday
+    ? await getNseOiLatestForSymbols(allowed, snapshotDate).catch(() => new Map<string, NseOiLatest>())
+    : new Map<string, NseOiLatest>();
   const closeClock = sessionCloseUtc(snapshotDate);
   const rows: EodRow[] = [];
 
@@ -134,6 +142,8 @@ async function computeClosingRows(
       ? evaluateBreakout(breakoutCtx, last.ltp, r?.rFactor ?? null, last.changePctOpen)
       : null;
 
+    const turnAvg = base?.futTurnover20dAvg;
+    const oiFeed = nseOi.get(s);
     rows.push({
       symbol: s,
       ltp: last.ltp,
@@ -146,6 +156,11 @@ async function computeClosingRows(
       oiLevel: last.oiLevel > 0 ? last.oiLevel : null,
       turnover: last.futTurnover > 0 ? last.futTurnover : null,
       hasDepth: false,
+      // At the close the whole session has elapsed — Turn Lvl divisor is the full-day average.
+      sinceEntryPct: changeSinceEntryWindow(series, last.ltp),
+      turnoverLvl: last.futTurnover > 0 && turnAvg != null && turnAvg > 0 ? last.futTurnover / turnAvg : null,
+      nseOiPct: oiFeed?.nseOiPct ?? null,
+      nseOiSlope30m: oiFeed?.slope30m ?? null,
       sessionOiChangePct: urgency.ok ? urgency.sessionOiChangePct : null,
       oiVelocity: urgency.ok ? urgency.oiVelocity : null,
       oiAccel: urgency.ok ? urgency.oiAccel : null,
@@ -199,6 +214,49 @@ async function captureEodOnce(date: string): Promise<void> {
   await insertEodRows(date, rows);
 }
 
+/**
+ * The frozen `live_urgency_eod` rows for `allowed` on `snapshotDate`, in
+ * watchlist order, enriched with the serve-time derived reads (Since-9:45,
+ * Turn Lvl) from the permanent oi_intraday series + pre-date baselines.
+ * Null when the capture covers none of the requested names.
+ */
+async function getFrozenRows(
+  allowed: string[],
+  snapshotDate: string,
+): Promise<Pick<ClosingSnapshotResponse, 'success' | 'marketOpen' | 'snapshot' | 'snapshotDate' | 'asOf' | 'date' | 'rows'> | null> {
+  const bySymbol = new Map((await getEodForDate(snapshotDate)).map((r) => [r.symbol, r]));
+  const [seriesMap, baselines] = await Promise.all([
+    getIntradaySeriesForSymbols(snapshotDate, allowed),
+    loadRFactorBaselines(allowed, snapshotDate),
+  ]);
+
+  const rows: LiveUrgencyRow[] = [];
+  let lastTs = 0;
+  for (const s of allowed) {
+    const r = bySymbol.get(s);
+    if (!r) continue;
+    const series = seriesMap.get(s) ?? [];
+    lastTs = Math.max(lastTs, series[series.length - 1]?.bucketTs ?? 0);
+    const turnAvg = baselines.get(s)?.futTurnover20dAvg;
+    rows.push({
+      ...r,
+      sinceEntryPct: changeSinceEntryWindow(series, r.ltp),
+      turnoverLvl: r.turnover != null && turnAvg != null && turnAvg > 0 ? r.turnover / turnAvg : null,
+    });
+  }
+  if (rows.length === 0) return null;
+
+  return {
+    success: true,
+    marketOpen: false,
+    snapshot: true,
+    snapshotDate,
+    asOf: lastTs > 0 ? new Date(lastTs * 1000).toISOString() : undefined,
+    date: snapshotDate,
+    rows,
+  };
+}
+
 export async function buildClosingSnapshot(symbols: string[]): Promise<ClosingSnapshotResponse | null> {
   const snapshotDate = await getLatestSnapshotDate();
   if (!snapshotDate) return null;
@@ -213,6 +271,18 @@ export async function buildClosingSnapshot(symbols: string[]): Promise<ClosingSn
     else excluded.push({ symbol: s, reason: excludeReasonLabel(cls.reason ?? 'not-fno') });
   }
   if (allowed.length === 0) return null;
+
+  // Any session EARLIER than today: serve the FROZEN close capture. The live
+  // recompute is only trustworthy on the session's own evening — by the next
+  // day the overnight bhavcopy sync shifts the baselines under it (the day
+  // would be compared against itself: bias collapses to neutral, OI change
+  // turns into a Dhan-vs-NSE convention artifact) and the Fyers bars are
+  // cleared. The capture was computed at the close with everything intact.
+  if (snapshotDate !== todayIST() && (await hasEodCapture(snapshotDate))) {
+    const frozen = await getFrozenRows(allowed, snapshotDate);
+    if (frozen) return { ...frozen, symbols: allowed, excluded };
+    // capture covers none of these names — fall through to the recompute
+  }
 
   const { rows, lastTs } = await computeClosingRows(allowed, snapshotDate);
   if (rows.length === 0) return null;

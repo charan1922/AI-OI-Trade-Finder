@@ -20,6 +20,7 @@
 
 import { prisma } from '@/lib/db';
 import type { FyersBar } from '@/lib/fyers/client';
+import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 
 /** Bars sit on this grid (seconds) — 5-minute candles, bar-START stamps. */
 export const FYERS_BUCKET_SEC = 300;
@@ -233,6 +234,46 @@ export async function getNseOiSeries(symbol: string, date: string): Promise<{ bu
     date,
   );
   return rows.map((r) => ({ bucketTs: toNum(r.bucketTs), nseOiPct: r.nseOiPct == null ? null : Number(r.nseOiPct) }));
+}
+
+/** Latest NSE combined-OI reading for one symbol (see getNseOiLatestForSymbols). */
+export interface NseOiLatest {
+  /** NSE's combined (futures+options) OI %-change vs the previous EOD — cumulative. */
+  nseOiPct: number;
+  /** Trailing ~30-min build in pct-points (combined-oi-slope); null when the series is too short. */
+  slope30m: number | null;
+}
+
+/**
+ * Batched: the latest non-null nseOiPct per symbol for `date`, plus its 30-min
+ * slope — ONE query for a whole watchlist (the /live quote route calls this per
+ * poll; per-symbol getNseOiSeries would be N queries). Symbols never attached
+ * (not in NSE's oi-spurts feed) are simply absent from the map — never faked.
+ */
+export async function getNseOiLatestForSymbols(symbols: string[], date: string): Promise<Map<string, NseOiLatest>> {
+  const out = new Map<string, NseOiLatest>();
+  if (symbols.length === 0) return out;
+  await ensureFyersCandlesTable();
+  const placeholders = symbols.map(() => '?').join(',');
+  const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT symbol, bucketTs, nseOiPct FROM fyers_candles
+      WHERE instrument = 'FUT' AND date = ? AND nseOiPct IS NOT NULL AND symbol IN (${placeholders})
+      ORDER BY symbol, bucketTs ASC`,
+    date,
+    ...symbols,
+  );
+  const bySymbol = new Map<string, { bucketTs: number; nseOiPct: number }[]>();
+  for (const r of rows) {
+    const s = String(r.symbol);
+    const arr = bySymbol.get(s) ?? [];
+    arr.push({ bucketTs: toNum(r.bucketTs), nseOiPct: Number(r.nseOiPct) });
+    bySymbol.set(s, arr);
+  }
+  for (const [symbol, series] of bySymbol) {
+    const latest = series[series.length - 1];
+    out.set(symbol, { nseOiPct: latest.nseOiPct, slope30m: combinedOiSlope(series, latest.bucketTs) });
+  }
+  return out;
 }
 
 export interface FyersCoverageRow {

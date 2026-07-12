@@ -142,6 +142,77 @@ function BreakoutCell({ r }: { r: LiveUrgencyRow }) {
   );
 }
 
+/**
+ * "Since 9:45" cell — price change since the entry window opened. THE freshness
+ * read: a big Chg% with ~0 here means the whole move came at the open
+ * (gap-and-flat) and is likely spent. "—" before 09:45 / no recorded series.
+ */
+function SinceEntryCell({ r }: { r: LiveUrgencyRow }) {
+  const v = r.sinceEntryPct;
+  if (v == null) return <span className="text-muted-foreground/50">—</span>;
+  const spent = r.changePctOpen != null && Math.abs(r.changePctOpen) >= 3 && Math.abs(v) < 1;
+  const cls = spent
+    ? 'font-semibold text-orange-600 dark:text-orange-400'
+    : v >= 0
+      ? 'text-emerald-600 dark:text-emerald-400'
+      : 'text-red-600 dark:text-red-400';
+  const tip = spent
+    ? `Moved ${r.changePctOpen!.toFixed(1)}% today but only ${v >= 0 ? '+' : ''}${v.toFixed(2)}% since 09:45 — the move came at the open (gap-and-flat), likely spent. Chasing it is the classic trap.`
+    : `Price change since 09:45 IST (when the entry window opens) — what the move has offered AFTER the open. Fresh trends keep giving here; spent spikes show ~0.`;
+  return (
+    <span className={`tabular-nums ${cls}`} title={tip}>
+      {v >= 0 ? '+' : ''}
+      {v.toFixed(2)}%{spent ? ' ⚠' : ''}
+    </span>
+  );
+}
+
+/** NSE combined (fut+opt) OI % — the oi-spurts feed value, with the 30-min build rate. */
+function NseOiCell({ r }: { r: LiveUrgencyRow }) {
+  const v = r.nseOiPct;
+  if (v == null) return <span className="text-muted-foreground/50">—</span>;
+  const cls =
+    v >= 10
+      ? 'font-semibold text-emerald-600 dark:text-emerald-400'
+      : v >= 3
+        ? 'text-emerald-600 dark:text-emerald-400'
+        : v <= -3
+          ? 'text-red-600 dark:text-red-400'
+          : 'text-muted-foreground';
+  const slope = r.nseOiSlope30m;
+  const tip = [
+    `NSE combined OI (futures + options) ${v >= 0 ? '+' : ''}${v.toFixed(1)}% vs yesterday's close — NSE's own oi-spurts number, the one the F&O OI Build-up list is ranked by.`,
+    slope != null
+      ? `Last ~30 min: ${slope >= 0 ? '+' : ''}${slope.toFixed(2)} pts — ${slope >= 0.5 ? 'still building NOW' : slope <= -0.5 ? 'unwinding' : 'flat (built earlier, stalled)'}`
+      : 'Build rate: not enough recorded points yet',
+  ].join('\n');
+  return (
+    <span className={`tabular-nums ${cls}`} title={tip}>
+      {v >= 0 ? '+' : ''}
+      {v.toFixed(1)}%{slope != null && slope >= 0.5 ? ' ▲' : ''}
+    </span>
+  );
+}
+
+/** Turnover level — cumulative futures turnover vs its time-of-day-adjusted 20d norm. */
+function TurnoverLvlCell({ v }: { v: number | null | undefined }) {
+  if (v == null) return <span className="text-muted-foreground/50">—</span>;
+  const cls =
+    v >= 2
+      ? 'font-semibold text-emerald-600 dark:text-emerald-400'
+      : v >= 1.5
+        ? 'text-amber-600 dark:text-amber-400'
+        : 'text-muted-foreground';
+  return (
+    <span
+      className={`tabular-nums ${cls}`}
+      title={`Futures turnover ${v.toFixed(2)}× its 20-day average, adjusted for the time of day — is real money flowing at an unusual pace RIGHT NOW. Decays through the day if the flow dies (unlike raw cumulative turnover).`}
+    >
+      {v.toFixed(2)}×
+    </span>
+  );
+}
+
 const BIAS_STYLE: Record<'buy' | 'sell' | 'neutral', { arrow: string; cls: string }> = {
   buy: { arrow: '▲', cls: 'text-emerald-600 dark:text-emerald-400' },
   sell: { arrow: '▼', cls: 'text-red-600 dark:text-red-400' },
@@ -176,6 +247,7 @@ function RFactorCell({ r }: { r: LiveUrgencyRow }) {
 
   const tip = [
     `R-Factor ${r.rFactor.toFixed(2)} / 8 · bias ${bias} · agreement ${conf}`,
+    'Measures big-money PARTICIPATION today (where money is) — not entry timing. It ratchets up through a heavy day and stays high after the move is done; use Setup + Breakout + Since 9:45 for the "enter now?" question.',
     r.rFactorAfterEntry === false ? '⚠ before the 09:45 IST entry window — may be opening noise' : '',
     '',
     active,
@@ -201,11 +273,14 @@ type SortKey =
   | 'breakout'
   | 'ltp'
   | 'changePctOpen'
+  | 'sinceEntryPct'
   | 'spreadPct'
   | 'imbalance'
   | 'futOi'
   | 'oiLevel'
+  | 'nseOiPct'
   | 'oiUrgency'
+  | 'turnoverLvl'
   | 'turnover';
 /** `origRank` = the row's 1-based position in the incoming watchlist (= NSE Movers order). */
 type Row = LiveUrgencyRow & { verdict: SetupVerdict; origRank: number };
@@ -303,7 +378,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               label="R-Factor"
               col="rFactor"
               align="right"
-              title="Live institutional-interest score 1.0–8.0 (higher = stronger) + bias arrow. Recomputed every poll from live OI/spread/breakout against fixed EOD baselines. Hover a value for the factor breakdown. Provisional until calibrated to TradeFinder."
+              title="Big-money PARTICIPATION today, 1.0–8.0 (higher = more institutional activity) + bias arrow. It answers WHERE money is — NOT 'enter now': it ratchets up through a heavy day and stays high after the move is done. For timing use Setup + Breakout + Since 9:45. Hover a value for the factor breakdown."
               {...th}
             />
             <Th label="Setup" col="setup" align="left" title="Combined verdict — see 'How to read'. Click to rank strongest first." {...th} />
@@ -316,6 +391,13 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
             />
             <Th label="LTP" col="ltp" align="right" title="Last price" {...th} />
             <Th label="Chg%" col="changePctOpen" align="right" title="Change since the day's open" {...th} />
+            <Th
+              label="Since 9:45"
+              col="sinceEntryPct"
+              align="right"
+              title="Price change since 09:45 IST (when the entry window opens) — the freshness read. Big Chg% + ~0 here = the move came at the open (gap-and-flat) and is likely spent; chasing it is the classic trap."
+              {...th}
+            />
             <Th label="Spread%" col="spreadPct" align="right" title="(ask − bid) ÷ mid. Tight = liquid / cheap to execute." {...th} />
             <Th label="Bid/Ask" col="imbalance" align="right" title="Resting bid ÷ (bid+ask) — order-flow pressure." {...th} />
             <Th label="Fut OI" col="futOi" align="right" title="Live futures open interest" {...th} />
@@ -325,6 +407,20 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               col="oiUrgency"
               align="right"
               title="Intraday OI build this session (% since first snapshot), colored by urgency = rate of fresh OI piling on now. Distinct from the static OI level."
+              {...th}
+            />
+            <Th
+              label="NSE OI%"
+              col="nseOiPct"
+              align="right"
+              title="NSE's combined OI change (futures + options) vs yesterday — the oi-spurts feed number the F&O OI Build-up list is ranked by. ▲ = still building in the last ~30 min (hover for the rate). '—' = not in NSE's feed."
+              {...th}
+            />
+            <Th
+              label="Turn Lvl"
+              col="turnoverLvl"
+              align="right"
+              title="Futures turnover ÷ 20-day average, adjusted for time of day — is real money flowing at an unusual pace RIGHT NOW. Decays if the flow dies; the raw Turnover next door only ever grows."
               {...th}
             />
             <Th label="Turnover" col="turnover" align="right" title="Live futures turnover ≈ VWAP × volume (quality)" {...th} />
@@ -384,6 +480,9 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               >
                 {r.changePctOpen != null ? `${r.changePctOpen >= 0 ? '+' : ''}${num(r.changePctOpen)}%` : '—'}
               </td>
+              <td className="px-2 py-1 text-right">
+                <SinceEntryCell r={r} />
+              </td>
               <td className={`px-2 py-1 text-right font-medium tabular-nums ${spreadCls(r.spreadPct)}`}>
                 {r.spreadPct != null ? `${num(r.spreadPct, 3)}%` : '—'}
               </td>
@@ -401,12 +500,18 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               <td className="px-2 py-1 text-right">
                 <OiBuild r={r} />
               </td>
+              <td className="px-2 py-1 text-right">
+                <NseOiCell r={r} />
+              </td>
+              <td className="px-2 py-1 text-right">
+                <TurnoverLvlCell v={r.turnoverLvl} />
+              </td>
               <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{fmtCompact(r.turnover)}</td>
             </tr>
           ))}
           {sorted.length === 0 && (
             <tr>
-              <td colSpan={13} className="px-3 py-8 text-center text-muted-foreground">
+              <td colSpan={16} className="px-3 py-8 text-center text-muted-foreground">
                 No data.
               </td>
             </tr>

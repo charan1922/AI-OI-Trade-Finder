@@ -3,6 +3,7 @@
 import { Flame, Gauge, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { CategorySection } from './_components/category-section';
+import { ClimbersSection } from './_components/climbers-section';
 import { HowToRead } from './_components/how-to-read';
 
 // Live depth split by category, mirroring the /nse/movers panels. Each section
@@ -93,7 +94,12 @@ export default function LiveUrgencyPage() {
           <b className="text-foreground">Setup</b> = the verdict (strongest first)
         </span>
         <span>
-          <b className="text-foreground">R-Factor</b> = big-money interest 1–8 + direction (hover for why)
+          <b className="text-foreground">R-Factor</b> = big-money activity today 1–8 (<i>where</i> money is — not an
+          enter-now signal)
+        </span>
+        <span>
+          <b className="text-foreground">Since 9:45</b> = what the move gave after the entry window opened (~0 = spent
+          at the open)
         </span>
         <span>
           <b className="text-foreground">Spread</b> = cost to trade (tight = cheap)
@@ -109,6 +115,9 @@ export default function LiveUrgencyPage() {
         </span>
         <span className="text-muted-foreground/70">· each category is F&amp;O-only; a name can appear in more than one</span>
       </div>
+
+      {/* Running race — rank-momentum across the feeds, above the static tables */}
+      <ClimbersSection refreshSignal={refreshNonce} />
 
       {/* Category sections — each loads independently, like the /nse/movers panels */}
       <CategorySection

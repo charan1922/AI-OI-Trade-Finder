@@ -87,7 +87,18 @@ export function setupScore(r: LiveUrgencyRow): SetupVerdict {
     );
   }
 
-  if (extended) reasons.push(`already moved ${r.changePctOpen! >= 0 ? '+' : ''}${r.changePctOpen!.toFixed(1)}% today — late to chase`);
+  if (extended) {
+    // The freshness read: a big Chg% with (near-)nothing since 09:45 is the
+    // gap-and-flat profile — the whole move came at the open and is likely spent.
+    const since = r.sinceEntryPct;
+    if (since != null && Math.abs(since) < 1) {
+      reasons.push(
+        `moved ${r.changePctOpen! >= 0 ? '+' : ''}${r.changePctOpen!.toFixed(1)}% today but only ${since >= 0 ? '+' : ''}${since.toFixed(1)}% since 09:45 — the move came at the open, likely spent`,
+      );
+    } else {
+      reasons.push(`already moved ${r.changePctOpen! >= 0 ? '+' : ''}${r.changePctOpen!.toFixed(1)}% today — late to chase`);
+    }
+  }
 
   // Conviction comes from EITHER sustained positioning (level) OR a fast fresh
   // build (urgency) — both say "real money is committing here".

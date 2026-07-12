@@ -48,14 +48,27 @@ export function HowToRead() {
             <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wide text-foreground">What each column means</h3>
             <dl className="space-y-2.5">
               <Def term="R-Factor">
-                One score for <b>how much big-money interest is in the stock right now</b>, on a <b>1–8</b> scale (higher
-                = stronger). The small arrow is the <b>direction</b>: <span className="text-emerald-600 dark:text-emerald-400">▲ buyers</span> ·{' '}
+                One score for <b>how much big money participated in the stock today</b>, on a <b>1–8</b> scale (higher =
+                more institutional activity). The small arrow is the <b>direction</b>:{' '}
+                <span className="text-emerald-600 dark:text-emerald-400">▲ buyers</span> ·{' '}
                 <span className="text-red-600 dark:text-red-400">▼ sellers</span>. It&apos;s built live by blending OI,
-                spread, breakout and turnover against <i>each stock&apos;s own normal</i>.{' '}
+                turnover, range and breakout against <i>each stock&apos;s own normal</i>.{' '}
                 <span className="text-emerald-600 dark:text-emerald-400">≥6.25 strong</span> ·{' '}
                 <span className="text-amber-600 dark:text-amber-400">4.5–6.25 moderate</span> ·{' '}
-                <span>below = quiet</span>. <b>Hover the number</b> to see which factors drove it and how much they agree.
-                Still being tuned, so treat it as a guide, not gospel.
+                <span>below = quiet</span>. <b>Hover the number</b> to see which factors drove it.{' '}
+                <b>
+                  It answers <i>where</i> money is — never <i>when</i> to enter:
+                </b>{' '}
+                on a heavy day it only climbs and <b>stays high after the move is done</b> (a stock that gapped up and
+                went sideways all day still scores high — big money really was there, but the trade wasn&apos;t). For
+                timing, read <b>Setup + Breakout + Since 9:45</b>.
+              </Def>
+              <Def term="Since 9:45">
+                Price change <b>since the entry window opened (09:45 IST)</b> — the <b>freshness</b> read, and the
+                column that separates a live trend from a finished one. A fresh trend keeps giving here; a{' '}
+                <span className="text-orange-600 dark:text-orange-400">big Chg% with ~0 Since 9:45 ⚠</span> means the
+                whole move came at the open (gap-and-flat) — <b>that move is spent, let it go</b>. &quot;—&quot; before
+                09:45.
               </Def>
               <Def term="Setup">
                 The <b>combined verdict</b> so you don&apos;t have to weigh every column yourself — Strong / Watch / Quiet
@@ -104,11 +117,51 @@ export function HowToRead() {
                 <span className="text-emerald-600 dark:text-emerald-400">Bright green = igniting</span>. A name can build
                 fast before its 20-day OI Lvl catches up. Shows &quot;—&quot; until a few minutes of data have piled up.
               </Def>
+              <Def term="NSE OI%">
+                NSE&apos;s own <b>combined OI change — futures AND options together</b> — vs yesterday&apos;s close (the
+                oi-spurts feed; the F&amp;O OI Build-up list above is ranked by exactly this number). Options often build
+                before futures, so this catches positioning the futures-only columns miss. <b>▲</b> = still building in
+                the last ~30 minutes (hover for the rate); no ▲ = built earlier, stalled since. &quot;—&quot; = the name
+                isn&apos;t in NSE&apos;s feed right now.
+              </Def>
+              <Def term="Turn Lvl">
+                Futures turnover ÷ its <b>20-day average, adjusted for the time of day</b> — is real money flowing at an
+                unusual pace <b>right now</b>?{' '}
+                <span className="text-emerald-600 dark:text-emerald-400">≥2× = heavy participation</span>. Unlike the raw
+                Turnover next to it (which only ever grows through the day), this <b>decays if the flow dies</b> — a
+                morning-only burst fades back toward 1× by afternoon.
+              </Def>
               <Def term="Turnover">
                 The <b>money actually traded</b> in the future (≈ average price × volume). The reality check: high
                 turnover means real money is behind the move, not a thin one-off tick.
               </Def>
             </dl>
+          </section>
+
+          {/* Running race */}
+          <section className="rounded-lg border border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-500/30 dark:bg-emerald-500/5">
+            <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+              The &quot;Running race&quot; panel
+            </h3>
+            <p className="mb-2">
+              The tables below are a <b>snapshot of now</b>. The race shows <b>movement</b>: who is <b>climbing the
+              leaderboard</b> fastest over the last 30–60 min. A name going <b>#25 → #6 in OI build-up</b> is getting
+              crowded into <i>right now</i> — the money is arriving, and spotting it mid-climb puts you ahead of the
+              pack, before it tops the board and everyone sees it.
+            </p>
+            <ul className="list-disc space-y-1 pl-4">
+              <li>
+                The green <b>▲ number</b> is how many spots it climbed; <b>#then→#now</b> shows the move.
+              </li>
+              <li>
+                <b>New to the board</b> names are listed separately on purpose — they only just appeared in our data, so
+                we <b>don&apos;t</b> pretend they rocketed up from nowhere.
+              </li>
+              <li>
+                Same caution as R-Factor: this is <b>who&apos;s getting crowded</b>, not a buy signal. Confirm with the
+                trade checklist above before acting. It fills in as the session runs and needs a few snapshots to start.
+              </li>
+            </ul>
           </section>
 
           {/* Recipe */}
@@ -138,6 +191,53 @@ export function HowToRead() {
             <p className="mt-2">
               A <b>live setup</b> = tight spread + price and book pointing the same way + OI Lvl ≥1.25× (or a fast build)
               + heavy turnover. Any one failing is a reason to pass.
+            </p>
+          </section>
+
+          {/* The trade decision — the scanner's own rules, for humans */}
+          <section className="rounded-lg border border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-500/30 dark:bg-emerald-500/5">
+            <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+              When to actually pull the trigger (the checklist)
+            </h3>
+            <p className="mb-2">
+              R-Factor finds the <i>stock</i>; this checklist decides the <i>trade</i>. It&apos;s the same set of rules
+              the automated scanner enforces — every box must tick, in order:
+            </p>
+            <ol className="list-decimal space-y-1.5 pl-4">
+              <li>
+                <b>Time: 09:45–11:00 IST only.</b> Before 09:45 is opening-auction noise; after 11:00 fresh entries
+                have the worst odds and square-off risk grows.
+              </li>
+              <li>
+                <b>Where: a top R-Factor name with a clear ▲/▼.</b> Big money must already be in it — never trade a
+                quiet stock because the chart &quot;looks good&quot;.
+              </li>
+              <li>
+                <b>Confirmation: the Breakout badge</b> — <span className="text-emerald-600 dark:text-emerald-400">Breakout</span>{' '}
+                or <span className="text-emerald-600 dark:text-emerald-400">Strong BO</span> in your direction, never{' '}
+                <span className="text-orange-600 dark:text-orange-400">Fakeout?</span>. Price must be <i>doing</i> the
+                thing, not about to.
+              </li>
+              <li>
+                <b>Freshness: Since 9:45 still small and in your direction</b> (roughly +0.3% to +1.5% for longs). Near
+                zero with a big Chg% (<span className="text-orange-600 dark:text-orange-400">⚠ / moved</span>) = the
+                move is spent — skip, whatever the R-Factor says. Already ran 2%+ since 09:45 = you&apos;re late; wait
+                for a pullback that holds.
+              </li>
+              <li>
+                <b>Still alive: OI Build / NSE OI% ▲ / Turn Lvl ≥1.5×</b> — positions and money still coming in{' '}
+                <i>now</i>, not just this morning.
+              </li>
+              <li>
+                <b>Risk before entry: know your exit.</b> Stop at the invalidation level (morning low / OR low for
+                longs — if it breaks, the setup failed), never more than you&apos;re prepared to lose on one trade, and
+                everything closes by <b>15:12</b>. No stop = no trade.
+              </li>
+            </ol>
+            <p className="mt-2">
+              Most days <b>zero to two</b> names pass all six. Passing on everything is a valid — often the best —
+              outcome; the checklist exists to keep you out of the KALYANKJIL-type trap (huge R-Factor, gap at the
+              open, dead sideways after).
             </p>
           </section>
 
@@ -250,7 +350,11 @@ export function HowToRead() {
                 (icebergs / slicing). Treat it as short-term pressure, never proof of where smart money is.
               </li>
               <li>This is a scanner. It shows where to look; the entry decision is yours.</li>
-              <li>Off-hours the order book doesn&apos;t exist, so the page shows nothing rather than a fake snapshot.</li>
+              <li>
+                Off-hours you see the <b>frozen closing snapshot</b> of the last session — the values recorded at the
+                close, not recomputed later. The order book no longer exists, so Bid/Ask show &quot;—&quot; (never
+                faked).
+              </li>
             </ul>
           </section>
         </div>

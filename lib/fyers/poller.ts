@@ -26,6 +26,7 @@ import { fetchFutDepth, fetchHistory5m } from '@/lib/fyers/client';
 import { attachFutDepth, fyersBucketFor, pruneToDate, upsertCandles } from '@/lib/fyers/candle-store';
 import { getTrackedUniverse, peekUniverse, resolveFutSymbol, toEqSymbol } from '@/lib/fyers/symbols';
 import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
+import { pruneRankSnapshots, recordRankSnapshot } from '@/lib/signals/rank-tracker';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
@@ -164,13 +165,21 @@ export async function runFyersCycle(
     // the session and create an orphan row).
     const attachOi = date === today && isMarketHours();
 
-    if (!opts.dateOverride) await pruneToDate(today);
+    if (!opts.dateOverride) {
+      await pruneToDate(today);
+      await pruneRankSnapshots(today); // same retention: last session survives until the next open
+    }
 
     const universe = await getTrackedUniverse(today);
     summary.universeSize = universe.length;
 
     // NSE combined-OI map for this cycle (only useful when attaching live depth)
     const nseOiPctBySymbol = attachOi ? await getNseCombinedOiPctMap() : new Map<string, number>();
+
+    // Freeze the leaderboard-rank snapshot for this bucket (the "running race"
+    // tracker). Reads the same shared-cache NSE feeds; fire-and-forget so a feed
+    // hiccup never delays or breaks the candle cycle.
+    if (attachOi) void recordRankSnapshot(today).catch(() => {});
 
     // One retried token regeneration per cycle: the first auth failure clears
     // the cached token; the retry regenerates it. A second failure aborts the

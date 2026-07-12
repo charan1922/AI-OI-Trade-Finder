@@ -31,6 +31,23 @@ export interface LiveUrgencyRow {
   /** Composite 0–10 urgency — fast + accelerating + already-significant OI build. */
   oiUrgency: number | null;
 
+  // ── Move freshness + flow pace (the "can I still enter?" reads) ────────────
+  /** Price change (%) since the first recorded tick at/after 09:45 IST — what the
+   *  move has offered AFTER the entry window opened. A big Chg% with a tiny value
+   *  here = the move happened at the open (gap-and-flat) and is likely spent.
+   *  Null before 09:45 / when nothing is recorded (never fabricated). */
+  sinceEntryPct?: number | null;
+  /** Futures turnover ÷ its 20-day average, adjusted for the fraction of the
+   *  session elapsed — is real money flowing at an unusual pace RIGHT NOW (a
+   *  level that decays if the flow dies, unlike raw cumulative turnover). */
+  turnoverLvl?: number | null;
+  /** NSE's combined (futures+options) OI %-change vs the previous EOD — the
+   *  oi-spurts feed value, recorded per 5-min bar by the Fyers poller. Null for
+   *  names not in that feed / off-hours (fyers_candles keeps today only). */
+  nseOiPct?: number | null;
+  /** Trailing ~30-min build of nseOiPct in pct-points — the combined-OI rate. */
+  nseOiSlope30m?: number | null;
+
   // ── R-Factor (lib/r-factor, live intraday) ─────────────────────────────────
   // Recomputed every poll from the live snapshot against fixed EOD baselines.
   // Null when there's no usable price. Weights are provisional until calibrated.
@@ -104,6 +121,32 @@ export interface SectorLeadersResponse {
     /** F&O names dropped for being in the 'avoid' lot-size band. */
     excludedAvoid?: number;
   };
+  error?: string;
+}
+
+/** One name's rank change over the window — from /api/live/climbers. */
+export interface Climber {
+  symbol: string;
+  rankNow: number;
+  rankThen: number | null;
+  /** Positive = climbed toward #1. Null for new entrants. */
+  delta: number | null;
+  valueNow: number;
+  isNew: boolean;
+}
+
+export type RankFeed = 'oi' | 'gainers' | 'losers' | 'active-value' | 'active-volume';
+
+export interface ClimbersResponse {
+  success: boolean;
+  marketOpen: boolean;
+  feed: RankFeed;
+  date: string;
+  latestTs: number | null;
+  baselineTs: number | null;
+  windowMin: number;
+  climbers: Climber[];
+  newEntrants: Climber[];
   error?: string;
 }
 

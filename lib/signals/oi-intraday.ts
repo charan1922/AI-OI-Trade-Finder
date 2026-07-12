@@ -263,6 +263,29 @@ export function computeOiUrgency(series: OiPoint[]): OiUrgency {
   return { ok: true, dayOpenOi, latestOi, sessionOiChangePct, oiVelocity, oiAccel, urgencyScore, points: n };
 }
 
+/** 09:45 IST as minute-of-day — when the trading rules allow entries. */
+const ENTRY_WINDOW_MIN = 9 * 60 + 45;
+
+/** IST minute-of-day for an epoch-second bucket (timestamps are UTC). */
+function istMinuteOfDay(bucketTs: number): number {
+  const istSec = bucketTs + 5.5 * 3600;
+  return Math.floor((((istSec % 86400) + 86400) % 86400) / 60);
+}
+
+/**
+ * Price change (%) from the first recorded snapshot at/after 09:45 IST to `ltp`
+ * — "what has the move offered since the entry window opened?". The freshness
+ * read that separates a live trend from a gap-and-flat day (all the Chg% made
+ * before 09:45, nothing after). Null before 09:45 or with no qualifying point —
+ * never fabricated.
+ */
+export function changeSinceEntryWindow(series: OiPoint[], ltp: number | null): number | null {
+  if (ltp == null || !(ltp > 0)) return null;
+  const p0 = series.find((p) => p.ltp > 0 && istMinuteOfDay(p.bucketTs) >= ENTRY_WINDOW_MIN);
+  if (!p0) return null;
+  return ((ltp - p0.ltp) / p0.ltp) * 100;
+}
+
 /** Retention: drop snapshots older than `beforeDate` (YYYY-MM-DD). Returns rows deleted. */
 export async function pruneOiIntraday(beforeDate: string): Promise<number> {
   await ensureOiIntradayTable();

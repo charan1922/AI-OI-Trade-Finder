@@ -60,16 +60,29 @@ function extreme(values: number[], n: number, mode: 'max' | 'min'): number | nul
 
 const pos = (v: number | null | undefined): number | null => (v != null && Number(v) > 0 ? Number(v) : null);
 
-/** Load per-symbol bhavcopy baselines (one query, newest sessions first). */
-export async function loadRFactorBaselines(symbols: string[]): Promise<Map<string, RFactorBaseline>> {
+/**
+ * Load per-symbol bhavcopy baselines (one query, newest sessions first).
+ *
+ * `beforeDate` (YYYY-MM-DD): only use sessions strictly BEFORE this date. The
+ * closing snapshot passes its own session date here — without it, once that
+ * day's bhavcopy syncs overnight the "previous session" becomes the displayed
+ * day ITSELF: price change collapses to ~0 (bias neutral), OI change compares
+ * Dhan-live OI against NSE-official OI (different measurement conventions —
+ * fake double-digit moves), and breakout levels become the day's own range.
+ * Caught 2026-07-12 (KALYANKJIL: frozen close 4.71-buy shown as 4.3-neutral).
+ * The live path omits it — today's bhavcopy never exists during market hours.
+ */
+export async function loadRFactorBaselines(symbols: string[], beforeDate?: string): Promise<Map<string, RFactorBaseline>> {
   const out = new Map<string, RFactorBaseline>();
   if (symbols.length === 0) return out;
   try {
     const placeholders = symbols.map(() => '?').join(',');
+    const dateClause = beforeDate ? 'AND date < ?' : '';
+    const params: unknown[] = beforeDate ? [...symbols, beforeDate] : [...symbols];
     const rows = await prisma.$queryRawUnsafe<BhavRow[]>(
       `SELECT symbol, date, futOi, futTurnover, futVolume, eqHigh, eqLow, eqClose
-         FROM bhavcopy_days WHERE symbol IN (${placeholders}) ORDER BY symbol, date DESC`,
-      ...symbols,
+         FROM bhavcopy_days WHERE symbol IN (${placeholders}) ${dateClause} ORDER BY symbol, date DESC`,
+      ...params,
     );
 
     const bySymbol = new Map<string, BhavRow[]>();
