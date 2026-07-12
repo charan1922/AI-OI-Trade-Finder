@@ -124,6 +124,70 @@ function SelectorRow<T extends string>({
   );
 }
 
+/**
+ * One editable risk cap. Commits on blur / Enter (only when changed), so the
+ * budget follows your actual account — set it to your Dhan balance and the
+ * scanner picks 1-lot contracts that fit while the auto-trader caps deployed
+ * premium here. Server-side validation (settings.ts) is the real guard; min/max
+ * are UI hints. /auto-trade is admin-only (rbac ADMIN_ONLY_PAGES), so no extra
+ * role gate is needed.
+ */
+function CapField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  unit = '',
+  busy,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
+  busy: boolean;
+  onCommit: (v: string) => void;
+}) {
+  // Sync the server value into the draft on change WITHOUT an effect (React's
+  // "adjust state during render" pattern): a background poll re-sync mid-edit is
+  // avoided because `synced` only trips when the committed value actually moves.
+  const [draft, setDraft] = useState(String(value));
+  const [synced, setSynced] = useState(value);
+  if (synced !== value) {
+    setSynced(value);
+    setDraft(String(value));
+  }
+  const commit = () => {
+    const n = Math.round(Number(draft));
+    if (Number.isFinite(n) && n >= min && n <= max && n !== value) onCommit(String(n));
+    else setDraft(String(value)); // out-of-range / unchanged → snap back
+  };
+  return (
+    <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`${label}: ${min.toLocaleString('en-IN')}–${max.toLocaleString('en-IN')}`}>
+      <span>{label}</span>
+      {unit && <span>{unit}</span>}
+      <input
+        type="number"
+        inputMode="numeric"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+        className="w-20 rounded border border-border bg-background px-1.5 py-0.5 text-right tabular-nums text-foreground focus:border-primary focus:outline-none disabled:opacity-50"
+      />
+    </label>
+  );
+}
+
 function Cap({ label, used, max, unit = '' }: { label: string; used: number; max: number; unit?: string }) {
   const danger = used >= max;
   return (
@@ -382,10 +446,19 @@ export default function AutoTradePage() {
             >
               <Play className="size-3.5" /> Run a pass now
             </button>
-            <span className="text-[11px] text-muted-foreground">
-              Caps: {s.maxTradesPerDay} trades/day · {s.maxOpenLots} lots · ₹{s.maxCapitalRupees.toLocaleString('en-IN')} budget · halt at −₹{s.dailyLossHaltRupees.toLocaleString('en-IN')}
-            </span>
           </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Caps</span>
+            <CapField label="Trades/day" value={s.maxTradesPerDay} min={1} max={4} step={1} busy={busy} onCommit={(v) => void setSetting('maxTradesPerDay', v)} />
+            <CapField label="Max lots" value={s.maxOpenLots} min={1} max={4} step={1} busy={busy} onCommit={(v) => void setSetting('maxOpenLots', v)} />
+            <CapField label="Budget" unit="₹" value={s.maxCapitalRupees} min={10_000} max={200_000} step={5_000} busy={busy} onCommit={(v) => void setSetting('maxCapitalRupees', v)} />
+            <CapField label="Loss halt" unit="₹" value={s.dailyLossHaltRupees} min={500} max={20_000} step={500} busy={busy} onCommit={(v) => void setSetting('dailyLossHaltRupees', v)} />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Set <b>Budget</b> to your account balance — the scanner only picks 1-lot contracts that fit it, and the
+            auto-trader caps deployed premium here. Always <b>1 lot per trade</b>; <b>Max lots</b> is how many can be open
+            at once. E.g. ₹30k budget + 1 lot = one affordable lot at a time; ₹60k + 2 = up to two.
+          </p>
         </div>
       )}
 

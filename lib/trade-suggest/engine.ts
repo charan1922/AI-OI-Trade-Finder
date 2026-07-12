@@ -62,6 +62,7 @@ import {
   WINDOW_LABEL,
   WINDOW_START_MIN,
 } from '@/lib/trade-suggest/config';
+import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
 import { qualifiesByBreakout } from '@/lib/trade-suggest/breakout-bypass';
 import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
@@ -348,6 +349,12 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
   const useExtendedTrendBypass = await getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS);
   const useTfBreakoutGate = await getToggle('USE_TF_BREAKOUT_GATE', USE_TF_BREAKOUT_GATE);
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
+  // Capital budget = the auto-trade page's editable maxCapitalRupees (one source
+  // of truth). A pick whose single lot costs more than this is skipped, so the
+  // scanner only surfaces contracts THIS account can actually afford (e.g. ₹30k
+  // Dhan balance -> only ≤₹30k/lot picks). getAutoTradeSettings never throws —
+  // falls back to its default (= CAPITAL_BUDGET) on a DB hiccup.
+  const capitalBudget = (await getAutoTradeSettings()).maxCapitalRupees || CAPITAL_BUDGET;
 
   // 1. Candidates from the live NSE feeds (F&O-gated, sector attached),
   //    widened to the full tracked universe when SCAN_FULL_UNIVERSE is on
@@ -667,10 +674,10 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     const side: 'CE' | 'PE' = s.direction === 'bullish' ? 'CE' : 'PE';
     const option = optionBySymbol.get(r.symbol) ?? null;
     if (!option) console.warn(`${TAG} no OPTSTK contract for ${r.symbol} — suggesting without contract details`);
-    if (option?.premium && option.premium.perLotCost > CAPITAL_BUDGET) {
+    if (option?.premium && option.premium.perLotCost > capitalBudget) {
       skippedUnaffordable++;
       console.log(
-        `${TAG} ${r.symbol} skipped: one lot costs ₹${Math.round(option.premium.perLotCost).toLocaleString('en-IN')} > ₹${CAPITAL_BUDGET.toLocaleString('en-IN')} budget`,
+        `${TAG} ${r.symbol} skipped: one lot costs ₹${Math.round(option.premium.perLotCost).toLocaleString('en-IN')} > ₹${capitalBudget.toLocaleString('en-IN')} budget`,
       );
       continue;
     }
