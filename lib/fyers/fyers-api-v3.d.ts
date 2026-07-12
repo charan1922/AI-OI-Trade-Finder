@@ -29,5 +29,26 @@ declare module 'fyers-api-v3' {
     }): Promise<Record<string, unknown>>;
     getQuotes(symbols: string[]): Promise<Record<string, unknown>>;
     getMarketDepth(req: { symbol: string[]; ohlcv_flag: number }): Promise<Record<string, unknown>>;
+    // Trading surface (lib/auto-trade/brokers/fyers-adapter.ts). Verified
+    // against node_modules/fyers-api-v3/apiService/apiService.js. NOTE:
+    // get_orders resolves undefined on HTTP failure (the SDK logs instead of
+    // rejecting) — callers must null-check.
+    place_order(req: {
+      symbol: string;
+      qty: number;
+      type: number; // 1=limit 2=market 3=SL-M 4=SL-L
+      side: number; // 1=buy -1=sell
+      productType: string; // 'INTRADAY' | 'CNC' | 'MARGIN'
+      limitPrice: number;
+      stopPrice: number;
+      validity: string; // 'DAY' | 'IOC'
+      disclosedQty: number;
+      offlineOrder: boolean;
+      orderTag?: string;
+    }): Promise<Record<string, unknown>>;
+    cancel_order(req: { id: string }): Promise<Record<string, unknown>>;
+    get_orders(): Promise<Record<string, unknown> | undefined>;
+    get_positions(): Promise<Record<string, unknown> | undefined>;
+    get_funds(): Promise<Record<string, unknown> | undefined>;
   }
 }

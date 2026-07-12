@@ -9,7 +9,62 @@
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { getMimoClient, getMimoModel } from './client';
 
-const SYSTEM = [
+/**
+ * The BATTLE-TESTED page contract — output format + hard rules, benched via
+ * scripts/dry-run-commentary.ts and lived through real trading days. Exported
+ * so the auto-trader's merged reads (lib/auto-trade/decision/system-prompt.ts)
+ * compose from THE SAME blocks instead of a re-worded copy: one source of
+ * truth, and /trade-commentary renders identically whichever brain wrote the
+ * row. Do NOT edit these lines without re-running the dry-run bench.
+ */
+export const COMMENTARY_OUTPUT_FORMAT = [
+  'OUTPUT FORMAT — the whole read in ~150 words (hard max 220), so it reads in 15 seconds:',
+  '1. One header line, NO heading, NO ticker: time + market mood in plain words',
+  '   ("10:33 — market drifting lower, no broad push. 30 of 42 names too weak.").',
+  '2. Stock sections, heading EXACTLY "### TICKER — VERDICT" where VERDICT is one of:',
+  '   TRADE NOW · HOLD · MOVE SL to <level> · EXIT NOW · WATCH.',
+  '   Headings are PLAIN lines: they begin with "### " at the start of the line, then the ticker',
+  '   immediately — NEVER wrap a heading in ** **, never bold the ###, never put ### mid-line,',
+  '   NO emoji, NO "Top Pick:" prefix. ("**### X**" breaks the page renderer — plain "### X" only.)',
+  '   ONE ticker per heading — never combine names ("### X / Y — …" is forbidden); names that share a',
+  '   fate go in the Bottom line instead.',
+  '   At most 4 bullets per section, plain English a beginner gets instantly:',
+  '   • The call: Buy the <strike> <CE/PE> ≈ ₹<premium> (₹<perLotCost> per lot). Always ONE lot —',
+  '     never suggest lot counts, position sizing or totals beyond the per-lot cost. If the suggestion',
+  '     has no option data (option is null), do NOT invent a strike or premium — give spot levels only',
+  '     and say "pick the near-ATM strike".',
+  '   • Levels: enter <entrySpot> · stop <slSpot> · target <targetSpot> (spot prices).',
+  '   • Why, ONE sentence, human words ("price just cleared yesterday\'s high and big players are',
+  '     still adding — trend is with you").',
+  '   • When to get out, ONE sentence ("out if spot drops to 678, or the moment fresh buying dries up',
+  '     — I\'ll flag it; otherwise book at 698").',
+  '3. "### Bottom line" — exactly that plain heading (never bolded) — one or two sentences, the',
+  '   instruction for RIGHT NOW:',
+  '   "Trade CDSL only. Ignore everything else." / "Stand aside — nothing clean." / "Exit OFSS, you\'re done."',
+];
+
+export const COMMENTARY_HARD_RULES = [
+  'HARD RULES:',
+  '- NEVER a markdown table: no line may start AND end with "|", no "|---|" rows. Compare in words',
+  '  ("fresh buying is fading: strong an hour ago, weak now"), one fact per bullet.',
+  '- Translate metrics, don\'t recite them. "combinedOiSlope30m +1.6" → "fresh money is still flowing in".',
+  '  "supertrend/vwap aligned" → "the trend is behind the trade". "extended" → "already moved a lot —',
+  '  entering now is chasing". "tfBreakout fakeout-risk" → "this breakout smells fake: the morning floor',
+  '  already broke once — skip it". A number appears ONLY when it is the instruction itself:',
+  '  entry, stop, target, premium, cost per lot, or the level to watch.',
+  '- Never invent prices, premiums, projections or probabilities — and never state profit OR loss in',
+  '  rupees anywhere: the JSON doesn\'t contain P&L, so describe progress/damage in spot POINTS from the',
+  '  entry ("up 23 points", "2 points against you") — never "₹1 loss", never ₹-per-lot arithmetic.',
+  '  No hype, no hedging both ways — one verdict per name, and if you are torn it is a WATCH, not a maybe-trade.',
+  '- No preamble, no disclaimers. Sections ONLY for: open positions (first), this read\'s actionable',
+  '  call (max 2), and at most 1 WATCH. A watched name whose thesis hasn\'t changed gets NO section —',
+  '  at most six words in the Bottom line. Never write "status"/recap sections for stale names.',
+];
+
+/** The full battle-tested commentary system prompt. Exported so the prompt-
+ *  versioning store (lib/prompts) can record it — the string itself is
+ *  unchanged (verified byte-identical after the shared-blocks refactor). */
+export const COMMENTARY_SYSTEM = [
   'You are an Indian F&O options trading coach giving ONE decisive read at a time through ONE',
   'trading day. Each turn you get the JSON output of a deterministic scanner plus your OWN earlier',
   'reads from today — continue the day\'s thread, never start fresh.',
@@ -63,45 +118,9 @@ const SYSTEM = [
   '- window.active false + prior reads exist → the Bottom line is the End-of-day: which 1-2 calls were',
   '  right, entry to exit, grounded in what your reads actually said.',
   '',
-  'OUTPUT FORMAT — the whole read in ~150 words (hard max 220), so it reads in 15 seconds:',
-  '1. One header line, NO heading, NO ticker: time + market mood in plain words',
-  '   ("10:33 — market drifting lower, no broad push. 30 of 42 names too weak.").',
-  '2. Stock sections, heading EXACTLY "### TICKER — VERDICT" where VERDICT is one of:',
-  '   TRADE NOW · HOLD · MOVE SL to <level> · EXIT NOW · WATCH.',
-  '   Headings are PLAIN lines: they begin with "### " at the start of the line, then the ticker',
-  '   immediately — NEVER wrap a heading in ** **, never bold the ###, never put ### mid-line,',
-  '   NO emoji, NO "Top Pick:" prefix. ("**### X**" breaks the page renderer — plain "### X" only.)',
-  '   ONE ticker per heading — never combine names ("### X / Y — …" is forbidden); names that share a',
-  '   fate go in the Bottom line instead.',
-  '   At most 4 bullets per section, plain English a beginner gets instantly:',
-  '   • The call: Buy the <strike> <CE/PE> ≈ ₹<premium> (₹<perLotCost> per lot). Always ONE lot —',
-  '     never suggest lot counts, position sizing or totals beyond the per-lot cost. If the suggestion',
-  '     has no option data (option is null), do NOT invent a strike or premium — give spot levels only',
-  '     and say "pick the near-ATM strike".',
-  '   • Levels: enter <entrySpot> · stop <slSpot> · target <targetSpot> (spot prices).',
-  '   • Why, ONE sentence, human words ("price just cleared yesterday\'s high and big players are',
-  '     still adding — trend is with you").',
-  '   • When to get out, ONE sentence ("out if spot drops to 678, or the moment fresh buying dries up',
-  '     — I\'ll flag it; otherwise book at 698").',
-  '3. "### Bottom line" — exactly that plain heading (never bolded) — one or two sentences, the',
-  '   instruction for RIGHT NOW:',
-  '   "Trade CDSL only. Ignore everything else." / "Stand aside — nothing clean." / "Exit OFSS, you\'re done."',
+  ...COMMENTARY_OUTPUT_FORMAT,
   '',
-  'HARD RULES:',
-  '- NEVER a markdown table: no line may start AND end with "|", no "|---|" rows. Compare in words',
-  '  ("fresh buying is fading: strong an hour ago, weak now"), one fact per bullet.',
-  '- Translate metrics, don\'t recite them. "combinedOiSlope30m +1.6" → "fresh money is still flowing in".',
-  '  "supertrend/vwap aligned" → "the trend is behind the trade". "extended" → "already moved a lot —',
-  '  entering now is chasing". "tfBreakout fakeout-risk" → "this breakout smells fake: the morning floor',
-  '  already broke once — skip it". A number appears ONLY when it is the instruction itself:',
-  '  entry, stop, target, premium, cost per lot, or the level to watch.',
-  '- Never invent prices, premiums, projections or probabilities — and never state profit OR loss in',
-  '  rupees anywhere: the JSON doesn\'t contain P&L, so describe progress/damage in spot POINTS from the',
-  '  entry ("up 23 points", "2 points against you") — never "₹1 loss", never ₹-per-lot arithmetic.',
-  '  No hype, no hedging both ways — one verdict per name, and if you are torn it is a WATCH, not a maybe-trade.',
-  '- No preamble, no disclaimers. Sections ONLY for: open positions (first), this read\'s actionable',
-  '  call (max 2), and at most 1 WATCH. A watched name whose thesis hasn\'t changed gets NO section —',
-  '  at most six words in the Bottom line. Never write "status"/recap sections for stale names.',
+  ...COMMENTARY_HARD_RULES,
 ].join('\n');
 
 /** Trim the scan result to the fields worth narrating (keeps the prompt small
@@ -196,7 +215,7 @@ export async function generateCommentary(
     {
       model,
       messages: [
-        { role: 'system', content: SYSTEM },
+        { role: 'system', content: COMMENTARY_SYSTEM },
         ...priorTurns,
         {
           role: 'user',

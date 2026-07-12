@@ -267,14 +267,31 @@ async function runAutonomousCapture(today: string, state: PollerState): Promise<
     try {
       const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
       const result = await runTradeSuggest(origin); // internal /api/live/* fetches carry APP_PASSWORD auth
-      // AI commentary (MiMo) — narrates the picks per the config window. Fully
-      // isolated: a commentary failure never affects the scan or the recorder.
+      // ONE AI analysis per cycle. The auto-trade pass runs FIRST (lib/auto-trade:
+      // deterministic guard, then the decision loop over the SAME scan result);
+      // when its read was stored as this cycle's commentary, the standalone MiMo
+      // narration is SKIPPED — it only runs as the fallback (auto-trade off /
+      // kill switch / nothing to decide / AI failed). Both blocks are isolated:
+      // a failure never affects the scan or the recorder.
+      let commentaryHandled = false;
       try {
-        const { runAndStoreCommentary } = await import('@/lib/ai-commentary/run');
-        const outcome = await runAndStoreCommentary(result);
-        if (outcome.generated) console.log(`${TAG} AI commentary generated`);
+        const { runAutoTradePass } = await import('@/lib/auto-trade/engine');
+        const outcome = await runAutoTradePass(result);
+        commentaryHandled = outcome.commentaryStored;
+        if (outcome.ran && (outcome.guardActions.length > 0 || outcome.aiSummary)) {
+          console.log(`${TAG} auto-trade: ${outcome.aiSummary?.slice(0, 120) ?? outcome.guardActions.join(' · ')}`);
+        }
       } catch (err) {
-        console.warn(`${TAG} commentary failed: ${(err as Error).message}`);
+        console.warn(`${TAG} auto-trade failed: ${(err as Error).message}`);
+      }
+      if (!commentaryHandled) {
+        try {
+          const { runAndStoreCommentary } = await import('@/lib/ai-commentary/run');
+          const outcome = await runAndStoreCommentary(result);
+          if (outcome.generated) console.log(`${TAG} AI commentary generated`);
+        } catch (err) {
+          console.warn(`${TAG} commentary failed: ${(err as Error).message}`);
+        }
       }
     } catch (err) {
       console.warn(`${TAG} autonomous scan failed: ${(err as Error).message}`);

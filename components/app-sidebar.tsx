@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState } from "react"
-import { Activity, Bot, BookOpen, CalendarClock, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, type LucideIcon, NotebookText, Radio, Sparkles, Table2, Target } from "lucide-react"
+import { Activity, Bot, BookOpen, CalendarClock, CalendarDays, ChevronDown, ChevronRight, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, type LucideIcon, NotebookText, Radio, ScrollText, Sparkles, Table2, Target, Zap } from "lucide-react"
 
 import {
   Sidebar,
@@ -57,6 +57,7 @@ const NAV_GROUPS: NavGroup[] = [
       { title: "Trade Assistant", href: "/trade-assistant", icon: Bot },
       { title: "Trade Suggest", href: "/trade-suggest", icon: Target },
       { title: "Trade Commentary", href: "/trade-commentary", icon: Sparkles },
+      { title: "Auto Trade", href: "/auto-trade", icon: Zap },
       { title: "Trade Log", href: "/trade-suggest/history", icon: NotebookText },
     ],
   },
@@ -68,6 +69,7 @@ const NAV_GROUPS: NavGroup[] = [
       { title: "EOD Live Urgency", href: "/live/history", icon: CalendarClock },
       { title: "Market Holidays", href: "/holidays", icon: CalendarDays },
       { title: "F&O Lot Sizes", href: "/fno-lots", icon: Table2 },
+      { title: "AI Prompts", href: "/prompts", icon: ScrollText },
       { title: "API Docs", href: "/api-docs", icon: BookOpen },
     ],
   },

@@ -35,6 +35,19 @@ export async function ensureCommentaryTable(): Promise<void> {
   } catch {
     /* column already exists */
   }
+  // Prompt-versioning stamp (lib/prompts): WHICH system prompt wrote this row
+  // ('trade-commentary' standalone MiMo, 'auto-trader' merged pass) and its
+  // version number in prompt_versions. Same additive-ALTER pattern.
+  try {
+    await prisma.$executeRawUnsafe(`ALTER TABLE trade_commentary ADD COLUMN promptKey TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    await prisma.$executeRawUnsafe(`ALTER TABLE trade_commentary ADD COLUMN promptVersion INTEGER`);
+  } catch {
+    /* column already exists */
+  }
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_trade_commentary_date ON trade_commentary (date, id)`);
   tableReady = true;
 }
@@ -50,6 +63,10 @@ export interface CommentaryRow {
   picks: StoredPick[];
   promptTokens: number | null;
   completionTokens: number | null;
+  /** Which system prompt wrote this row + its prompt_versions number (null on
+   *  rows from before versioning existed). */
+  promptKey: string | null;
+  promptVersion: number | null;
   createdAt: string;
 }
 
@@ -63,14 +80,16 @@ export interface InsertCommentary {
   picks: StoredPick[];
   promptTokens: number | null;
   completionTokens: number | null;
+  promptKey?: string | null;
+  promptVersion?: number | null;
 }
 
 export async function insertCommentary(row: InsertCommentary): Promise<void> {
   await ensureCommentaryTable();
   await prisma.$executeRawUnsafe(
     `INSERT INTO trade_commentary
-       (date, asOf, windowActive, picksCount, model, text, picksJson, promptTokens, completionTokens, createdAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (date, asOf, windowActive, picksCount, model, text, picksJson, promptTokens, completionTokens, promptKey, promptVersion, createdAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     row.date,
     row.asOf,
     row.windowActive ? 1 : 0,
@@ -80,6 +99,8 @@ export async function insertCommentary(row: InsertCommentary): Promise<void> {
     JSON.stringify(row.picks ?? []),
     row.promptTokens,
     row.completionTokens,
+    row.promptKey ?? null,
+    row.promptVersion ?? null,
     new Date().toISOString(),
   );
 }
@@ -95,6 +116,8 @@ interface RawRow {
   picksJson: string | null;
   promptTokens: number | null;
   completionTokens: number | null;
+  promptKey: string | null;
+  promptVersion: number | null;
   createdAt: string;
 }
 

@@ -79,7 +79,7 @@ export const TF_VALIDATE_WRITE_ACTIONS: ReadonlySet<string> = new Set([
  * hides these entries for viewers (components/app-sidebar.tsx) — that part is
  * cosmetic, this list is what enforces.
  */
-export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set(['/api-docs', '/config']);
+export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set(['/api-docs', '/config', '/auto-trade']);
 
 /**
  * The API access policy: which permission (if any) a request needs.

@@ -272,6 +272,113 @@ model TradeSuggestion {
   @@map("trade_suggestions")
 }
 
+/// AI prompt version history (created at runtime via raw SQL in
+/// lib/prompts/store.ts; declared here so `db push` keeps it). One row per
+/// distinct prompt text per key ('trade-commentary', 'auto-trader'); recorded
+/// automatically whenever a generation path runs with changed prompt text.
+/// Read-only history — the code stays the source of truth for what runs.
+model PromptVersion {
+  key       String
+  version   Int
+  text      String
+  createdAt String
+
+  @@id([key, version])
+  @@map("prompt_versions")
+}
+
+/// Auto-trade runtime settings — mode/broker/AI/kill-switch/caps flipped from
+/// the /auto-trade page (created at runtime via raw SQL in
+/// lib/auto-trade/settings.ts; declared here so `db push` keeps it). The
+/// registry + defaults live in that file; this table only stores overrides.
+model AutoTradeSetting {
+  key       String @id
+  value     String
+  updatedAt String
+
+  @@map("auto_trade_settings")
+}
+
+/// One AI-driven position lifecycle: proposal → (approval) → fill → managed →
+/// exit (created at runtime via raw SQL in lib/auto-trade/store.ts; declared
+/// here so `db push` keeps it). Premium fields are ₹/share; realizedPnlRupees
+/// = (exitFill − entryFill) × lotSize × lots, set only when both fills known.
+model AutoTrade {
+  id                Int     @id @default(autoincrement())
+  date              String
+  symbol            String
+  direction         String
+  optionType        String
+  strike            Float
+  expiryDate        String
+  lotSize           Int
+  lots              Int
+  optSecurityId     String
+  mode              String
+  broker            String
+  status            String
+  entrySpot         Float
+  slSpot            Float?
+  targetSpot        Float?
+  entryPremium      Float
+  slPremium         Float
+  targetPremium     Float
+  entryFillPremium  Float?
+  exitFillPremium   Float?
+  exitReason        String?
+  aiReasonEntry     String
+  aiReasonExit      String?
+  realizedPnlRupees Float?
+  proposedAt        String
+  openedAt          String?
+  closedAt          String?
+  updatedAt         String
+
+  @@index([date])
+  @@map("auto_trades")
+}
+
+/// Every order sent to any execution venue (paper/fyers/dhan), idempotency-
+/// keyed so a retry can never double-fire (created at runtime via raw SQL in
+/// lib/auto-trade/store.ts; declared here so `db push` keeps it).
+model AutoOrder {
+  id            Int     @id @default(autoincrement())
+  tradeId       Int
+  idemKey       String  @unique
+  broker        String
+  mode          String
+  side          String
+  qtyUnits      Int
+  brokerOrderId String?
+  status        String
+  avgFillPrice  Float?
+  error         String?
+  createdAt     String
+  updatedAt     String
+
+  @@index([tradeId])
+  @@map("auto_orders")
+}
+
+/// Append-only audit of every auto-trade pass — AI decisions with their full
+/// tool trace, guard actions, approval events (created at runtime via raw SQL
+/// in lib/auto-trade/store.ts; declared here so `db push` keeps it).
+model AutoDecision {
+  id               Int     @id @default(autoincrement())
+  date             String
+  at               String
+  pass             String
+  provider         String?
+  model            String?
+  summary          String
+  toolTrace        String  @default("[]")
+  promptTokens     Int?
+  completionTokens Int?
+
+  @@index([date])
+  @@map("auto_decisions")
+}
+
 /// Permanent EOD copy of the /live "Live Urgency" board (created at runtime via
 /// raw SQL in lib/signals/live-urgency-eod.ts; declared here so `db push` keeps
 /// it). One row per (date, symbol) — the first post-market capture of a session

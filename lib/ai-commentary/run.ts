@@ -9,8 +9,9 @@
  */
 import { todayIST } from '@/lib/dhan/market-feed';
 import { hasMimo } from '@/lib/env';
+import { recordPromptVersion } from '@/lib/prompts/store';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
-import { generateCommentary } from './generate';
+import { COMMENTARY_SYSTEM, generateCommentary } from './generate';
 import { buildPicks } from './picks';
 import { getCommentary, insertCommentary } from './store';
 
@@ -31,6 +32,9 @@ export async function runAndStoreCommentary(result: SuggestResponse): Promise<Ru
   const priorReads = priorToday.map((r) => r.text).reverse(); // store returns newest-first
 
   const c = await generateCommentary(result, priorReads);
+  // Prompt-versioning stamp: record the system prompt used (new row only when
+  // the text changed) and remember which version wrote this commentary.
+  const promptVersion = await recordPromptVersion('trade-commentary', COMMENTARY_SYSTEM);
   await insertCommentary({
     date: today,
     asOf: result.window?.nowIST ? `${today} ${result.window.nowIST}` : new Date().toISOString(),
@@ -41,6 +45,8 @@ export async function runAndStoreCommentary(result: SuggestResponse): Promise<Ru
     picks: buildPicks(result),
     promptTokens: c.promptTokens,
     completionTokens: c.completionTokens,
+    promptKey: 'trade-commentary',
+    promptVersion,
   });
   return { generated: true, text: c.text };
 }

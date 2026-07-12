@@ -34,6 +34,10 @@ const envSchema = z.object({
   MIMO_API_KEY: z.string().optional(),
   MIMO_BASE_URL: z.string().optional(),
   MIMO_MODEL: z.string().optional(), // default 'mimo-v2.5-pro'
+  // Second key for auto-trade LIVE mode (lib/auto-trade/): the /auto-trade page
+  // can select mode 'live', but real autonomous orders stay blocked until this
+  // is ALSO 'true' — a deliberate two-key safety on real money.
+  AUTO_TRADE_LIVE_ENABLED: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);
@@ -66,4 +70,9 @@ export function isVercel(): boolean {
 /** True when the MiMo commentary model is configured (key + base URL). */
 export function hasMimo(): boolean {
   return !!env.MIMO_API_KEY && !!env.MIMO_BASE_URL;
+}
+
+/** Second key for auto-trade live mode (see lib/auto-trade/risk/gates.ts). */
+export function isAutoTradeLiveEnabled(): boolean {
+  return env.AUTO_TRADE_LIVE_ENABLED === 'true';
 }
