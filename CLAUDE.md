@@ -8,7 +8,7 @@ This file extends the parent repo's `../CLAUDE.md` with simulator-specific guida
 - **Role policy** (single source: `roleForGoogleEmail()` in `lib/auth/rbac.ts`): `ADMIN_GOOGLE_EMAILS` (charan192219@gmail.com) → admin; ANY other verified Google account → read-only viewer (all mutating actions 403). While the OAuth app is in Google's "Testing" status, only test users added in Google Cloud Console can sign in at all.
 - **Break-glass**: the password form is hidden but alive at `/login?password=1` (posts to `/api/auth/login`) — never remove it; it's the operator's way in if Google is down/misconfigured. Internal server-to-self calls (poller/engine) keep using HTTP Basic with `APP_PASSWORD` — untouched by Auth.js.
 - **Sessions**: Auth.js uses stateless JWTs (`AUTH_SECRET`) — no DB tables. One sign-out (`/api/auth/logout`) clears both the password cookie and the Auth.js cookies.
-- **Env**: `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_SECRET` (all required on Railway too). Google Cloud Console must list `<origin>/api/auth/callback/google` as an authorized redirect URI for `http://localhost:5001` AND the production domain.
+- **Env**: `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_SECRET` (all required on Railway too), plus `AUTH_URL=<public origin>` **required in production** — behind Railway's proxy the app sees itself as `0.0.0.0:5001`, and without AUTH_URL, Auth.js sends Google an insecure redirect_uri (Google blocks with `invalid_request`). Google Cloud Console must list `<origin>/api/auth/callback/google` as an authorized redirect URI for `http://localhost:5001` AND the production domain. Redirects in our own routes must be RELATIVE (`Location: /login`), never built from `req.url`.
 
 ## Auto-Trade Module (`lib/auto-trade/`)
 

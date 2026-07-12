@@ -38,6 +38,12 @@ const envSchema = z.object({
   AUTH_GOOGLE_ID: z.string().optional(),
   AUTH_GOOGLE_SECRET: z.string().optional(),
   AUTH_SECRET: z.string().optional(),
+  // REQUIRED IN PRODUCTION: the app's public origin, e.g.
+  // https://project-r-simulator-production.up.railway.app — behind Railway's
+  // proxy the request URL shows the internal bind address (0.0.0.0:5001), so
+  // without this Auth.js sends Google an insecure/IP redirect_uri and Google
+  // blocks the sign-in with "invalid_request" (seen live 2026-07-12).
+  AUTH_URL: z.string().optional(),
   // Xiaomi MiMo (OpenAI-compatible) — powers the /trade-commentary AI narration
   // of the deterministic scan picks. Reasoning model; see lib/ai-commentary/.
   MIMO_API_KEY: z.string().optional(),
