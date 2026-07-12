@@ -2,6 +2,14 @@
 
 This file extends the parent repo's `../CLAUDE.md` with simulator-specific guidance. Where they conflict, this file wins (the simulator uses **ESLint + Prettier on port 5001**, not Biome/5000; validate with `pnpm lint` and `pnpm typecheck`).
 
+## Authentication (Google via Auth.js + RBAC)
+
+- **Google sign-in is THE browser login** (Auth.js / next-auth v5 — the beta tag is the App Router standard, per `authjs.dev`). Official layout: `auth.ts` (root config), `app/api/auth/[...nextauth]/route.ts` (handlers), `proxy.ts` wraps the existing gate with `auth()` so `req.auth` joins the role resolution.
+- **Role policy** (single source: `roleForGoogleEmail()` in `lib/auth/rbac.ts`): `ADMIN_GOOGLE_EMAILS` (charan192219@gmail.com) → admin; ANY other verified Google account → read-only viewer (all mutating actions 403). While the OAuth app is in Google's "Testing" status, only test users added in Google Cloud Console can sign in at all.
+- **Break-glass**: the password form is hidden but alive at `/login?password=1` (posts to `/api/auth/login`) — never remove it; it's the operator's way in if Google is down/misconfigured. Internal server-to-self calls (poller/engine) keep using HTTP Basic with `APP_PASSWORD` — untouched by Auth.js.
+- **Sessions**: Auth.js uses stateless JWTs (`AUTH_SECRET`) — no DB tables. One sign-out (`/api/auth/logout`) clears both the password cookie and the Auth.js cookies.
+- **Env**: `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_SECRET` (all required on Railway too). Google Cloud Console must list `<origin>/api/auth/callback/google` as an authorized redirect URI for `http://localhost:5001` AND the production domain.
+
 ## Auto-Trade Module (`lib/auto-trade/`)
 
 AI-driven order execution over the deterministic `/trade-suggest` scanner. Design law: **the AI proposes, code disposes** — every mutating tool re-runs `risk/gates.ts` in code; no prompt failure can bypass a limit.

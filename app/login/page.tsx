@@ -1,7 +1,8 @@
 'use client';
 
 import { Activity, ArrowRight, Eye, EyeOff, Loader2, Lock, ShieldCheck, User } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { signIn } from 'next-auth/react';
+import { useCallback, useEffect, useState } from 'react';
 
 /**
  * The auth screen. Replaces the browser's native Basic-Auth prompt: posts the
@@ -15,6 +16,29 @@ export default function LoginPage() {
   const [show, setShow] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Google is THE sign-in. The password form is a break-glass fallback shown
+  // only via /login?password=1 — so a Google outage/misconfig can never lock
+  // the operator out of the console.
+  const [withPassword, setWithPassword] = useState(false);
+
+  // Surface a failed/refused Google sign-in — Auth.js redirects back here with
+  // ?error= (e.g. AccessDenied) — and read the break-glass flag. Deferred a
+  // tick per the repo's set-state-in-effect pattern.
+  useEffect(() => {
+    const kick = setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      const err = params.get('error');
+      if (err) setError(err === 'AccessDenied' ? 'This Google account is not allowed in.' : `Google sign-in failed (${err}).`);
+      if (params.get('password') === '1') setWithPassword(true);
+    }, 0);
+    return () => clearTimeout(kick);
+  }, []);
+
+  const googleSignIn = useCallback(() => {
+    const next = new URLSearchParams(window.location.search).get('next');
+    const target = next?.startsWith('/') ? next : '/';
+    void signIn('google', { redirectTo: target });
+  }, []);
 
   const submit = useCallback(
     async (e: React.FormEvent) => {
@@ -110,9 +134,33 @@ export default function LoginPage() {
 
           <div className="login-glow rounded-2xl border border-slate-200/80 bg-white/80 p-8 shadow-xl shadow-slate-200/60 backdrop-blur-xl">
             <h2 className="text-xl font-semibold tracking-tight text-slate-900">Welcome back</h2>
-            <p className="mt-1 text-sm text-slate-500">Enter your password to open the console.</p>
+            <p className="mt-1 text-sm text-slate-500">
+              {withPassword ? 'Operator fallback — enter the console password.' : 'Sign in with your Google account to open the console.'}
+            </p>
 
-            <form onSubmit={submit} className="mt-6 space-y-4">
+            {error && (
+              <div className="login-error mt-4 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
+                {error}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={googleSignIn}
+              className="mt-6 flex h-11 w-full items-center justify-center gap-2.5 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-slate-300 hover:bg-slate-50"
+            >
+              <GoogleMark />
+              Continue with Google
+            </button>
+
+            {withPassword && (
+              <>
+                <div className="mt-5 flex items-center gap-3">
+                  <span className="h-px flex-1 bg-slate-200" />
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">or</span>
+                  <span className="h-px flex-1 bg-slate-200" />
+                </div>
+                <form onSubmit={submit} className="mt-5 space-y-4">
               <div>
                 <label htmlFor="username" className="mb-1.5 block text-xs font-medium text-slate-600">
                   Username
@@ -161,12 +209,6 @@ export default function LoginPage() {
                 </div>
               </div>
 
-              {error && (
-                <div className="login-error flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
-                  {error}
-                </div>
-              )}
-
               <button
                 type="submit"
                 disabled={submitting || !password}
@@ -182,17 +224,43 @@ export default function LoginPage() {
                     <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
                   </>
                 )}
-              </button>
-            </form>
+                </button>
+                </form>
+              </>
+            )}
           </div>
 
           <p className="mt-6 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
             <ShieldCheck className="size-3.5" />
-            Secured session · read-only guests use their own password
+            Secured session · guest Google accounts get read-only access
           </p>
         </div>
       </section>
     </div>
+  );
+}
+
+/** Google "G" — inline SVG (self-contained, official brand colours). */
+function GoogleMark() {
+  return (
+    <svg className="size-4" viewBox="0 0 48 48" aria-hidden>
+      <path
+        fill="#EA4335"
+        d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+      />
+      <path
+        fill="#4285F4"
+        d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+      />
+      <path
+        fill="#34A853"
+        d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+      />
+    </svg>
   );
 }
 

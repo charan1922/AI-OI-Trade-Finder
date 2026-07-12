@@ -29,6 +29,15 @@ const envSchema = z.object({
   // every page and read API, but all state-changing actions 403.
   APP_PASSWORD: z.string().optional(),
   APP_READONLY_PASSWORD: z.string().optional(),
+  // Auth.js (NextAuth v5) Google sign-in — the "Continue with Google" button on
+  // /login. AUTH_GOOGLE_ID/SECRET are read by the Google provider via Auth.js
+  // env convention; AUTH_SECRET signs the session JWTs (generate with
+  // `npx auth secret` or 32 random bytes). The OAuth client in Google Cloud
+  // Console must list <origin>/api/auth/callback/google as an authorized
+  // redirect URI for every host (http://localhost:5001 + production).
+  AUTH_GOOGLE_ID: z.string().optional(),
+  AUTH_GOOGLE_SECRET: z.string().optional(),
+  AUTH_SECRET: z.string().optional(),
   // Xiaomi MiMo (OpenAI-compatible) — powers the /trade-commentary AI narration
   // of the deterministic scan picks. Reasoning model; see lib/ai-commentary/.
   MIMO_API_KEY: z.string().optional(),
@@ -75,4 +84,9 @@ export function hasMimo(): boolean {
 /** Second key for auto-trade live mode (see lib/auto-trade/risk/gates.ts). */
 export function isAutoTradeLiveEnabled(): boolean {
   return env.AUTO_TRADE_LIVE_ENABLED === 'true';
+}
+
+/** True when Auth.js Google sign-in is configured (client id + secret + JWT key). */
+export function hasGoogleAuth(): boolean {
+  return !!env.AUTH_GOOGLE_ID && !!env.AUTH_GOOGLE_SECRET && !!env.AUTH_SECRET;
 }

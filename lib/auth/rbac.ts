@@ -27,6 +27,23 @@
 
 export type Role = 'admin' | 'viewer';
 
+/**
+ * Google → role policy (user rule 2026-07-12). THE single source of truth for
+ * what a Google sign-in is worth — auth.ts admits verified accounts, proxy.ts
+ * maps them through roleForGoogleEmail():
+ *   ADMIN_GOOGLE_EMAILS        → admin (the operator)
+ *   any other verified account → viewer (read-only; every action 403s)
+ * While the OAuth app is in Google's "Testing" publishing status, only test
+ * users added in Google Cloud Console can sign in at all — that list is the
+ * effective viewer guest list.
+ */
+export const ADMIN_GOOGLE_EMAILS: ReadonlySet<string> = new Set(['charan192219@gmail.com']);
+
+export function roleForGoogleEmail(email: string | null | undefined): Role | null {
+  if (!email) return null;
+  return ADMIN_GOOGLE_EMAILS.has(email.toLowerCase()) ? 'admin' : 'viewer';
+}
+
 /** Request header the proxy stamps AFTER stripping any client-supplied value —
  *  downstream route handlers may trust it (see lib/auth/server.ts). */
 export const ROLE_HEADER = 'x-app-role';

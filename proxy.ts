@@ -1,17 +1,22 @@
 /**
- * Auth gate + RBAC — Next 16 proxy convention.
+ * Auth gate + RBAC — Next 16 proxy convention, wrapped with Auth.js `auth()`
+ * per the official pattern (authjs.dev) so `req.auth` carries the Google
+ * session inside our existing gate.
  *
- * Two ways to authenticate, both mapping to a role (catalog in lib/auth/rbac.ts):
- *   1. Session cookie (browsers, the ONLY browser path) — set by /api/auth/login
- *      after the /login page posts the password; cleared by /api/auth/logout.
- *      Signed (lib/auth/session).
- *   2. HTTP Basic Auth (non-browser clients only: the internal server-to-self
+ * Three ways to authenticate, all mapping to a role (catalog in lib/auth/rbac.ts):
+ *   1. Session cookie (browsers) — set by /api/auth/login after the /login page
+ *      posts the password; cleared by /api/auth/logout. Signed (lib/auth/session).
+ *   2. Google sign-in (browsers) — Auth.js session JWT (auth.ts); only emails
+ *      on ADMIN_GOOGLE_EMAILS ever get a session, and they resolve to admin.
+ *   3. HTTP Basic Auth (non-browser clients only: the internal server-to-self
  *      calls in engine.ts / poller.ts, curl). Ignored when the request carries
  *      Sec-Fetch-Mode (i.e. comes from a browser) — see roleFromBasicAuth.
  *
  * Roles:
- *   APP_PASSWORD          → admin  (full access)
- *   APP_READONLY_PASSWORD → viewer (every page + read API; actions 403)
+ *   APP_PASSWORD           → admin  (full access)
+ *   ADMIN_GOOGLE_EMAILS    → admin  (via Google)
+ *   any other Google login → viewer (read-only)
+ *   APP_READONLY_PASSWORD  → viewer (every page + read API; actions 403)
  *
  * Active ONLY when APP_PASSWORD is set. Unset (local dev) → no-op, every request
  * runs as admin, `pnpm dev` stays password-free and never sees /login.
@@ -22,7 +27,8 @@
  * /login (with ?next=); unauthenticated API calls get 401 JSON.
  */
 import { type NextRequest, NextResponse } from 'next/server';
-import { requiredPermission, resolveRole, ROLE_HEADER, roleHas, type Role } from '@/lib/auth/rbac';
+import { auth } from '@/auth';
+import { requiredPermission, resolveRole, roleForGoogleEmail, ROLE_HEADER, roleHas, type Role } from '@/lib/auth/rbac';
 import { SESSION_COOKIE, verifySession } from '@/lib/auth/session';
 
 /** Forward the request with the TRUSTED role header (spoof-proof: always overwritten). */
@@ -61,7 +67,7 @@ function roleFromBasicAuth(req: NextRequest, adminPassword: string): Role | null
   return resolveRole(supplied, adminPassword, process.env.APP_READONLY_PASSWORD);
 }
 
-export async function proxy(req: NextRequest): Promise<NextResponse> {
+export const proxy = auth(async (req) => {
   const { pathname, searchParams } = req.nextUrl;
 
   // Health check stays public (Railway keep-alive pinger) — strip any spoofed role.
@@ -75,14 +81,30 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
   // Gate disabled (local dev / opt-out) — everyone is admin, no login needed.
   if (!adminPassword) return forwardAs(req, 'admin');
 
-  // Login/logout endpoints authenticate themselves — always reachable.
-  if (pathname === '/api/auth/login' || pathname === '/api/auth/logout') {
+  // Login/logout and the Auth.js endpoints (signin, callback/google, csrf,
+  // session, …) authenticate themselves — always reachable.
+  if (
+    pathname === '/api/auth/login' ||
+    pathname === '/api/auth/logout' ||
+    pathname.startsWith('/api/auth/signin') ||
+    pathname.startsWith('/api/auth/callback') ||
+    pathname === '/api/auth/csrf' ||
+    pathname === '/api/auth/session' ||
+    pathname === '/api/auth/providers' ||
+    pathname === '/api/auth/error' ||
+    pathname === '/api/auth/signout'
+  ) {
     return NextResponse.next();
   }
 
-  // Resolve the caller's role: session cookie first, then Basic Auth.
+  // Google session → role via the central policy (lib/auth/rbac.ts):
+  // the operator's email → admin, any other signed-in Google account → viewer.
+  const googleRole: Role | null = roleForGoogleEmail(req.auth?.user?.email);
+
+  // Resolve the caller's role: password cookie, then Google session, then Basic Auth.
   const role =
     (await verifySession(req.cookies.get(SESSION_COOKIE)?.value, adminPassword)) ??
+    googleRole ??
     roleFromBasicAuth(req, adminPassword);
 
   // The login page: reachable when signed out; bounce to home when already in.
@@ -116,7 +138,7 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
   }
 
   return forwardAs(req, role);
-}
+});
 
 /**
  * Run on everything except Next's static assets and the favicon, so those don't

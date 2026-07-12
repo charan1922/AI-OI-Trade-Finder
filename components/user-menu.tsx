@@ -33,6 +33,11 @@ export function UserMenu() {
         {readOnly ? <Eye className="size-3" /> : <ShieldCheck className="size-3" />}
         {readOnly ? 'Read-only' : 'Operator'}
       </span>
+      {/* Deliberate <a>: logout must be ONE full browser navigation (the API
+          route clears cookies + redirects) — a client-side <Link /> transition
+          would not carry the Set-Cookie response through. The lint rule fires
+          because /api/auth now contains the Auth.js catch-all segment. */}
+      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
       <a
         href="/api/auth/logout"
         title="Sign out"

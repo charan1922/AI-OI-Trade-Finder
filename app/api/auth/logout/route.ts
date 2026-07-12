@@ -15,6 +15,11 @@ const CLEAR = {
 function clearCookies(res: NextResponse): NextResponse {
   res.cookies.set(SESSION_COOKIE, '', CLEAR);
   res.cookies.set(USERNAME_COOKIE, '', CLEAR);
+  // Auth.js (Google) session cookies — dev and production (__Secure-) names.
+  // Cleared here so ONE sign-out ends BOTH login kinds; without this a Google
+  // user would be silently signed back in on their next navigation.
+  res.cookies.set('authjs.session-token', '', CLEAR);
+  res.cookies.set('__Secure-authjs.session-token', '', { ...CLEAR, secure: true });
   return res;
 }
 

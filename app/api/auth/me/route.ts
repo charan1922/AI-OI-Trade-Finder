@@ -1,12 +1,14 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@/auth';
 import { ROLE_PERMISSIONS } from '@/lib/auth/rbac';
 import { roleFromRequest } from '@/lib/auth/server';
 import { USERNAME_COOKIE } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
 
-/** Display-only username from the cookie the login route set (never trusted). */
-function usernameFromRequest(req: Request, role: string): string {
+/** Display-only username: the password-login cookie first, else the Google
+ *  session's name (Auth.js), else a role-based default. Never trusted. */
+async function usernameFromRequest(req: Request, role: string): Promise<string> {
   const cookie = req.headers.get('cookie') ?? '';
   const m = cookie.match(new RegExp(`(?:^|;\\s*)${USERNAME_COOKIE}=([^;]*)`));
   if (m) {
@@ -14,8 +16,15 @@ function usernameFromRequest(req: Request, role: string): string {
       const v = decodeURIComponent(m[1]).trim();
       if (v) return v;
     } catch {
-      /* malformed — fall through to default */
+      /* malformed — fall through */
     }
+  }
+  try {
+    const session = await auth();
+    const name = session?.user?.name?.trim() || session?.user?.email?.trim();
+    if (name) return name.slice(0, 32);
+  } catch {
+    /* no Auth.js session — fall through to default */
   }
   return role === 'viewer' ? 'Guest' : 'Analyst';
 }
@@ -31,7 +40,7 @@ export async function GET(req: Request) {
     success: true,
     role,
     readOnly: role === 'viewer',
-    username: usernameFromRequest(req, role),
+    username: await usernameFromRequest(req, role),
     // Off (local dev, no APP_PASSWORD) → every request is admin and there's no
     // session to end, so the UI hides the logout button.
     gateEnabled: !!process.env.APP_PASSWORD,
