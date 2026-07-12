@@ -16,6 +16,10 @@ export interface RoleInfo {
   readOnly: boolean;
   /** Display-only name from login (header greeting). */
   username: string;
+  /** Google account email (null on password sessions). Display-only. */
+  email: string | null;
+  /** Google avatar URL (null on password sessions). Display-only. */
+  image: string | null;
   /** True when the password gate is active (production). Local dev → false, so
    *  the UI hides logout (no session to end). */
   gateEnabled: boolean;
@@ -25,6 +29,8 @@ const RoleContext = createContext<RoleInfo>({
   role: 'admin',
   readOnly: false,
   username: 'Analyst',
+  email: null,
+  image: null,
   gateEnabled: false,
 });
 

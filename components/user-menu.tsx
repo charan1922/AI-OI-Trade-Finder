@@ -1,51 +1,109 @@
-'use client';
+"use client"
 
-import { Eye, LogOut, ShieldCheck } from 'lucide-react';
-import { useRole } from '@/lib/auth/use-role';
-import { cn } from '@/lib/utils';
+import Link from "next/link"
+import { Eye, LogOut, Settings, ShieldCheck } from "lucide-react"
+import { useState } from "react"
+
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { useRole } from "@/lib/auth/use-role"
+import { cn } from "@/lib/utils"
 
 /**
- * Header role chip + logout link. Renders nothing until we know the gate is on
- * (local dev has no session to end). The role chip doubles as the read-only
- * indicator so a viewer always knows which login they're on.
- *
- * Sign-out is a plain link to GET /api/auth/logout, which clears the cookie and
- * 302s to /login in one response — a single browser navigation with no client
- * fetch, so it can't hang behind a busy page's in-flight requests (e.g. /live).
+ * Profile menu (top-right): avatar button → dropdown with the signed-in
+ * identity (Google name/email or password-login username), the role badge,
+ * Settings (admin only — moved here from the header), and Sign out.
+ * Enforcement lives in the proxy/RBAC — everything here is UX only.
  */
 export function UserMenu() {
-  const { readOnly, username, gateEnabled } = useRole();
+  const { username, email, image, readOnly, gateEnabled } = useRole()
+  const [open, setOpen] = useState(false)
 
-  if (!gateEnabled) return null;
+  const initial = (username || "?").trim().charAt(0).toUpperCase()
 
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="hidden text-xs font-medium text-muted-foreground sm:inline">{username}</span>
-      <span
-        className={cn(
-          'inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium',
-          readOnly
-            ? 'border-amber-300/60 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300'
-            : 'border-emerald-300/60 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300',
-        )}
-        title={readOnly ? 'Read-only session — actions are disabled' : 'Operator session — full access'}
-      >
-        {readOnly ? <Eye className="size-3" /> : <ShieldCheck className="size-3" />}
-        {readOnly ? 'Read-only' : 'Operator'}
-      </span>
-      {/* Deliberate <a>: logout must be ONE full browser navigation (the API
-          route clears cookies + redirects) — a client-side <Link /> transition
-          would not carry the Set-Cookie response through. The lint rule fires
-          because /api/auth now contains the Auth.js catch-all segment. */}
-      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-      <a
-        href="/api/auth/logout"
-        title="Sign out"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      >
-        <LogOut className="size-4" />
-        <span className="hidden sm:inline">Sign out</span>
-      </a>
-    </div>
-  );
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="Profile menu"
+          className="flex items-center rounded-full transition-shadow hover:ring-2 hover:ring-ring/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Avatar image={image} initial={initial} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" sideOffset={8} className="w-64 p-0">
+        {/* Identity */}
+        <div className="flex items-center gap-3 border-b border-border p-3">
+          <Avatar image={image} initial={initial} size="lg" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-foreground">{username}</p>
+            {email && <p className="truncate text-xs text-muted-foreground">{email}</p>}
+            <span
+              className={cn(
+                "mt-1 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                readOnly
+                  ? "border-amber-300/60 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
+                  : "border-emerald-300/60 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300",
+              )}
+              title={readOnly ? "Read-only session — actions are disabled" : "Operator session — full access"}
+            >
+              {readOnly ? <Eye className="size-3" /> : <ShieldCheck className="size-3" />}
+              {readOnly ? "Read-only" : "Operator"}
+            </span>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="p-1">
+          {!readOnly && (
+            <Link
+              href="/config"
+              onClick={() => setOpen(false)}
+              className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-foreground transition-colors hover:bg-accent"
+            >
+              <Settings className="size-4 text-muted-foreground" />
+              Settings
+            </Link>
+          )}
+          {gateEnabled && (
+            <>
+              {/* Deliberate <a>: logout must be ONE full browser navigation (the
+                  API route clears cookies + redirects) — a client-side <Link />
+                  transition would not carry the Set-Cookie response through. */}
+              {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+              <a
+                href="/api/auth/logout"
+                className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-foreground transition-colors hover:bg-accent"
+              >
+                <LogOut className="size-4 text-muted-foreground" />
+                Sign out
+              </a>
+            </>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function Avatar({ image, initial, size = "sm" }: { image: string | null; initial: string; size?: "sm" | "lg" }) {
+  const cls = size === "lg" ? "size-10 text-base" : "size-8 text-sm"
+  if (image) {
+    // Deliberate <img>: Google avatar hosts (lh3.googleusercontent.com) are not
+    // in next/image remotePatterns; a 32px avatar gains nothing from optimization.
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={image} alt="" referrerPolicy="no-referrer" className={cn(cls, "rounded-full object-cover")} />
+    )
+  }
+  return (
+    <span
+      className={cn(
+        cls,
+        "grid place-items-center rounded-full bg-gradient-to-br from-indigo-600 to-violet-600 font-bold text-white",
+      )}
+    >
+      {initial}
+    </span>
+  )
 }

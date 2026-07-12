@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers"
 import { ThemeProvider } from "next-themes"
 
 import "./globals.css"
+import { auth } from "@/auth"
 import { LayoutShell } from "@/components/layout-shell"
 import { RoleProvider, type RoleInfo } from "@/components/role-provider"
 import { ThemeHotkey } from "@/components/theme-hotkey"
@@ -18,22 +19,36 @@ const fontMono = Geist_Mono({
 })
 
 /** Resolve the caller's role from the proxy's trusted header + display cookie,
- *  server-side, so the UI knows it from the first render (no client fetch). */
+ *  server-side, so the UI knows it from the first render (no client fetch).
+ *  Google sessions (Auth.js) fill in the name/email/avatar when there is no
+ *  password-login display cookie. */
 async function resolveRoleInfo(): Promise<RoleInfo> {
   const [hdrs, cookieStore] = [await headers(), await cookies()]
   const role: Role = hdrs.get(ROLE_HEADER) === "viewer" ? "viewer" : "admin"
   const gateEnabled = !!process.env.APP_PASSWORD
   const rawUser = cookieStore.get(USERNAME_COOKIE)?.value
-  let username = role === "viewer" ? "Guest" : "Analyst"
+  let username = ""
   if (rawUser) {
     try {
-      const v = decodeURIComponent(rawUser).trim()
-      if (v) username = v
+      username = decodeURIComponent(rawUser).trim()
     } catch {
-      /* malformed cookie — keep default */
+      /* malformed cookie — keep empty */
     }
   }
-  return { role, readOnly: role === "viewer", username, gateEnabled }
+  let email: string | null = null
+  let image: string | null = null
+  try {
+    const session = await auth()
+    if (session?.user) {
+      email = session.user.email ?? null
+      image = session.user.image ?? null
+      if (!username) username = session.user.name?.trim() || email || ""
+    }
+  } catch {
+    /* no Auth.js session — password/basic path */
+  }
+  if (!username) username = role === "viewer" ? "Guest" : "Analyst"
+  return { role, readOnly: role === "viewer", username: username.slice(0, 40), email, image, gateEnabled }
 }
 
 export default async function RootLayout({
