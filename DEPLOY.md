@@ -99,17 +99,20 @@ accumulate candles during market hours.
 
 ### 7. Expose it — **only after setting the password**
 
-The password gate (`proxy.ts`) protects every page and API route with HTTP
-Basic Auth, but it is **only active when `APP_PASSWORD` is set**. Before you
-click **Generate Domain**:
+The auth gate (`proxy.ts`) protects every page and API route, but it is **only
+active when `APP_PASSWORD` is set**. Browsers sign in at the `/login` page (a
+signed session cookie, with a Sign-out button in the header); the internal
+server-to-self calls still use HTTP Basic Auth. Before you click **Generate
+Domain**:
 
 1. Add a service variable `APP_PASSWORD=<a strong password>`.
 2. Optionally add `APP_READONLY_PASSWORD=<a different password>` for read-only
    guests (see the variable list above).
 3. Redeploy (saving the variables does this).
 4. Generate the public domain, and set the **target port to `5001`** (see the
-   port note below). Visiting the URL prompts for the password (any username;
-   the password decides the role: admin or viewer).
+   port note below). Visiting the URL redirects to `/login`; the password
+   entered there decides the role (admin or viewer). The username field is
+   cosmetic — it only sets the header greeting.
 
 Leave `APP_PASSWORD` unset for local dev — the gate is a no-op without it, so
 `pnpm dev` stays password-free.

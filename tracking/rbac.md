@@ -7,18 +7,26 @@ rewriting enforcement.
 
 ## How it works
 
-**Identity (today):** the existing HTTP Basic-Auth gate in `proxy.ts` now maps
-the supplied password to a role:
+**Identity (today):** two ways to authenticate, both mapping a password to a role:
+
+- **Browsers** sign in at **`/login`** (a real page, not the native Basic-Auth
+  prompt). `POST /api/auth/login` validates the password and sets a signed
+  session cookie (`lib/auth/session.ts`, HMAC keyed on `APP_PASSWORD` — a viewer
+  can't forge an admin cookie). A **Sign out** button in the header calls
+  `POST /api/auth/logout` to clear it. The login page also has a cosmetic
+  **username** field (display-only, stored in a `pr_user` cookie, shown in the
+  header greeting — never used for auth).
+- **Internal server-to-self calls** (engine.ts / poller.ts) keep sending
+  `APP_PASSWORD` as HTTP **Basic Auth**; the proxy accepts that too.
 
 | env var | role | access |
 | --- | --- | --- |
-| `APP_PASSWORD` | `admin` | everything (unchanged for the current login) |
+| `APP_PASSWORD` | `admin` | everything |
 | `APP_READONLY_PASSWORD` | `viewer` | every page + every read API; all actions 403 |
-| *(neither set)* | `admin` | gate off — local dev unchanged |
+| *(neither set)* | `admin` | gate off — local dev, no `/login`, unchanged |
 
-Any username, password picks the role — same UX as before. Comparison is
-constant-time (`constantTimeEqual`) so timing can't leak which password half
-matched.
+Password comparison is constant-time (`constantTimeEqual`) so timing can't leak
+which password matched.
 
 **Enforcement (three layers, server-authoritative):**
 
@@ -61,6 +69,7 @@ classifies it as a read.
 | any other non-GET `/api/*` | `app:write` | default-deny catch-all |
 
 Deliberate read classifications (viewer-allowed):
+
 - `POST /api/live/quote` — POST-for-payload only; a pure read.
 - `GET /api/trade-suggest` (plain) — runs a scan that persists suggestions,
   but the identical scan already runs autonomously in the server poller; a

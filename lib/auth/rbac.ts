@@ -74,6 +74,14 @@ export const TF_VALIDATE_WRITE_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Admin-only PAGES. Every other page is viewable by every role. The proxy
+ * redirects a viewer's navigation here to the home page; the sidebar also
+ * hides these entries for viewers (components/app-sidebar.tsx) — that part is
+ * cosmetic, this list is what enforces.
+ */
+export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set(['/api-docs', '/config']);
+
+/**
  * The API access policy: which permission (if any) a request needs.
  * Returns null when every authenticated role may pass (all pages, all reads).
  *
@@ -87,11 +95,14 @@ export const TF_VALIDATE_WRITE_ACTIONS: ReadonlySet<string> = new Set([
  *    idempotent instrumentation behavior, not a user action — a read.
  */
 export function requiredPermission(method: string, pathname: string, searchParams: URLSearchParams): Permission | null {
-  if (!pathname.startsWith('/api/')) return null; // every page is viewable by every role
+  // Pages: viewable by every role except the explicit admin-only list.
+  if (!pathname.startsWith('/api/')) return ADMIN_ONLY_PAGES.has(pathname) ? 'app:write' : null;
 
   const m = method.toUpperCase();
   if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') {
     if (pathname === '/api/trade-suggest' && searchParams.get('force') === '1') return 'scan:actions';
+    // The OpenAPI spec backs the admin-only /api-docs page — same restriction.
+    if (pathname === '/api/openapi') return 'app:write';
     return null;
   }
 
