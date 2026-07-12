@@ -10,7 +10,7 @@
  *      on ADMIN_GOOGLE_EMAILS ever get a session, and they resolve to admin.
  *   3. HTTP Basic Auth (non-browser clients only: the internal server-to-self
  *      calls in engine.ts / poller.ts, curl). Ignored when the request carries
- *      Sec-Fetch-Mode (i.e. comes from a browser) — see roleFromBasicAuth.
+ *      Sec-Fetch-Dest/Site (i.e. comes from a browser) — see roleFromBasicAuth.
  *
  * Roles:
  *   APP_PASSWORD           → admin  (full access)
@@ -48,12 +48,18 @@ function isBrowserNavigation(req: NextRequest): boolean {
  * server-to-self fetches, curl). Browsers must use the session cookie:
  * they cache Basic credentials for the whole browser session and re-send them
  * on every request, which would silently re-authenticate a user who just
- * signed out (the /login redirect would bounce straight back in). All modern
- * browsers send `Sec-Fetch-Mode` on every request; Node fetch and curl don't —
- * so its presence identifies a browser and disables the Basic path.
+ * signed out (the /login redirect would bounce straight back in).
+ *
+ * Browser detection MUST use `Sec-Fetch-Dest`/`Sec-Fetch-Site`, NOT
+ * `Sec-Fetch-Mode`: modern browsers send the whole Sec-Fetch-* family on every
+ * request, but Node's fetch (undici, Node ≥18.5) ALSO sends
+ * `sec-fetch-mode: cors` — and nothing else of the family — on every server-side
+ * fetch. Checking sec-fetch-mode therefore silently 401'd every internal
+ * engine/poller self-call (caught 2026-07-12, before the first live market
+ * session on this code). curl sends none of these headers.
  */
 function roleFromBasicAuth(req: NextRequest, adminPassword: string): Role | null {
-  if (req.headers.has('sec-fetch-mode')) return null; // browser → cookie only
+  if (req.headers.has('sec-fetch-dest') || req.headers.has('sec-fetch-site')) return null; // browser → cookie only
   const header = req.headers.get('authorization');
   if (!header?.startsWith('Basic ')) return null;
   let decoded = '';
