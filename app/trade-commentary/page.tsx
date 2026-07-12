@@ -353,17 +353,19 @@ export default function TradeCommentaryPage() {
           ⚡ Xiaomi MiMo · {data?.model ?? 'mimo-v2.5-pro'}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            onClick={generateNow}
-            disabled={generating || data?.configured === false || readOnly}
-            title={readOnly ? 'Read-only session — generating commentary needs the operator login' : undefined}
-            className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-          >
-            {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-            <span className="hidden sm:inline">Generate now</span>
-            <span className="sm:hidden">Generate</span>
-          </button>
+          {/* Viewers don't see operator actions at all (server 403s them anyway). */}
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={generateNow}
+              disabled={generating || data?.configured === false}
+              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+              <span className="hidden sm:inline">Generate now</span>
+              <span className="sm:hidden">Generate</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void load()}

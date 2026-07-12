@@ -31,8 +31,13 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * once this request reaches the front of the queue and ≥ MIN_INTERVAL_MS has
  * elapsed since the previous dispatch. Start-to-start spacing + serial execution
  * together guarantee ≤ 1 request/second.
+ *
+ * `fresh` marks a MANUAL refresh ("Refresh all"): it bypasses the server's
+ * shared response cache (app/api/live/_lib/quote-response-cache.ts) so the
+ * click keeps returning brand-new quotes exactly as it did before that cache
+ * existed. Steady polls omit it and share results across windows/users.
  */
-export function scheduleQuote(symbols: string[]): Promise<LiveQuoteResponse> {
+export function scheduleQuote(symbols: string[], fresh = false): Promise<LiveQuoteResponse> {
   const run = tail.then(async (): Promise<LiveQuoteResponse> => {
     const wait = lastDispatchAt + MIN_INTERVAL_MS - Date.now();
     if (wait > 0) await sleep(wait);
@@ -43,7 +48,7 @@ export function scheduleQuote(symbols: string[]): Promise<LiveQuoteResponse> {
       const res = await fetch('/api/live/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols }),
+        body: JSON.stringify(fresh ? { symbols, fresh: true } : { symbols }),
         signal: ctrl.signal,
       });
       return (await res.json()) as LiveQuoteResponse;

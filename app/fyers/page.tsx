@@ -255,40 +255,39 @@ export default function FyersPage() {
               <Badge ok={status.token.cached} okLabel={`token · exp ${fmtTime(status.token.expiresAt)}`} badLabel="no token" />
             </>
           )}
-          <button
-            type="button"
-            onClick={() => void act(status?.paused ? 'resume' : 'pause')}
-            disabled={!!acting || !status || readOnly}
-            title={readOnly ? 'Read-only session — poller control needs the operator login' : undefined}
-            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
-          >
-            {status?.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
-            {status?.paused ? 'Resume' : 'Pause'}
-          </button>
-          <button
-            type="button"
-            onClick={() => void act('run-once')}
-            disabled={!!acting || !status || readOnly}
-            title={readOnly ? 'Read-only session — poller control needs the operator login' : undefined}
-            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
-          >
-            {acting === 'run-once' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-            Run once
-          </button>
-          <button
-            type="button"
-            onClick={() => void regenToken()}
-            disabled={!!acting || !status?.credentialsConfigured || readOnly}
-            title={
-              readOnly
-                ? 'Read-only session — token management needs the operator login'
-                : 'Force a fresh Fyers access token via the TOTP login chain (daily regeneration is automatic)'
-            }
-            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
-          >
-            {acting === 'token' ? <Loader2 className="h-3 w-3 animate-spin" /> : <KeyRound className="h-3 w-3" />}
-            New token
-          </button>
+          {/* Viewers don't see operator actions at all (server 403s them anyway). */}
+          {!readOnly && (
+            <>
+              <button
+                type="button"
+                onClick={() => void act(status?.paused ? 'resume' : 'pause')}
+                disabled={!!acting || !status}
+                className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
+              >
+                {status?.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                {status?.paused ? 'Resume' : 'Pause'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void act('run-once')}
+                disabled={!!acting || !status}
+                className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
+              >
+                {acting === 'run-once' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                Run once
+              </button>
+              <button
+                type="button"
+                onClick={() => void regenToken()}
+                disabled={!!acting || !status?.credentialsConfigured}
+                title="Force a fresh Fyers access token via the TOTP login chain (daily regeneration is automatic)"
+                className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
+              >
+                {acting === 'token' ? <Loader2 className="h-3 w-3 animate-spin" /> : <KeyRound className="h-3 w-3" />}
+                New token
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={() => void refresh()}

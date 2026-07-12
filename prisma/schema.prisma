@@ -287,6 +287,25 @@ model PromptVersion {
   @@map("prompt_versions")
 }
 
+/// Registered users + subscription fields — every Google account that signs in
+/// (created at runtime via raw SQL in lib/auth/users.ts; declared here so
+/// `db push` keeps it). Owner email → admin/owner; everyone else registers as
+/// viewer/trial (read-only). Enforcement stays in proxy.ts/rbac.ts for now;
+/// the future billing step flips role resolution to read this table.
+model AppUser {
+  email              String  @id
+  name               String?
+  image              String?
+  role               String  @default("viewer")
+  plan               String  @default("trial")
+  status             String  @default("active")
+  subscriptionEndsAt String?
+  createdAt          String
+  lastSeenAt         String
+
+  @@map("app_users")
+}
+
 /// Auto-trade runtime settings — mode/broker/AI/kill-switch/caps flipped from
 /// the /auto-trade page (created at runtime via raw SQL in
 /// lib/auto-trade/settings.ts; declared here so `db push` keeps it). The

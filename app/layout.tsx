@@ -9,6 +9,7 @@ import { RoleProvider, type RoleInfo } from "@/components/role-provider"
 import { ThemeHotkey } from "@/components/theme-hotkey"
 import { ROLE_HEADER, type Role } from "@/lib/auth/rbac"
 import { USERNAME_COOKIE } from "@/lib/auth/session"
+import { recordUserSeen } from "@/lib/auth/users"
 import { cn } from "@/lib/utils"
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" })
@@ -43,6 +44,10 @@ async function resolveRoleInfo(): Promise<RoleInfo> {
       email = session.user.email ?? null
       image = session.user.image ?? null
       if (!username) username = session.user.name?.trim() || email || ""
+      // Register/refresh this Google account in the app_users table (viewer/
+      // trial by default, owner email → admin/owner). Fire-and-forget +
+      // throttled inside — never blocks or breaks rendering.
+      if (email) void recordUserSeen({ email, name: session.user.name, image })
     }
   } catch {
     /* no Auth.js session — password/basic path */

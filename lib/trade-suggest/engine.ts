@@ -208,7 +208,10 @@ async function fetchQuotes(origin: string, symbols: string[]): Promise<LiveQuote
   const res = await fetch(`${origin}/api/live/quote`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...internalAuthHeaders() },
-    body: JSON.stringify({ symbols }),
+    // fresh: the scanner feeds real trade decisions — always bypass the /live
+    // shared response cache (app/api/live/_lib/quote-response-cache.ts) so it
+    // sees quotes exactly as fresh as before that cache existed.
+    body: JSON.stringify({ symbols, fresh: true }),
     cache: 'no-store',
   });
   return (await res.json()) as LiveQuoteResponse;

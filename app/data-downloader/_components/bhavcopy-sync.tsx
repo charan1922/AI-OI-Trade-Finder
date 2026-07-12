@@ -71,6 +71,9 @@ export function BhavcopySync({ onSynced }: { onSynced?: () => void }) {
     }
   };
 
+  // Viewers don't see operator actions at all (the server 403s the sync anyway).
+  if (readOnly) return null;
+
   return (
     <span className="flex items-center gap-1.5">
       {/* Single sync ACTION. The freshness date + "global, all stocks" context
@@ -80,11 +83,9 @@ export function BhavcopySync({ onSynced }: { onSynced?: () => void }) {
       <button
         type="button"
         onClick={sync}
-        disabled={syncing || readOnly}
+        disabled={syncing}
         title={
-          readOnly
-            ? 'Read-only session — syncing NSE data needs the operator login'
-            : status
+          status
             ? `Sync official NSE end-of-day data (bhavcopy) — the GLOBAL source behind the Futures OI & Turnover charts. One file covers ALL stocks, so it's shared by every trade. Current through ${status.latestDate ? fmtDate(status.latestDate) : '—'} (${status.dates} days). Click to fetch newer days; only downloads dates not already on disk.`
             : 'Sync official NSE end-of-day data (bhavcopy) — the global source behind the Futures OI & Turnover charts (covers all stocks). Click to fetch the latest days.'
         }

@@ -104,7 +104,10 @@ export function useCategoryUrgency(source: WatchlistSource, staggerIndex: number
   const symbolsKey = useMemo(() => picks.map((p) => p.symbol).join(','), [picks]);
   const inFlight = useRef(false);
 
-  const fetchQuotes = useCallback(async () => {
+  // `fresh` (manual "Refresh all" only) bypasses the server's shared response
+  // cache so the click returns brand-new quotes; steady polls share results
+  // across windows/users (see app/api/live/_lib/quote-response-cache.ts).
+  const fetchQuotes = useCallback(async (fresh = false) => {
     if (!symbolsKey) {
       setRows([]);
       return;
@@ -113,7 +116,7 @@ export function useCategoryUrgency(source: WatchlistSource, staggerIndex: number
     inFlight.current = true;
     setQuoteLoading(true);
     try {
-      const d: LiveQuoteResponse = await scheduleQuote(symbolsKey.split(','));
+      const d: LiveQuoteResponse = await scheduleQuote(symbolsKey.split(','), fresh);
       if (d.success) {
         setMarketOpen(d.marketOpen);
         setSnapshot(d.snapshot === true);
@@ -149,7 +152,7 @@ export function useCategoryUrgency(source: WatchlistSource, staggerIndex: number
 
   const refresh = useCallback(() => {
     void fetchList();
-    void fetchQuotes();
+    void fetchQuotes(true);
   }, [fetchList, fetchQuotes]);
 
   return {

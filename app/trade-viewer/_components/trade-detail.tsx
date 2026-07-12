@@ -138,16 +138,18 @@ export function TradeDetailSection() {
             </p>
             {downloadProgress && <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1 font-mono">{downloadProgress}</p>}
           </div>
-          <button
-            type="button"
-            onClick={() => downloadSingleTrade(selectedIdx)}
-            disabled={downloadingTrade || readOnly}
-            title={readOnly ? 'Read-only session — downloading data needs the operator login' : undefined}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 border border-amber-400 dark:border-amber-500/40 text-sm font-semibold disabled:opacity-50 shrink-0"
-          >
-            <Download className="w-4 h-4" />
-            {downloadingTrade ? 'Downloading...' : `Download ${selected.symbol}`}
-          </button>
+          {/* Viewers don't see operator actions at all (server 403s them anyway). */}
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={() => downloadSingleTrade(selectedIdx)}
+              disabled={downloadingTrade}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 border border-amber-400 dark:border-amber-500/40 text-sm font-semibold disabled:opacity-50 shrink-0"
+            >
+              <Download className="w-4 h-4" />
+              {downloadingTrade ? 'Downloading...' : `Download ${selected.symbol}`}
+            </button>
+          )}
         </div>
       )}
 
