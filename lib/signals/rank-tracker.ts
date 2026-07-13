@@ -33,6 +33,12 @@ export type RankFeed = (typeof RANK_FEEDS)[number];
 /** Snapshots are floored to this grid (seconds) — matches the poller's 5-min cadence. */
 const BUCKET_SEC = 300;
 
+/** Only the top N of each feed are tracked. The race that matters is near the
+ *  front of the board — a name crawling from #150 to #120 isn't a signal, and
+ *  storing the whole ~180-name tail just adds noise (and rows). A name breaking
+ *  INTO the top 50 surfaces as a new entrant, which is exactly the event we want. */
+const TOP_N = 50;
+
 let tableReady = false;
 
 export async function ensureRankSnapshotTable(): Promise<void> {
@@ -122,7 +128,9 @@ export async function recordRankSnapshot(date: string, nowMs: number = Date.now(
 
     const rows: { feed: RankFeed; symbol: string; rank: number; value: number }[] = [];
     for (const feed of RANK_FEEDS) {
-      const ranked = (await rankedFeed(feed)).filter((r) => tradeable.has(r.symbol));
+      // Rank within the tradeable universe, then keep only the top N — the
+      // front of the race is the part worth tracking.
+      const ranked = (await rankedFeed(feed)).filter((r) => tradeable.has(r.symbol)).slice(0, TOP_N);
       ranked.forEach((r, i) => rows.push({ feed, symbol: r.symbol, rank: i + 1, value: r.value }));
     }
     if (rows.length === 0) return 0;
