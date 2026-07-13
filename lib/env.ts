@@ -56,6 +56,14 @@ const envSchema = z.object({
   // Optional webhook for auto-trade alerts (lib/auto-trade/alerts.ts).
   // Telegram example: https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>
   AUTO_TRADE_ALERT_WEBHOOK: z.string().optional(),
+  // Telegram bot for bidirectional alerts + webhook commands.
+  // TELEGRAM_BOT_TOKEN is the bot token from @BotFather.
+  // TELEGRAM_CHAT_ID is the operator's chat id (numeric string).
+  // TELEGRAM_WEBHOOK_SECRET is an arbitrary secret token Telegram sends back
+  // in the X-Telegram-Bot-Api-Secret-Token header for webhook verification.
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_CHAT_ID: z.string().optional(),
+  TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);

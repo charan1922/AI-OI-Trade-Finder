@@ -83,6 +83,14 @@ export const proxy = auth(async (req) => {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Telegram webhook — Telegram's servers POST updates here; auth is via
+  // X-Telegram-Bot-Api-Secret-Token header (verified in the route handler).
+  if (pathname === '/api/telegram/webhook') {
+    const headers = new Headers(req.headers);
+    headers.delete(ROLE_HEADER);
+    return NextResponse.next({ request: { headers } });
+  }
+
   const adminPassword = process.env.APP_PASSWORD;
   // Gate disabled (local dev / opt-out) — everyone is admin, no login needed.
   if (!adminPassword) return forwardAs(req, 'admin');

@@ -235,6 +235,144 @@ which falls inside the autoscale up-window: a cron that `POST`s `/api/bhavcopy`
 baselines fresh at **no extra cost** (the service is already up then). Not wired
 by default — ask to add it (needs `APP_PASSWORD` as a second GitHub secret).
 
+## Telegram Bot Webhook (auto-trade alerts + commands)
+
+The auto-trade engine can send real-time alerts (trade placed, exited, kill
+switch, etc.) to a Telegram bot, and the bot can receive commands
+(`/status`, `/positions`, `/kill`, `/pnl`, etc.) via a webhook.
+
+### Environment variables
+
+Add these to Railway → Variables (or `.env.local` for local dev):
+
+| Variable | Required | Description |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
+| `TELEGRAM_CHAT_ID` | Yes | Your numeric chat id (send `/start` to @userinfobot) |
+| `TELEGRAM_WEBHOOK_SECRET` | Yes | Arbitrary secret string — Telegram sends it back in the `X-Telegram-Bot-Api-Secret-Token` header for webhook verification |
+
+> **`AUTO_TRADE_ALERT_WEBHOOK`** (the legacy one-way webhook) is still
+> supported as a fallback. If the three `TELEGRAM_*` vars are set, alerts
+> route through the native Telegram Bot API instead — which also enables
+> the inbound command handler.
+
+### Register the webhook
+
+After setting the env vars and redeploying:
+
+```bash
+# Via the setup script (from the repo root):
+npx tsx scripts/setup-telegram-webhook.ts
+```
+
+Or via the API endpoint (after deploy):
+
+**Linux / macOS (bash):**
+```bash
+curl -X POST https://<your-railway-url>/api/telegram/setup \
+  -H "Authorization: Basic $(echo -n ':YOUR_APP_PASSWORD' | base64)" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"register"}'
+```
+
+**Windows cmd:**
+```cmd
+curl.exe -X POST https://<your-railway-url>/api/telegram/setup -H "Authorization: Basic <base64_of_:YOUR_APP_PASSWORD>" -H "Content-Type: application/json" -d "{\"action\":\"register\"}"
+```
+
+**Windows PowerShell (curl — use single quotes around JSON body):**
+```powershell
+curl.exe -X POST "https://<your-railway-url>/api/telegram/setup" `
+  -H "Authorization: Basic <base64_of_:YOUR_APP_PASSWORD>" `
+  -H "Content-Type: application/json" `
+  -d '{"action":"register"}'
+```
+
+> ⚠️ **PowerShell + curl gotcha:** PowerShell single-quoted strings are *literal* — `\"` does **not** escape, it sends a literal backslash. Always put JSON in single quotes `'...'` so double quotes inside pass through unchanged. Do **not** use `\"` inside single quotes.
+
+**Windows PowerShell (recommended — Invoke-RestMethod):**
+```powershell
+$body = @{ action = "register" } | ConvertTo-Json
+Invoke-RestMethod `
+  -Uri "https://<your-railway-url>/api/telegram/setup" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Headers @{ Authorization = "Basic <base64_of_:YOUR_APP_PASSWORD>" } `
+  -Body $body
+```
+
+> **Tip:** On Windows, use `certutil -encode` or an online base64 encoder to generate the `Authorization: Basic` value. The value is `base64(":YOUR_APP_PASSWORD")`.
+
+### Testing the Telegram bot on Windows
+
+To send a test message via curl on Windows, avoid `\"` escaping inside double-quoted strings. Use this approach:
+
+**Windows cmd:**
+```cmd
+curl.exe -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage" -H "Content-Type: application/json" -d "{""chat_id"":""<YOUR_CHAT_ID>"",""text"":""Test message""}"
+```
+
+**Windows PowerShell (curl — single quotes around JSON):**
+```powershell
+curl.exe -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage" `
+  -H "Content-Type: application/json" `
+  -d '{"chat_id":"<YOUR_CHAT_ID>","text":"Test message"}'
+```
+
+**Windows PowerShell (recommended — Invoke-RestMethod):**
+```powershell
+$body = @{
+    chat_id = "<YOUR_CHAT_ID>"
+    text    = "Test message"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+> **Note:** In Windows cmd, use `""` to escape double quotes inside a double-quoted string. In PowerShell, use single quotes for the outer JSON string so internal double quotes pass through as-is — or use `Invoke-RestMethod` which handles escaping automatically.
+
+### Available bot commands
+
+| Command | Description |
+|---|---|
+| `/status` | Engine mode, broker, kill switch, caps, open positions |
+| `/positions` | Open positions with entry/SL/target |
+| `/trades` | Today's trade history |
+| `/pnl` | Daily P&L summary |
+| `/decisions` | Recent AI decisions |
+| `/kill` | Activate kill switch (halt new orders) |
+| `/unkill` | Deactivate kill switch |
+| `/mode` | Check or change mode (`/mode paper`, `/mode off`) |
+| `/help` | List all commands |
+
+### What Telegram receives
+
+**Automatic alerts** (from the auto-trade engine):
+- 🟢 Trade placed  ·  🔴 Trade exited  ·  🚨 Kill switch  ·  🛑 Daily loss halt
+- ⚠️ Exit failures  ·  ⏰ EOD square-off  ·  👻 Stale phantom
+
+**Automatic trade commentary** (from the AI commentary engine):
+- Every time `/trade-suggest` runs and generates a new commentary, it is pushed to Telegram in real-time — the same narration you see on `/trade-commentary`.
+
+**Bot commands** (send any of these to @live_ait_bot):
+`/status` `/positions` `/trades` `/pnl` `/decisions` `/kill` `/unkill` `/mode` `/help`
+
+### Architecture
+
+- **`lib/telegram/bot.ts`** — Telegram Bot API client (send, webhook management, secret verification)
+- **`lib/telegram/handlers.ts`** — Command dispatcher (queries auto_trade DB, writes settings)
+- **`app/api/telegram/webhook/route.ts`** — Unauthenticated POST endpoint (Telegram → app). Auth is via the secret token header, not the app password.
+- **`app/api/telegram/setup/route.ts`** — Authenticated endpoint to register/delete the webhook
+- **`scripts/setup-telegram-webhook.ts`** — CLI script for one-time webhook registration
+
+The webhook endpoint (`/api/telegram/webhook`) is allowlisted in `proxy.ts`
+as a public route (like `/api/health`), so Telegram's servers can reach it
+without the app password.
+
 ## Cost levers (later)
 
 - **Trim resident memory** — slim the poller universe.

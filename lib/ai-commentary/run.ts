@@ -1,3 +1,4 @@
+l
 /**
  * Generate + persist one commentary for a scan result. Called by the poller's
  * autonomous capture (in-process, no external cron) and by the manual
@@ -10,6 +11,7 @@
 import { todayIST } from '@/lib/dhan/market-feed';
 import { hasMimo } from '@/lib/env';
 import { recordPromptVersion } from '@/lib/prompts/store';
+import { sendMessage, isTelegramConfigured } from '@/lib/telegram';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { COMMENTARY_SYSTEM, generateCommentary } from './generate';
 import { buildPicks } from './picks';
@@ -48,5 +50,13 @@ export async function runAndStoreCommentary(result: SuggestResponse): Promise<Ru
     promptKey: 'trade-commentary',
     promptVersion,
   });
+  // Push the commentary to Telegram so the operator gets it in real-time.
+  // Telegram limit is 4096 chars; commentary is ~220 words max so it fits.
+  // Plain text (no parse_mode) — the commentary uses ### headings, • bullets,
+  // and inline * or _ that Telegram's Markdown parser doesn't handle cleanly.
+  if (isTelegramConfigured() && c.text) {
+    sendMessage(`📊 Trade Commentary\n\n${c.text}`);
+  }
+
   return { generated: true, text: c.text };
 }
