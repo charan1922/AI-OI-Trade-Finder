@@ -1,4 +1,4 @@
-/**
+cept /**
  * Telegram bot command handlers — processes incoming messages from the webhook
  * and dispatches auto-trade queries / controls.
  *
@@ -234,6 +234,31 @@ register('/unkill', 'Deactivate kill switch', async (_args, chatId) => {
   }
   await setAutoTradeSetting('killSwitch', '0');
   return { text: '✅ *Kill switch DEACTIVATED*\nNew orders can now be placed.', reply_markup: quickActionsKeyboard() };
+});
+
+register('/telegram', 'Toggle Telegram alerts on/off', async (args, chatId) => {
+  if (!isOperator(chatId)) {
+    return { text: '❌ Operator-only command.' };
+  }
+  const settings = await getAutoTradeSettings();
+  const trimmed = args.trim().toLowerCase();
+
+  if (!trimmed || trimmed === 'status') {
+    const status = settings.telegramAlerts ? '✅ ON' : '🔕 OFF';
+    return { text: `Telegram alerts: ${status}\n\nToggle with: /telegram on|off`, reply_markup: quickActionsKeyboard() };
+  }
+
+  if (trimmed === 'on') {
+    await setAutoTradeSetting('telegramAlerts', '1');
+    return { text: '✅ Telegram alerts turned ON', reply_markup: quickActionsKeyboard() };
+  }
+
+  if (trimmed === 'off') {
+    await setAutoTradeSetting('telegramAlerts', '0');
+    return { text: '🔕 Telegram alerts turned OFF', reply_markup: quickActionsKeyboard() };
+  }
+
+  return { text: 'Usage: /telegram on|off|status', reply_markup: quickActionsKeyboard() };
 });
 
 register('/mode', 'Check or change trading mode', async (args, chatId) => {

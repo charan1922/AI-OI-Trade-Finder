@@ -29,6 +29,7 @@ export const DEFAULT_SETTINGS: AutoTradeSettings = {
   maxCapitalRupees: 60_000, // user rule: ₹50–60k account — ₹-cap on deployed premium
   dailyLossHaltRupees: 3_000, // 2 × the ₹1.5k/lot max loss — then stop for the day
   approvalTtlMin: 15, // a pending approval is stale after 3 poller cycles
+  telegramAlerts: true, // send auto-trade alerts + commentary to Telegram
 };
 
 /** Entry window (IST minutes from midnight): 09:45–11:00 per the user's rule.

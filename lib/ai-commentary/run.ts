@@ -11,6 +11,7 @@ import { todayIST } from '@/lib/dhan/market-feed';
 import { hasMimo } from '@/lib/env';
 import { recordPromptVersion } from '@/lib/prompts/store';
 import { sendMessage, isTelegramConfigured } from '@/lib/telegram';
+import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { COMMENTARY_SYSTEM, generateCommentary } from './generate';
 import { buildPicks } from './picks';
@@ -54,7 +55,15 @@ export async function runAndStoreCommentary(result: SuggestResponse): Promise<Ru
   // Plain text (no parse_mode) — the commentary uses ### headings, • bullets,
   // and inline * or _ that Telegram's Markdown parser doesn't handle cleanly.
   if (isTelegramConfigured() && c.text) {
-    sendMessage(`📊 Trade Commentary\n\n${c.text}`);
+    try {
+      const settings = await getAutoTradeSettings();
+      if (settings.telegramAlerts) {
+        sendMessage(`📊 Trade Commentary\n\n${c.text}`);
+      }
+    } catch {
+      // Fail-open: send if settings can't be loaded
+      sendMessage(`📊 Trade Commentary\n\n${c.text}`);
+    }
   }
 
   return { generated: true, text: c.text };

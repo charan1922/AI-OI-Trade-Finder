@@ -19,6 +19,7 @@ import type { AiProvider, AutoTradeSettings, BrokerId, TradeMode } from './types
 const MODES: TradeMode[] = ['off', 'paper', 'approval', 'live'];
 const BROKERS: BrokerId[] = ['fyers', 'dhan'];
 const PROVIDERS: AiProvider[] = ['azure', 'mimo'];
+const BOOL_KEYS = ['killSwitch', 'telegramAlerts'] as const;
 
 interface SettingDef {
   key: keyof AutoTradeSettings;
@@ -107,6 +108,13 @@ export const SETTING_DEFS: SettingDef[] = [
     serialize: String,
     label: 'Approval TTL (min)',
     description: 'A pending approval older than this expires (the quote is stale).',
+  },
+  {
+    key: 'telegramAlerts',
+    parse: (raw) => raw === '1' || raw === 'true',
+    serialize: (v) => (v ? '1' : '0'),
+    label: 'Telegram alerts',
+    description: 'ON = send auto-trade alerts, approval buttons, and commentary to Telegram. OFF = silent.',
   },
 ];
 
