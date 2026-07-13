@@ -1,4 +1,4 @@
-cept /**
+/**
  * Telegram bot command handlers — processes incoming messages from the webhook
  * and dispatches auto-trade queries / controls.
  *
@@ -318,6 +318,11 @@ export async function handleTelegramMessage(
   chatId: number,
 ): Promise<HandlerResult | null> {
   if (!text.startsWith('/')) return null;
+
+  // Non-operators can only read — they see commentary/alerts but cannot run commands
+  if (!isOperator(chatId)) {
+    return { text: '🔒 This is a read-only bot. Only the operator can run commands.\nYou will receive trade commentary and alerts automatically.' };
+  }
 
   // Split "/cmd args" — strip bot username suffix like /status@MyBot
   const spaceIdx = text.indexOf(' ');
