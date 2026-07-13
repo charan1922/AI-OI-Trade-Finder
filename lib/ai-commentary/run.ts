@@ -1,4 +1,3 @@
-l
 /**
  * Generate + persist one commentary for a scan result. Called by the poller's
  * autonomous capture (in-process, no external cron) and by the manual
