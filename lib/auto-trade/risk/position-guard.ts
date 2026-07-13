@@ -15,10 +15,11 @@
  * exits reduce risk and always stay allowed.
  */
 
-import { isPastSquareOff, minuteOfDayIST } from '../config';
+import { alerts } from '../alerts';
+import { isPastSquareOff, minuteOfDayIST, nowIST } from '../config';
 import { exitTrade } from '../execution';
 import { fetchOptionQuote, latestSpot } from '../quotes';
-import { getOpenTrades } from '../store';
+import { getOpenTrades, getOrdersForTrade, updateTrade } from '../store';
 import type { AutoTrade } from '../types';
 
 const TAG = '[PositionGuard]';
@@ -34,6 +35,15 @@ function spotExitReason(trade: AutoTrade, spot: number): string | null {
   return null;
 }
 
+/** Max age (ms) for an open trade with no confirmed fill. After this, the
+ *  entry is considered lost — mark it failed rather than let it linger as
+ *  an unmanaged phantom. Reconcile normally resolves fills within seconds;
+ *  5 min = one poller cycle. */
+const UNFILLED_STALE_MS = 5 * 60 * 1000;
+
+/** Consecutive exit failures before escalating to a loud warning. */
+const EXIT_FAILURE_ESCALATE = 3;
+
 /** Check every open trade against the hard exit rules; exit what must exit.
  *  Returns a human-readable action list for the audit log. */
 export async function runPositionGuard(date: string): Promise<string[]> {
@@ -41,13 +51,27 @@ export async function runPositionGuard(date: string): Promise<string[]> {
   if (open.length === 0) return [];
   const actions: string[] = [];
   const squareOff = isPastSquareOff(minuteOfDayIST());
+  const now = nowIST();
 
   for (const trade of open) {
     // A trade is 'open' only briefly before its entry fill is confirmed
     // (reconcile / the entry poll resolves it). NEVER try to exit one with no
     // confirmed fill — there is no real position to sell, and a SELL here would
     // open a naked short at the broker. Leave it for reconcile to settle/fail.
-    if (trade.entryFillPremium == null) continue;
+    if (trade.entryFillPremium == null) {
+      // Staleness check: if the trade has been open without a fill for >5 min,
+      // the entry is likely lost (broker flake, network blip). Fail it rather
+      // than let it linger as an unmanaged phantom with no broker order.
+      const openedMs = trade.openedAt ? new Date(trade.openedAt).getTime() : new Date(trade.proposedAt).getTime();
+      if (now.getTime() - openedMs > UNFILLED_STALE_MS) {
+        await updateTrade(trade.id, { status: 'failed', exitReason: 'entry fill not confirmed after 5 min — stale phantom' });
+        const line = `${trade.symbol} ${trade.optionType}: entry fill unconfirmed for >5 min → FAILED (stale phantom)`;
+        actions.push(line);
+        console.warn(`[PositionGuard] ⚠️ ${line}`);
+        alerts.stalePhantom(trade.symbol);
+      }
+      continue;
+    }
 
     let reason: string | null = null;
 
@@ -75,6 +99,25 @@ export async function runPositionGuard(date: string): Promise<string[]> {
       const line = `${trade.symbol} ${trade.optionType}: ${reason} → ${outcome.message}`;
       actions.push(line);
       console.log(`${TAG} ${line}`);
+
+      // Fire alerts for exits
+      if (outcome.ok) {
+        alerts.tradeExited(trade.symbol, reason, null);
+        if (squareOff) alerts.eodSquareOff(trade.symbol);
+      }
+
+      // Exit failure escalation: if the exit order failed, count consecutive
+      // failures for this trade and escalate after EXIT_FAILURE_ESCALATE.
+      if (!outcome.ok) {
+        const exitOrders = (await getOrdersForTrade(trade.id)).filter((o) => o.side === 'SELL');
+        const consecutiveFails = exitOrders.filter((o) => o.status === 'rejected' || (o.status === 'sent' && o.error)).length;
+        if (consecutiveFails >= EXIT_FAILURE_ESCALATE) {
+          const esc = `⚠️ ${trade.symbol} ${trade.optionType}: ${consecutiveFails} consecutive exit failures — MANUAL INTERVENTION NEEDED`;
+          actions.push(esc);
+          console.error(`[PositionGuard] 🚨 ${esc}`);
+          alerts.exitFailureEscalation(trade.symbol, consecutiveFails);
+        }
+      }
     }
   }
   return actions;

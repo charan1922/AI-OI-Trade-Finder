@@ -51,7 +51,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, marketOpen: isMarketHours(), rows: [], symbols });
     }
 
-    const payload = await cachedQuoteResponse(symbols.join(','), fresh, () => computeQuotePayload(symbols));
+    // Sort for cache-key normalization — two windows passing the same symbols
+    // in different order must share the same cache entry.
+    const sortedSymbols = [...symbols].sort();
+    const payload = await cachedQuoteResponse(sortedSymbols.join(','), fresh, () => computeQuotePayload(symbols));
     return NextResponse.json(payload);
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });

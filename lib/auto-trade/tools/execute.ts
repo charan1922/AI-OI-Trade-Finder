@@ -10,6 +10,7 @@
 import { isMarketHours } from '@/lib/dhan/market-feed';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
 import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types';
+import { alerts } from '../alerts';
 import { getExecutionAdapter } from '../brokers';
 import { isEntryWindow, minuteOfDayIST, nowISTClock } from '../config';
 import { exitTrade, placeEntryOrder } from '../execution';
@@ -143,6 +144,7 @@ async function buildGateInput(
       lots: 1,
       perLotCost: freshPremium != null && lotSize > 0 ? Math.round(freshPremium * lotSize * 100) / 100 : null,
       slippagePct,
+      spreadPct: fresh?.spreadPct ?? null,
       hasSlSpot: pick.plan.slSpot != null,
       brokerFundsAvailable: state.brokerFundsAvailable,
     },
@@ -280,6 +282,7 @@ export async function executeAutoTradeTool(
         await updateTrade(tradeId, { status: 'failed', exitReason: `entry crashed: ${message}` });
         outcome = { ok: false, message: `entry crashed: ${message}` };
       }
+      if (outcome.ok) alerts.tradePlaced(symbol, pick.option.optionType, entryPremium);
       const result = { placed: outcome.ok, tradeId, message: outcome.message };
       return { result, trace: { name, args, ok: outcome.ok, summary: `${symbol}: ${outcome.message}` } };
     }

@@ -8,6 +8,7 @@
  */
 
 import { MAX_LOSS_PER_LOT_RUPEES, TF_LOT_TARGET_RUPEES } from '@/lib/trade-suggest/config';
+import { nowIST, minuteOfDayIST, nowISTClock } from '@/lib/ist';
 import type { AutoTradeSettings } from './types';
 
 /** ₹ risk/reward anchors per lot — the SAME numbers the scanner plans with
@@ -48,6 +49,12 @@ export const SQUARE_OFF_MIN = 15 * 60 + 12;
  *  from the scanner's quote this cycle (the AI decided on stale numbers). */
 export const MAX_ENTRY_SLIPPAGE_PCT = 4;
 
+/** Reject an entry when the option's bid-ask spread exceeds this %.
+ *  Deep OTM illiquid options can have ₹0.10 bid / ₹5.00 ask — instant
+ *  ~100% loss on fill. The scanner already flags liquidityWarning but the
+ *  gate must enforce it. */
+export const MAX_SPREAD_PCT = 8;
+
 /** How long to poll a live broker order for a fill before leaving it to the
  *  next cycle's reconcile step (MARKET orders on liquid near-ATM strikes fill
  *  in seconds; anything slower is investigated, not assumed). */
@@ -57,22 +64,7 @@ export const FILL_POLL_DELAY_MS = 2_000;
 /** Per-pass ceiling on AI tool steps (mirrors lib/ai-assistant's cap). */
 export const MAX_TOOL_STEPS = 10;
 
-/** IST helpers (server runs UTC on Railway — same offset math as the repo's
- *  other IST call sites, e.g. lib/ai-assistant/assistant.ts sessionInfo). */
-export function nowIST(): Date {
-  return new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
-}
-
-export function minuteOfDayIST(): number {
-  const ist = nowIST();
-  return ist.getHours() * 60 + ist.getMinutes();
-}
-
-export function nowISTClock(): string {
-  const ist = nowIST();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(ist.getHours())}:${pad(ist.getMinutes())}:${pad(ist.getSeconds())}`;
-}
+export { nowIST, minuteOfDayIST, nowISTClock };
 
 export function isEntryWindow(minute = minuteOfDayIST()): boolean {
   return minute >= ENTRY_START_MIN && minute <= ENTRY_END_MIN;

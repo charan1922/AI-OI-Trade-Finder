@@ -20,6 +20,7 @@ import { ticketQtyUnits } from './adapter';
 const TAG = '[DhanTrade]';
 const BASE = 'https://api.dhan.co/v2';
 const MIN_INTERVAL_MS = 300;
+const RETRY_STATUS = new Set([429, 502, 503, 504]);
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -41,23 +42,40 @@ function serial<T>(task: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** Single retry on transient HTTP errors (502/503/504/429) — Dhan and Railway
+ *  occasionally return these under load. One retry is enough; persistent
+ *  failures surface immediately. */
 async function dhanFetch(pathname: string, init: { method: string; body?: unknown }): Promise<Record<string, unknown>> {
   const token = await getDhanAccessToken();
   const clientId = env.DHAN_CLIENT_ID;
   if (!clientId) throw new Error(`${TAG} DHAN_CLIENT_ID is not configured`);
-  const res = await serial(() =>
-    fetch(`${BASE}${pathname}`, {
-      method: init.method,
-      headers: {
-        'access-token': token,
-        'client-id': clientId,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: init.body === undefined ? undefined : JSON.stringify(init.body),
-    }),
-  );
-  const text = await res.text();
+
+  const doFetch = async (): Promise<{ res: Response; text: string }> => {
+    const res = await serial(() =>
+      fetch(`${BASE}${pathname}`, {
+        method: init.method,
+        headers: {
+          'access-token': token,
+          'client-id': clientId,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      }),
+    );
+    const text = await res.text();
+    return { res, text };
+  };
+
+  let { res, text } = await doFetch();
+
+  // One retry on transient errors
+  if (RETRY_STATUS.has(res.status)) {
+    console.warn(`${TAG} ${init.method} ${pathname} → ${res.status}, retrying in 1s...`);
+    await sleep(1000);
+    ({ res, text } = await doFetch());
+  }
+
   let data: Record<string, unknown> = {};
   try {
     data = text ? (JSON.parse(text) as Record<string, unknown>) : {};

@@ -25,7 +25,7 @@ export function backstopsFromFill(fill: number, lotSize: number): { slPremium: n
   const slPct = fill * 0.6; // −40% premium backstop
   const slCap = fill - MAX_LOSS_PER_LOT_FALLBACK / lotSize;
   return {
-    slPremium: Math.round(Math.max(0, Math.max(slPct, slCap)) * 100) / 100,
+    slPremium: Math.round(Math.max(0.05, Math.max(slPct, slCap)) * 100) / 100,
     targetPremium: Math.round((fill + TARGET_PER_LOT_FALLBACK / lotSize) * 100) / 100,
   };
 }

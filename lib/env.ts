@@ -53,6 +53,9 @@ const envSchema = z.object({
   // can select mode 'live', but real autonomous orders stay blocked until this
   // is ALSO 'true' — a deliberate two-key safety on real money.
   AUTO_TRADE_LIVE_ENABLED: z.string().optional(),
+  // Optional webhook for auto-trade alerts (lib/auto-trade/alerts.ts).
+  // Telegram example: https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>
+  AUTO_TRADE_ALERT_WEBHOOK: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);

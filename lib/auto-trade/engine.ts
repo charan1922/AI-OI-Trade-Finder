@@ -62,8 +62,10 @@ const g = globalThis as unknown as { __autoTradePassRunning?: boolean };
  * premium backstops to the real fill; a filled SELL books the close + P&L.
  * Terminal failures free the idempotency key so the guard can retry exits.
  */
+const MAX_RECONCILE_ORDERS = 20;
+
 async function reconcileUnresolvedOrders(): Promise<string[]> {
-  const unresolved = await getUnresolvedOrders();
+  const unresolved = (await getUnresolvedOrders()).slice(-MAX_RECONCILE_ORDERS);
   const notes: string[] = [];
   for (const order of unresolved) {
     if (order.broker === 'paper' || !order.brokerOrderId) continue;
@@ -233,7 +235,27 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
       });
       commentaryStored = true;
     } catch (err) {
-      console.warn(`${TAG} commentary store failed (poller will fall back): ${(err as Error).message}`);
+      // Retry once before falling back — the DB may have been briefly locked
+      console.warn(`${TAG} commentary store failed, retrying once: ${(err as Error).message}`);
+      try {
+        const promptVersion = await recordPromptVersion('auto-trader', AUTO_TRADER_SYSTEM);
+        await insertCommentary({
+          date,
+          asOf: scan?.window?.nowIST ? `${date} ${scan.window.nowIST}` : new Date().toISOString(),
+          windowActive: Boolean(scan?.window?.active),
+          picksCount: scan?.suggestions?.length ?? 0,
+          model: result.model,
+          text: result.text,
+          picks: scan ? buildPicks(scan) : [],
+          promptTokens: result.promptTokens,
+          completionTokens: result.completionTokens,
+          promptKey: 'auto-trader',
+          promptVersion,
+        });
+        commentaryStored = true;
+      } catch (retryErr) {
+        console.warn(`${TAG} commentary store failed (poller will fall back): ${(retryErr as Error).message}`);
+      }
     }
     console.log(`${TAG} AI pass done: ${result.text.slice(0, 140)}`);
     return { ran: true, guardActions, aiSummary: result.text, commentaryStored };

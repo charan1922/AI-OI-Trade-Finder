@@ -64,6 +64,7 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     lots: trade.lots,
     perLotCost: fresh != null ? Math.round(fresh.ltp * trade.lotSize * 100) / 100 : null,
     slippagePct,
+    spreadPct: fresh?.spreadPct ?? null,
     hasSlSpot: trade.slSpot != null,
     brokerFundsAvailable: funds,
   });

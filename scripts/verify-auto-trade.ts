@@ -49,6 +49,7 @@ async function main(): Promise<void> {
     lots: 1,
     perLotCost: 30_000,
     slippagePct: 1,
+    spreadPct: 2,
     hasSlSpot: true,
     brokerFundsAvailable: null,
   };
@@ -67,6 +68,8 @@ async function main(): Promise<void> {
   check('gates: no stop blocked', !checkEntryGates({ ...base, hasSlSpot: false }).allow);
   check('gates: live without env key blocked', !checkEntryGates({ ...base, settings: { ...base.settings, mode: 'live' } }).allow);
   check('gates: broker funds short blocked', !checkEntryGates({ ...base, brokerFundsAvailable: 10_000 }).allow);
+  check('gates: wide spread blocked', !checkEntryGates({ ...base, spreadPct: 12 }).allow, 'spread 12% > 8% max');
+  check('gates: null spread allowed', checkEntryGates({ ...base, spreadPct: null }).allow, 'no depth → gate skipped');
   check('stop: bullish tighten up allowed', checkStopMove('bullish', 100, 105).allow);
   check('stop: bullish loosen down blocked', !checkStopMove('bullish', 100, 95).allow);
   check('stop: bearish tighten down allowed', checkStopMove('bearish', 100, 95).allow);

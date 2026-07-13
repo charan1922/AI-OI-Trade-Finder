@@ -122,6 +122,11 @@ export class FyersAdapter implements BrokerAdapter {
   async getOrderState(brokerOrderId: string): Promise<OrderState> {
     try {
       const fyers = await getFyers();
+      // NOTE: get_orders() fetches the ENTIRE day's order book. The Fyers SDK
+      // (fyers-api-v3) does not expose a single-order query endpoint — every
+      // call returns all orders. The serial gate + MIN_INTERVAL_MS keep this
+      // bounded; if perf becomes an issue, consider caching the book for a few
+      // seconds on globalThis.
       const res = await serial(() => fyers.get_orders());
       if (!res || res.s !== 'ok') return { status: 'unknown', avgFillPrice: null, detail: 'orderbook unavailable' };
       const book = Array.isArray(res.orderBook) ? (res.orderBook as Record<string, unknown>[]) : [];

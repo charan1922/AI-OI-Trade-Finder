@@ -11,6 +11,7 @@ import {
   ENTRY_START_MIN,
   ENTRY_WINDOW_LABEL,
   MAX_ENTRY_SLIPPAGE_PCT,
+  MAX_SPREAD_PCT,
 } from '../config';
 import type { AutoTradeSettings, GateVerdict } from '../types';
 
@@ -33,6 +34,8 @@ export interface EntryGateInput {
   perLotCost: number | null;
   /** Scanner's quote this cycle vs the fresh quote at placement time (%). */
   slippagePct: number | null;
+  /** Bid-ask spread % on the option contract (null when no depth available). */
+  spreadPct: number | null;
   /** Spot stop from the scanner plan — an entry without one is unmanaged. */
   hasSlSpot: boolean;
   /** Broker's reported available balance (null = venue can't say; paper). */
@@ -79,6 +82,9 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
   }
   if (x.slippagePct != null && Math.abs(x.slippagePct) > MAX_ENTRY_SLIPPAGE_PCT) {
     reasons.push(`premium moved ${x.slippagePct.toFixed(1)}% since the scan quote (> ${MAX_ENTRY_SLIPPAGE_PCT}% slippage guard)`);
+  }
+  if (x.spreadPct != null && x.spreadPct > MAX_SPREAD_PCT) {
+    reasons.push(`option spread ${x.spreadPct.toFixed(1)}% exceeds max ${MAX_SPREAD_PCT}% — too illiquid`);
   }
   if (!x.hasSlSpot) reasons.push('scanner plan has no spot stop-loss — unmanaged entries are not allowed');
 
