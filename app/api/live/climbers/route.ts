@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
 
     // Live during market hours; otherwise the last session that has snapshots.
     const date = isMarketHours() ? todayIST() : ((await getLatestRankDate()) ?? todayIST());
-    const result = await getRaceSinceOpen(date, feed, 18); // top 18 climbers
+    const result = await getRaceSinceOpen(date, feed, 15); // top 15 climbers
 
     return NextResponse.json({ success: true, marketOpen: isMarketHours(), ...result });
   } catch (error) {
