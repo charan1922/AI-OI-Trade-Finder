@@ -16,6 +16,7 @@
  */
 
 import { prisma } from '@/lib/db';
+import type { BreakoutSignal } from '@/lib/breakout';
 import type { LiveUrgencyRow, RFactorRowDetail } from '@/app/live/_lib/types';
 
 let tableReady = false;
@@ -44,11 +45,24 @@ export async function ensureLiveUrgencyEodTable(): Promise<void> {
       rFactorConfidence  REAL,
       rFactorAfterEntry  INTEGER,
       rFactors           TEXT    DEFAULT '[]',
+      breakout           TEXT,
+      nseOiPct           REAL,
+      nseOiSlope30m      REAL,
       capturedAt         TEXT    NOT NULL,
       PRIMARY KEY (date, symbol)
     )
   `);
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_live_urgency_eod_date ON live_urgency_eod (date)`);
+  // Migrate tables created before these columns existed (the frozen board must
+  // persist the close's Breakout verdict + NSE OI% — both are live/same-evening
+  // only and can't be recomputed for a past date once fyers_candles is pruned).
+  for (const col of ['breakout TEXT', 'nseOiPct REAL', 'nseOiSlope30m REAL']) {
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE live_urgency_eod ADD COLUMN ${col}`);
+    } catch {
+      // column already exists — fine
+    }
+  }
   tableReady = true;
 }
 
@@ -60,8 +74,8 @@ export interface EodRow extends LiveUrgencyRow {
   dayLow: number | null;
 }
 
-const COLS = 21;
-const BATCH_ROWS = 40; // 21 cols × 40 rows = 840 params, under SQLite's 999 limit
+const COLS = 24;
+const BATCH_ROWS = 40; // 24 cols × 40 rows = 960 params, under SQLite's 999 limit
 
 /** Persist one session's rows. Idempotent: INSERT OR IGNORE on (date, symbol)
  *  — repeat calls (e.g. a retried capture) never overwrite an existing row. */
@@ -97,6 +111,9 @@ export async function insertEodRows(date: string, rows: EodRow[], nowMs: number 
         r.rFactorConfidence,
         r.rFactorAfterEntry == null ? null : r.rFactorAfterEntry ? 1 : 0,
         JSON.stringify(r.rFactors ?? []),
+        r.breakout ? JSON.stringify(r.breakout) : null,
+        r.nseOiPct ?? null,
+        r.nseOiSlope30m ?? null,
         capturedAt,
       );
     }
@@ -104,7 +121,8 @@ export async function insertEodRows(date: string, rows: EodRow[], nowMs: number 
       `INSERT OR IGNORE INTO live_urgency_eod
          (date, symbol, ltp, changePctOpen, spreadPct, imbalance, futOi, oiLevel, turnover,
           dayHigh, dayLow, sessionOiChangePct, oiVelocity, oiAccel, oiUrgency,
-          rFactor, rFactorBias, rFactorConfidence, rFactorAfterEntry, rFactors, capturedAt)
+          rFactor, rFactorBias, rFactorConfidence, rFactorAfterEntry, rFactors,
+          breakout, nseOiPct, nseOiSlope30m, capturedAt)
        VALUES ${placeholders}`,
       ...params,
     );
@@ -152,6 +170,16 @@ function safeParseFactors(v: unknown): RFactorRowDetail[] | null {
   }
 }
 
+function safeParseBreakout(v: unknown): BreakoutSignal | null {
+  if (v == null) return null;
+  try {
+    const parsed = JSON.parse(String(v));
+    return parsed && typeof parsed === 'object' ? (parsed as BreakoutSignal) : null;
+  } catch {
+    return null;
+  }
+}
+
 function rowToEod(r: Record<string, unknown>): EodRow {
   return {
     symbol: String(r.symbol),
@@ -174,6 +202,9 @@ function rowToEod(r: Record<string, unknown>): EodRow {
     rFactorConfidence: toNumOrNull(r.rFactorConfidence),
     rFactorAfterEntry: r.rFactorAfterEntry == null ? null : Number(r.rFactorAfterEntry) === 1,
     rFactors: safeParseFactors(r.rFactors),
+    breakout: safeParseBreakout(r.breakout),
+    nseOiPct: toNumOrNull(r.nseOiPct),
+    nseOiSlope30m: toNumOrNull(r.nseOiSlope30m),
     dayHigh: toNumOrNull(r.dayHigh),
     dayLow: toNumOrNull(r.dayLow),
   };

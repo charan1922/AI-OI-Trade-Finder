@@ -426,6 +426,9 @@ model LiveUrgencyEod {
   rFactorConfidence  Float?
   rFactorAfterEntry  Int?
   rFactors           String  @default("[]")
+  breakout           String?
+  nseOiPct           Float?
+  nseOiSlope30m      Float?
   capturedAt         String
 
   @@id([date, symbol])
