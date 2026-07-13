@@ -21,6 +21,8 @@ import { exitTrade } from '../execution';
 import { fetchOptionQuote, latestSpot } from '../quotes';
 import { getOpenTrades, getOrdersForTrade, updateTrade } from '../store';
 import type { AutoTrade } from '../types';
+import { supertrend } from '@/lib/signals/indicators';
+import { getFyersCandles } from '@/lib/fyers/candle-store';
 
 const TAG = '[PositionGuard]';
 
@@ -43,6 +45,10 @@ const UNFILLED_STALE_MS = 5 * 60 * 1000;
 
 /** Consecutive exit failures before escalating to a loud warning. */
 const EXIT_FAILURE_ESCALATE = 3;
+
+/** Trailing stop: once premium gains this %, move SL to entry (risk-free). */
+const TRAIL_STOP_TRIGGER_PCT = 30;
+
 
 /** Check every open trade against the hard exit rules; exit what must exit.
  *  Returns a human-readable action list for the audit log. */
@@ -85,6 +91,36 @@ export async function runPositionGuard(date: string): Promise<string[]> {
           reason = `premium stop hit (₹${quote.ltp} ≤ ₹${trade.slPremium})`;
         } else if (quote.ltp >= trade.targetPremium) {
           reason = `premium target hit (₹${quote.ltp} ≥ ₹${trade.targetPremium})`;
+        }
+
+        // Trailing stop: once premium gains TRAIL_STOP_TRIGGER_PCT%, tighten
+        // SL to entry fill price (risk-free trade). Only tightens — never loosens.
+        if (!reason && trade.entryFillPremium > 0) {
+          const gainPct = ((quote.ltp - trade.entryFillPremium) / trade.entryFillPremium) * 100;
+          if (gainPct >= TRAIL_STOP_TRIGGER_PCT && trade.slPremium < trade.entryFillPremium) {
+            await updateTrade(trade.id, { slPremium: trade.entryFillPremium });
+            const line = `${trade.symbol} ${trade.optionType}: trailing stop → SL tightened to entry ₹${trade.entryFillPremium} (+${gainPct.toFixed(0)}% gain)`;
+            actions.push(line);
+            console.log(`${TAG} ${line}`);
+          }
+        }
+
+        // Momentum exit: if Supertrend flips against the trade AND premium
+        // has dropped below entry (giveback of gains), exit to protect capital.
+        if (!reason) {
+          try {
+            const bars = await getFyersCandles(trade.symbol, date, 'EQ');
+            const st = supertrend(bars);
+            if (st != null) {
+              const bullish = trade.direction === 'bullish';
+              const stFlipped = bullish ? st.direction === 'down' : st.direction === 'up';
+              if (stFlipped && quote.ltp < trade.entryFillPremium) {
+                reason = `momentum exit: Supertrend flipped ${st.direction} + premium ₹${quote.ltp} below entry ₹${trade.entryFillPremium}`;
+              }
+            }
+          } catch {
+            // Supertrend check is best-effort — don't fail the guard
+          }
         }
       }
       // Spot plan levels (scanner's structure-based stop, AI-tightened).

@@ -560,6 +560,28 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
       gated.directionDisagree++;
       continue;
     }
+
+    // Supertrend(10,3) alignment gate — replay benchmark (July 10-13) showed
+    // 0/3 wins for Supertrend-misaligned picks. Enforce as a hard gate.
+    const earlySt = supertrend(bars);
+    if (earlySt != null) {
+      const stAligned = direction === 'bullish' ? earlySt.direction === 'up' : earlySt.direction === 'down';
+      if (!stAligned) {
+        gated.supertrendDisagree = (gated.supertrendDisagree ?? 0) + 1;
+        continue;
+      }
+    }
+
+    // Session VWAP alignment gate — price must be on the correct side of VWAP.
+    const earlyVw = sessionVwap(bars);
+    if (earlyVw != null) {
+      const vwAligned = direction === 'bullish' ? ltp > earlyVw : ltp < earlyVw;
+      if (!vwAligned) {
+        gated.vwapDisagree = (gated.vwapDisagree ?? 0) + 1;
+        continue;
+      }
+    }
+
     if (verdict.level === 'quiet') {
       gated.quietSetup++;
       continue;
