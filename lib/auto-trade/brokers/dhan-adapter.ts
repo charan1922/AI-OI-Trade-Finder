@@ -104,11 +104,18 @@ export class DhanAdapter implements BrokerAdapter {
   }
 
   async placeMarketOrder(ticket: OrderTicket): Promise<PlacedOrder> {
+    // Dhan's live API rejects any correlationId with non-alphanumeric chars
+    // ("400: Invalid correlationId") even though the OpenAPI spec only caps
+    // length at 30. Our idemKey has colons/hyphens (e.g. 2026-07-13:LTF:CE:…),
+    // so strip to alphanumerics. Determinism is preserved (same idemKey → same
+    // id); real idempotency is enforced by the auto_orders UNIQUE idemKey, not
+    // by this broker-side tracking tag.
+    const correlationId = ticket.idemKey.replace(/[^a-zA-Z0-9]/g, '').slice(0, 25);
     const data = await dhanFetch('/orders', {
       method: 'POST',
       body: {
         dhanClientId: env.DHAN_CLIENT_ID,
-        correlationId: ticket.idemKey.slice(0, 25),
+        correlationId,
         transactionType: ticket.side,
         exchangeSegment: 'NSE_FNO',
         productType: 'INTRADAY',

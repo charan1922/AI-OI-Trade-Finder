@@ -94,6 +94,13 @@ async function ensureTables(): Promise<void> {
  *  expired / failed never held a position and never count. */
 const COUNTED_STATUSES: TradeStatus[] = ['pending_approval', 'open', 'closed'];
 
+/** Statuses that block a SECOND entry attempt for the same symbol today. Adds
+ *  'failed' to the counted set: one shot per symbol per day. A failed entry
+ *  does NOT burn the daily cap (see COUNTED_STATUSES), but it must not be
+ *  re-attempted every cycle — that retry storm is what created a phantom
+ *  'open' row (a re-insert collided on the entry idempotency key). */
+const SYMBOL_LOCK_STATUSES: TradeStatus[] = [...COUNTED_STATUSES, 'failed'];
+
 export interface NewTrade {
   date: string;
   symbol: string;
@@ -221,7 +228,7 @@ export async function countEntriesToday(date: string): Promise<number> {
 export async function symbolTradedToday(date: string, symbol: string): Promise<boolean> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(
-    `SELECT 1 FROM auto_trades WHERE date = ? AND symbol = ? AND status IN ('${COUNTED_STATUSES.join("','")}') LIMIT 1`,
+    `SELECT 1 FROM auto_trades WHERE date = ? AND symbol = ? AND status IN ('${SYMBOL_LOCK_STATUSES.join("','")}') LIMIT 1`,
     date, symbol,
   )) as unknown[];
   return rows.length > 0;

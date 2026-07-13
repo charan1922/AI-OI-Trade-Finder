@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { approveTrade, rejectTrade } from '@/lib/auto-trade/approval';
 import { runAutoTradePass } from '@/lib/auto-trade/engine';
 import { exitTrade } from '@/lib/auto-trade/execution';
-import { getTrade, insertDecision } from '@/lib/auto-trade/store';
+import { getTrade, insertDecision, updateTrade } from '@/lib/auto-trade/store';
 import { todayIST } from '@/lib/dhan/market-feed';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
 
@@ -51,6 +51,37 @@ export async function POST(req: Request) {
         completionTokens: null,
       });
       return NextResponse.json({ success: outcome.ok, message: outcome.message });
+    }
+
+    if (action === 'void') {
+      // Clear a stuck 'open' trade that never confirmed a broker fill (a
+      // never-opened phantom). SAFE because there is no real position: we mark
+      // it failed WITHOUT placing any broker order. Refused for a trade that
+      // actually filled — that must be closed via 'exit' so the sell is real.
+      const tradeId = Number(body.tradeId);
+      const trade = Number.isFinite(tradeId) ? await getTrade(tradeId) : null;
+      if (!trade) return NextResponse.json({ success: false, error: 'unknown tradeId' }, { status: 400 });
+      if (trade.status !== 'open') {
+        return NextResponse.json({ success: false, error: `trade ${tradeId} is ${trade.status}, not open` }, { status: 400 });
+      }
+      if (trade.entryFillPremium != null) {
+        return NextResponse.json(
+          { success: false, error: 'trade has a confirmed fill — use Exit (real sell), not void' },
+          { status: 400 },
+        );
+      }
+      await updateTrade(tradeId, { status: 'failed', exitReason: 'voided by operator: entry never confirmed (no broker fill)' });
+      await insertDecision({
+        date: todayIST(),
+        pass: 'system',
+        provider: null,
+        model: null,
+        summary: `Operator voided unfilled trade ${trade.symbol} ${trade.strike}${trade.optionType} (no real position)`,
+        toolTrace: [],
+        promptTokens: null,
+        completionTokens: null,
+      });
+      return NextResponse.json({ success: true, message: `voided unfilled trade ${tradeId}` });
     }
 
     if (action === 'run-pass') {

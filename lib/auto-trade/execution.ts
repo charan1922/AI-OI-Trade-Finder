@@ -59,24 +59,40 @@ export async function placeEntryOrder(
   settings: AutoTradeSettings,
   executionMode: TradeMode,
 ): Promise<ExecOutcome> {
-  const idemKey = `${trade.date}:${trade.symbol}:${trade.optionType}:entry`;
+  // Per-trade key (symmetric with the exit key `…:exit:${id}`). A prior
+  // rejected attempt for the same symbol leaves its own order row holding the
+  // OLD key — a non-scoped key would collide on the UNIQUE constraint here and,
+  // because insertOrder runs before this function's try/catch, throw AFTER the
+  // trade row was inserted 'open' → an orphaned phantom position. Scoping by
+  // trade.id makes each attempt's key distinct; the store still blocks a true
+  // double-placement for the SAME trade row.
+  const idemKey = `${trade.date}:${trade.symbol}:${trade.optionType}:entry:${trade.id}`;
   if (await orderExistsForKey(idemKey)) {
-    return { ok: false, message: `entry order for ${trade.symbol} already exists today (idempotency)` };
+    return { ok: false, message: `entry order for ${trade.symbol} already exists (idempotency)` };
   }
   const adapter = getExecutionAdapter(settings, executionMode);
   const ticket = ticketFromTrade(trade, 'BUY', idemKey);
-  const orderId = await insertOrder({
-    tradeId: trade.id,
-    idemKey,
-    broker: adapter.id,
-    mode: executionMode,
-    side: 'BUY',
-    qtyUnits: ticketQtyUnits(ticket),
-    brokerOrderId: null,
-    status: 'sent',
-    avgFillPrice: null,
-    error: null,
-  });
+  let orderId: number;
+  try {
+    orderId = await insertOrder({
+      tradeId: trade.id,
+      idemKey,
+      broker: adapter.id,
+      mode: executionMode,
+      side: 'BUY',
+      qtyUnits: ticketQtyUnits(ticket),
+      brokerOrderId: null,
+      status: 'sent',
+      avgFillPrice: null,
+      error: null,
+    });
+  } catch (err) {
+    // Could not even record the order — the trade row must NOT linger 'open'
+    // with no live broker order behind it (that was the phantom).
+    const message = (err as Error).message;
+    await updateTrade(trade.id, { status: 'failed', exitReason: `entry not placed: ${message}` });
+    return { ok: false, message: `entry not placed: ${message}` };
+  }
 
   let placed: { brokerOrderId: string; immediateFillPrice?: number };
   try {

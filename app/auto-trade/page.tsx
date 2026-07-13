@@ -46,6 +46,16 @@ interface TradeRow {
   aiReasonExit: string | null;
   realizedPnlRupees: number | null;
   proposedAt: string;
+  orders?: OrderRow[];
+}
+interface OrderRow {
+  id: number;
+  side: string;
+  status: string;
+  brokerOrderId: string | null;
+  avgFillPrice: number | null;
+  error: string | null;
+  createdAt: string;
 }
 interface DecisionRow {
   id: number;
@@ -237,6 +247,21 @@ function TradeCard({ trade, onAction, busy }: { trade: TradeRow; onAction: (acti
       </div>
       <div className="mt-1.5 text-xs text-foreground/90">{trade.aiReasonEntry}</div>
       {trade.exitReason && <div className="mt-0.5 text-[11px] text-muted-foreground">exit: {trade.exitReason}</div>}
+      {trade.orders && trade.orders.length > 0 && (
+        <div className="mt-2 rounded border border-border/60 bg-muted/40 p-2 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+          <div className="mb-0.5 font-sans font-semibold uppercase tracking-wide text-[9px] text-muted-foreground/80">Order log</div>
+          {trade.orders.map((o) => (
+            <div key={o.id} className="flex flex-wrap gap-x-2">
+              <span className="text-foreground/80">{fmtTime(o.createdAt)}</span>
+              <span className={o.side === 'BUY' ? 'text-sky-600 dark:text-sky-400' : 'text-amber-600 dark:text-amber-400'}>{o.side}</span>
+              <span className={o.status === 'filled' ? 'text-emerald-600 dark:text-emerald-400' : o.status === 'rejected' || o.status === 'cancelled' ? 'text-red-600 dark:text-red-400' : ''}>{o.status}</span>
+              {o.brokerOrderId && <span>#{o.brokerOrderId}</span>}
+              {o.avgFillPrice != null && <span>@₹{o.avgFillPrice}</span>}
+              {o.error && <span className="w-full text-red-600 dark:text-red-400">↳ {o.error}</span>}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="mt-2 flex gap-2">
         {trade.status === 'pending_approval' && (
           <>
@@ -258,7 +283,7 @@ function TradeCard({ trade, onAction, busy }: { trade: TradeRow; onAction: (acti
             </button>
           </>
         )}
-        {trade.status === 'open' && (
+        {trade.status === 'open' && trade.entryFillPremium != null && (
           <button
             type="button"
             disabled={busy}
@@ -266,6 +291,17 @@ function TradeCard({ trade, onAction, busy }: { trade: TradeRow; onAction: (acti
             className="rounded border border-red-500/60 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-500/10 disabled:opacity-50 dark:text-red-400"
           >
             Exit now at market
+          </button>
+        )}
+        {trade.status === 'open' && trade.entryFillPremium == null && (
+          <button
+            type="button"
+            disabled={busy}
+            title="This entry never confirmed a broker fill — there is no real position. Void clears it without placing any order."
+            onClick={() => onAction('void', trade.id)}
+            className="rounded border border-amber-500/60 px-3 py-1 text-xs font-semibold text-amber-600 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-400"
+          >
+            Void — no fill confirmed
           </button>
         )}
       </div>
@@ -329,6 +365,7 @@ export default function AutoTradePage() {
     async (action: string, tradeId?: number) => {
       if (action === 'exit' && !window.confirm('Exit this position at market now?')) return;
       if (action === 'approve' && !window.confirm('Approve and place a REAL order at the broker?')) return;
+      if (action === 'void' && !window.confirm('Void this unfilled trade? No broker order is placed — it just clears a row that never confirmed a fill.')) return;
       setBusy(true);
       setNotice(null);
       try {

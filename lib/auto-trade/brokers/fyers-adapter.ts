@@ -99,7 +99,10 @@ export class FyersAdapter implements BrokerAdapter {
       validity: 'DAY',
       disclosedQty: 0,
       offlineOrder: false,
-      orderTag: ticket.idemKey.slice(0, 20),
+      // Fyers orderTag is alphanumeric only (and shouldn't lead with a digit) —
+      // our idemKey has colons/hyphens, so strip and prefix a letter. Mirrors
+      // the Dhan correlationId fix; real idempotency is the DB UNIQUE idemKey.
+      orderTag: `t${ticket.idemKey.replace(/[^a-zA-Z0-9]/g, '')}`.slice(0, 20),
     };
     let res: Record<string, unknown>;
     try {

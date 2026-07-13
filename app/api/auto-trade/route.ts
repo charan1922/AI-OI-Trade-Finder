@@ -8,6 +8,7 @@ import {
   dailyRealizedPnl,
   getDecisions,
   getExposure,
+  getOrdersForTrade,
   getPendingApprovals,
   getTradesByDate,
 } from '@/lib/auto-trade/store';
@@ -33,6 +34,11 @@ export async function GET(req: Request) {
       await getExposure(date),
       await dailyRealizedPnl(date),
     ];
+    // Attach each trade's broker orders so the console can show why an entry
+    // failed / where it stands (broker order id, status, fill, error).
+    const tradesWithOrders = await Promise.all(
+      trades.map(async (t) => ({ ...t, orders: await getOrdersForTrade(t.id) })),
+    );
     return NextResponse.json({
       success: true,
       date,
@@ -47,7 +53,7 @@ export async function GET(req: Request) {
         deployedRupees: exposure.deployedRupees,
         realizedPnlRupees: pnl,
       },
-      trades,
+      trades: tradesWithOrders,
       pending,
       decisions,
     });

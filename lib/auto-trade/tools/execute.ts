@@ -269,7 +269,17 @@ export async function executeAutoTradeTool(
       }
       const trade = await getTrade(tradeId);
       if (!trade) throw new Error(`trade ${tradeId} vanished after insert`);
-      const outcome = await placeEntryOrder(trade, rt.settings, rt.settings.mode);
+      // Safety net: a live trade row is already 'open' at this point. If
+      // placement throws unexpectedly, fail the trade so it can never linger
+      // as a phantom 'open' position with no broker order behind it.
+      let outcome: { ok: boolean; message: string };
+      try {
+        outcome = await placeEntryOrder(trade, rt.settings, rt.settings.mode);
+      } catch (err) {
+        const message = (err as Error).message;
+        await updateTrade(tradeId, { status: 'failed', exitReason: `entry crashed: ${message}` });
+        outcome = { ok: false, message: `entry crashed: ${message}` };
+      }
       const result = { placed: outcome.ok, tradeId, message: outcome.message };
       return { result, trace: { name, args, ok: outcome.ok, summary: `${symbol}: ${outcome.message}` } };
     }

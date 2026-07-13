@@ -43,6 +43,12 @@ export async function runPositionGuard(date: string): Promise<string[]> {
   const squareOff = isPastSquareOff(minuteOfDayIST());
 
   for (const trade of open) {
+    // A trade is 'open' only briefly before its entry fill is confirmed
+    // (reconcile / the entry poll resolves it). NEVER try to exit one with no
+    // confirmed fill — there is no real position to sell, and a SELL here would
+    // open a naked short at the broker. Leave it for reconcile to settle/fail.
+    if (trade.entryFillPremium == null) continue;
+
     let reason: string | null = null;
 
     if (squareOff) {
