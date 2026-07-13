@@ -46,11 +46,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // 4. Dispatch command
-  const response = await handleTelegramMessage(text, chatId);
+  const result = await handleTelegramMessage(text, chatId);
 
-  // 5. Reply to the user
-  if (response) {
-    sendMessageTo(chatId, response, { parse_mode: 'Markdown' });
+  // 5. Reply to the user (with inline keyboard if provided)
+  if (result) {
+    const options: Record<string, unknown> = { parse_mode: 'Markdown' };
+    if (result.reply_markup) options.reply_markup = result.reply_markup;
+    sendMessageTo(chatId, result.text, options as import('@/lib/telegram/bot').SendMessageOptions);
   }
 
   // Telegram requires 200 OK

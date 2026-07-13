@@ -2,8 +2,8 @@
  * Telegram bot command handlers — processes incoming messages from the webhook
  * and dispatches auto-trade queries / controls.
  *
- * All handlers are async and return a text string that the caller sends back
- * to the user. No side effects beyond what's explicitly described.
+ * All handlers are async and return { text, reply_markup? } that the caller
+ * sends back to the user. No side effects beyond what's explicitly described.
  */
 
 import { getAutoTradeSettings, setAutoTradeSetting } from '@/lib/auto-trade/settings';
@@ -12,10 +12,19 @@ import { nowIST, todayIST } from '@/lib/ist';
 import type { AutoTradeSettings } from '@/lib/auto-trade/types';
 
 /* ------------------------------------------------------------------ */
-/*  Command registry                                                   */
+/*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Handler = (args: string, chatId: number) => Promise<string>;
+interface HandlerResult {
+  text: string;
+  reply_markup?: Record<string, unknown>;
+}
+
+type Handler = (args: string, chatId: number) => Promise<HandlerResult>;
+
+/* ------------------------------------------------------------------ */
+/*  Command registry                                                   */
+/* ------------------------------------------------------------------ */
 
 const commands = new Map<string, { handler: Handler; description: string }>();
 
@@ -24,15 +33,66 @@ function register(cmd: string, description: string, handler: Handler) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Inline keyboard builders                                           */
+/* ------------------------------------------------------------------ */
+
+/** Quick-action buttons shown after most commands. */
+function quickActionsKeyboard(): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [
+        { text: '📊 Status', callback_data: '/status' },
+        { text: '📈 Positions', callback_data: '/positions' },
+        { text: '💰 P&L', callback_data: '/pnl' },
+      ],
+      [
+        { text: '📋 Trades', callback_data: '/trades' },
+        { text: '🤖 Decisions', callback_data: '/decisions' },
+      ],
+      [
+        { text: '🚨 Kill', callback_data: '/kill' },
+        { text: '✅ Unkill', callback_data: '/unkill' },
+      ],
+    ],
+  };
+}
+
+/** Full command list keyboard for /start and /help. */
+function helpKeyboard(): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [
+        { text: '📊 Status', callback_data: '/status' },
+        { text: '📈 Positions', callback_data: '/positions' },
+        { text: '💰 P&L', callback_data: '/pnl' },
+      ],
+      [
+        { text: '📋 Trades', callback_data: '/trades' },
+        { text: '🤖 Decisions', callback_data: '/decisions' },
+      ],
+      [
+        { text: '🚨 Kill', callback_data: '/kill' },
+        { text: '✅ Unkill', callback_data: '/unkill' },
+      ],
+      [
+        { text: '📝 Paper', callback_data: '/mode paper' },
+        { text: '👀 Approval', callback_data: '/mode approval' },
+        { text: '🔥 Live', callback_data: '/mode live' },
+      ],
+    ],
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Command implementations                                            */
 /* ------------------------------------------------------------------ */
 
 register('/start', 'Show available commands', async () => {
-  return helpText();
+  return { text: helpText(), reply_markup: helpKeyboard() };
 });
 
 register('/help', 'Show available commands', async () => {
-  return helpText();
+  return { text: helpText(), reply_markup: helpKeyboard() };
 });
 
 register('/status', 'Auto-trade engine status', async () => {
@@ -63,12 +123,12 @@ register('/status', 'Auto-trade engine status', async () => {
     lines.push(`  • ${t.symbol} ${t.optionType} ${t.strike} — ${t.lots} lot(s) @ ₹${t.entryFillPremium ?? t.entryPremium}`);
   }
 
-  return lines.join('\n');
+  return { text: lines.join('\n'), reply_markup: quickActionsKeyboard() };
 });
 
 register('/positions', 'Open positions', async () => {
   const openTrades = await getOpenTrades();
-  if (openTrades.length === 0) return '📭 No open positions.';
+  if (openTrades.length === 0) return { text: '📭 No open positions.', reply_markup: quickActionsKeyboard() };
 
   const lines = ['📈 *Open Positions*\n'];
   for (const t of openTrades) {
@@ -81,13 +141,13 @@ register('/positions', 'Open positions', async () => {
       `  Reason: ${t.aiReasonEntry.slice(0, 120)}`,
     );
   }
-  return lines.join('\n');
+  return { text: lines.join('\n'), reply_markup: quickActionsKeyboard() };
 });
 
 register('/trades', 'Today\'s trade history', async () => {
   const date = todayIST();
   const trades = await getTradesByDate(date);
-  if (trades.length === 0) return '📭 No trades today.';
+  if (trades.length === 0) return { text: '📭 No trades today.', reply_markup: quickActionsKeyboard() };
 
   const lines = [`📋 *Today's Trades* (${date})\n`];
   for (const t of trades) {
@@ -97,37 +157,37 @@ register('/trades', 'Today\'s trade history', async () => {
     const pnlStr = t.realizedPnlRupees != null ? ` | P&L ₹${t.realizedPnlRupees}` : '';
     lines.push(`${emoji} *${t.symbol}* ${t.optionType} ${t.strike} — ₹${entry}${exitStr}${pnlStr} [${t.status}]`);
   }
-  return lines.join('\n');
+  return { text: lines.join('\n'), reply_markup: quickActionsKeyboard() };
 });
 
 register('/decisions', 'Recent AI decisions', async () => {
   const date = todayIST();
   const decisions = await getDecisions(date, 5);
-  if (decisions.length === 0) return '📭 No AI decisions today.';
+  if (decisions.length === 0) return { text: '📭 No AI decisions today.', reply_markup: quickActionsKeyboard() };
 
   const lines = ['🤖 *Recent AI Decisions*\n'];
   for (const d of decisions) {
     lines.push(`[${d.pass}] ${d.at.slice(11, 19)} — ${d.summary.slice(0, 200)}`);
   }
-  return lines.join('\n');
+  return { text: lines.join('\n'), reply_markup: quickActionsKeyboard() };
 });
 
-register('/kill', 'Activate kill switch (halt new orders)', async (args, chatId) => {
+register('/kill', 'Activate kill switch (halt new orders)', async () => {
   const settings = await getAutoTradeSettings();
   if (settings.killSwitch) {
-    return '⚠️ Kill switch is already *ON*. No new orders will be placed.\nUse /unkill to deactivate.';
+    return { text: '⚠️ Kill switch is already *ON*. No new orders will be placed.\nUse /unkill to deactivate.', reply_markup: quickActionsKeyboard() };
   }
   await setAutoTradeSetting('killSwitch', '1');
-  return '🚨 *Kill switch ACTIVATED*\nNo new orders will be placed. Open positions still guarded.\nUse /unkill to deactivate.';
+  return { text: '🚨 *Kill switch ACTIVATED*\nNo new orders will be placed. Open positions still guarded.\nUse /unkill to deactivate.', reply_markup: quickActionsKeyboard() };
 });
 
 register('/unkill', 'Deactivate kill switch', async () => {
   const settings = await getAutoTradeSettings();
   if (!settings.killSwitch) {
-    return '✅ Kill switch is already *OFF*. Orders can be placed normally.';
+    return { text: '✅ Kill switch is already *OFF*. Orders can be placed normally.', reply_markup: quickActionsKeyboard() };
   }
   await setAutoTradeSetting('killSwitch', '0');
-  return '✅ *Kill switch DEACTIVATED*\nNew orders can now be placed.';
+  return { text: '✅ *Kill switch DEACTIVATED*\nNew orders can now be placed.', reply_markup: quickActionsKeyboard() };
 });
 
 register('/mode', 'Check or change trading mode', async (args) => {
@@ -136,15 +196,15 @@ register('/mode', 'Check or change trading mode', async (args) => {
 
   if (!trimmed) {
     const settings = await getAutoTradeSettings();
-    return `Current mode: *${modeLabel(settings)}*\n\nChange with: /mode off|paper|approval|live`;
+    return { text: `Current mode: *${modeLabel(settings)}*\n\nChange with: /mode off|paper|approval|live`, reply_markup: quickActionsKeyboard() };
   }
 
   if (!validModes.includes(trimmed as typeof validModes[number])) {
-    return `❌ Invalid mode "${trimmed}". Valid: ${validModes.join(', ')}`;
+    return { text: `❌ Invalid mode "${trimmed}". Valid: ${validModes.join(', ')}`, reply_markup: quickActionsKeyboard() };
   }
 
   const settings = await setAutoTradeSetting('mode', trimmed);
-  return `✅ Mode changed to *${modeLabel(settings)}*`;
+  return { text: `✅ Mode changed to *${modeLabel(settings)}*`, reply_markup: quickActionsKeyboard() };
 });
 
 register('/pnl', 'Daily P&L summary', async () => {
@@ -165,7 +225,7 @@ register('/pnl', 'Daily P&L summary', async () => {
     `Win/Loss: ${wins}W / ${losses}L`,
     `Total trades: ${trades.length}`,
   ];
-  return lines.join('\n');
+  return { text: lines.join('\n'), reply_markup: quickActionsKeyboard() };
 });
 
 /* ------------------------------------------------------------------ */
@@ -173,15 +233,15 @@ register('/pnl', 'Daily P&L summary', async () => {
 /* ------------------------------------------------------------------ */
 
 /**
- * Process an incoming Telegram text message.
+ * Process an incoming Telegram text message or callback_data.
  * If it starts with '/', dispatch to the matching handler.
  * Otherwise, ignore (or add free-text handling later).
- * Returns the response text to send back to the user.
+ * Returns { text, reply_markup? } for the caller to send.
  */
 export async function handleTelegramMessage(
   text: string,
   chatId: number,
-): Promise<string | null> {
+): Promise<HandlerResult | null> {
   if (!text.startsWith('/')) return null;
 
   // Split "/cmd args" — strip bot username suffix like /status@MyBot
@@ -192,14 +252,14 @@ export async function handleTelegramMessage(
 
   const entry = commands.get(cmd);
   if (!entry) {
-    return `❓ Unknown command: ${cmd}\n\nType /help for available commands.`;
+    return { text: `❓ Unknown command: ${cmd}\n\nType /help for available commands.` };
   }
 
   try {
     return await entry.handler(args, chatId);
   } catch (err) {
     console.error(`[TelegramHandlers] ${cmd} error:`, err);
-    return `❌ Error executing ${cmd}: ${(err as Error).message}`;
+    return { text: `❌ Error executing ${cmd}: ${(err as Error).message}` };
   }
 }
 
@@ -216,6 +276,7 @@ function helpText(): string {
     lines.push(`${cmd} — ${description}`);
   }
   lines.push(`\nAlerts are sent automatically for trade events.`);
+  lines.push(`\nTap a button below for quick actions 👇`);
   return lines.join('\n');
 }
 
