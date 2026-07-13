@@ -1,4 +1,4 @@
-/**
+teler/**
  * Tool executors — where the AI's requests meet the hard gates. Every mutating
  * tool re-validates EVERYTHING in code (risk/gates.ts) against fresh DB state
  * and fresh quotes; the model's arguments are treated as untrusted input.
@@ -261,6 +261,9 @@ export async function executeAutoTradeTool(
         aiReasonEntry: reason,
       });
       if (rt.settings.mode === 'approval') {
+        // Push approval alert with Approve/Reject buttons to Telegram
+        const { alerts } = await import('@/lib/auto-trade/alerts');
+        alerts.approvalRequested(tradeId, pick.symbol, pick.option.optionType, pick.option.strike, entryPremium, reason);
         const result = {
           placed: false,
           queued: true,

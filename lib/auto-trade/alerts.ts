@@ -14,6 +14,7 @@
 
 import { env } from '@/lib/env';
 import { sendMessage, isTelegramConfigured } from '@/lib/telegram';
+import type { SendMessageOptions } from '@/lib/telegram/bot';
 
 const TAG = '[AutoTradeAlert]';
 
@@ -50,6 +51,29 @@ export const alerts = {
 
   tradeExited: (symbol: string, reason: string, pnl: number | null) =>
     sendAlert(`🔴 EXIT ${symbol}: ${reason}${pnl != null ? ` (P&L ₹${pnl})` : ''}`),
+
+  /** Send a pending-approval alert with inline Approve / Reject buttons. */
+  approvalRequested: (tradeId: number, symbol: string, optionType: string, strike: number, premium: number | null, reason: string) => {
+    const premiumStr = premium != null ? ` @ ₹${premium}` : '';
+    const text =
+      `⏳ *APPROVAL NEEDED* #${tradeId}\n\n` +
+      `*${symbol}* ${optionType} ${strike}${premiumStr}\n` +
+      `Reason: ${reason.slice(0, 200)}\n\n` +
+      `⏰ Expires in a few minutes — tap a button below:`;
+    const options: SendMessageOptions = {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: `✅ Approve #${tradeId}`, callback_data: `/approve ${tradeId}` },
+            { text: `❌ Reject #${tradeId}`, callback_data: `/reject ${tradeId}` },
+          ],
+        ],
+      },
+    };
+    if (!isTelegramConfigured()) return;
+    sendMessage(text, options);
+  },
 
   killSwitchActivated: () =>
     sendAlert(`🚨 KILL SWITCH activated — no new orders`),

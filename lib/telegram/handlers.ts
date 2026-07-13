@@ -4,10 +4,15 @@
  *
  * All handlers are async and return { text, reply_markup? } that the caller
  * sends back to the user. No side effects beyond what's explicitly described.
+ *
+ * Destructive commands (kill, unkill, mode change, approve, reject) are
+ * restricted to the operator chat (TELEGRAM_CHAT_ID).
  */
 
+import { approveTrade, rejectTrade } from '@/lib/auto-trade/approval';
 import { getAutoTradeSettings, setAutoTradeSetting } from '@/lib/auto-trade/settings';
 import { getOpenTrades, getTradesByDate, dailyRealizedPnl, getExposure, countEntriesToday, getDecisions } from '@/lib/auto-trade/store';
+import { env } from '@/lib/env';
 import { nowIST, todayIST } from '@/lib/ist';
 import type { AutoTradeSettings } from '@/lib/auto-trade/types';
 
@@ -21,6 +26,17 @@ interface HandlerResult {
 }
 
 type Handler = (args: string, chatId: number) => Promise<HandlerResult>;
+
+/* ------------------------------------------------------------------ */
+/*  Operator guard                                                     */
+/* ------------------------------------------------------------------ */
+
+/** True if chatId matches the configured operator (TELEGRAM_CHAT_ID). */
+function isOperator(chatId: number): boolean {
+  const opChatId = env.TELEGRAM_CHAT_ID;
+  if (!opChatId) return true; // no restriction if not configured
+  return chatId === Number(opChatId);
+}
 
 /* ------------------------------------------------------------------ */
 /*  Command registry                                                   */
@@ -172,7 +188,34 @@ register('/decisions', 'Recent AI decisions', async () => {
   return { text: lines.join('\n'), reply_markup: quickActionsKeyboard() };
 });
 
-register('/kill', 'Activate kill switch (halt new orders)', async () => {
+register('/approve', 'Approve a pending trade', async (args, chatId) => {
+  if (!isOperator(chatId)) {
+    return { text: '❌ Operator-only command.' };
+  }
+  const tradeId = Number(args.trim());
+  if (!Number.isFinite(tradeId)) {
+    return { text: 'Usage: /approve <tradeId>', reply_markup: quickActionsKeyboard() };
+  }
+  const outcome = await approveTrade(tradeId);
+  return { text: outcome.ok ? `✅ ${outcome.message}` : `❌ ${outcome.message}`, reply_markup: quickActionsKeyboard() };
+});
+
+register('/reject', 'Reject a pending trade', async (args, chatId) => {
+  if (!isOperator(chatId)) {
+    return { text: '❌ Operator-only command.' };
+  }
+  const tradeId = Number(args.trim());
+  if (!Number.isFinite(tradeId)) {
+    return { text: 'Usage: /reject <tradeId>', reply_markup: quickActionsKeyboard() };
+  }
+  const outcome = await rejectTrade(tradeId);
+  return { text: outcome.ok ? `✅ ${outcome.message}` : `❌ ${outcome.message}`, reply_markup: quickActionsKeyboard() };
+});
+
+register('/kill', 'Activate kill switch (halt new orders)', async (_args, chatId) => {
+  if (!isOperator(chatId)) {
+    return { text: '❌ Operator-only command.' };
+  }
   const settings = await getAutoTradeSettings();
   if (settings.killSwitch) {
     return { text: '⚠️ Kill switch is already *ON*. No new orders will be placed.\nUse /unkill to deactivate.', reply_markup: quickActionsKeyboard() };
@@ -181,7 +224,10 @@ register('/kill', 'Activate kill switch (halt new orders)', async () => {
   return { text: '🚨 *Kill switch ACTIVATED*\nNo new orders will be placed. Open positions still guarded.\nUse /unkill to deactivate.', reply_markup: quickActionsKeyboard() };
 });
 
-register('/unkill', 'Deactivate kill switch', async () => {
+register('/unkill', 'Deactivate kill switch', async (_args, chatId) => {
+  if (!isOperator(chatId)) {
+    return { text: '❌ Operator-only command.' };
+  }
   const settings = await getAutoTradeSettings();
   if (!settings.killSwitch) {
     return { text: '✅ Kill switch is already *OFF*. Orders can be placed normally.', reply_markup: quickActionsKeyboard() };
@@ -190,13 +236,17 @@ register('/unkill', 'Deactivate kill switch', async () => {
   return { text: '✅ *Kill switch DEACTIVATED*\nNew orders can now be placed.', reply_markup: quickActionsKeyboard() };
 });
 
-register('/mode', 'Check or change trading mode', async (args) => {
+register('/mode', 'Check or change trading mode', async (args, chatId) => {
   const trimmed = args.trim();
   const validModes = ['off', 'paper', 'approval', 'live'] as const;
 
   if (!trimmed) {
     const settings = await getAutoTradeSettings();
     return { text: `Current mode: *${modeLabel(settings)}*\n\nChange with: /mode off|paper|approval|live`, reply_markup: quickActionsKeyboard() };
+  }
+
+  if (!isOperator(chatId)) {
+    return { text: '❌ Operator-only command (mode change).' };
   }
 
   if (!validModes.includes(trimmed as typeof validModes[number])) {
@@ -275,6 +325,7 @@ function helpText(): string {
   for (const [cmd, { description }] of commands) {
     lines.push(`${cmd} — ${description}`);
   }
+  lines.push(`\n🔒 Kill, Unkill, Mode change, Approve, Reject — operator only.`);
   lines.push(`\nAlerts are sent automatically for trade events.`);
   lines.push(`\nTap a button below for quick actions 👇`);
   return lines.join('\n');
