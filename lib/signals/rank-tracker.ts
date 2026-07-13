@@ -190,7 +190,7 @@ export interface RaceResult {
  * local rank_snapshots only. Uses the same MIN_HEALTHY bucket guard as
  * getClimbers so a partially-captured cycle can't distort the baseline.
  */
-export async function getRaceSinceOpen(date: string, feed: RankFeed, limit = 20): Promise<RaceResult> {
+export async function getRaceSinceOpen(date: string, feed: RankFeed, limit = 20, maxRank = 20): Promise<RaceResult> {
   await ensureRankSnapshotTable();
   const empty: RaceResult = { feed, date, openTs: null, latestTs: null, bucketTimes: [], runners: [], newEntrants: [] };
 
@@ -239,6 +239,7 @@ export async function getRaceSinceOpen(date: string, feed: RankFeed, limit = 20)
   for (const [symbol, track] of trackBy) {
     const rankNow = track[lastIdx];
     if (rankNow == null) continue; // dropped off the latest board — not in the current race
+    if (rankNow > maxRank) continue; // the race is the FINAL top-N — only names now near the front
     const rankOpen = track[0];
     const valueNow = valueNowBy.get(symbol) ?? 0;
     if (rankOpen == null) {

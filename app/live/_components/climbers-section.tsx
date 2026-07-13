@@ -60,19 +60,20 @@ function RunnerRow({ c, feed }: { c: RaceRunner; feed: RankFeed }) {
       onClick={() =>
         window.open(`https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(c.symbol)}&interval=5`, '_blank', 'noopener,noreferrer')
       }
-      title={`${c.symbol} — from #${c.rankOpen} at open to #${c.rankNow} now (${c.deltaSinceOpen} spots) · ${fmtValue(feed, c.valueNow)}. Open chart.`}
-      className="flex cursor-pointer items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 hover:bg-muted/60"
+      title={`${c.symbol} — now #${c.rankNow}, from #${c.rankOpen} at open (climbed ${c.deltaSinceOpen}) · ${fmtValue(feed, c.valueNow)}. Open chart.`}
+      className="flex cursor-pointer items-center gap-1.5 rounded border border-border bg-muted/30 px-1.5 py-0.5 hover:bg-muted/60"
     >
-      <span className={`flex w-8 items-center gap-0.5 font-bold ${climbed ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-        {climbed ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
+      {/* Headline = current rank (always within the top 20). */}
+      <span className="w-7 shrink-0 text-center text-[12px] font-bold tabular-nums text-foreground">#{c.rankNow}</span>
+      <span className="w-14 truncate text-[10.5px] font-medium text-foreground">{c.symbol}</span>
+      {/* Climb since open — secondary. */}
+      <span className={`flex shrink-0 items-center gap-0.5 text-[9.5px] tabular-nums ${climbed ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+        {climbed ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />}
         {Math.abs(c.deltaSinceOpen ?? 0)}
       </span>
-      <span className="w-16 truncate font-medium text-foreground">{c.symbol}</span>
-      <span className="text-[10px] text-muted-foreground">
-        #{c.rankOpen}→<b className="text-foreground">#{c.rankNow}</b>
-      </span>
+      <span className="text-[9px] text-muted-foreground">from #{c.rankOpen}</span>
       <RankSparkline track={c.track} climbed={climbed} />
-      <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">{fmtValue(feed, c.valueNow)}</span>
+      <span className="ml-auto text-[9.5px] tabular-nums text-muted-foreground">{fmtValue(feed, c.valueNow)}</span>
     </div>
   );
 }
@@ -100,7 +101,7 @@ export function ClimbersSection({ refreshSignal }: { refreshSignal: number }) {
         <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />
         <h2 className="text-[12px] font-semibold uppercase tracking-wide text-foreground">Running race</h2>
         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-          climbing since open{checks > 0 ? ` · ${checks} checks` : ''}
+          into the top 20 · since open{checks > 0 ? ` · ${checks} checks` : ''}
         </span>
         <div className="ml-auto flex items-center gap-0.5 rounded-lg border border-border p-0.5">
           {FEEDS.map((f) => (
