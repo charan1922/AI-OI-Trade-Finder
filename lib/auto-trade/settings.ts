@@ -19,7 +19,6 @@ import type { AiProvider, AutoTradeSettings, BrokerId, TradeMode } from './types
 const MODES: TradeMode[] = ['off', 'paper', 'approval', 'live'];
 const BROKERS: BrokerId[] = ['fyers', 'dhan'];
 const PROVIDERS: AiProvider[] = ['azure', 'mimo'];
-const BOOL_KEYS = ['killSwitch', 'telegramAlerts'] as const;
 
 interface SettingDef {
   key: keyof AutoTradeSettings;

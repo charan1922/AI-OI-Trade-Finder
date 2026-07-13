@@ -1,4 +1,4 @@
-teler/**
+/**
  * Tool executors — where the AI's requests meet the hard gates. Every mutating
  * tool re-validates EVERYTHING in code (risk/gates.ts) against fresh DB state
  * and fresh quotes; the model's arguments are treated as untrusted input.
