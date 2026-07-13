@@ -153,44 +153,47 @@ export async function recordRankSnapshot(date: string, nowMs: number = Date.now(
   }
 }
 
-export interface Climber {
+export interface RaceRunner {
   symbol: string;
+  /** Rank in the latest (most recent) 5-min check. */
   rankNow: number;
-  /** Rank `windowMin` ago; null when the name wasn't on the board then (new entrant). */
-  rankThen: number | null;
-  /** Positive = climbed (rank improved). Null for new entrants. */
-  delta: number | null;
+  /** Rank at market open (the day's first healthy bucket); null = joined later. */
+  rankOpen: number | null;
+  /** rankOpen − rankNow. Positive = climbed since open. Null for new entrants. */
+  deltaSinceOpen: number | null;
   valueNow: number;
   isNew: boolean;
+  /** Rank at each healthy 5-min check, aligned to `bucketTimes` (null where the
+   *  name wasn't in the top-N that check). The sparkline "track". */
+  track: (number | null)[];
 }
 
-export interface ClimbersResult {
+export interface RaceResult {
   feed: RankFeed;
   date: string;
-  /** Latest snapshot time (epoch seconds) and the baseline it's compared against. */
+  /** Market-open baseline bucket and the latest bucket (epoch seconds). */
+  openTs: number | null;
   latestTs: number | null;
-  baselineTs: number | null;
-  windowMin: number;
-  climbers: Climber[];
-  /** Names new to the board within the window (surfaced separately, never as huge climbs). */
-  newEntrants: Climber[];
+  /** Every healthy 5-min checkpoint today (epoch seconds), oldest → newest. */
+  bucketTimes: number[];
+  /** Climbers since open, biggest gain first. */
+  runners: RaceRunner[];
+  /** Names that entered the top-N after open, by current rank. */
+  newEntrants: RaceRunner[];
 }
 
 /**
- * Biggest rank *improvements* for `feed` over the trailing `windowMin`. Compares
- * the latest snapshot to the one closest to `windowMin` ago (≥ half the window
- * back, else the oldest available). Climbers (rank went up) sorted by gain;
- * new-to-board names split out separately.
+ * The running race measured FROM MARKET OPEN: for each name on the latest
+ * board, its rank at every 5-min check today, its rank at the open, and how
+ * many spots it has climbed since. Climbers are returned biggest-gain-first;
+ * names that weren't on the board at open are split out as new entrants. Reads
+ * local rank_snapshots only. Uses the same MIN_HEALTHY bucket guard as
+ * getClimbers so a partially-captured cycle can't distort the baseline.
  */
-export async function getClimbers(date: string, feed: RankFeed, windowMin = 30, limit = 15): Promise<ClimbersResult> {
+export async function getRaceSinceOpen(date: string, feed: RankFeed, limit = 20): Promise<RaceResult> {
   await ensureRankSnapshotTable();
-  const empty: ClimbersResult = { feed, date, latestTs: null, baselineTs: null, windowMin, climbers: [], newEntrants: [] };
+  const empty: RaceResult = { feed, date, openTs: null, latestTs: null, bucketTimes: [], runners: [], newEntrants: [] };
 
-  // Only compare against HEALTHY buckets. A poller cycle can partially fail (auth
-  // hiccup, NSE feed flake) and capture just a handful of names; using such a
-  // bucket as "now" or the baseline would flag the whole board as new/climbing
-  // (real: reconstructed Jul-10 had 5-name buckets between 166-name ones). Skip
-  // any bucket under MIN_HEALTHY of the day's fullest board.
   const bucketRows = await prisma.$queryRawUnsafe<{ bucketTs: number; c: number }[]>(
     `SELECT bucketTs, COUNT(*) AS c FROM rank_snapshots WHERE date = ? AND feed = ? GROUP BY bucketTs ORDER BY bucketTs ASC`,
     date,
@@ -202,50 +205,61 @@ export async function getClimbers(date: string, feed: RankFeed, windowMin = 30, 
   const buckets = bucketRows.filter((r) => Number(r.c) >= MIN_HEALTHY * maxCount).map((r) => Number(r.bucketTs));
   if (buckets.length === 0) return empty;
 
+  const openTs = buckets[0];
   const latestTs = buckets[buckets.length - 1];
-  const targetTs = latestTs - windowMin * 60;
-  // Newest healthy bucket at or before the target; else the oldest that's ≥ half a window back.
-  let baselineTs: number | null = null;
-  for (let i = buckets.length - 1; i >= 0; i--) {
-    if (buckets[i] <= targetTs) { baselineTs = buckets[i]; break; }
-  }
-  if (baselineTs == null) {
-    const oldest = buckets[0];
-    if (latestTs - oldest >= (windowMin * 60) / 2) baselineTs = oldest;
-  }
-  if (baselineTs == null || baselineTs === latestTs) return { ...empty, latestTs }; // too young to say
+  if (openTs === latestTs) return { ...empty, openTs, latestTs, bucketTimes: buckets }; // only one check so far
 
+  const bucketIndex = new Map<number, number>();
+  buckets.forEach((b, i) => bucketIndex.set(b, i));
+
+  const placeholders = buckets.map(() => '?').join(',');
   const rows = await prisma.$queryRawUnsafe<{ symbol: string; rank: number; value: number; bucketTs: number }[]>(
-    `SELECT symbol, rank, value, bucketTs FROM rank_snapshots
-       WHERE date = ? AND feed = ? AND bucketTs IN (?, ?)`,
+    `SELECT symbol, rank, value, bucketTs FROM rank_snapshots WHERE date = ? AND feed = ? AND bucketTs IN (${placeholders})`,
     date,
     feed,
-    latestTs,
-    baselineTs,
+    ...buckets,
   );
-  const nowBy = new Map<string, { rank: number; value: number }>();
-  const thenBy = new Map<string, number>();
+
+  const trackBy = new Map<string, (number | null)[]>();
+  const valueNowBy = new Map<string, number>();
   for (const r of rows) {
-    if (Number(r.bucketTs) === latestTs) nowBy.set(r.symbol, { rank: Number(r.rank), value: Number(r.value) });
-    else thenBy.set(r.symbol, Number(r.rank));
+    let track = trackBy.get(r.symbol);
+    if (!track) {
+      track = Array(buckets.length).fill(null) as (number | null)[];
+      trackBy.set(r.symbol, track);
+    }
+    const idx = bucketIndex.get(Number(r.bucketTs));
+    if (idx != null) track[idx] = Number(r.rank);
+    if (Number(r.bucketTs) === latestTs) valueNowBy.set(r.symbol, Number(r.value));
   }
 
-  const climbers: Climber[] = [];
-  const newEntrants: Climber[] = [];
-  for (const [symbol, cur] of nowBy) {
-    const rankThen = thenBy.get(symbol) ?? null;
-    if (rankThen == null) {
-      newEntrants.push({ symbol, rankNow: cur.rank, rankThen: null, delta: null, valueNow: cur.value, isNew: true });
+  const lastIdx = buckets.length - 1;
+  const runners: RaceRunner[] = [];
+  const newEntrants: RaceRunner[] = [];
+  for (const [symbol, track] of trackBy) {
+    const rankNow = track[lastIdx];
+    if (rankNow == null) continue; // dropped off the latest board — not in the current race
+    const rankOpen = track[0];
+    const valueNow = valueNowBy.get(symbol) ?? 0;
+    if (rankOpen == null) {
+      newEntrants.push({ symbol, rankNow, rankOpen: null, deltaSinceOpen: null, valueNow, isNew: true, track });
     } else {
-      const delta = rankThen - cur.rank; // + = improved (moved toward #1)
-      if (delta > 0) climbers.push({ symbol, rankNow: cur.rank, rankThen, delta, valueNow: cur.value, isNew: false });
+      const delta = rankOpen - rankNow; // + = climbed toward #1
+      if (delta > 0) runners.push({ symbol, rankNow, rankOpen, deltaSinceOpen: delta, valueNow, isNew: false, track });
     }
   }
-  climbers.sort((a, b) => (b.delta ?? 0) - (a.delta ?? 0) || a.rankNow - b.rankNow);
-  // New entrants that landed high are the interesting ones — sort by current rank.
+  runners.sort((a, b) => (b.deltaSinceOpen ?? 0) - (a.deltaSinceOpen ?? 0) || a.rankNow - b.rankNow);
   newEntrants.sort((a, b) => a.rankNow - b.rankNow);
 
-  return { feed, date, latestTs, baselineTs, windowMin, climbers: climbers.slice(0, limit), newEntrants: newEntrants.slice(0, limit) };
+  return {
+    feed,
+    date,
+    openTs,
+    latestTs,
+    bucketTimes: buckets,
+    runners: runners.slice(0, limit),
+    newEntrants: newEntrants.slice(0, limit),
+  };
 }
 
 /** Latest session date that has any rank snapshot, newest first. */

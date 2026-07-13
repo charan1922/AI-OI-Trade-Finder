@@ -124,15 +124,18 @@ export interface SectorLeadersResponse {
   error?: string;
 }
 
-/** One name's rank change over the window — from /api/live/climbers. */
-export interface Climber {
+/** One name's race since market open — from /api/live/climbers. */
+export interface RaceRunner {
   symbol: string;
   rankNow: number;
-  rankThen: number | null;
-  /** Positive = climbed toward #1. Null for new entrants. */
-  delta: number | null;
+  /** Rank at market open; null = joined the board after open (new entrant). */
+  rankOpen: number | null;
+  /** rankOpen − rankNow. Positive = climbed toward #1. Null for new entrants. */
+  deltaSinceOpen: number | null;
   valueNow: number;
   isNew: boolean;
+  /** Rank at each 5-min check, aligned to `bucketTimes` (null = off the board that check). */
+  track: (number | null)[];
 }
 
 export type RankFeed = 'oi' | 'gainers' | 'losers' | 'active-value' | 'active-volume';
@@ -142,11 +145,12 @@ export interface ClimbersResponse {
   marketOpen: boolean;
   feed: RankFeed;
   date: string;
+  openTs: number | null;
   latestTs: number | null;
-  baselineTs: number | null;
-  windowMin: number;
-  climbers: Climber[];
-  newEntrants: Climber[];
+  /** Every 5-min checkpoint today (epoch seconds), oldest → newest. */
+  bucketTimes: number[];
+  runners: RaceRunner[];
+  newEntrants: RaceRunner[];
   error?: string;
 }
 

@@ -14,28 +14,28 @@ export interface UseClimbers {
   refresh: () => void;
 }
 
-/** Load the "running race" climbers for one feed + window (polls every 60s). */
-export function useClimbers(feed: RankFeed, windowMin: number, refreshSignal: number): UseClimbers {
+/** Load the "running race" (since market open) for one feed (polls every 60s). */
+export function useClimbers(feed: RankFeed, refreshSignal: number): UseClimbers {
   const [data, setData] = useState<ClimbersResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchClimbers = useCallback(async () => {
     try {
-      const res = await fetch(`/api/live/climbers?feed=${feed}&window=${windowMin}`);
+      const res = await fetch(`/api/live/climbers?feed=${feed}`);
       const d = (await res.json()) as ClimbersResponse;
       if (d.success) {
         setData(d);
         setError(null);
       } else {
-        setError(d.error ?? 'Failed to load climbers');
+        setError(d.error ?? 'Failed to load the race');
       }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [feed, windowMin]);
+  }, [feed]);
 
   useEffect(() => {
     let stopped = false;

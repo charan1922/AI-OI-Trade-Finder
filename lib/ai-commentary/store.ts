@@ -132,6 +132,15 @@ function map(r: RawRow): CommentaryRow {
   return { ...rest, windowActive: windowActive === 1, picks };
 }
 
+/** The latest date that has any commentary (newest session). Null when empty. */
+export async function getLatestCommentaryDate(): Promise<string | null> {
+  await ensureCommentaryTable();
+  const rows = (await prisma.$queryRawUnsafe(
+    `SELECT date FROM trade_commentary ORDER BY date DESC LIMIT 1`,
+  )) as { date: string }[];
+  return rows[0]?.date ?? null;
+}
+
 /** Most recent narrations, newest first (optionally filtered to one date). */
 export async function getCommentary(opts: { date?: string; limit?: number } = {}): Promise<CommentaryRow[]> {
   await ensureCommentaryTable();

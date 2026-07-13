@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { hasMimo } from '@/lib/env';
+import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getMimoModel } from '@/lib/ai-commentary/client';
 import { runAndStoreCommentary } from '@/lib/ai-commentary/run';
-import { getCommentary } from '@/lib/ai-commentary/store';
+import { getCommentary, getLatestCommentaryDate } from '@/lib/ai-commentary/store';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
 
 export const dynamic = 'force-dynamic';
@@ -12,15 +13,21 @@ export const runtime = 'nodejs';
  * GET /api/trade-commentary[?date=YYYY-MM-DD&limit=N] — stored AI narrations of
  * the scan (newest first). These are generated in-process by the poller during
  * market hours, so the page has data even when nobody had the app open.
+ *
+ * With no `date`, scopes to a SINGLE session (never a cross-day mix): today once
+ * the market is open (the day's running thread, even before its first read),
+ * else the latest session that has commentary. Mirrors how /live freezes to the
+ * last session off-hours.
  */
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const date = url.searchParams.get('date') ?? undefined;
+    const explicit = url.searchParams.get('date') ?? undefined;
+    const date = explicit ?? (isMarketHours() ? todayIST() : ((await getLatestCommentaryDate()) ?? todayIST()));
     const limitParam = Number(url.searchParams.get('limit'));
     const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 30;
     const rows = await getCommentary({ date, limit });
-    return NextResponse.json({ success: true, configured: hasMimo(), model: getMimoModel(), rows });
+    return NextResponse.json({ success: true, configured: hasMimo(), model: getMimoModel(), date, rows });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }

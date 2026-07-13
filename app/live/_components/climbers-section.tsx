@@ -1,9 +1,9 @@
 'use client';
 
-import { ArrowUp, Loader2, Sparkles, TrendingUp } from 'lucide-react';
+import { ArrowDown, ArrowUp, Loader2, Sparkles, TrendingUp } from 'lucide-react';
 import { useState } from 'react';
 import { useClimbers } from '../_hooks/use-climbers';
-import type { Climber, RankFeed } from '../_lib/types';
+import type { RaceRunner, RankFeed } from '../_lib/types';
 
 // The feeds the race can track, in the order shown as tabs. Labels are plain.
 const FEEDS: { key: RankFeed; label: string }[] = [
@@ -12,7 +12,6 @@ const FEEDS: { key: RankFeed; label: string }[] = [
   { key: 'losers', label: 'Losers' },
   { key: 'active-value', label: 'Most Active' },
 ];
-const WINDOWS = [30, 60];
 
 /** Format the feed's metric value for the little context number. */
 function fmtValue(feed: RankFeed, v: number): string {
@@ -22,43 +21,78 @@ function fmtValue(feed: RankFeed, v: number): string {
   return v >= 1e7 ? `${(v / 1e7).toFixed(1)}Cr` : `${(v / 1e5).toFixed(0)}L`;
 }
 
-function ClimberRow({ c, feed }: { c: Climber; feed: RankFeed }) {
+/**
+ * The rank "track" over the day as a tiny sparkline. Rank 1 (best) sits at the
+ * TOP, so a climb reads as the line going UP. Auto-scaled to this name's own
+ * rank range — the delta badge carries the magnitude; the line shows the path.
+ */
+function RankSparkline({ track, climbed }: { track: (number | null)[]; climbed: boolean }) {
+  const W = 60;
+  const H = 18;
+  const pts = track.map((r, i) => ({ i, r })).filter((p): p is { i: number; r: number } => p.r != null);
+  if (pts.length < 2) return <span className="inline-block" style={{ width: W, height: H }} />;
+
+  const ranks = pts.map((p) => p.r);
+  const minR = Math.min(...ranks);
+  const maxR = Math.max(...ranks);
+  const span = maxR - minR || 1;
+  const n = track.length - 1 || 1;
+  const x = (i: number) => 1 + (i / n) * (W - 2);
+  // Best rank (minR) → top (small y); worst (maxR) → bottom.
+  const y = (r: number) => 1 + ((r - minR) / span) * (H - 2);
+
+  const d = pts.map((p, k) => `${k === 0 ? 'M' : 'L'}${x(p.i).toFixed(1)},${y(p.r).toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1];
+  const stroke = climbed ? 'rgb(16 185 129)' : 'rgb(239 68 68)';
+
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="shrink-0" aria-hidden>
+      <path d={d} fill="none" stroke={stroke} strokeWidth={1.25} strokeLinejoin="round" strokeLinecap="round" opacity={0.85} />
+      <circle cx={x(last.i)} cy={y(last.r)} r={1.8} fill={stroke} />
+    </svg>
+  );
+}
+
+function RunnerRow({ c, feed }: { c: RaceRunner; feed: RankFeed }) {
+  const climbed = (c.deltaSinceOpen ?? 0) > 0;
   return (
     <div
       onClick={() =>
         window.open(`https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(c.symbol)}&interval=5`, '_blank', 'noopener,noreferrer')
       }
-      title={`${c.symbol} — climbed from #${c.rankThen} to #${c.rankNow} (${c.delta} spots) · ${fmtValue(feed, c.valueNow)}. Open chart.`}
+      title={`${c.symbol} — from #${c.rankOpen} at open to #${c.rankNow} now (${c.deltaSinceOpen} spots) · ${fmtValue(feed, c.valueNow)}. Open chart.`}
       className="flex cursor-pointer items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 hover:bg-muted/60"
     >
-      <span className="flex items-center gap-0.5 font-bold text-emerald-600 dark:text-emerald-400">
-        <ArrowUp className="h-3 w-3" />
-        {c.delta}
+      <span className={`flex w-8 items-center gap-0.5 font-bold ${climbed ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+        {climbed ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
+        {Math.abs(c.deltaSinceOpen ?? 0)}
       </span>
-      <span className="font-medium text-foreground">{c.symbol}</span>
+      <span className="w-16 truncate font-medium text-foreground">{c.symbol}</span>
       <span className="text-[10px] text-muted-foreground">
-        #{c.rankThen}→<b className="text-foreground">#{c.rankNow}</b>
+        #{c.rankOpen}→<b className="text-foreground">#{c.rankNow}</b>
       </span>
+      <RankSparkline track={c.track} climbed={climbed} />
       <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">{fmtValue(feed, c.valueNow)}</span>
     </div>
   );
 }
 
 /**
- * "Running race" — the biggest RANK CLIMBERS in a feed over the last 30/60 min.
- * The rank-momentum read: who's getting crowded into RIGHT NOW (moving up the
- * leaderboard), which the static category tables below can't show. New-to-board
- * names are listed separately so a fresh arrival never masquerades as a big climb.
- * Reads local rank_snapshots only — no Dhan/NSE cost.
+ * "Running race" — who has CLIMBED the leaderboard SINCE MARKET OPEN. Each name
+ * shows its rank at open, its rank now, the spots gained, and a sparkline of its
+ * rank at every 5-min check today — so you can see at a glance who's been
+ * marching up the board all session. Re-ranked biggest-climber-first each poll.
+ * New-to-board names (weren't ranked at open) are listed separately so a fresh
+ * arrival never masquerades as a big climb. Reads local rank_snapshots — no cost.
  */
 export function ClimbersSection({ refreshSignal }: { refreshSignal: number }) {
   const [feed, setFeed] = useState<RankFeed>('oi');
-  const [windowMin, setWindowMin] = useState(30);
-  const { data, loading, error } = useClimbers(feed, windowMin, refreshSignal);
+  const { data, loading, error } = useClimbers(feed, refreshSignal);
 
-  const climbers = data?.climbers ?? [];
+  const runners = data?.runners ?? [];
   const newEntrants = data?.newEntrants ?? [];
-  const hasSeries = data?.baselineTs != null;
+  const checks = data?.bucketTimes?.length ?? 0;
+  const hasRace = data?.openTs != null && (data?.bucketTimes?.length ?? 0) >= 2;
 
   return (
     <section className="rounded-lg border border-border bg-card">
@@ -66,39 +100,21 @@ export function ClimbersSection({ refreshSignal }: { refreshSignal: number }) {
         <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />
         <h2 className="text-[12px] font-semibold uppercase tracking-wide text-foreground">Running race</h2>
         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-          climbing the leaderboard
+          climbing since open{checks > 0 ? ` · ${checks} checks` : ''}
         </span>
-        <div className="ml-auto flex items-center gap-2">
-          {/* Feed tabs */}
-          <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
-            {FEEDS.map((f) => (
-              <button
-                key={f.key}
-                type="button"
-                onClick={() => setFeed(f.key)}
-                className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-                  feed === f.key ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-          {/* Window toggle */}
-          <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
-            {WINDOWS.map((w) => (
-              <button
-                key={w}
-                type="button"
-                onClick={() => setWindowMin(w)}
-                className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-                  windowMin === w ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {w}m
-              </button>
-            ))}
-          </div>
+        <div className="ml-auto flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+          {FEEDS.map((f) => (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => setFeed(f.key)}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                feed === f.key ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
         </div>
       </header>
 
@@ -109,28 +125,28 @@ export function ClimbersSection({ refreshSignal }: { refreshSignal: number }) {
           <p className="flex items-center justify-center gap-2 py-2 text-[11px] text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin text-primary" /> Loading the race…
           </p>
-        ) : !hasSeries ? (
+        ) : !hasRace ? (
           <p className="py-2 text-center text-[11px] text-muted-foreground">
-            Not enough history yet — the race needs ~{Math.round(windowMin / 2)}+ min of 5-min snapshots. It fills in
-            as the session runs (resumes at the next open when the market&apos;s closed).
+            The race fills in from the open — it needs at least two 5-min checks. It builds as the session runs (resumes
+            at the next open when the market&apos;s closed).
           </p>
-        ) : climbers.length === 0 && newEntrants.length === 0 ? (
+        ) : runners.length === 0 && newEntrants.length === 0 ? (
           <p className="py-2 text-center text-[11px] text-muted-foreground">
-            No one&apos;s climbing this board over the last {windowMin} min — the leaderboard is settled.
+            No one&apos;s climbed this board since the open — the leaderboard has held its shape.
           </p>
         ) : (
           <div className="space-y-2">
-            {climbers.length > 0 && (
+            {runners.length > 0 && (
               <div className="grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3">
-                {climbers.map((c) => (
-                  <ClimberRow key={c.symbol} c={c} feed={feed} />
+                {runners.map((c) => (
+                  <RunnerRow key={c.symbol} c={c} feed={feed} />
                 ))}
               </div>
             )}
             {newEntrants.length > 0 && (
               <div>
                 <p className="mb-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-                  <Sparkles className="h-3 w-3 text-amber-500" /> New to the board (weren&apos;t here {windowMin}m ago)
+                  <Sparkles className="h-3 w-3 text-amber-500" /> New since open (weren&apos;t on the board at 9:15)
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {newEntrants.map((c) => (
