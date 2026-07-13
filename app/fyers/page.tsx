@@ -54,6 +54,9 @@ interface PollerStatus {
   token: { cached: boolean; expiresAt: number | null };
   universe: { date: string; symbols: string[] } | null;
   coverage?: CoverageRow[];
+  /** Latest pre-open token warm-up (08:40–09:15 IST). Optional so an older
+   *  server payload still renders. */
+  lastWarmup?: { date: string; at: number; fyers: string; dhan: string } | null;
 }
 
 const POLL_MS = 10_000;
@@ -317,6 +320,13 @@ export default function FyersPage() {
                 #{status.cycles} · next tick {fmtTime(status.nextTickAt)} IST
               </span>
             </h2>
+            {status.lastWarmup && (
+              <div className="mb-2 text-[10px] text-muted-foreground">
+                pre-open warm-up {fmtTime(status.lastWarmup.at)} IST · fyers{' '}
+                <b className="font-semibold text-foreground">{status.lastWarmup.fyers}</b> · dhan{' '}
+                <b className="font-semibold text-foreground">{status.lastWarmup.dhan}</b>
+              </div>
+            )}
             {!last ? (
               <div className="px-1 py-2 text-[11px] text-muted-foreground">
                 {latestStoredTs > 0

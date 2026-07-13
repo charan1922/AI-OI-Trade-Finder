@@ -17,6 +17,14 @@ This file extends the parent repo's `../CLAUDE.md` with simulator-specific guida
 
 `POST /api/live/quote` responses are shared through `app/api/live/_lib/quote-response-cache.ts` (globalThis TTL cache + in-flight coalescing, keyed by the exact symbol list): N open windows/users cost the same Dhan traffic as 1. The 6.5s TTL sits deliberately under the client's 7s poll (`QUOTE_POLL_MS`) so a single window always recomputes — change either constant only in step with the other. `fresh: true` bypasses the cache: the page's "Refresh all" button sends it, and `lib/trade-suggest/engine.ts` ALWAYS sends it (the scanner feeds real trade decisions — never let it read a stale cache). Errors are never cached; side effects (oi_intraday recording, universe enrollment, context warming) run once per compute.
 
+## Headless automation & token warm-up
+
+Everything trading-critical runs on the server with NO page open. `instrumentation.ts` starts the Fyers poller at boot (`startFyersPoller`); it ticks every 5 min 24/7 (`lib/fyers/poller.ts`, `scheduleNextTick`), and during market hours records candles/OI and runs the autonomous capture (scanner → auto-trade). Broker tokens (Fyers/Dhan) are created LAZILY on first use — never at import. `getFyersAccessToken`/`getDhanAccessToken` are idempotent (return the cached token instantly while valid; promise-locked; disk-cached in `data/.{fyers,dhan}-token.json`).
+
+**Pre-open token warm-up** (`warmPreOpenTokens` in poller.ts): on the off-hours ticks in **08:40–09:15 IST on trading days**, the poller mints BOTH tokens so they exist before 09:00 with no page opened. Deliberately NOT Railway-gated (calls are idempotent; dev needs the same tokens) and NO per-day marker — the token cache IS the success marker, so every in-window tick is a free retry (~7 attempts, 5 min apart, over Dhan's ~2-min gen limit). One provider failing never blocks the other. Outcome surfaces as `PollerStatus.lastWarmup` (on `/fyers`, `/dhan`, and the health widget). A PAUSED poller skips warm-up (the pause guard precedes the market-closed branch). Ops/test hook: `POST /api/fyers/poller {action:'warm-tokens'}` runs it immediately, window checks bypassed.
+
+**`/dhan` page + `GET|POST /api/dhan/status`**: the Dhan sibling of `/fyers` (chips + New-token + Test-call). `GET /api/dhan/status` is STRICTLY PASSIVE (poll-safe) — NEVER poll `GET /api/dhan/token`, which GENERATES a token as a side effect. `POST /api/dhan/status {action:'test-call'}` fetches one RELIANCE quote to prove the token works end-to-end (admin-only via default-deny; works off-hours too).
+
 ## Auto-Trade Module (`lib/auto-trade/`)
 
 AI-driven order execution over the deterministic `/trade-suggest` scanner. Design law: **the AI proposes, code disposes** — every mutating tool re-runs `risk/gates.ts` in code; no prompt failure can bypass a limit.

@@ -10,7 +10,7 @@
  */
 import { NextResponse } from 'next/server';
 import { getDhanTokenStatus, hasDhanAuth } from '@/lib/dhan/auth';
-import { isMarketHours } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getFyersPollerStatus } from '@/lib/fyers/poller';
 import { getPulseCacheStatus } from '@/lib/nse/pulse-cache';
 
@@ -24,6 +24,12 @@ const NSE_FRESH_MS = 5 * 60 * 1000; // a successful pulse fetch within 5 min = h
 export function GET(): Response {
   const marketOpen = isMarketHours();
   const now = Date.now();
+  // The poller runs the pre-open token warm-up; its lastWarmup surfaces a failed
+  // pre-open Dhan mint as a warn dot BEFORE the open (needed by both providers).
+  const p = getFyersPollerStatus();
+  const warm = p.lastWarmup;
+  const warmDhanFailedToday =
+    warm != null && warm.date === todayIST() && warm.dhan.startsWith('error');
 
   // ── Dhan: config + token validity (Dhan is only called during market hours) ──
   const dhanToken = getDhanTokenStatus();
@@ -33,14 +39,15 @@ export function GET(): Response {
     dhan = { status: 'down', detail: 'Not configured (DHAN_CLIENT_ID + PIN + TOTP_SECRET)', tokenExpiresAt: null };
   } else if (dhanValid) {
     dhan = { status: 'ok', detail: 'Token valid', tokenExpiresAt: dhanToken.expiresAt };
+  } else if (warmDhanFailedToday) {
+    dhan = { status: 'warn', detail: `Pre-open warm-up failed: ${warm!.dhan.replace(/^error:\s*/, '').slice(0, 80)}`, tokenExpiresAt: dhanToken.expiresAt };
   } else if (!marketOpen) {
-    dhan = { status: 'idle', detail: 'Idle — token refreshes on the next market-hours call', tokenExpiresAt: dhanToken.expiresAt };
+    dhan = { status: 'idle', detail: 'Idle — token warms pre-open (~08:40 IST) or on the next market-hours call', tokenExpiresAt: dhanToken.expiresAt };
   } else {
     dhan = { status: 'warn', detail: 'Configured, token not fetched yet (regenerates on next call)', tokenExpiresAt: dhanToken.expiresAt };
   }
 
   // ── Fyers: the poller actually calls Fyers every cycle, so its last cycle is the real signal ──
-  const p = getFyersPollerStatus();
   const lc = p.lastCycle;
   let fyers: { status: Status; detail: string; tokenExpiresAt: number | null; lastCycle: typeof lc };
   if (!p.credentialsConfigured) {

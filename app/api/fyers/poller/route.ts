@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { todayIST } from '@/lib/dhan/market-feed';
 import { getFyersCoverage } from '@/lib/fyers/candle-store';
-import { getFyersPollerStatus, runFyersCycle, setFyersPollerPaused, startFyersPoller } from '@/lib/fyers/poller';
+import { getFyersPollerStatus, runFyersCycle, runTokenWarmup, setFyersPollerPaused, startFyersPoller } from '@/lib/fyers/poller';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,10 +22,12 @@ export async function GET(req: Request) {
 
 /**
  * POST /api/fyers/poller — control the loop.
- * Body: { action: 'pause' | 'resume' | 'run-once', date?: 'YYYY-MM-DD' }
+ * Body: { action: 'pause' | 'resume' | 'run-once' | 'warm-tokens', date?: 'YYYY-MM-DD' }
  * `run-once` runs a full cycle immediately, bypassing the market-hours guard —
  * with `date` it backfills that day's candles (market-closed testing; those
- * rows are pruned by the next regular cycle).
+ * rows are pruned by the next regular cycle). `warm-tokens` runs the pre-open
+ * token warm-up immediately (window/day checks bypassed) — the ops/test hook
+ * for the 08:40–09:15 IST automatic warm-up.
  */
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as { action?: string; date?: string };
@@ -44,9 +46,13 @@ export async function POST(req: Request) {
       const summary = await runFyersCycle({ force: true, dateOverride: body.date, trigger: 'manual' });
       return NextResponse.json({ success: true, summary });
     }
+    case 'warm-tokens': {
+      await runTokenWarmup();
+      return NextResponse.json({ success: true, ...getFyersPollerStatus() });
+    }
     default:
       return NextResponse.json(
-        { success: false, error: "action must be 'pause' | 'resume' | 'run-once'" },
+        { success: false, error: "action must be 'pause' | 'resume' | 'run-once' | 'warm-tokens'" },
         { status: 400 },
       );
   }

@@ -19,6 +19,8 @@
  * rationale as lib/dhan/market-feed.ts's gate).
  */
 
+import { nowIST } from '@/lib/auto-trade/config';
+import { getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/auth';
 import { EOD_PUBLISH_HOUR_IST, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { prisma } from '@/lib/db';
 import { FyersAuthError, getFyersAccessToken, getFyersTokenStatus, hasFyersAuth } from '@/lib/fyers/auth';
@@ -68,6 +70,13 @@ interface PollerState {
   /** Guards against a slow autonomous capture overlapping the next one — so the
    *  scan's Dhan/NSE calls can never be issued concurrently (rate-limit safety). */
   captureRunning: boolean;
+  /** Latest pre-open token warm-up attempt (08:40–09:15 IST ticks, trading days).
+   *  Per-provider outcome: 'ok' | 'no-credentials' | 'error: …'. Overwritten each
+   *  attempt — the token caches themselves are the real success markers. */
+  lastWarmup: { date: string; at: number; fyers: string; dhan: string } | null;
+  /** Keeps lastWarmup writes clean when a slow warm-up overlaps the next tick
+   *  (the auth modules' promise locks already make the API side safe). */
+  warmupRunning: boolean;
 }
 
 const g = globalThis as unknown as { __fyersPoller?: PollerState };
@@ -85,6 +94,8 @@ function getState(): PollerState {
     holidayCache: null,
     lastBhavcopyDate: null,
     captureRunning: false,
+    lastWarmup: null,
+    warmupRunning: false,
   };
   return g.__fyersPoller;
 }
@@ -148,6 +159,11 @@ export async function runFyersCycle(
     // holidays since it backfills the last completed session. The Fyers candle
     // cycle itself stays skipped.
     if (process.env.RAILWAY_ENVIRONMENT_NAME) void runEodCapture(state);
+    // Pre-open token warm-up (08:40–09:15 IST ticks): both broker tokens exist
+    // BEFORE 09:00 without any page being opened. Fire-and-forget; window/day
+    // gating lives inside. Note: a PAUSED poller skips this branch entirely —
+    // pausing is an explicit operator action, warm-up pauses with it.
+    void warmPreOpenTokens(state).catch(() => {});
     return finish('market-closed');
   }
   if (!opts.force && (await isMarketHoliday(summary.date))) return finish('holiday');
@@ -352,6 +368,75 @@ async function runEodCapture(state: PollerState): Promise<void> {
   }
 }
 
+/** Pre-open warm-up window (IST minutes): tokens exist well before 09:00. At
+ *  09:15 isMarketHours() flips true and the market-closed branch stops running,
+ *  so the upper bound is doubly enforced. */
+const WARM_START_MIN = 8 * 60 + 40;
+const WARM_END_MIN = 9 * 60 + 15;
+
+/** True when `ist` (a Date whose LOCAL components are the IST wall clock, e.g.
+ *  from nowIST()) is a weekday inside [08:40, 09:15). Pure + testable; the
+ *  holiday check (async DB) is applied separately by warmPreOpenTokens. */
+export function inWarmupClockWindow(ist: Date): boolean {
+  const day = ist.getDay();
+  if (day === 0 || day === 6) return false;
+  const minute = ist.getHours() * 60 + ist.getMinutes();
+  return minute >= WARM_START_MIN && minute < WARM_END_MIN;
+}
+
+/**
+ * Pre-open token warm-up — mint/refresh BOTH broker tokens (Fyers TOTP chain,
+ * Dhan TOTP/renew chain) on the off-hours ticks between 08:40 and 09:15 IST on
+ * trading days, so they exist before the open with no page ever opened.
+ *
+ * No per-day marker on purpose: both getters return their cached token
+ * instantly while it's valid, so every tick in the window is a FREE retry after
+ * a transient failure (7 attempts, 5 min apart — comfortably over Dhan's ~2-min
+ * generation limit). One provider failing never blocks the other. Runs in every
+ * environment (not Railway-gated): the calls are idempotent and dev needs the
+ * same tokens anyway. Never throws to the poller.
+ *
+ * `force` (the poller route's 'warm-tokens' action) bypasses the day/window
+ * checks — the deterministic test/ops hook — but never the credential checks.
+ */
+async function warmPreOpenTokens(state: PollerState, force = false): Promise<void> {
+  if (!force) {
+    if (!inWarmupClockWindow(nowIST())) return;
+    if (await isMarketHoliday(todayIST())) return;
+  }
+  if (state.warmupRunning) return;
+  state.warmupRunning = true;
+  try {
+    let fyers = 'no-credentials';
+    if (hasFyersAuth()) {
+      try {
+        await getFyersAccessToken();
+        fyers = 'ok';
+      } catch (err) {
+        fyers = `error: ${(err as Error).message.slice(0, 160)}`;
+      }
+    }
+    let dhan = 'no-credentials';
+    if (hasDhanAuth()) {
+      try {
+        await getDhanAccessToken();
+        dhan = 'ok';
+      } catch (err) {
+        dhan = `error: ${(err as Error).message.slice(0, 160)}`;
+      }
+    }
+    state.lastWarmup = { date: todayIST(), at: Date.now(), fyers, dhan };
+    console.log(`${TAG} pre-open token warm-up: fyers=${fyers} dhan=${dhan}`);
+  } finally {
+    state.warmupRunning = false;
+  }
+}
+
+/** Manual warm-up trigger (POST /api/fyers/poller {action:'warm-tokens'}). */
+export async function runTokenWarmup(): Promise<void> {
+  await warmPreOpenTokens(getState(), true);
+}
+
 function scheduleNextTick(): void {
   const state = getState();
   if (!state.started) return;
@@ -405,6 +490,8 @@ export interface PollerStatus {
   credentialsConfigured: boolean;
   token: { cached: boolean; expiresAt: number | null };
   universe: { date: string; symbols: string[] } | null;
+  /** Latest pre-open token warm-up outcome (see warmPreOpenTokens). */
+  lastWarmup: { date: string; at: number; fyers: string; dhan: string } | null;
 }
 
 export function getFyersPollerStatus(): PollerStatus {
@@ -421,5 +508,6 @@ export function getFyersPollerStatus(): PollerStatus {
     credentialsConfigured: hasFyersAuth(),
     token: getFyersTokenStatus(),
     universe: peekUniverse(),
+    lastWarmup: state.lastWarmup,
   };
 }
