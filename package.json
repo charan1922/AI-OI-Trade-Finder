@@ -13,6 +13,7 @@
     "db:generate": "prisma generate --config prisma/prisma.config.ts",
     "db:push": "prisma db push --config prisma/prisma.config.ts",
     "db:studio": "prisma studio --config prisma/prisma.config.ts",
+    "db:pull-prod": "node scripts/db-pull-prod.mjs",
     "server:up": "railway scale --project d5d24ef5-cd81-401e-a3d4-b319ef66e4bf --environment a6fcc8f0-dec3-4b56-abdb-6bcf5e513a54 --service a5ce553b-bbd1-4699-8465-6ff34aeac202 sfo=1",
     "server:down": "railway scale --project d5d24ef5-cd81-401e-a3d4-b319ef66e4bf --environment a6fcc8f0-dec3-4b56-abdb-6bcf5e513a54 --service a5ce553b-bbd1-4699-8465-6ff34aeac202 sfo=0"
   },
