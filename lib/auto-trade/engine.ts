@@ -19,6 +19,7 @@ import { buildPicks } from '@/lib/ai-commentary/picks';
 import { getCommentary, insertCommentary } from '@/lib/ai-commentary/store';
 import { hasMimo } from '@/lib/env';
 import { recordPromptVersion } from '@/lib/prompts/store';
+import { sendMessage, isTelegramConfigured } from '@/lib/telegram';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { expireStaleApprovals } from './approval';
 import { backstopsFromFill, adapterFor } from './execution';
@@ -234,6 +235,15 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
         promptVersion,
       });
       commentaryStored = true;
+      // Push commentary to Telegram — same as runAndStoreCommentary() does.
+      if (isTelegramConfigured() && result.text) {
+        try {
+          const settings = await getAutoTradeSettings();
+          if (settings.telegramAlerts) sendMessage(`📊 Trade Commentary\n\n${result.text}`);
+        } catch {
+          sendMessage(`📊 Trade Commentary\n\n${result.text}`);
+        }
+      }
     } catch (err) {
       // Retry once before falling back — the DB may have been briefly locked
       console.warn(`${TAG} commentary store failed, retrying once: ${(err as Error).message}`);
