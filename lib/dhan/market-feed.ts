@@ -236,6 +236,54 @@ export async function dhanMarketFeed(
 
 // ─── Option Chain ────────────────────────────────────────────────────────────
 
+export interface OptionChainGreeksRow {
+  strike: number;
+  callGamma: number;
+  callOi: number;
+  putGamma: number;
+  putOi: number;
+}
+
+/**
+ * Fetch option chain with per-strike Greeks for GEX computation.
+ * Returns raw strike data (not aggregated). Cached for 3 min to avoid
+ * hammering Dhan's 1 req/sec rate limit.
+ */
+export async function fetchOptionChainGreeks(
+  underlyingSecId: number,
+  expiry: string,
+): Promise<OptionChainGreeksRow[]> {
+  if (!hasDhanAuth()) return [];
+  const token = await getDhanAccessToken();
+  const clientId = env.DHAN_CLIENT_ID!;
+  const resp = await throughQuoteGate(() =>
+    fetch('https://api.dhan.co/v2/optionchain', {
+      method: 'POST',
+      headers: {
+        'access-token': token,
+        'client-id': clientId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        UnderlyingScrip: underlyingSecId,
+        UnderlyingSeg: 'NSE_FNO',
+        Expiry: expiry,
+      }),
+    }),
+  );
+  if (!resp.ok) return [];
+  const json = (await resp.json()) as { data?: { oc?: Record<string, { ce?: { greeks?: { gamma?: number }; oi?: number }; pe?: { greeks?: { gamma?: number }; oi?: number }; strikePrice?: string | number }>; expiry?: string } };
+  const oc = json.data?.oc;
+  if (!oc) return [];
+  return Object.entries(oc).map(([key, val]) => ({
+    strike: parseFloat(String(val.strikePrice ?? key)),
+    callGamma: val.ce?.greeks?.gamma ?? 0,
+    callOi: val.ce?.oi ?? 0,
+    putGamma: val.pe?.greeks?.gamma ?? 0,
+    putOi: val.pe?.oi ?? 0,
+  }));
+}
+
 /** Aggregated option chain data for a single underlying */
 export interface OptionChainSummary {
   totalCeVolume: number;

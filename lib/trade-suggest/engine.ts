@@ -31,6 +31,7 @@ import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
 import { detectRegime } from '@/lib/signals/regime-detector';
+import { computeGex } from '@/lib/signals/gex';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   BREAKOUT_BYPASS_MIN_RFACTOR,
@@ -480,6 +481,33 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
   }
   const dynamicMinConfidence = MIN_CONFIDENCE * regimeMultiplier;
 
+  // 3b. Compute NIFTY GEX (market-wide dealer hedging pressure).
+  //     Display evidence only — not a gate until replay-validated.
+  let gexResult: import('@/lib/signals/gex').GexResult | null = null;
+  try {
+    const { fetchOptionChainGreeks } = await import('@/lib/dhan/market-feed');
+    // Nearest weekly expiry (Dhan needs YYYY-MM-DD; derive from master_contracts)
+    const niftyExpiry = (await prisma.$queryRawUnsafe<{ expiryDate: string }[]>(
+      `SELECT MIN(expiryDate) as expiryDate FROM master_contracts
+       WHERE underlying = 'NIFTY' AND instrument = 'OPTFUT' AND expiryDate >= ?`,
+      date,
+    ))[0]?.expiryDate ?? '';
+    if (niftyExpiry) {
+      const greeksRows = await fetchOptionChainGreeks(13, niftyExpiry.slice(0, 10));
+      if (greeksRows.length > 0) {
+        // Use NIFTY spot from quotes (first NIFTY row or fallback to median of scanned)
+        const niftyRow = quotes.rows.find((r) => r.symbol === 'NIFTY' || r.symbol === 'NIFTY 50');
+        const niftySpot = niftyRow?.ltp ?? (quotes.rows.length > 0 ? quotes.rows[0].ltp ?? 0 : 0);
+        if (niftySpot > 0) {
+          gexResult = computeGex(greeksRows, niftySpot);
+          console.log(`${TAG} GEX: ${gexResult.label}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`${TAG} GEX computation failed (non-fatal): ${(err as Error).message}`);
+  }
+
   // Gate + enrich
   const gated: Record<string, number> = {
     noPrice: 0,
@@ -834,6 +862,12 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
         ? [`sector confirmation: ${breadth.get(`${s.sector}:${s.direction}`)} ${s.sector} names moving ${s.direction}`]
         : [],
       ...s.setupReasons,
+      // GEX display evidence (market-level, not per-stock)
+      ...(gexResult?.regime === 'positive'
+        ? [`NIFTY GEX positive (₹${Math.abs(gexResult.netGex).toFixed(0)}/1%) — dealers buying dips, expect range-bound action${gexResult.gammaWall != null ? ` near gamma wall ${gexResult.gammaWall}` : ''}`]
+        : gexResult?.regime === 'negative'
+          ? [`⚠ NIFTY GEX negative (₹${Math.abs(gexResult.netGex).toFixed(0)}/1%) — dealers chasing momentum, expect trending/volatile moves`]
+          : []),
     ];
 
     picks.push({
