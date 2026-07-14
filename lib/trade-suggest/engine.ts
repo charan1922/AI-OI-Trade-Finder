@@ -30,6 +30,7 @@ import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
+import { detectRegime } from '@/lib/signals/regime-detector';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   BREAKOUT_BYPASS_MIN_RFACTOR,
@@ -457,7 +458,29 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     ).map((a) => [a.sector, a]),
   );
 
-  // 3. Gate + enrich
+  // 3. Detect market regime (once per scan, using first available symbol as
+  //    proxy for the broad market). The regime adjusts the confidence threshold
+  //    dynamically: relax in good regimes, tighten in bad ones.
+  let regimeMultiplier = 1.0;
+  let regimeLabel = 'no regime data';
+  try {
+    // Pick the first symbol with candles for regime detection
+    for (const sym of symbols.slice(0, 5)) {
+      const regimeBars = await getFyersCandles(sym, date, 'EQ');
+      if (regimeBars.length >= 30) {
+        const regime = detectRegime(regimeBars);
+        regimeMultiplier = regime.confidenceMultiplier;
+        regimeLabel = regime.label;
+        console.log(`${TAG} regime: ${regimeLabel} → confidence×${regimeMultiplier.toFixed(2)}`);
+        break;
+      }
+    }
+  } catch {
+    // Regime detection is best-effort
+  }
+  const dynamicMinConfidence = MIN_CONFIDENCE * regimeMultiplier;
+
+  // Gate + enrich
   const gated: Record<string, number> = {
     noPrice: 0,
     illiquid: 0,
@@ -505,7 +528,7 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
       gated.weakRFactor++;
       continue;
     }
-    if ((row.rFactorConfidence ?? 0) < MIN_CONFIDENCE) {
+    if ((row.rFactorConfidence ?? 0) < dynamicMinConfidence) {
       gated.lowConfidence++;
       continue;
     }
