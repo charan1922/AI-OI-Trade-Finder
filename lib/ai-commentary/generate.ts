@@ -79,6 +79,12 @@ export const COMMENTARY_SYSTEM = [
   '- trend with the trade: supertrendAligned and vwapAligned not false; sector not against it;',
   '- fresh money still coming in: combinedOiSlope30m >= 0 (or oiUrgency clearly rising);',
   '- entry→target room beats the entry→SL risk.',
+  'GEX (Gamma Exposure) in the JSON: the `gex` object at the top level is a market-wide signal',
+  '  from NIFTY options — positive GEX = dealers buy dips, market is range-bound (gamma wall is a',
+  '  price magnet). Negative GEX = dealers chase momentum, expect trending/volatile moves.',
+  '  Mention GEX in the header line when non-neutral ("GEX positive — dips should hold").',
+  '  The gexWall number is a price magnet / support-resistance level for NIFTY. Translate:',
+  '  "gexValue -12345" → "dealers are chasing momentum today".',
   'On "extended": the scanner ALREADY penalizes and filters late chases — an extended name that still',
   'reaches you is the deliberate trend-day-continuation profile (still breaking out, trend + money',
   'behind it). Extended alone is NOT a veto: demand the rest of the bar be fully clean, call it a late',
@@ -131,6 +137,9 @@ function trimForPrompt(r: SuggestResponse): unknown {
     scanned: r.scanned,
     gated: r.gated,
     tilt: r.tilt,
+    // Market-wide GEX (Gamma Exposure) — dealer hedging pressure.
+    // Positive = mean-reverting/range-bound, negative = trending/volatile.
+    gex: r.gex ?? null,
     // Position-management feed: earlier calls + live price, even when the name
     // no longer clears the gates (see TrackedPosition in trade-suggest/types).
     tracked: (r.tracked ?? []).map((t) => ({
@@ -180,6 +189,9 @@ function trimForPrompt(r: SuggestResponse): unknown {
         onOiSpurtList: s.factors.onOiSpurtList,
         sectorPct: s.factors.sectorPct,
         sectorAligned: s.factors.sectorAligned,
+        gexRegime: s.factors.gexRegime,
+        gexValue: s.factors.gexValue,
+        gexWall: s.factors.gexWall,
       },
       reasons: s.reasons,
     })),

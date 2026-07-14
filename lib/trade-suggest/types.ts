@@ -87,6 +87,12 @@ export interface PickFactors {
   sectorPct: number | null;
   sectorAdvanceRatio: number | null;
   sectorAligned: boolean | null;
+  /** NIFTY GEX regime at scan time (market-level signal, not per-stock). */
+  gexRegime: 'positive' | 'negative' | 'neutral' | null;
+  /** Net GEX value (positive = mean-reverting, negative = trending). */
+  gexValue: number | null;
+  /** Gamma wall — the strike with max positive GEX (magnet/support level). */
+  gexWall: number | null;
 }
 
 /** One suggestion, fully assembled. */
@@ -208,6 +214,14 @@ export interface SuggestResponse {
   tilt?: MarketTilt;
   /** Sector inflow/outflow read among the candidates, strongest first. */
   sectorFlow?: SectorFlow[];
+  /** NIFTY GEX (Gamma Exposure) — market-wide dealer hedging pressure.
+   *  Display evidence only, not a gate until replay-validated. */
+  gex?: {
+    regime: 'positive' | 'negative' | 'neutral';
+    netGex: number;
+    gammaWall: number | null;
+    label: string;
+  } | null;
   /** Everything persisted earlier today (continuity across loop iterations). */
   earlierToday: StoredSuggestion[];
   /** Earlier calls + live price — the position-management feed (see TrackedPosition). */

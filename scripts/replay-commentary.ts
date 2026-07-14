@@ -331,6 +331,9 @@ function scanAtTick(tick: number): SuggestResponse {
         sectorPct: sa?.weightedPct ?? null,
         sectorAdvanceRatio: sa ? sa.advancers / Math.max(1, sa.advancers + sa.decliners) : null,
         sectorAligned,
+        gexRegime: null, // GEX not computed in replay (no live Dhan option chain)
+        gexValue: null,
+        gexWall: null,
       },
       reasons: [
         `R-Factor ${sv.row.rFactor?.toFixed(2)} (${sv.direction}, confidence ${(((sv.row.rFactorConfidence ?? 0) as number) * 100).toFixed(0)}%)`,

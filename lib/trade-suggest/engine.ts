@@ -808,6 +808,9 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
       sectorPct,
       sectorAdvanceRatio: sa?.advanceRatio == null ? null : Math.round(sa.advanceRatio * 100) / 100,
       sectorAligned,
+      gexRegime: gexResult?.regime ?? null,
+      gexValue: gexResult?.netGex ?? null,
+      gexWall: gexResult?.gammaWall ?? null,
     };
 
     const reasons = [
@@ -897,6 +900,14 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
   if (skippedUnaffordable > 0) gated.unaffordableLot = skippedUnaffordable;
   base.gated = gated;
   base.suggestions = picks;
+  if (gexResult) {
+    base.gex = {
+      regime: gexResult.regime,
+      netGex: gexResult.netGex,
+      gammaWall: gexResult.gammaWall,
+      label: gexResult.label,
+    };
+  }
 
   // 7. Persist (first sighting keeps its original spot/time; repeats bump timesSeen)
   try {
