@@ -47,6 +47,21 @@ export interface LiveUrgencyRow {
   nseOiPct?: number | null;
   /** Trailing ~30-min build of nseOiPct in pct-points — the combined-OI rate. */
   nseOiSlope30m?: number | null;
+  // ── Extra oi-spurts columns (live-feed join, F&O OI Build-up view) ──────────
+  // Snapshot from NSE's oi-spurts feed (cumulative since prev EOD). Money in ₹ Cr.
+  /** Options premium traded value today (₹ Cr) — the money in the options pool. */
+  nsePremValueCr?: number | null;
+  /** Futures traded value today (₹ Cr). */
+  nseFutValueCr?: number | null;
+  /** Options notional traded value today (₹ Cr). */
+  nseOptValueCr?: number | null;
+  /** Futures + options-premium total (₹ Cr). */
+  nseTotalValueCr?: number | null;
+  /** Options share of the fut+prem value, [0,1] — options-led (high) vs futures-led. */
+  nseOptShare?: number | null;
+  /** Combined futures+options OI today / yesterday (contracts). */
+  nseLatestOi?: number | null;
+  nsePrevOi?: number | null;
 
   // ── R-Factor (lib/r-factor, live intraday) ─────────────────────────────────
   // Recomputed every poll from the live snapshot against fixed EOD baselines.

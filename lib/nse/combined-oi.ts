@@ -26,3 +26,21 @@ export async function getNseCombinedOiPctMap(): Promise<Map<string, number>> {
     return new Map();
   }
 }
+
+/**
+ * The full oi-spurts row per underlying (not just the %-change) — the source for
+ * the /live F&O OI Build-up columns: options premium, fut/opt value split, the
+ * options-share ratio, and absolute combined OI. Same shared 30s cache as the
+ * %-map above; empty map on failure (callers show "—", never fabricate). The
+ * `optShare` field is the one worth wiring into gates later — it's the only
+ * value here that doesn't ratchet with the day.
+ */
+export async function getNseOiRowMap(): Promise<Map<string, OiStock>> {
+  try {
+    const res = await getPulseFeed<OiStock[]>('oiSpurts');
+    return new Map((res.data ?? []).filter((s) => s.symbol).map((s) => [s.symbol, s]));
+  } catch (err) {
+    console.warn(`[CombinedOi] NSE oi-spurts feed unavailable: ${(err as Error).message}`);
+    return new Map();
+  }
+}

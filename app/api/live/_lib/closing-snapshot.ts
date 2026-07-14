@@ -34,6 +34,7 @@ import {
   getLatestSnapshotDate,
 } from '@/lib/signals/oi-intraday';
 import { type EodRow, getEodForDate, hasEodCapture, insertEodRows } from '@/lib/signals/live-urgency-eod';
+import { getNseOiRowMap } from '@/lib/nse/combined-oi';
 import { classifyFno, excludeReasonLabel, loadFnoUniverse } from './fno-universe';
 import { getMorningContext } from './morning-candles';
 import { buildLiveRFactorInput } from './rfactor-inputs';
@@ -257,6 +258,27 @@ async function getFrozenRows(
   };
 }
 
+/**
+ * Serve-time enrichment: attach the oi-spurts value columns (options premium,
+ * fut/opt split, options share, absolute combined OI) to the closing-snapshot
+ * rows from NSE's live feed. Off-hours the feed still serves the last session's
+ * static values, so these render real numbers rather than "—". NOT persisted
+ * into live_urgency_eod — this is a display-only join, mutating the rows in place.
+ */
+async function attachOiSpurtsColumns(rows: LiveUrgencyRow[]): Promise<void> {
+  const map = await getNseOiRowMap().catch(() => new Map());
+  for (const r of rows) {
+    const o = map.get(r.symbol);
+    r.nsePremValueCr = o?.premValueCr ?? null;
+    r.nseFutValueCr = o?.futValueCr ?? null;
+    r.nseOptValueCr = o?.optValueCr ?? null;
+    r.nseTotalValueCr = o?.totalValueCr ?? null;
+    r.nseOptShare = o?.optShare ?? null;
+    r.nseLatestOi = o?.latestOi ?? null;
+    r.nsePrevOi = o?.prevOi ?? null;
+  }
+}
+
 export async function buildClosingSnapshot(symbols: string[]): Promise<ClosingSnapshotResponse | null> {
   const snapshotDate = await getLatestSnapshotDate();
   if (!snapshotDate) return null;
@@ -280,7 +302,10 @@ export async function buildClosingSnapshot(symbols: string[]): Promise<ClosingSn
   // cleared. The capture was computed at the close with everything intact.
   if (snapshotDate !== todayIST() && (await hasEodCapture(snapshotDate))) {
     const frozen = await getFrozenRows(allowed, snapshotDate);
-    if (frozen) return { ...frozen, symbols: allowed, excluded };
+    if (frozen) {
+      await attachOiSpurtsColumns(frozen.rows);
+      return { ...frozen, symbols: allowed, excluded };
+    }
     // capture covers none of these names — fall through to the recompute
   }
 
@@ -289,6 +314,7 @@ export async function buildClosingSnapshot(symbols: string[]): Promise<ClosingSn
 
   void captureEodOnce(snapshotDate).catch((e) => console.warn('[live] EOD capture failed:', (e as Error).message));
 
+  await attachOiSpurtsColumns(rows);
   return {
     success: true,
     marketOpen: false,

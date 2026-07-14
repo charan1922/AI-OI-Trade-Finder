@@ -124,6 +124,29 @@ export function HowToRead() {
                 the last ~30 minutes (hover for the rate); no ▲ = built earlier, stalled since. &quot;—&quot; = the name
                 isn&apos;t in NSE&apos;s feed right now.
               </Def>
+              <Def term="Opt% (options share)">
+                Of all the money traded in this stock&apos;s F&amp;O today, how much sat in <b>options premium</b> vs
+                futures — i.e. is the position build <b>options-led or futures-led</b>. Since we <b>buy options</b>, an
+                options-led build is the one that concerns us: it means the smart money is expressing its view through
+                the exact instrument we trade.{' '}
+                <span className="text-violet-600 dark:text-violet-400">≥20% = options-led</span> ·{' '}
+                <span className="text-amber-600 dark:text-amber-400">10–20% = meaningful</span> · below = futures-led.
+                Unlike the ₹ columns next to it, this is a <b>ratio</b> — it doesn&apos;t just grow through the day, so
+                it&apos;s the one worth trusting late in the session.
+              </Def>
+              <Def term="Opt Prem / Fut Val / Opt Val / Tot Val">
+                The raw money behind that split, straight from NSE&apos;s oi-spurts feed, in ₹ Crore.{' '}
+                <b>Opt Prem</b> = options <b>premium</b> traded (the real cash in the options we&apos;d buy — the best
+                single liquidity read for us); <b>Fut Val</b> = futures traded value; <b>Opt Val</b> = options{' '}
+                <b>notional</b> (full contract value, not premium); <b>Tot Val</b> = Fut + Opt-premium. All are{' '}
+                <b>cumulative since yesterday&apos;s close</b>, so they climb all day — read them for <i>scale</i>, not
+                timing.
+              </Def>
+              <Def term="Comb OI / Prev OI">
+                <b>Combined futures + options open interest</b> in contracts — today (<b>Comb OI</b>) vs yesterday
+                (<b>Prev OI</b>). NSE OI% is the % change between these two; showing the absolute numbers tells you the{' '}
+                <b>scale</b> a given % move represents (a +5% build on a huge base ≠ +5% on a tiny one).
+              </Def>
               <Def term="Turn Lvl">
                 Futures turnover ÷ its <b>20-day average, adjusted for the time of day</b> — is real money flowing at an
                 unusual pace <b>right now</b>?{' '}

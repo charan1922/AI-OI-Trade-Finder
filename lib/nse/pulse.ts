@@ -44,6 +44,27 @@ export interface OiStock {
   changeInOi: number;
   volume: number;
   underlyingValue: number;
+  // ── Extra oi-spurts fields (kept for the /live F&O OI Build-up columns) ──────
+  // Money values are NORMALIZED to ₹ Crore here: the feed reports futValue/
+  // premValue/total in ₹ Lakhs but optValue in raw ₹, so we divide by the right
+  // factor once, at the source, and every consumer works in one unit.
+  /** Combined futures+options open interest today / yesterday, in CONTRACTS. */
+  latestOi: number;
+  prevOi: number;
+  /** Futures traded value today, ₹ Crore (feed ₹ Lakhs ÷ 100). */
+  futValueCr: number;
+  /** Options PREMIUM traded value today, ₹ Crore (feed ₹ Lakhs ÷ 100) — the
+   *  actual money moving through this underlying's options. */
+  premValueCr: number;
+  /** Futures + options-premium total, ₹ Crore (feed ₹ Lakhs ÷ 100). */
+  totalValueCr: number;
+  /** Options notional traded value today, ₹ Crore (feed raw ₹ ÷ 1e7). */
+  optValueCr: number;
+  /** Options share of the futures+premium value total, [0,1] — is this OI build
+   *  options-led (high) or futures-led (low). premValue ÷ (futValue + premValue);
+   *  null when the total is 0. Unit-independent, so it doesn't ratchet with the
+   *  day the way the raw cumulative values do. */
+  optShare: number | null;
 }
 
 /** Groups we surface from the variations feed (each capped at ~20 by NSE). */
@@ -139,13 +160,26 @@ export async function fetchMostActiveVolume(): Promise<ActiveStock[]> {
 export async function fetchOiSpurts(): Promise<OiStock[]> {
   const json = await nseApiGet<{ data?: Record<string, unknown>[] }>('/api/live-analysis-oi-spurts-underlyings');
   return (json.data ?? [])
-    .map((d) => ({
-      symbol: String(d.symbol ?? ''),
-      changeInOiPct: num(d.avgInOI),
-      changeInOi: num(d.changeInOI),
-      volume: num(d.volume),
-      underlyingValue: num(d.underlyingValue),
-    }))
+    .map((d) => {
+      // futValue/premValue/total are ₹ Lakhs; optValue is raw ₹ — normalize all to ₹ Cr.
+      const futValueLakh = num(d.futValue);
+      const premValueLakh = num(d.premValue);
+      const denomLakh = futValueLakh + premValueLakh;
+      return {
+        symbol: String(d.symbol ?? ''),
+        changeInOiPct: num(d.avgInOI),
+        changeInOi: num(d.changeInOI),
+        volume: num(d.volume),
+        underlyingValue: num(d.underlyingValue),
+        latestOi: num(d.latestOI),
+        prevOi: num(d.prevOI),
+        futValueCr: futValueLakh / 100,
+        premValueCr: premValueLakh / 100,
+        totalValueCr: num(d.total) / 100,
+        optValueCr: num(d.optValue) / 1e7,
+        optShare: denomLakh > 0 ? premValueLakh / denomLakh : null,
+      };
+    })
     .sort((a, b) => Math.abs(b.changeInOiPct) - Math.abs(a.changeInOiPct));
 }
 

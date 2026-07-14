@@ -4,6 +4,8 @@ import { prisma } from '@/lib/db';
 import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { computeRFactor } from '@/lib/r-factor';
 import { getNseOiLatestForSymbols } from '@/lib/fyers/candle-store';
+import { getNseOiRowMap } from '@/lib/nse/combined-oi';
+import type { OiStock } from '@/lib/nse/pulse';
 import { addToUniverse } from '@/lib/fyers/symbols';
 import { changeSinceEntryWindow, computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
 import { evaluateBreakout } from '@/lib/breakout';
@@ -143,6 +145,10 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
   // Fyers poller from the oi-spurts feed. DB-only, one batched query; names not
   // in that feed are simply absent (shown as "—", never faked).
   const nseOi = await getNseOiLatestForSymbols(allowed, today).catch(() => new Map<string, never>());
+  // Rich oi-spurts row per symbol (options premium, fut/opt value split, options
+  // share, absolute combined OI) — live-feed snapshot through the shared 30s NSE
+  // cache. Display columns for the F&O OI Build-up view; missing → "—", never faked.
+  const nseOiRows = await getNseOiRowMap().catch(() => new Map<string, OiStock>());
   // Fraction of the session elapsed — the Turn-Lvl divisor (same math the
   // R-Factor turnover factor uses, surfaced as its own column).
   const sessionFrac = sessionFractionElapsed(now);
@@ -173,6 +179,7 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
         ? turnover / (base.futTurnover20dAvg * sessionFrac)
         : null;
     const oiFeed = nseOi.get(s);
+    const oiRow = nseOiRows.get(s);
 
     // R-Factor: score the live snapshot against the baselines + whatever morning
     // context is already cached (opening-range breakout). Candles are warmed only
@@ -217,6 +224,13 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
       turnoverLvl,
       nseOiPct: oiFeed?.nseOiPct ?? null,
       nseOiSlope30m: oiFeed?.slope30m ?? null,
+      nsePremValueCr: oiRow?.premValueCr ?? null,
+      nseFutValueCr: oiRow?.futValueCr ?? null,
+      nseOptValueCr: oiRow?.optValueCr ?? null,
+      nseTotalValueCr: oiRow?.totalValueCr ?? null,
+      nseOptShare: oiRow?.optShare ?? null,
+      nseLatestOi: oiRow?.latestOi ?? null,
+      nsePrevOi: oiRow?.prevOi ?? null,
       sessionOiChangePct: null,
       oiVelocity: null,
       oiAccel: null,

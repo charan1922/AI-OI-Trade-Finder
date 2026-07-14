@@ -17,6 +17,43 @@ function fmtCompact(n: number | null): string {
   return n.toFixed(0);
 }
 
+/** ₹ Crore value (already in Cr): whole Cr above 100, one decimal below. */
+function fmtCr(n: number | null | undefined): string {
+  if (n == null || n <= 0) return '—';
+  return n >= 100 ? `₹${Math.round(n)}Cr` : `₹${n.toFixed(1)}Cr`;
+}
+
+/**
+ * Options-share cell — options premium as a fraction of the fut+opt traded value.
+ * High = the OI build is options-LED (the action is in options, our instrument);
+ * low = futures-led. A ratio, so it doesn't ratchet through the day like the raw
+ * cumulative values do. "—" when the feed doesn't cover the name.
+ */
+function OptShareCell({ v }: { v: number | null | undefined }) {
+  if (v == null) return <span className="text-muted-foreground/50">—</span>;
+  const pct = Math.round(v * 100);
+  const cls =
+    v >= 0.2
+      ? 'font-semibold text-violet-600 dark:text-violet-400'
+      : v >= 0.1
+        ? 'text-amber-600 dark:text-amber-400'
+        : 'text-muted-foreground';
+  const lead =
+    v >= 0.2
+      ? 'options-LED build — the money is in the options (our instrument)'
+      : v >= 0.1
+        ? 'meaningful options participation'
+        : 'futures-led build';
+  return (
+    <span
+      className={`tabular-nums ${cls}`}
+      title={`Options premium is ${pct}% of this underlying's futures+options traded value — ${lead}. A ratio, so unlike the raw values it doesn't just grow through the day.`}
+    >
+      {pct}%
+    </span>
+  );
+}
+
 /** Spread %: tight = liquid/cheap to trade (green); wide = illiquid (red). */
 function spreadCls(p: number | null): string {
   if (p == null) return 'text-muted-foreground/50';
@@ -280,6 +317,13 @@ type SortKey =
   | 'oiLevel'
   | 'nseOiPct'
   | 'oiUrgency'
+  | 'nseOptShare'
+  | 'nsePremValueCr'
+  | 'nseFutValueCr'
+  | 'nseOptValueCr'
+  | 'nseTotalValueCr'
+  | 'nseLatestOi'
+  | 'nsePrevOi'
   | 'turnoverLvl'
   | 'turnover';
 /** `origRank` = the row's 1-based position in the incoming watchlist (= NSE Movers order). */
@@ -307,7 +351,7 @@ function Th({
   const justify = align === 'left' ? 'justify-start' : align === 'center' ? 'justify-center' : 'justify-end';
   const textAlign = align === 'left' ? 'text-left' : align === 'center' ? 'text-center' : 'text-right';
   return (
-    <th className={`px-2 py-1.5 font-semibold ${textAlign}`} title={title}>
+    <th className={`px-1.5 py-1 font-semibold ${textAlign}`} title={title}>
       <button
         type="button"
         onClick={() => onSort(col)}
@@ -369,7 +413,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
 
   return (
     <div className="overflow-x-auto rounded-xl border border-border bg-card">
-      <table className="w-full text-[11px]">
+      <table className="w-full text-[10px]">
         <thead className="bg-muted/50 text-muted-foreground">
           <tr>
             <Th label="#" col="rank" align="right" title="Watchlist order — same as NSE Movers. Default sort; click any header to re-rank." {...th} />
@@ -417,6 +461,55 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               {...th}
             />
             <Th
+              label="NSE Opt%"
+              col="nseOptShare"
+              align="right"
+              title="Options premium ÷ (futures + options) traded value — is the OI build options-led (high) or futures-led (low)? Since we trade options, an options-led build is the one that concerns us. It's a ratio, so it doesn't just grow through the day. From NSE's oi-spurts feed."
+              {...th}
+            />
+            <Th
+              label="NSE Opt Prem"
+              col="nsePremValueCr"
+              align="right"
+              title="Options PREMIUM traded value in this underlying today (₹ Cr) — the actual money moving through its options, i.e. the pool we'd trade in. Cumulative since yesterday's close."
+              {...th}
+            />
+            <Th
+              label="NSE Fut Val"
+              col="nseFutValueCr"
+              align="right"
+              title="Futures traded value today (₹ Cr) — from NSE's oi-spurts feed. Cumulative since yesterday's close."
+              {...th}
+            />
+            <Th
+              label="NSE Opt Val"
+              col="nseOptValueCr"
+              align="right"
+              title="Options notional traded value today (₹ Cr) — the full contract value (not premium). Cumulative since yesterday's close."
+              {...th}
+            />
+            <Th
+              label="NSE Tot Val"
+              col="nseTotalValueCr"
+              align="right"
+              title="Futures + options-premium total traded value today (₹ Cr) — NSE's own 'total' column. Cumulative since yesterday's close."
+              {...th}
+            />
+            <Th
+              label="NSE Comb OI"
+              col="nseLatestOi"
+              align="right"
+              title="Combined futures + options open interest today, in contracts (NSE oi-spurts 'latestOI'). The absolute scale behind the NSE OI% change."
+              {...th}
+            />
+            <Th
+              label="NSE Prev OI"
+              col="nsePrevOi"
+              align="right"
+              title="Yesterday's combined futures + options open interest, in contracts (NSE oi-spurts 'prevOI') — the baseline the NSE OI% change is measured from."
+              {...th}
+            />
+            <Th
               label="Turn Lvl"
               col="turnoverLvl"
               align="right"
@@ -440,7 +533,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               title={`Open ${r.symbol} chart on TradingView`}
               className="cursor-pointer border-t border-border hover:bg-muted/30"
             >
-              <td className="px-2 py-1 text-right tabular-nums text-[10px] text-muted-foreground">{r.origRank}</td>
+              <td className="px-1.5 py-0.5 text-right tabular-nums text-[10px] text-muted-foreground">{r.origRank}</td>
               <td className="px-3 py-1 font-medium text-foreground">
                 {r.symbol}
                 {sectors?.[r.symbol] && (
@@ -449,7 +542,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
                   </span>
                 )}
               </td>
-              <td className="px-2 py-1 text-right">
+              <td className="px-1.5 py-0.5 text-right">
                 <RFactorCell r={r} />
               </td>
               <td className="px-2 py-1">
@@ -468,9 +561,9 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               <td className="px-2 py-1">
                 <BreakoutCell r={r} />
               </td>
-              <td className="px-2 py-1 text-right tabular-nums">{r.ltp != null ? `₹${num(r.ltp)}` : '—'}</td>
+              <td className="px-1.5 py-0.5 text-right tabular-nums">{r.ltp != null ? `₹${num(r.ltp)}` : '—'}</td>
               <td
-                className={`px-2 py-1 text-right tabular-nums ${
+                className={`px-1.5 py-0.5 text-right tabular-nums ${
                   r.changePctOpen == null
                     ? 'text-muted-foreground/50'
                     : r.changePctOpen >= 0
@@ -480,30 +573,39 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               >
                 {r.changePctOpen != null ? `${r.changePctOpen >= 0 ? '+' : ''}${num(r.changePctOpen)}%` : '—'}
               </td>
-              <td className="px-2 py-1 text-right">
+              <td className="px-1.5 py-0.5 text-right">
                 <SinceEntryCell r={r} />
               </td>
-              <td className={`px-2 py-1 text-right font-medium tabular-nums ${spreadCls(r.spreadPct)}`}>
+              <td className={`px-1.5 py-0.5 text-right font-medium tabular-nums ${spreadCls(r.spreadPct)}`}>
                 {r.spreadPct != null ? `${num(r.spreadPct, 3)}%` : '—'}
               </td>
               <td className="px-2 py-1">
                 <Imbalance v={r.imbalance} />
               </td>
-              <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">{fmtCompact(r.futOi)}</td>
+              <td className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{fmtCompact(r.futOi)}</td>
               <td
-                className={`px-2 py-1 text-right tabular-nums ${
+                className={`px-1.5 py-0.5 text-right tabular-nums ${
                   (r.oiLevel ?? 0) >= 1.25 ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
                 }`}
               >
                 {r.oiLevel != null ? `${num(r.oiLevel)}×` : '—'}
               </td>
-              <td className="px-2 py-1 text-right">
+              <td className="px-1.5 py-0.5 text-right">
                 <OiBuild r={r} />
               </td>
-              <td className="px-2 py-1 text-right">
+              <td className="px-1.5 py-0.5 text-right">
                 <NseOiCell r={r} />
               </td>
-              <td className="px-2 py-1 text-right">
+              <td className="px-1.5 py-0.5 text-right">
+                <OptShareCell v={r.nseOptShare} />
+              </td>
+              <td className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{fmtCr(r.nsePremValueCr)}</td>
+              <td className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{fmtCr(r.nseFutValueCr)}</td>
+              <td className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{fmtCr(r.nseOptValueCr)}</td>
+              <td className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{fmtCr(r.nseTotalValueCr)}</td>
+              <td className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{fmtCompact(r.nseLatestOi ?? null)}</td>
+              <td className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{fmtCompact(r.nsePrevOi ?? null)}</td>
+              <td className="px-1.5 py-0.5 text-right">
                 <TurnoverLvlCell v={r.turnoverLvl} />
               </td>
               <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{fmtCompact(r.turnover)}</td>
@@ -511,7 +613,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
           ))}
           {sorted.length === 0 && (
             <tr>
-              <td colSpan={16} className="px-3 py-8 text-center text-muted-foreground">
+              <td colSpan={23} className="px-2 py-8 text-center text-muted-foreground">
                 No data.
               </td>
             </tr>
