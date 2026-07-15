@@ -12,7 +12,9 @@
  *   2. futures full-day 5-min history → upsert 'FUT' rows
  *   3. live futures OI via depth      → attach to the current 'FUT' bucket
  * Full-day refetch + PK upsert means missed cycles self-heal and duplicates
- * are impossible. pruneToDate() at cycle start keeps only today's rows.
+ * are impossible. pruneCandleHistory() at cycle start keeps the newest
+ * FYERS_CANDLE_RETENTION_SESSIONS sessions (today + the replay benchmark's
+ * trailing days).
  *
  * State lives on globalThis: Turbopack HMR re-evaluates this module, and a
  * module-level timer would duplicate the loop on every hot reload (same
@@ -23,16 +25,41 @@ import { nowIST } from '@/lib/auto-trade/config';
 import { getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/auth';
 import { EOD_PUBLISH_HOUR_IST, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { prisma } from '@/lib/db';
+import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 import { FyersAuthError, getFyersAccessToken, getFyersTokenStatus, hasFyersAuth } from '@/lib/fyers/auth';
-import { fetchFutDepth, fetchHistory5m } from '@/lib/fyers/client';
-import { attachFutDepth, fyersBucketFor, pruneToDate, upsertCandles } from '@/lib/fyers/candle-store';
+import { fetchFutDepth, fetchHistory5m, type FyersBar } from '@/lib/fyers/client';
+import { attachFutDepth, fyersBucketFor, pruneCandleHistory, upsertCandles } from '@/lib/fyers/candle-store';
 import { getTrackedUniverse, peekUniverse, resolveFutSymbol, toEqSymbol } from '@/lib/fyers/symbols';
 import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 import { pruneRankSnapshots, recordRankSnapshot } from '@/lib/signals/rank-tracker';
+import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
 const TICK_OFFSET_MS = 10_000; // fire 10s after the grid boundary so the closed bar exists
+const PRIORITY_HISTORY_CONCURRENCY = 3;
+const POLLER_LEASE = 'fyers-poller';
+const POLLER_LEASE_TTL_MS = 90_000;
+
+/** True only when history contains a usable bar at the required bucket. */
+export function hasRequiredEqBar(bars: readonly FyersBar[], requiredBucket: number | null): boolean {
+  return bars.some((bar) => bar.open > 0 && (requiredBucket === null || bar.bucketTs >= requiredBucket));
+}
+
+async function mapBounded<T>(
+  values: readonly T[],
+  concurrency: number,
+  work: (value: T) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < values.length) {
+      const index = next++;
+      await work(values[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), values.length) }, () => worker()));
+}
 
 export interface CycleError {
   symbol: string;
@@ -51,8 +78,25 @@ export interface CycleSummary {
   eqBars: number;
   futBars: number;
   oiAttached: number;
-  skipped?: 'market-closed' | 'holiday' | 'paused' | 'overlap' | 'no-credentials';
+  prioritySymbols: number;
+  /** Priority symbols whose Fyers history response contained candle rows. */
+  priorityFreshSymbols: number;
+  /** Tick start to release of the autonomous scan path. */
+  captureReleaseMs: number | null;
+  skipped?: 'market-closed' | 'holiday' | 'paused' | 'overlap' | 'not-leader' | 'no-credentials';
   errors: CycleError[];
+}
+
+export interface CaptureTiming {
+  cycleStartedAt: string;
+  captureStartedAt: string;
+  status: 'completed' | 'scan-failed' | 'decision-failed' | 'skipped-overlap';
+  tickToCaptureMs: number;
+  tickToScanMs: number | null;
+  scanToDecisionMs: number | null;
+  tickToDecisionMs: number | null;
+  redundantReadTools: number | null;
+  detail: string | null;
 }
 
 interface PollerState {
@@ -70,6 +114,8 @@ interface PollerState {
   /** Guards against a slow autonomous capture overlapping the next one — so the
    *  scan's Dhan/NSE calls can never be issued concurrently (rate-limit safety). */
   captureRunning: boolean;
+  captureSkips: number;
+  lastCapture: CaptureTiming | null;
   /** Latest pre-open token warm-up attempt (08:40–09:15 IST ticks, trading days).
    *  Per-provider outcome: 'ok' | 'no-credentials' | 'error: …'. Overwritten each
    *  attempt — the token caches themselves are the real success markers. */
@@ -94,6 +140,8 @@ function getState(): PollerState {
     holidayCache: null,
     lastBhavcopyDate: null,
     captureRunning: false,
+    captureSkips: 0,
+    lastCapture: null,
     lastWarmup: null,
     warmupRunning: false,
   };
@@ -106,10 +154,7 @@ async function isMarketHoliday(date: string): Promise<boolean> {
   if (state.holidayCache?.date === date) return state.holidayCache.holiday;
   let holiday = false;
   try {
-    const rows = await prisma.$queryRawUnsafe<unknown[]>(
-      `SELECT 1 FROM market_holidays WHERE date = ? LIMIT 1`,
-      date,
-    );
+    const rows = await prisma.$queryRawUnsafe<unknown[]>(`SELECT 1 FROM market_holidays WHERE date = ? LIMIT 1`, date);
     holiday = rows.length > 0;
   } catch {
     // Table absent / unreadable → assume trading day; a holiday cycle just fetches empty candles
@@ -121,11 +166,16 @@ async function isMarketHoliday(date: string): Promise<boolean> {
 /**
  * Run one download cycle. `force` bypasses the paused/market-hours/holiday
  * guards (manual run-once); `dateOverride` fetches that day's candles instead
- * of today's (market-closed testing — OI is skipped, and the rows are removed
- * by the next un-overridden cycle's prune).
+ * of today's (market-closed testing / replay-benchmark backfill — OI is
+ * skipped; the rows survive as long as the date is among the newest
+ * FYERS_CANDLE_RETENTION_SESSIONS sessions).
  */
 export async function runFyersCycle(
-  opts: { force?: boolean; dateOverride?: string; trigger?: 'timer' | 'manual' } = {},
+  opts: {
+    force?: boolean;
+    dateOverride?: string;
+    trigger?: 'timer' | 'manual';
+  } = {}
 ): Promise<CycleSummary> {
   const state = getState();
   const trigger = opts.trigger ?? 'manual';
@@ -141,6 +191,9 @@ export async function runFyersCycle(
     eqBars: 0,
     futBars: 0,
     oiAttached: 0,
+    prioritySymbols: 0,
+    priorityFreshSymbols: 0,
+    captureReleaseMs: null,
     errors: [],
   };
   const finish = (skipped?: CycleSummary['skipped']): CycleSummary => {
@@ -168,11 +221,19 @@ export async function runFyersCycle(
   }
   if (!opts.force && (await isMarketHoliday(summary.date))) return finish('holiday');
   if (!hasFyersAuth()) {
-    summary.errors.push({ symbol: '*', stage: 'cycle', message: 'Fyers credentials not configured (.env.local)' });
+    summary.errors.push({
+      symbol: '*',
+      stage: 'cycle',
+      message: 'Fyers credentials not configured (.env.local)',
+    });
     return finish('no-credentials');
   }
+  if (!(await tryAcquireRuntimeLease(POLLER_LEASE, POLLER_LEASE_TTL_MS))) return finish('not-leader');
 
   state.cycleRunning = true;
+  const leaseRenewal = setInterval(() => {
+    void tryAcquireRuntimeLease(POLLER_LEASE, POLLER_LEASE_TTL_MS);
+  }, 30_000);
   try {
     const today = todayIST();
     const date = summary.date;
@@ -181,50 +242,155 @@ export async function runFyersCycle(
     // the session and create an orphan row).
     const attachOi = date === today && isMarketHours();
 
-    if (!opts.dateOverride) {
-      await pruneToDate(today);
-      await pruneRankSnapshots(today); // same retention: last session survives until the next open
-    }
-
     const universe = await getTrackedUniverse(today);
     summary.universeSize = universe.length;
 
-    // NSE combined-OI map for this cycle (only useful when attaching live depth)
-    const nseOiPctBySymbol = attachOi ? await getNseCombinedOiPctMap() : new Map<string, number>();
-
-    // Freeze the leaderboard-rank snapshot for this bucket (the "running race"
-    // tracker). Reads the same shared-cache NSE feeds; fire-and-forget so a feed
-    // hiccup never delays or breaks the candle cycle.
-    if (attachOi) void recordRankSnapshot(today).catch(() => {});
+    // ── Priority-first download (2026-07-15, latency fix) ──────────────────
+    // The autonomous capture (scan → AI decision) used to wait for the WHOLE
+    // ~166-symbol download (~3 min of sequential Fyers calls) even though the
+    // scan only reads EQ candles; its prices/futures OI come from batched Dhan
+    // and NSE snapshots. So: refresh EQ history for the priority names FIRST
+    // (open positions, today's earlier picks, the NSE movers/OI lists — the
+    // same ~50-80 names /live shows), fire the capture as soon as those candles
+    // land, and let every FUT-history/depth call plus the remaining universe
+    // download while the scan/AI runs. The providers have separate account
+    // limits, so this overlap is intentional; the shared Dhan gates still
+    // serialize each Dhan endpoint process-wide. The full
+    // universe still downloads every cycle (replay benchmark + full-universe
+    // scans need it) — nothing is excluded, only reordered.
+    const captureEligible = !opts.dateOverride && attachOi && Boolean(process.env.RAILWAY_ENVIRONMENT_NAME);
+    let candidateSnapshot: CandidateSnapshot | null = null;
+    if (captureEligible) {
+      try {
+        const { discoverCandidateSnapshot, isCandidateScanDue } = await import('@/lib/trade-suggest/candidates');
+        if (await isCandidateScanDue()) candidateSnapshot = await discoverCandidateSnapshot();
+      } catch (err) {
+        console.warn(`${TAG} candidate discovery failed: ${(err as Error).message}`);
+      }
+    }
+    // Freeze replay membership from the same pulse-cache moment as candidate
+    // discovery. Run off-path; Fyers downloads can proceed while SQLite stores
+    // the rank rows.
+    if (attachOi) void recordRankSnapshot(today, Date.now(), candidateSnapshot?.fullUniverse ?? null).catch(() => {});
+    const priority = captureEligible ? await getPrioritySymbols(today, candidateSnapshot) : new Set<string>();
+    const ordered =
+      priority.size > 0
+        ? [...universe.filter((s) => priority.has(s)), ...universe.filter((s) => !priority.has(s))]
+        : universe;
+    const priorityCount = ordered.length - universe.filter((s) => !priority.has(s)).length;
+    summary.prioritySymbols = priorityCount;
+    let captureFired = false;
 
     // One retried token regeneration per cycle: the first auth failure clears
     // the cached token; the retry regenerates it. A second failure aborts the
     // cycle — every remaining call would fail the same way.
-    let authRetried = false;
+    let authRefresh: Promise<void> | null = null;
     const withAuthRetry = async <T>(call: () => Promise<T>): Promise<T> => {
       try {
         return await call();
       } catch (err) {
-        if (!(err instanceof FyersAuthError) || authRetried) throw err;
-        authRetried = true;
+        if (!(err instanceof FyersAuthError)) throw err;
         console.warn(`${TAG} auth failure — regenerating token and retrying once`);
-        await getFyersAccessToken();
+        authRefresh ??= getFyersAccessToken()
+          .then(() => undefined)
+          .finally(() => {
+            authRefresh = null;
+          });
+        await authRefresh;
         return call();
       }
     };
 
-    for (const symbol of universe) {
+    let cycleAborted = false;
+    const downloadEq = async (symbol: string, requireFresh = false): Promise<boolean> => {
+      try {
+        const fetchEqBars = async () => {
+          summary.apiCalls += 1;
+          return withAuthRetry(() => fetchHistory5m(toEqSymbol(symbol), date));
+        };
+        const requiredBucket = requireFresh ? fyersBucketFor(startedMs) - CYCLE_MS / 1000 : null;
+        let eqBars = await fetchEqBars();
+        if (!hasRequiredEqBar(eqBars, requiredBucket) && requireFresh) eqBars = await fetchEqBars();
+        if (!hasRequiredEqBar(eqBars, requiredBucket)) {
+          summary.errors.push({
+            symbol,
+            stage: 'eq-history',
+            message: requireFresh
+              ? 'Fyers priority EQ history did not reach the latest completed 5-min bucket after retry; capture will use last stored candle context'
+              : 'Fyers returned no usable EQ candles; recorder kept existing candle context',
+          });
+          return false;
+        }
+        summary.eqBars += await upsertCandles(symbol, 'EQ', date, eqBars);
+        return true;
+      } catch (err) {
+        if (err instanceof FyersAuthError) {
+          summary.errors.push({
+            symbol,
+            stage: 'cycle',
+            message: `auth failed twice — cycle aborted: ${err.message}`,
+          });
+          cycleAborted = true;
+          return false;
+        }
+        summary.errors.push({
+          symbol,
+          stage: 'eq-history',
+          message: (err as Error).message,
+        });
+        return false;
+      }
+    };
+
+    // Critical path: one Fyers history call per priority symbol. FUT history
+    // and depth are recorder/replay data; the live scan does not read them.
+    // Bounded in-flight requests preserve the existing 350ms dispatch gate
+    // and adaptive 429 cooldown while removing response-time head-of-line
+    // blocking from the decision path.
+    let priorityFreshCount = 0;
+    await mapBounded(ordered.slice(0, priorityCount), PRIORITY_HISTORY_CONCURRENCY, async (symbol) => {
+      if (!cycleAborted && (await downloadEq(symbol, true))) priorityFreshCount += 1;
+    });
+    summary.priorityFreshSymbols = priorityFreshCount;
+
+    if (!cycleAborted && captureEligible && priorityCount > 0) {
+      captureFired = true;
+      summary.captureReleaseMs = Date.now() - startedMs;
+      console.log(
+        `${TAG} priority EQ refresh ${priorityFreshCount}/${priorityCount} fresh — capture fired; ${priorityCount - priorityFreshCount} use last stored candle context, FUT/depth and ${ordered.length - priorityCount} more symbols continue in background`
+      );
+      void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
+    } else if (!cycleAborted && captureEligible && priorityCount === 0) {
+      // Feeds down / no current candidates: position management and the live
+      // scan still use last-cycle candles plus fresh Dhan/NSE snapshots.
+      captureFired = true;
+      summary.captureReleaseMs = Date.now() - startedMs;
+      console.log(`${TAG} no priority symbols — capture fired immediately`);
+      void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
+    }
+
+    // Recorder-only work starts after the decision path is released.
+    const nseOiPctBySymbol = attachOi ? await getNseCombinedOiPctMap() : new Map<string, number>();
+    for (let symbolIdx = 0; symbolIdx < ordered.length && !cycleAborted; symbolIdx += 1) {
+      const symbol = ordered[symbolIdx];
       try {
         let futSymbol: string | null = null;
         try {
           futSymbol = await resolveFutSymbol(symbol, today);
         } catch (err) {
-          summary.errors.push({ symbol, stage: 'resolve', message: (err as Error).message });
+          summary.errors.push({
+            symbol,
+            stage: 'resolve',
+            message: (err as Error).message,
+          });
         }
 
-        summary.apiCalls += 1;
-        const eqBars = await withAuthRetry(() => fetchHistory5m(toEqSymbol(symbol), date));
-        summary.eqBars += await upsertCandles(symbol, 'EQ', date, eqBars);
+        // Priority EQ was completed above; the tail still gets the identical
+        // full EQ+FUT+depth refresh before the cycle finishes.
+        if (symbolIdx >= priorityCount) {
+          await downloadEq(symbol);
+          if (cycleAborted) break;
+        }
 
         if (futSymbol) {
           summary.apiCalls += 1;
@@ -246,32 +412,82 @@ export async function runFyersCycle(
         summary.symbolsProcessed += 1;
       } catch (err) {
         if (err instanceof FyersAuthError) {
-          summary.errors.push({ symbol, stage: 'cycle', message: `auth failed twice — cycle aborted: ${err.message}` });
+          summary.errors.push({
+            symbol,
+            stage: 'cycle',
+            message: `auth failed twice — cycle aborted: ${err.message}`,
+          });
+          cycleAborted = true;
           break;
         }
-        summary.errors.push({ symbol, stage: 'cycle', message: (err as Error).message });
+        summary.errors.push({
+          symbol,
+          stage: 'cycle',
+          message: (err as Error).message,
+        });
       }
+    }
+
+    // Retention never affects today's readers. Keep its SQLite work entirely
+    // off the tick-to-decision path and run it after the recorder is complete.
+    if (!opts.dateOverride) {
+      await pruneCandleHistory();
+      await pruneRankSnapshots();
     }
 
     state.cycles += 1;
     console.log(
       `${TAG} cycle #${state.cycles} (${trigger}) ${date}: ${summary.symbolsProcessed}/${summary.universeSize} symbols, ` +
         `${summary.eqBars} eq bars, ${summary.futBars} fut bars, ${summary.oiAttached} OI, ` +
-        `${summary.apiCalls} calls, ${summary.errors.length} errors, ${Date.now() - startedMs}ms`,
+        `${summary.apiCalls} calls, ${summary.errors.length} errors, ${Date.now() - startedMs}ms`
     );
 
-    // Autonomous in-process capture (deployed server only). Drives the same
-    // endpoints that otherwise only persist when a browser/loop hits them, so
-    // /trade-suggest, the OI-urgency series and the Trade Log fill hands-off —
-    // no external cron. Gated to live market hours today; never blocks/breaks
-    // the poller (fire-and-forget, own error handling).
-    if (!opts.dateOverride && attachOi && process.env.RAILWAY_ENVIRONMENT_NAME) {
-      void runAutonomousCapture(today, state);
+    // Autonomous in-process capture (deployed server only) — FALLBACK fire
+    // point: normally the capture already fired above; this covers a critical
+    // Fyers auth abort/exception before the release point. Gated to live
+    // market hours today; never blocks/breaks the poller (fire-and-forget).
+    if (!captureFired && captureEligible) {
+      summary.captureReleaseMs = Date.now() - startedMs;
+      void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
     }
     return finish();
   } finally {
+    clearInterval(leaseRenewal);
+    await releaseRuntimeLease(POLLER_LEASE);
     state.cycleRunning = false;
   }
+}
+
+/**
+ * Symbols whose candles must be FRESH before the capture fires — the download
+ * loop refreshes their EQ history first so the scan/AI works on this cycle's
+ * candle shape without waiting for unrelated FUT history/depth calls:
+ *   1. Open auto-trade positions (the guard's spot stops read their candles),
+ *   2. today's earlier picks (position-management feed),
+ *   3. the /live watchlist (NSE oi-spurts + FOSec gainers/losers + most-active
+ *      by value/volume — the same shared-cache pulse feeds the page shows,
+ *      fetched sequentially to respect NSE's burst limit; oiSpurts is already
+ *      warm from the cycle's combined-OI fetch).
+ * Best-effort everywhere: any source failing just contributes nothing; an
+ * empty set means the capture fires immediately on last-cycle candle context
+ * rather than waiting for unrelated recorder work.
+ */
+async function getPrioritySymbols(today: string, candidateSnapshot: CandidateSnapshot | null): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const symbol of candidateSnapshot?.prioritySymbols ?? []) out.add(symbol);
+  try {
+    const { getRiskBearingTrades } = await import('@/lib/auto-trade/store');
+    for (const t of await getRiskBearingTrades()) out.add(t.symbol);
+  } catch (err) {
+    console.warn(`${TAG} priority: open trades unavailable: ${(err as Error).message}`);
+  }
+  try {
+    const { getSuggestions } = await import('@/lib/trade-suggest/store');
+    for (const s of await getSuggestions(today)) out.add(s.symbol);
+  } catch (err) {
+    console.warn(`${TAG} priority: suggestions unavailable: ${(err as Error).message}`);
+  }
+  return out;
 }
 
 /**
@@ -281,17 +497,59 @@ export async function runFyersCycle(
  * 09:40–11:00 window) and syncs EOD bhavcopy once a day. Best-effort — any
  * failure is logged and swallowed so the recorder is never affected.
  */
-async function runAutonomousCapture(today: string, state: PollerState): Promise<void> {
+async function runAutonomousCapture(
+  today: string,
+  state: PollerState,
+  candidateSnapshot: CandidateSnapshot | null = null,
+  cycleStartedMs: number | null = null
+): Promise<void> {
   // Never let a slow capture overlap the next cycle's — this serializes the
   // scan's Dhan/NSE calls (rate-limit safety). A skipped pass self-heals next
   // cycle (the scan is idempotent; repeats just bump timesSeen).
-  if (state.captureRunning) return;
+  const captureStartedMs = Date.now();
+  const cycleStart = cycleStartedMs ?? captureStartedMs;
+  if (state.captureRunning) {
+    state.captureSkips += 1;
+    state.lastCapture = {
+      cycleStartedAt: new Date(cycleStart).toISOString(),
+      captureStartedAt: new Date(captureStartedMs).toISOString(),
+      status: 'skipped-overlap',
+      tickToCaptureMs: captureStartedMs - cycleStart,
+      tickToScanMs: null,
+      scanToDecisionMs: null,
+      tickToDecisionMs: null,
+      redundantReadTools: null,
+      detail: 'previous autonomous capture still running',
+    };
+    console.warn(`${TAG} capture skipped: previous pass still running (total skips ${state.captureSkips})`);
+    return;
+  }
   state.captureRunning = true;
+  const timing: CaptureTiming = {
+    cycleStartedAt: new Date(cycleStart).toISOString(),
+    captureStartedAt: new Date(captureStartedMs).toISOString(),
+    status: 'scan-failed',
+    tickToCaptureMs: captureStartedMs - cycleStart,
+    tickToScanMs: null,
+    scanToDecisionMs: null,
+    tickToDecisionMs: null,
+    redundantReadTools: null,
+    detail: null,
+  };
+  state.lastCapture = timing;
   const origin = `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
+  let allowDisplayRefresh = false;
   try {
     try {
       const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
-      const result = await runTradeSuggest(origin); // internal /api/live/* fetches carry APP_PASSWORD auth
+      const result = await runTradeSuggest(origin, {
+        candidateSnapshot: candidateSnapshot ?? undefined,
+      });
+      const scanReadyMs = Date.now();
+      timing.tickToScanMs = scanReadyMs - cycleStart;
+      console.log(
+        `${TAG} latency: tick→scan ${scanReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (capture→scan ${scanReadyMs - captureStartedMs}ms)`
+      );
       // ONE AI analysis per cycle. The auto-trade pass runs FIRST (lib/auto-trade:
       // deterministic guard, then the decision loop over the SAME scan result);
       // when its read was stored as this cycle's commentary, the standalone MiMo
@@ -302,11 +560,28 @@ async function runAutonomousCapture(today: string, state: PollerState): Promise<
       try {
         const { runAutoTradePass } = await import('@/lib/auto-trade/engine');
         const outcome = await runAutoTradePass(result);
-        commentaryHandled = outcome.commentaryStored;
+        const decisionReadyMs = Date.now();
+        timing.status = outcome.ran ? (outcome.error ? 'decision-failed' : 'completed') : 'skipped-overlap';
+        timing.scanToDecisionMs = decisionReadyMs - scanReadyMs;
+        timing.tickToDecisionMs = decisionReadyMs - cycleStart;
+        timing.redundantReadTools = outcome.redundantReadTools ?? 0;
+        timing.detail = outcome.reason ?? null;
+        // Only this process may spend the low-priority Dhan option-chain call
+        // after it actually owned and completed the engine pass. If another
+        // process owns the pass, its quote lane must remain uncontested.
+        allowDisplayRefresh = outcome.ran;
+        console.log(
+          `${TAG} latency: tick→auto-pass ${decisionReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (scan→decision ${decisionReadyMs - scanReadyMs}ms; ${outcome.reason})`
+        );
+        // A non-running outcome means another in-process/distributed pass owns
+        // this cycle. Do not start a second standalone model call alongside it.
+        commentaryHandled = outcome.commentaryStored || !outcome.ran;
         if (outcome.ran && (outcome.guardActions.length > 0 || outcome.aiSummary)) {
           console.log(`${TAG} auto-trade: ${outcome.aiSummary?.slice(0, 120) ?? outcome.guardActions.join(' · ')}`);
         }
       } catch (err) {
+        timing.status = 'decision-failed';
+        timing.detail = (err as Error).message;
         console.warn(`${TAG} auto-trade failed: ${(err as Error).message}`);
       }
       if (!commentaryHandled) {
@@ -319,12 +594,29 @@ async function runAutonomousCapture(today: string, state: PollerState): Promise<
         }
       }
     } catch (err) {
+      timing.status = 'scan-failed';
+      timing.detail = (err as Error).message;
       console.warn(`${TAG} autonomous scan failed: ${(err as Error).message}`);
     }
     // NOTE: EOD bhavcopy is NOT synced here — NSE only publishes it after close,
     // so it runs in runEodCapture() from the post-market branch instead.
   } finally {
     state.captureRunning = false;
+    // Display-only and deliberately off the decision path. Skip unless this
+    // process owned the engine pass, and skip whenever an entry submission or
+    // confirmed position bears risk. /live reads only the resulting cache.
+    if (allowDisplayRefresh) void refreshDisplayOnlyNiftyContext();
+  }
+}
+
+async function refreshDisplayOnlyNiftyContext(): Promise<void> {
+  try {
+    const { getRiskBearingTrades } = await import('@/lib/auto-trade/store');
+    if ((await getRiskBearingTrades()).length > 0) return;
+    const { refreshNiftyGammaContext } = await import('@/lib/signals/nifty-gamma-context');
+    await refreshNiftyGammaContext();
+  } catch (err) {
+    console.warn(`${TAG} display-only NIFTY context refresh failed: ${(err as Error).message}`);
   }
 }
 
@@ -349,7 +641,9 @@ async function runEodCapture(state: PollerState): Promise<void> {
   try {
     const origin = `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
     const auth: Record<string, string> = process.env.APP_PASSWORD
-      ? { Authorization: `Basic ${Buffer.from(`x:${process.env.APP_PASSWORD}`).toString('base64')}` }
+      ? {
+          Authorization: `Basic ${Buffer.from(`x:${process.env.APP_PASSWORD}`).toString('base64')}`,
+        }
       : {};
     const res = await fetch(`${origin}/api/bhavcopy`, {
       method: 'POST',
@@ -357,7 +651,9 @@ async function runEodCapture(state: PollerState): Promise<void> {
       body: '{}',
     });
     if (res.ok) {
-      const j = (await res.json().catch(() => ({}))) as { status?: { latestDate?: string } };
+      const j = (await res.json().catch(() => ({}))) as {
+        status?: { latestDate?: string };
+      };
       state.lastBhavcopyDate = istToday; // mark done for today, on a successful run
       console.log(`${TAG} EOD bhavcopy sync ran (latest ${j.status?.latestDate ?? '?'})`);
     }
@@ -460,7 +756,7 @@ export function startFyersPoller(): void {
   scheduleNextTick();
   console.log(
     `${TAG} started — next tick ${state.nextTickAt ? new Date(state.nextTickAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) : '?'} IST` +
-      (hasFyersAuth() ? '' : ' (Fyers credentials NOT configured — cycles will skip)'),
+      (hasFyersAuth() ? '' : ' (Fyers credentials NOT configured — cycles will skip)')
   );
 }
 
@@ -486,6 +782,9 @@ export interface PollerStatus {
   cycles: number;
   nextTickAt: number | null;
   lastCycle: CycleSummary | null;
+  captureRunning: boolean;
+  captureSkips: number;
+  lastCapture: CaptureTiming | null;
   marketOpen: boolean;
   credentialsConfigured: boolean;
   token: { cached: boolean; expiresAt: number | null };
@@ -504,6 +803,9 @@ export function getFyersPollerStatus(): PollerStatus {
     cycles: state.cycles,
     nextTickAt: state.nextTickAt,
     lastCycle: state.lastCycle,
+    captureRunning: state.captureRunning,
+    captureSkips: state.captureSkips,
+    lastCapture: state.lastCapture,
     marketOpen: isMarketHours(),
     credentialsConfigured: hasFyersAuth(),
     token: getFyersTokenStatus(),

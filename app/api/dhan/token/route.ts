@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { clearCachedToken, getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/auth';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,13 +38,20 @@ function tokenInfo(token: string, reveal: boolean) {
  * Returns whether auth is configured plus the active token's (masked) preview and
  * expiry, fetching/caching a token if none is loaded yet.
  */
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   if (!hasDhanAuth()) {
     return NextResponse.json({ success: false, configured: false, error: NO_CREDS }, { status: 400 });
   }
   try {
     const token = await getDhanAccessToken();
-    return NextResponse.json({ success: true, configured: true, regenerated: false, ...tokenInfo(token, false) });
+    return NextResponse.json({
+      success: true,
+      configured: true,
+      regenerated: false,
+      ...tokenInfo(token, false),
+    });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 502 });
   }
@@ -58,6 +66,8 @@ export async function GET() {
  * It's a live credential, so it's masked by default.
  */
 export async function POST(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   if (!hasDhanAuth()) {
     return NextResponse.json({ success: false, configured: false, error: NO_CREDS }, { status: 400 });
   }
@@ -65,7 +75,12 @@ export async function POST(req: Request) {
   try {
     clearCachedToken();
     const token = await getDhanAccessToken();
-    return NextResponse.json({ success: true, configured: true, regenerated: true, ...tokenInfo(token, body.reveal === true) });
+    return NextResponse.json({
+      success: true,
+      configured: true,
+      regenerated: true,
+      ...tokenInfo(token, body.reveal === true),
+    });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 502 });
   }

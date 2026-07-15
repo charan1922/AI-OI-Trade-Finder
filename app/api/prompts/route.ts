@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { COMMENTARY_SYSTEM } from '@/lib/ai-commentary/generate';
 import { AUTO_TRADER_SYSTEM } from '@/lib/auto-trade/decision/system-prompt';
 import { getPromptText, listPromptVersions, recordPromptVersion } from '@/lib/prompts/store';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,12 +15,17 @@ export const runtime = 'nodejs';
  *   ?key=X[&version=N]   → the full text of one version (latest when omitted).
  */
 export async function GET(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
     const url = new URL(req.url);
     const key = url.searchParams.get('key');
     if (key) {
       const versionParam = Number(url.searchParams.get('version'));
-      const row = await getPromptText(key, Number.isFinite(versionParam) && versionParam > 0 ? versionParam : undefined);
+      const row = await getPromptText(
+        key,
+        Number.isFinite(versionParam) && versionParam > 0 ? versionParam : undefined
+      );
       if (!row) return NextResponse.json({ success: false, error: `no stored prompt for '${key}'` }, { status: 404 });
       return NextResponse.json({ success: true, key, ...row });
     }

@@ -7,7 +7,12 @@ import { getNseOiLatestForSymbols } from '@/lib/fyers/candle-store';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
 import type { OiStock } from '@/lib/nse/pulse';
 import { addToUniverse } from '@/lib/fyers/symbols';
-import { changeSinceEntryWindow, computeOiUrgency, getIntradaySeriesForSymbols, recordIntradayOi } from '@/lib/signals/oi-intraday';
+import {
+  changeSinceEntryWindow,
+  computeOiUrgency,
+  getIntradaySeriesForSymbols,
+  recordIntradayOi,
+} from '@/lib/signals/oi-intraday';
 import { evaluateBreakout } from '@/lib/breakout';
 import { ensureBreakoutContext, getBreakoutContext } from '../_lib/breakout-context';
 import { buildClosingSnapshot } from '../_lib/closing-snapshot';
@@ -50,7 +55,12 @@ export async function POST(req: Request) {
     // No hardcoded fallback basket — an empty watchlist returns empty rows (each
     // /live section builds its own list via /api/live/nse-watchlist).
     if (symbols.length === 0) {
-      return NextResponse.json({ success: true, marketOpen: isMarketHours(), rows: [], symbols });
+      return NextResponse.json({
+        success: true,
+        marketOpen: isMarketHours(),
+        rows: [],
+        symbols,
+      });
     }
 
     // Sort for cache-key normalization — two windows passing the same symbols
@@ -84,10 +94,20 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
   for (const s of symbols) {
     const cls = classifyFno(fno.get(s));
     if (cls.ok) allowed.push(s);
-    else excluded.push({ symbol: s, reason: excludeReasonLabel(cls.reason ?? 'not-fno') });
+    else
+      excluded.push({
+        symbol: s,
+        reason: excludeReasonLabel(cls.reason ?? 'not-fno'),
+      });
   }
   if (allowed.length === 0) {
-    return { success: true, marketOpen: true, rows: [], symbols: allowed, excluded };
+    return {
+      success: true,
+      marketOpen: true,
+      rows: [],
+      symbols: allowed,
+      excluded,
+    };
   }
 
   // Resolve equity + near-month futures security IDs DIRECTLY from
@@ -175,7 +195,10 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
     // Turnover pace: cumulative turnover ÷ (20d full-day avg × session fraction).
     // Decays through the day if the flow dies — unlike raw cumulative turnover.
     const turnoverLvl =
-      turnover != null && base?.futTurnover20dAvg != null && base.futTurnover20dAvg > 0 && sessionFrac > MIN_SESSION_FRACTION
+      turnover != null &&
+      base?.futTurnover20dAvg != null &&
+      base.futTurnover20dAvg > 0 &&
+      sessionFrac > MIN_SESSION_FRACTION
         ? turnover / (base.futTurnover20dAvg * sessionFrac)
         : null;
     const oiFeed = nseOi.get(s);
@@ -199,7 +222,7 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
       },
       base,
       getMorningContext(s),
-      now,
+      now
     );
     const r = rf ? computeRFactor(rf) : null;
 
@@ -224,6 +247,12 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
       turnoverLvl,
       nseOiPct: oiFeed?.nseOiPct ?? null,
       nseOiSlope30m: oiFeed?.slope30m ?? null,
+      // NSE-native columns — straight from the LIVE oi-spurts feed so they match
+      // NSE's site exactly (the DB-recorded nseOiPct above lags by up to one poll).
+      nseChgOiPct: oiRow?.changeInOiPct ?? null,
+      nseChangeInOi: oiRow?.changeInOi ?? null,
+      nseVolume: oiRow?.volume ?? null,
+      nseUnderlyingValue: oiRow?.underlyingValue ?? null,
       nsePremValueCr: oiRow?.premValueCr ?? null,
       nseFutValueCr: oiRow?.futValueCr ?? null,
       nseOptValueCr: oiRow?.optValueCr ?? null,
@@ -239,7 +268,14 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
       rFactorBias: r?.bias ?? null,
       rFactorConfidence: r?.confidence ?? null,
       rFactorAfterEntry: r?.afterEntryWindow ?? null,
-      rFactors: r?.factors.map((f) => ({ label: f.label, score: f.score, vote: f.vote, available: f.available, detail: f.detail })) ?? null,
+      rFactors:
+        r?.factors.map((f) => ({
+          label: f.label,
+          score: f.score,
+          vote: f.vote,
+          available: f.available,
+          detail: f.detail,
+        })) ?? null,
       breakout,
     };
   });
@@ -283,7 +319,9 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
         changePctOpen: r.changePctOpen,
         spreadPct: r.spreadPct,
         imbalance: r.imbalance,
-      })),
+        optShare: r.nseOptShare ?? null,
+        premValueCr: r.nsePremValueCr ?? null,
+      }))
     );
     const seriesMap = await getIntradaySeriesForSymbols(today, allowed);
     for (const r of rows) {

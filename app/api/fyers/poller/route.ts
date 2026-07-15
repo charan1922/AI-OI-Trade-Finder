@@ -1,7 +1,14 @@
 import { NextResponse } from 'next/server';
 import { todayIST } from '@/lib/dhan/market-feed';
 import { getFyersCoverage } from '@/lib/fyers/candle-store';
-import { getFyersPollerStatus, runFyersCycle, runTokenWarmup, setFyersPollerPaused, startFyersPoller } from '@/lib/fyers/poller';
+import {
+  getFyersPollerStatus,
+  runFyersCycle,
+  runTokenWarmup,
+  setFyersPollerPaused,
+  startFyersPoller,
+} from '@/lib/fyers/poller';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -13,6 +20,8 @@ export const runtime = 'nodejs';
  * normally already has.
  */
 export async function GET(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   startFyersPoller();
   const status = getFyersPollerStatus();
   const withCoverage = new URL(req.url).searchParams.get('coverage') === '1';
@@ -30,7 +39,12 @@ export async function GET(req: Request) {
  * for the 08:40–09:15 IST automatic warm-up.
  */
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { action?: string; date?: string };
+  const denied = adminOnly(req);
+  if (denied) return denied;
+  const body = (await req.json().catch(() => ({}))) as {
+    action?: string;
+    date?: string;
+  };
 
   switch (body.action) {
     case 'pause':
@@ -43,7 +57,11 @@ export async function POST(req: Request) {
       if (body.date && !/^\d{4}-\d{2}-\d{2}$/.test(body.date)) {
         return NextResponse.json({ success: false, error: 'date must be YYYY-MM-DD' }, { status: 400 });
       }
-      const summary = await runFyersCycle({ force: true, dateOverride: body.date, trigger: 'manual' });
+      const summary = await runFyersCycle({
+        force: true,
+        dateOverride: body.date,
+        trigger: 'manual',
+      });
       return NextResponse.json({ success: true, summary });
     }
     case 'warm-tokens': {
@@ -52,8 +70,11 @@ export async function POST(req: Request) {
     }
     default:
       return NextResponse.json(
-        { success: false, error: "action must be 'pause' | 'resume' | 'run-once' | 'warm-tokens'" },
-        { status: 400 },
+        {
+          success: false,
+          error: "action must be 'pause' | 'resume' | 'run-once' | 'warm-tokens'",
+        },
+        { status: 400 }
       );
   }
 }

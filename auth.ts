@@ -10,12 +10,9 @@
  * Auth.js convention, and sessions are stateless JWTs signed with AUTH_SECRET
  * — no database tables, so nothing here can ever touch trading data.
  *
- * Access control (user rule 2026-07-12): ADMIN_GOOGLE_EMAILS → admin; EVERY
- * other verified Google account that completes sign-in → read-only viewer
- * (pages + read APIs only; all actions 403). Role mapping lives in proxy.ts.
- * While the Google OAuth app is in "Testing" publishing status, Google itself
- * only admits the test users added in Google Cloud Console — that list is the
- * real guest list for viewers.
+ * Access control: ADMIN_GOOGLE_EMAILS → admin; GOOGLE_VIEWER_EMAILS → viewer;
+ * every other account is denied before a session is issued. Role mapping
+ * lives in lib/auth/rbac.ts and is reused by proxy.ts.
  *
  * Google Cloud Console → the OAuth client must list the callback URL
  *   <origin>/api/auth/callback/google
@@ -23,6 +20,7 @@
  */
 import NextAuth from 'next-auth';
 import Google from 'next-auth/providers/google';
+import { roleForGoogleEmail } from '@/lib/auth/rbac';
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [Google],
@@ -40,10 +38,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     error: '/login',
   },
   callbacks: {
-    // Any VERIFIED Google account may sign in; the role split (admin vs
-    // read-only viewer) happens in proxy.ts via ADMIN_GOOGLE_EMAILS.
+    // Verified email plus explicit role allowlist; unlisted accounts get no
+    // Auth.js session even if Google OAuth itself accepts them.
     signIn({ profile }) {
-      return profile?.email_verified === true && !!profile?.email;
+      return (
+        profile?.email_verified === true && roleForGoogleEmail(profile.email, process.env.GOOGLE_VIEWER_EMAILS) != null
+      );
     },
   },
 });

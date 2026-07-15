@@ -1,6 +1,7 @@
 import { downloadEquity5min, downloadFutures5min, downloadOption5min } from '@/lib/backtest/data-downloader';
 import { getTradeContract, upsertTradeContract } from '@/lib/backtest/backtest-store';
 import { ensureSynced, forceSync, MasterContractsNotSyncedError } from '@/lib/historify/master-contracts';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +12,8 @@ export const dynamic = 'force-dynamic';
  * Body: { symbols: { symbol, optionType, strike }[], fromDate, toDate }
  */
 export async function POST(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   const body = await req.json().catch(() => ({}));
   const items = (body.symbols ?? []) as {
     symbol: string;
@@ -21,7 +24,9 @@ export async function POST(req: Request) {
   }[];
 
   if (!items.length) {
-    return new Response(JSON.stringify({ error: 'No symbols provided' }), { status: 400 });
+    return new Response(JSON.stringify({ error: 'No symbols provided' }), {
+      status: 400,
+    });
   }
 
   const encoder = new TextEncoder();
@@ -57,7 +62,7 @@ export async function POST(req: Request) {
       // keeps working even when the contract has left today's master.
       const preserved = await Promise.all(items.map((t) => getTradeContract(t.symbol, t.date, t.optionType, t.strike)));
       const allPreserved = preserved.every(
-        (p, idx) => p?.eqSecurityId && p?.futSecurityId && (items[idx].strike <= 0 || p?.optSecurityId || p?.optVia),
+        (p, idx) => p?.eqSecurityId && p?.futSecurityId && (items[idx].strike <= 0 || p?.optSecurityId || p?.optVia)
       );
 
       // Instrument resolution needs today's master contracts. The user's
@@ -70,13 +75,29 @@ export async function POST(req: Request) {
         } catch (e) {
           if (e instanceof MasterContractsNotSyncedError) {
             try {
-              send({ type: 'progress', step: 'master-sync', symbolIndex: 0, totalSymbols: items.length });
+              send({
+                type: 'progress',
+                step: 'master-sync',
+                symbolIndex: 0,
+                totalSymbols: items.length,
+              });
               const sync = await forceSync();
-              send({ type: 'step-done', step: 'master-sync', rows: sync.count, symbolIndex: 0, totalSymbols: items.length });
+              send({
+                type: 'step-done',
+                step: 'master-sync',
+                rows: sync.count,
+                symbolIndex: 0,
+                totalSymbols: items.length,
+              });
             } catch (syncErr) {
               const msg = `Master contracts sync failed: ${(syncErr as Error).message}`;
               send({ type: 'error', step: 'master-sync', message: msg });
-              send({ type: 'complete', totalRows: 0, errorCount: 1, errors: [msg] });
+              send({
+                type: 'complete',
+                totalRows: 0,
+                errorCount: 1,
+                errors: [msg],
+              });
               close();
               return;
             }
@@ -98,14 +119,22 @@ export async function POST(req: Request) {
 
         // Equity
         try {
-          send({ type: 'progress', symbol, step: 'equity', symbolIndex: i, totalSymbols: items.length });
+          send({
+            type: 'progress',
+            symbol,
+            step: 'equity',
+            symbolIndex: i,
+            totalSymbols: items.length,
+          });
           const result = await downloadEquity5min(symbol, fromDate, toDate, {
             securityId: kept?.eqSecurityId ?? undefined,
           });
           if (result.error) throw new Error(result.error);
           totalRows += result.rows;
           if (result.securityId) {
-            await upsertTradeContract(symbol, date, optionType, strike, { eqSecurityId: result.securityId });
+            await upsertTradeContract(symbol, date, optionType, strike, {
+              eqSecurityId: result.securityId,
+            });
           }
           send({
             type: 'step-done',
@@ -124,7 +153,13 @@ export async function POST(req: Request) {
         // Futures
         if (clientGone) break;
         try {
-          send({ type: 'progress', symbol, step: 'futures', symbolIndex: i, totalSymbols: items.length });
+          send({
+            type: 'progress',
+            symbol,
+            step: 'futures',
+            symbolIndex: i,
+            totalSymbols: items.length,
+          });
           const result = await downloadFutures5min(symbol, fromDate, toDate, {
             securityId: kept?.futSecurityId ?? undefined,
             expiry: kept?.futExpiry ?? undefined,
@@ -157,7 +192,13 @@ export async function POST(req: Request) {
         if (clientGone) break;
         if (strike > 0) {
           try {
-            send({ type: 'progress', symbol, step: 'options', symbolIndex: i, totalSymbols: items.length });
+            send({
+              type: 'progress',
+              symbol,
+              step: 'options',
+              symbolIndex: i,
+              totalSymbols: items.length,
+            });
             const result = await downloadOption5min(symbol, optionType as 'CE' | 'PE', strike, fromDate, toDate, {
               spotPrice,
               securityId: kept?.optSecurityId ?? undefined,
@@ -183,7 +224,13 @@ export async function POST(req: Request) {
           }
         }
 
-        send({ type: 'symbol-done', symbol, symbolIndex: i, totalSymbols: items.length, totalRows });
+        send({
+          type: 'symbol-done',
+          symbol,
+          symbolIndex: i,
+          totalSymbols: items.length,
+          totalRows,
+        });
       }
 
       // Bhavcopy leg — the OI charts' source: market-wide NSE end-of-day totals
@@ -195,7 +242,12 @@ export async function POST(req: Request) {
       // shared dataset tops up for every trade at once.
       if (!clientGone) {
         try {
-          send({ type: 'progress', step: 'bhavcopy', symbolIndex: items.length - 1, totalSymbols: items.length });
+          send({
+            type: 'progress',
+            step: 'bhavcopy',
+            symbolIndex: items.length - 1,
+            totalSymbols: items.length,
+          });
           const { syncBhavcopy } = await import('@/lib/historify/bhavcopy-service');
           const { tradedStrikeKeys } = await import('@/lib/backtest/data-downloader');
           // Weekdays from the earliest item's window-start (trade date − 45d)
@@ -232,7 +284,12 @@ export async function POST(req: Request) {
         }
       }
 
-      send({ type: 'complete', totalRows, errorCount: errors.length, errors: errors.slice(0, 20) });
+      send({
+        type: 'complete',
+        totalRows,
+        errorCount: errors.length,
+        errors: errors.slice(0, 20),
+      });
       close();
     },
     cancel() {

@@ -1,6 +1,17 @@
 'use client';
 
-import { Activity, ChevronDown, ChevronRight, Download, KeyRound, Loader2, Pause, Play, RefreshCw, Radio } from 'lucide-react';
+import {
+  Activity,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  KeyRound,
+  Loader2,
+  Pause,
+  Play,
+  RefreshCw,
+  Radio,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRole } from '@/lib/auth/use-role';
 
@@ -21,8 +32,20 @@ interface CycleSummary {
   eqBars: number;
   futBars: number;
   oiAttached: number;
+  prioritySymbols?: number;
+  priorityFreshSymbols?: number;
+  captureReleaseMs?: number | null;
   skipped?: string;
   errors: CycleError[];
+}
+interface CaptureTiming {
+  status: 'completed' | 'scan-failed' | 'decision-failed' | 'skipped-overlap';
+  tickToCaptureMs: number;
+  tickToScanMs: number | null;
+  scanToDecisionMs: number | null;
+  tickToDecisionMs: number | null;
+  redundantReadTools: number | null;
+  detail: string | null;
 }
 interface CoverageRow {
   symbol: string;
@@ -49,6 +72,9 @@ interface PollerStatus {
   cycles: number;
   nextTickAt: number | null;
   lastCycle: CycleSummary | null;
+  captureRunning?: boolean;
+  captureSkips?: number;
+  lastCapture?: CaptureTiming | null;
   marketOpen: boolean;
   credentialsConfigured: boolean;
   token: { cached: boolean; expiresAt: number | null };
@@ -72,6 +98,8 @@ const fmtTime = (ts: number | null | undefined) =>
     : '—';
 
 const fmtBucket = (bucketTs: number) => (bucketTs > 0 ? fmtTime(bucketTs * 1000) : '—');
+const fmtDuration = (ms: number | null | undefined) =>
+  ms == null ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 
 function Badge({ ok, okLabel, badLabel }: { ok: boolean; okLabel: string; badLabel: string }) {
   return (
@@ -90,7 +118,7 @@ function Badge({ ok, okLabel, badLabel }: { ok: boolean; okLabel: string; badLab
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded border border-border/50 px-2 py-1">
-      <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-[9px] tracking-wide text-muted-foreground uppercase">{label}</div>
       <div className="text-[12px] font-semibold tabular-nums">{value}</div>
     </div>
   );
@@ -146,7 +174,8 @@ function mergeCoverage(rows: CoverageRow[]): MergedCoverage[] {
       m.atp = r.atp;
       m.dayVolume = r.dayVolume;
       m.turnover = r.atp != null && r.dayVolume != null ? r.atp * r.dayVolume : null;
-      m.buyPressure = r.buyQty != null && r.sellQty != null && r.buyQty + r.sellQty > 0 ? r.buyQty / (r.buyQty + r.sellQty) : null;
+      m.buyPressure =
+        r.buyQty != null && r.sellQty != null && r.buyQty + r.sellQty > 0 ? r.buyQty / (r.buyQty + r.sellQty) : null;
       m.futLtp = r.futLtp;
       m.nseOiPct = r.nseOiPct;
     }
@@ -216,7 +245,7 @@ export default function FyersPage() {
         setActing(null);
       }
     },
-    [refresh],
+    [refresh]
   );
 
   // Force a fresh access token (clears cache, re-runs the TOTP login chain).
@@ -224,7 +253,11 @@ export default function FyersPage() {
   const regenToken = useCallback(async () => {
     setActing('token');
     try {
-      const res = await fetch('/api/fyers/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const res = await fetch('/api/fyers/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
       const j = (await res.json()) as { success: boolean; error?: string };
       if (!j.success) setError(j.error ?? 'Token generation failed');
       else setError(null);
@@ -252,10 +285,18 @@ export default function FyersPage() {
         <div className="flex items-center gap-1.5">
           {status && (
             <>
-              <Badge ok={status.started && !status.paused} okLabel="running" badLabel={status.paused ? 'paused' : 'stopped'} />
+              <Badge
+                ok={status.started && !status.paused}
+                okLabel="running"
+                badLabel={status.paused ? 'paused' : 'stopped'}
+              />
               <Badge ok={status.marketOpen} okLabel="market open" badLabel="market closed" />
               <Badge ok={status.credentialsConfigured} okLabel="creds ok" badLabel="no credentials" />
-              <Badge ok={status.token.cached} okLabel={`token · exp ${fmtTime(status.token.expiresAt)}`} badLabel="no token" />
+              <Badge
+                ok={status.token.cached}
+                okLabel={`token · exp ${fmtTime(status.token.expiresAt)}`}
+                badLabel="no token"
+              />
             </>
           )}
           {/* Viewers don't see operator actions at all (server 403s them anyway). */}
@@ -276,7 +317,11 @@ export default function FyersPage() {
                 disabled={!!acting || !status}
                 className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-60"
               >
-                {acting === 'run-once' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                {acting === 'run-once' ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Download className="h-3 w-3" />
+                )}
                 Run once
               </button>
               <button
@@ -312,11 +357,11 @@ export default function FyersPage() {
       {status && (
         <>
           <div className="rounded-lg border border-border bg-card p-2.5">
-            <h2 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
+            <h2 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold tracking-wide uppercase">
               <Activity className="h-3.5 w-3.5" />
               Last cycle
               {status.cycleRunning && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
-              <span className="ml-auto font-normal normal-case text-muted-foreground">
+              <span className="ml-auto font-normal text-muted-foreground normal-case">
                 #{status.cycles} · next tick {fmtTime(status.nextTickAt)} IST
               </span>
             </h2>
@@ -351,6 +396,15 @@ export default function FyersPage() {
                     </span>
                   )}
                 </div>
+                {(last.captureReleaseMs != null || (last.prioritySymbols ?? 0) > 0) && (
+                  <div className="mt-1 text-[10px] text-muted-foreground">
+                    priority EQ fresh{' '}
+                    <b className="font-semibold text-foreground">
+                      {last.priorityFreshSymbols ?? 0}/{last.prioritySymbols ?? 0}
+                    </b>{' '}
+                    · capture released {fmtDuration(last.captureReleaseMs)} after tick
+                  </div>
+                )}
                 {last.errors.length > 0 && (
                   <div className="mt-2 max-h-40 overflow-y-auto rounded border border-red-300/40">
                     {last.errors.map((e) => (
@@ -369,18 +423,34 @@ export default function FyersPage() {
                 )}
               </>
             )}
+            {status.lastCapture && (
+              <div className="mt-2 rounded border border-border/50 bg-muted/30 px-2 py-1.5 text-[10px] text-muted-foreground">
+                latest capture{' '}
+                <b className="font-semibold text-foreground">
+                  {status.lastCapture.status}
+                  {status.captureRunning ? ' · running' : ''}
+                </b>{' '}
+                · tick→scan {fmtDuration(status.lastCapture.tickToScanMs)} · scan→decision{' '}
+                {fmtDuration(status.lastCapture.scanToDecisionMs)} · tick→decision{' '}
+                {fmtDuration(status.lastCapture.tickToDecisionMs)} · redundant AI reads{' '}
+                {status.lastCapture.redundantReadTools ?? '—'} · overlap skips {status.captureSkips ?? 0}
+                {status.lastCapture.detail && <> · {status.lastCapture.detail}</>}
+              </div>
+            )}
           </div>
 
           <div className="rounded-lg border border-border bg-card p-2.5">
             <button
               type="button"
               onClick={() => setUniverseOpen((o) => !o)}
-              className="flex w-full items-center gap-1.5 text-left text-[11px] font-semibold uppercase tracking-wide"
+              className="flex w-full items-center gap-1.5 text-left text-[11px] font-semibold tracking-wide uppercase"
             >
               {universeOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               Tracked universe
-              <span className="font-normal normal-case text-muted-foreground">
-                {status.universe ? `${status.universe.symbols.length} symbols · ${status.universe.date}` : 'not built yet'}
+              <span className="font-normal text-muted-foreground normal-case">
+                {status.universe
+                  ? `${status.universe.symbols.length} symbols · ${status.universe.date}`
+                  : 'not built yet'}
               </span>
             </button>
             {universeOpen && (
@@ -396,9 +466,9 @@ export default function FyersPage() {
 
           {merged.length > 0 && (
             <div className="rounded-lg border border-border bg-card p-2.5">
-              <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide">
+              <h2 className="mb-2 text-[11px] font-semibold tracking-wide uppercase">
                 Today&apos;s coverage
-                <span className="ml-2 font-normal normal-case text-muted-foreground">
+                <span className="ml-2 font-normal text-muted-foreground normal-case">
                   {merged.length} symbols · OI is a futures-contract metric (equities have none)
                 </span>
               </h2>
@@ -451,25 +521,37 @@ export default function FyersPage() {
                         <td className="px-1.5 py-0.5 text-right tabular-nums">{r.eqBars}</td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">{r.futBars}</td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">{fmtBucket(r.lastBucketTs)}</td>
-                        <td className="px-1.5 py-0.5 text-right tabular-nums">{r.futLtp?.toLocaleString('en-IN') ?? '—'}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">
+                          {r.futLtp?.toLocaleString('en-IN') ?? '—'}
+                        </td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">
                           {r.lastOi > 0 ? r.lastOi.toLocaleString('en-IN') : '—'}
                         </td>
                         <td
                           className={`px-1.5 py-0.5 text-right tabular-nums ${
-                            r.oiPct == null ? '' : r.oiPct >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
+                            r.oiPct == null
+                              ? ''
+                              : r.oiPct >= 0
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : 'text-red-600 dark:text-red-400'
                           }`}
                         >
                           {fmtPctSigned(r.oiPct)}
                         </td>
                         <td
                           className={`px-1.5 py-0.5 text-right tabular-nums ${
-                            r.nseOiPct == null ? '' : r.nseOiPct >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
+                            r.nseOiPct == null
+                              ? ''
+                              : r.nseOiPct >= 0
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : 'text-red-600 dark:text-red-400'
                           }`}
                         >
                           {fmtPctSigned(r.nseOiPct)}
                         </td>
-                        <td className="px-1.5 py-0.5 text-right tabular-nums">{r.atp?.toLocaleString('en-IN') ?? '—'}</td>
+                        <td className="px-1.5 py-0.5 text-right tabular-nums">
+                          {r.atp?.toLocaleString('en-IN') ?? '—'}
+                        </td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">{fmtCrore(r.turnover)}</td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">{fmtCrore(r.eqTurnover)}</td>
                         <td className="px-1.5 py-0.5 text-right tabular-nums">

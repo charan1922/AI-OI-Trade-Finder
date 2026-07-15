@@ -6,8 +6,38 @@
  * Trade Assistant). We pass a trimmed, real-numbers-only view of the result and
  * ask for a short, scannable market read.
  */
+import { getNumberSetting } from '@/lib/config/feature-toggles';
+import { minuteOfDayIST } from '@/lib/ist';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { getMimoClient, getMimoModel } from './client';
+
+/**
+ * IST minute-of-day after which the read must stop pitching fresh entries and
+ * spend its words on managing/exiting (default 12:30). Deterministic and
+ * injected into the USER turn each read — the battle-tested system prompt
+ * stays byte-identical. Runtime-tunable from /config
+ * (COMMENTARY_ENTRY_CUTOFF_MIN); the scanner's own entry gates are unaffected.
+ */
+export const COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT = 12 * 60 + 30;
+
+/** The exit-focus instruction for the user turn, or null before the cutoff.
+ *  Prefers the scan's own clock (window.nowIST "HH:MM") over the wall clock so
+ *  replays/tests stay deterministic. */
+export async function commentaryTimeContext(nowIST?: string | null): Promise<string | null> {
+  const cutoff = await getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT).catch(
+    () => COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT
+  );
+  const m = nowIST?.match(/^(\d{1,2}):(\d{2})/);
+  const minutes = m ? Number(m[1]) * 60 + Number(m[2]) : minuteOfDayIST();
+  if (minutes < cutoff) return null;
+  const hh = String(Math.floor(cutoff / 60)).padStart(2, '0');
+  const mm = String(cutoff % 60).padStart(2, '0');
+  return (
+    `TIME CONTEXT (deterministic, from code — overrides any earlier window guidance): it is past ${hh}:${mm} IST. ` +
+    'Do NOT pitch fresh entries in this read, whatever the scanner surfaces — no TRADE NOW, no "tradeable until 14:30". ' +
+    'Focus entirely on managing open positions (HOLD / MOVE SL / EXIT NOW); if flat, the Bottom line is that staying flat is the plan.'
+  );
+}
 
 /**
  * The BATTLE-TESTED page contract — output format + hard rules, benched via
@@ -53,11 +83,11 @@ export const COMMENTARY_HARD_RULES = [
   '  already broke once — skip it". A number appears ONLY when it is the instruction itself:',
   '  entry, stop, target, premium, cost per lot, or the level to watch.',
   '- Never invent prices, premiums, projections or probabilities — and never state profit OR loss in',
-  '  rupees anywhere: the JSON doesn\'t contain P&L, so describe progress/damage in spot POINTS from the',
+  "  rupees anywhere: the JSON doesn't contain P&L, so describe progress/damage in spot POINTS from the",
   '  entry ("up 23 points", "2 points against you") — never "₹1 loss", never ₹-per-lot arithmetic.',
   '  No hype, no hedging both ways — one verdict per name, and if you are torn it is a WATCH, not a maybe-trade.',
-  '- No preamble, no disclaimers. Sections ONLY for: open positions (first), this read\'s actionable',
-  '  call (max 2), and at most 1 WATCH. A watched name whose thesis hasn\'t changed gets NO section —',
+  "- No preamble, no disclaimers. Sections ONLY for: open positions (first), this read's actionable",
+  "  call (max 2), and at most 1 WATCH. A watched name whose thesis hasn't changed gets NO section —",
   '  at most six words in the Bottom line. Never write "status"/recap sections for stale names.',
 ];
 
@@ -67,10 +97,10 @@ export const COMMENTARY_HARD_RULES = [
 export const COMMENTARY_SYSTEM = [
   'You are an Indian F&O options trading coach giving ONE decisive read at a time through ONE',
   'trading day. Each turn you get the JSON output of a deterministic scanner plus your OWN earlier',
-  'reads from today — continue the day\'s thread, never start fresh.',
+  "reads from today — continue the day's thread, never start fresh.",
   '',
   'Your trader has ₹50-60k, takes AT MOST 1-2 trades a day, and wants ZERO ambiguity. Your whole',
-  'job each read is one plain answer: TRADE this / HOLD what\'s on / EXIT now / WAIT / STAND ASIDE.',
+  "job each read is one plain answer: TRADE this / HOLD what's on / EXIT now / WAIT / STAND ASIDE.",
   'Never dump metrics. Be decisive — but only as decisive as the data. Confidence comes from the',
   "scanner's numbers, never bravado, and you use ONLY numbers present in the JSON or your earlier reads.",
   '',
@@ -79,12 +109,6 @@ export const COMMENTARY_SYSTEM = [
   '- trend with the trade: supertrendAligned and vwapAligned not false; sector not against it;',
   '- fresh money still coming in: combinedOiSlope30m >= 0 (or oiUrgency clearly rising);',
   '- entry→target room beats the entry→SL risk.',
-  'GEX (Gamma Exposure) in the JSON: the `gex` object at the top level is a market-wide signal',
-  '  from NIFTY options — positive GEX = dealers buy dips, market is range-bound (gamma wall is a',
-  '  price magnet). Negative GEX = dealers chase momentum, expect trending/volatile moves.',
-  '  Mention GEX in the header line when non-neutral ("GEX positive — dips should hold").',
-  '  The gexWall number is a price magnet / support-resistance level for NIFTY. Translate:',
-  '  "gexValue -12345" → "dealers are chasing momentum today".',
   'On "extended": the scanner ALREADY penalizes and filters late chases — an extended name that still',
   'reaches you is the deliberate trend-day-continuation profile (still breaking out, trend + money',
   'behind it). Extended alone is NOT a veto: demand the rest of the bar be fully clean, call it a late',
@@ -137,9 +161,6 @@ function trimForPrompt(r: SuggestResponse): unknown {
     scanned: r.scanned,
     gated: r.gated,
     tilt: r.tilt,
-    // Market-wide GEX (Gamma Exposure) — dealer hedging pressure.
-    // Positive = mean-reverting/range-bound, negative = trending/volatile.
-    gex: r.gex ?? null,
     // Position-management feed: earlier calls + live price, even when the name
     // no longer clears the gates (see TrackedPosition in trade-suggest/types).
     tracked: (r.tracked ?? []).map((t) => ({
@@ -189,9 +210,6 @@ function trimForPrompt(r: SuggestResponse): unknown {
         onOiSpurtList: s.factors.onOiSpurtList,
         sectorPct: s.factors.sectorPct,
         sectorAligned: s.factors.sectorAligned,
-        gexRegime: s.factors.gexRegime,
-        gexValue: s.factors.gexValue,
-        gexWall: s.factors.gexWall,
       },
       reasons: s.reasons,
     })),
@@ -215,14 +233,19 @@ export interface CommentaryResult {
  */
 export async function generateCommentary(
   result: SuggestResponse,
-  priorReads: string[] = [],
+  priorReads: string[] = []
 ): Promise<CommentaryResult> {
   const client = getMimoClient();
   const model = getMimoModel();
   // Cap the carried history so the prompt stays small (the last few reads hold
   // the relevant intraday context; older ones are summarised by those).
   const recent = priorReads.slice(-6);
-  const priorTurns = recent.map((text) => ({ role: 'assistant' as const, content: text }));
+  const priorTurns = recent.map((text) => ({
+    role: 'assistant' as const,
+    content: text,
+  }));
+  // Afternoon exit-focus: a code-decided instruction line, not prompt-vibes.
+  const timeContext = await commentaryTimeContext(result.window?.nowIST ?? null);
   const resp = await client.chat.completions.create(
     {
       model,
@@ -232,6 +255,7 @@ export async function generateCommentary(
         {
           role: 'user',
           content:
+            (timeContext ? `${timeContext}\n\n` : '') +
             (recent.length ? 'Latest scan — continue the running commentary:\n' : 'First scan of the day:\n') +
             JSON.stringify(trimForPrompt(result)),
         },
@@ -244,7 +268,7 @@ export async function generateCommentary(
       // words; the rest is thinking room.
       max_tokens: 6000,
     },
-    { timeout: 90_000 },
+    { timeout: 90_000 }
   );
   const text = (resp.choices?.[0]?.message?.content ?? '').trim();
   if (!text) throw new Error('MiMo returned empty content (reasoning may have consumed the token budget).');

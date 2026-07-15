@@ -32,16 +32,25 @@ export type Role = 'admin' | 'viewer';
  * what a Google sign-in is worth — auth.ts admits verified accounts, proxy.ts
  * maps them through roleForGoogleEmail():
  *   ADMIN_GOOGLE_EMAILS        → admin (the operator)
- *   any other verified account → viewer (read-only; every action 403s)
- * While the OAuth app is in Google's "Testing" publishing status, only test
- * users added in Google Cloud Console can sign in at all — that list is the
- * effective viewer guest list.
+ *   GOOGLE_VIEWER_EMAILS      → viewer (explicit comma-separated allowlist)
+ *   every other account       → denied before a session is issued
  */
 export const ADMIN_GOOGLE_EMAILS: ReadonlySet<string> = new Set(['charan192219@gmail.com']);
 
-export function roleForGoogleEmail(email: string | null | undefined): Role | null {
+export function roleForGoogleEmail(
+  email: string | null | undefined,
+  viewerEmails = process.env.GOOGLE_VIEWER_EMAILS
+): Role | null {
   if (!email) return null;
-  return ADMIN_GOOGLE_EMAILS.has(email.toLowerCase()) ? 'admin' : 'viewer';
+  const normalized = email.toLowerCase();
+  if (ADMIN_GOOGLE_EMAILS.has(normalized)) return 'admin';
+  const viewers = new Set(
+    (viewerEmails ?? '')
+      .split(',')
+      .map((candidate) => candidate.trim().toLowerCase())
+      .filter(Boolean)
+  );
+  return viewers.has(normalized) ? 'viewer' : null;
 }
 
 /** Request header the proxy stamps AFTER stripping any client-supplied value —
@@ -91,12 +100,59 @@ export const TF_VALIDATE_WRITE_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Admin-only PAGES. Every other page is viewable by every role. The proxy
- * redirects a viewer's navigation here to the home page; the sidebar also
- * hides these entries for viewers (components/app-sidebar.tsx) — that part is
- * cosmetic, this list is what enforces.
+ * Admin-only PAGES (matched as the exact path or any sub-path). Every other
+ * page is viewable by every role. The proxy redirects a viewer's navigation
+ * here to the home page; the sidebar also hides these entries for viewers
+ * (components/app-sidebar.tsx) — that part is cosmetic, this list is what
+ * enforces.
+ *
+ * What counts as sensitive (operator-only): anything that controls trading or
+ * money (auto-trade), broker/token panels (fyers, dhan), raw internals
+ * (db-explorer, prompts, api-docs, config), data-sync/download tooling
+ * (data-downloader, trade-viewer, replay-commentary), and paid-AI surfaces
+ * (trade-assistant — its chat API is viewer-403'd anyway, the page is useless
+ * without it). Data-VIEW pages (/live, /nse/*, /heatmap, /trade-suggest,
+ * /trade-commentary, /holidays, /fno-lots) stay viewer-visible.
  */
-export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set(['/api-docs', '/config', '/auto-trade']);
+export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set([
+  '/api-docs',
+  '/config',
+  '/auto-trade',
+  '/fyers',
+  '/dhan',
+  '/prompts',
+  '/db-explorer',
+  '/data-downloader',
+  '/trade-viewer',
+  '/replay-commentary',
+  '/trade-assistant',
+]);
+
+/** True when `pathname` is an admin-only page or lives under one. */
+export function isAdminOnlyPage(pathname: string): boolean {
+  for (const page of ADMIN_ONLY_PAGES) {
+    if (pathname === page || pathname.startsWith(`${page}/`)) return true;
+  }
+  return false;
+}
+
+export const ADMIN_ONLY_API_PREFIXES: readonly string[] = [
+  '/api/auto-trade',
+  '/api/backtest',
+  '/api/config',
+  '/api/db-explorer',
+  '/api/dhan',
+  '/api/fyers',
+  '/api/health/services',
+  '/api/openapi',
+  '/api/prompts',
+  '/api/replay-commentary',
+  '/api/telegram/setup',
+];
+
+export function isAdminOnlyApi(pathname: string): boolean {
+  return ADMIN_ONLY_API_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
 
 /**
  * The API access policy: which permission (if any) a request needs.
@@ -108,18 +164,19 @@ export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set(['/api-docs', '/con
  *    a viewer loading /trade-suggest adds nothing an admin session wouldn't —
  *    so it stays a read. `?force=1` (window bypass) is an operator override.
  *  - POST /api/live/quote is POST-for-payload only (batch symbol list) — a read.
- *  - GET /api/fyers/poller defensively (re)starts the singleton loop; that is
- *    idempotent instrumentation behavior, not a user action — a read.
+ *  - Sensitive operational GETs are covered by ADMIN_ONLY_API_PREFIXES as
+ *    well as close-to-data checks in their route handlers.
  */
 export function requiredPermission(method: string, pathname: string, searchParams: URLSearchParams): Permission | null {
-  // Pages: viewable by every role except the explicit admin-only list.
-  if (!pathname.startsWith('/api/')) return ADMIN_ONLY_PAGES.has(pathname) ? 'app:write' : null;
+  // Pages: viewable by every role except the explicit admin-only list
+  // (matched with sub-paths, e.g. /db-explorer/<table>).
+  if (!pathname.startsWith('/api/')) return isAdminOnlyPage(pathname) ? 'app:write' : null;
 
   const m = method.toUpperCase();
   if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') {
     if (pathname === '/api/trade-suggest' && searchParams.get('force') === '1') return 'scan:actions';
     // The OpenAPI spec backs the admin-only /api-docs page — same restriction.
-    if (pathname === '/api/openapi') return 'app:write';
+    if (isAdminOnlyApi(pathname)) return 'app:write';
     return null;
   }
 

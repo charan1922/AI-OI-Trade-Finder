@@ -58,7 +58,12 @@ interface QuoteGateState {
 }
 
 const gateHost = globalThis as unknown as { __dhanQuoteGate?: QuoteGateState };
-gateHost.__dhanQuoteGate ??= { tail: Promise.resolve(), lastDispatchAt: 0, cooldownUntil: 0, consecutive429: 0 };
+gateHost.__dhanQuoteGate ??= {
+  tail: Promise.resolve(),
+  lastDispatchAt: 0,
+  cooldownUntil: 0,
+  consecutive429: 0,
+};
 const gate = gateHost.__dhanQuoteGate;
 
 /**
@@ -77,7 +82,7 @@ function throughQuoteGate<T>(task: () => Promise<T>): Promise<T> {
   });
   gate.tail = run.then(
     () => undefined,
-    () => undefined,
+    () => undefined
   );
   return run;
 }
@@ -99,15 +104,25 @@ function noteQuoteOk(): void {
  * is absent or degenerate (off-hours, ohlc endpoint, or a one-sided/zero book) —
  * never a fabricated price. spreadPct is relative to the mid (×100).
  */
-export function bestBidAsk(
-  q: MarketFeedQuote | undefined | null,
-): { bid: number; ask: number; mid: number; spreadAbs: number; spreadPct: number } | null {
+export function bestBidAsk(q: MarketFeedQuote | undefined | null): {
+  bid: number;
+  ask: number;
+  mid: number;
+  spreadAbs: number;
+  spreadPct: number;
+} | null {
   const bid = q?.depth?.buy?.[0]?.price ?? 0;
   const ask = q?.depth?.sell?.[0]?.price ?? 0;
   if (!(bid > 0) || !(ask > 0) || ask < bid) return null;
   const mid = (bid + ask) / 2;
   const spreadAbs = ask - bid;
-  return { bid, ask, mid, spreadAbs, spreadPct: mid > 0 ? (spreadAbs / mid) * 100 : 0 };
+  return {
+    bid,
+    ask,
+    mid,
+    spreadAbs,
+    spreadPct: mid > 0 ? (spreadAbs / mid) * 100 : 0,
+  };
 }
 
 /**
@@ -184,7 +199,7 @@ function getIST(): Date {
  */
 export async function dhanMarketFeed(
   endpoint: 'ohlc' | 'quote',
-  securities: Record<string, number[]>,
+  securities: Record<string, number[]>
 ): Promise<MarketFeedResponse> {
   if (!hasDhanAuth()) return {};
   const token = await getDhanAccessToken();
@@ -209,7 +224,9 @@ export async function dhanMarketFeed(
 
     if (resp.status === 429) {
       noteQuote429();
-      console.warn(`[Dhan] marketfeed/${endpoint} HTTP 429 — cooling off ${Math.round((gate.cooldownUntil - Date.now()) / 100) / 10}s`);
+      console.warn(
+        `[Dhan] marketfeed/${endpoint} HTTP 429 — cooling off ${Math.round((gate.cooldownUntil - Date.now()) / 100) / 10}s`
+      );
       return {};
     }
 
@@ -244,16 +261,116 @@ export interface OptionChainGreeksRow {
   putOi: number;
 }
 
+/** A single index option-chain snapshot for the OI-weighted gamma proxy. */
+export interface OptionChainGreeksSnapshot {
+  rows: OptionChainGreeksRow[];
+  /** Dhan's index level from this response; never substitute a stock quote. */
+  underlyingLastPrice: number | null;
+}
+
+const OPTION_CHAIN_GREEKS_CACHE_MS = 3 * 60_000;
+type OptionChainGreeksCache = Map<string, { expiresAt: number; value: OptionChainGreeksSnapshot }>;
+type OptionChainGreeksInFlight = Map<string, Promise<OptionChainGreeksSnapshot | null>>;
+const optionChainGreeksHost = globalThis as unknown as {
+  __optionChainGreeksCache?: OptionChainGreeksCache;
+  __optionChainGreeksInFlight?: OptionChainGreeksInFlight;
+};
+optionChainGreeksHost.__optionChainGreeksCache ??= new Map();
+optionChainGreeksHost.__optionChainGreeksInFlight ??= new Map();
+const optionChainGreeksCache = optionChainGreeksHost.__optionChainGreeksCache;
+const optionChainGreeksInFlight = optionChainGreeksHost.__optionChainGreeksInFlight;
+
+type OptionExpiryCache = Map<string, { expiresAt: number; value: string[] }>;
+const optionExpiryHost = globalThis as unknown as {
+  __optionExpiryCache?: OptionExpiryCache;
+};
+optionExpiryHost.__optionExpiryCache ??= new Map();
+const optionExpiryCache = optionExpiryHost.__optionExpiryCache;
+
+/** Active option expiries from Dhan's documented expiry-list endpoint. */
+export async function fetchOptionExpiries(
+  underlyingSecId: number,
+  underlyingSeg: 'IDX_I' | 'NSE_FNO'
+): Promise<string[]> {
+  if (!hasDhanAuth()) return [];
+  const key = `${underlyingSecId}:${underlyingSeg}`;
+  const cached = optionExpiryCache.get(key);
+  if (cached != null && cached.expiresAt > Date.now()) return cached.value;
+  const token = await getDhanAccessToken();
+  const clientId = env.DHAN_CLIENT_ID!;
+  const resp = await throughQuoteGate(() =>
+    fetch('https://api.dhan.co/v2/optionchain/expirylist', {
+      method: 'POST',
+      headers: {
+        'access-token': token,
+        'client-id': clientId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        UnderlyingScrip: underlyingSecId,
+        UnderlyingSeg: underlyingSeg,
+      }),
+    })
+  );
+  if (resp.status === 429) noteQuote429();
+  if (!resp.ok) {
+    console.warn(`[Dhan] optionchain/expirylist HTTP ${resp.status} for secId=${underlyingSecId}`);
+    return [];
+  }
+  noteQuoteOk();
+  const json = (await resp.json()) as { data?: unknown };
+  const value = Array.isArray(json.data)
+    ? json.data
+        .map(String)
+        .filter((expiry) => /^\d{4}-\d{2}-\d{2}$/.test(expiry))
+        .sort()
+    : [];
+  if (value.length > 0) {
+    optionExpiryCache.set(key, {
+      expiresAt: Date.now() + 6 * 60 * 60_000,
+      value,
+    });
+  }
+  return value;
+}
+
 /**
- * Fetch option chain with per-strike Greeks for GEX computation.
- * Returns raw strike data (not aggregated). Cached for 3 min to avoid
- * hammering Dhan's 1 req/sec rate limit.
+ * Fetch NIFTY's option chain for the experimental OI-weighted gamma proxy.
+ * NIFTY 50 is an index underlying: Dhan requires IDX_I for security ID 13.
+ * Successful snapshots are cached for three minutes; concurrent callers share
+ * one request through the existing app-wide quote gate.
  */
 export async function fetchOptionChainGreeks(
   underlyingSecId: number,
-  expiry: string,
-): Promise<OptionChainGreeksRow[]> {
-  if (!hasDhanAuth()) return [];
+  expiry: string
+): Promise<OptionChainGreeksSnapshot | null> {
+  if (!hasDhanAuth()) return null;
+  const cacheKey = `${underlyingSecId}:IDX_I:${expiry}`;
+  const cached = optionChainGreeksCache.get(cacheKey);
+  if (cached != null && cached.expiresAt > Date.now()) return cached.value;
+  const running = optionChainGreeksInFlight.get(cacheKey);
+  if (running != null) return running;
+
+  const request = fetchOptionChainGreeksSnapshot(underlyingSecId, expiry);
+  optionChainGreeksInFlight.set(cacheKey, request);
+  try {
+    const snapshot = await request;
+    if (snapshot != null) {
+      optionChainGreeksCache.set(cacheKey, {
+        expiresAt: Date.now() + OPTION_CHAIN_GREEKS_CACHE_MS,
+        value: snapshot,
+      });
+    }
+    return snapshot;
+  } finally {
+    optionChainGreeksInFlight.delete(cacheKey);
+  }
+}
+
+async function fetchOptionChainGreeksSnapshot(
+  underlyingSecId: number,
+  expiry: string
+): Promise<OptionChainGreeksSnapshot | null> {
   const token = await getDhanAccessToken();
   const clientId = env.DHAN_CLIENT_ID!;
   const resp = await throughQuoteGate(() =>
@@ -266,22 +383,43 @@ export async function fetchOptionChainGreeks(
       },
       body: JSON.stringify({
         UnderlyingScrip: underlyingSecId,
-        UnderlyingSeg: 'NSE_FNO',
+        UnderlyingSeg: 'IDX_I',
         Expiry: expiry,
       }),
-    }),
+    })
   );
-  if (!resp.ok) return [];
-  const json = (await resp.json()) as { data?: { oc?: Record<string, { ce?: { greeks?: { gamma?: number }; oi?: number }; pe?: { greeks?: { gamma?: number }; oi?: number }; strikePrice?: string | number }>; expiry?: string } };
+  if (resp.status === 429) noteQuote429();
+  if (!resp.ok) {
+    console.warn(`[Dhan] optionchain HTTP ${resp.status} for index secId=${underlyingSecId}`);
+    return null;
+  }
+  noteQuoteOk();
+
+  const json = (await resp.json()) as {
+    data?: {
+      last_price?: number;
+      oc?: Record<
+        string,
+        {
+          ce?: { greeks?: { gamma?: number }; oi?: number };
+          pe?: { greeks?: { gamma?: number }; oi?: number };
+          strikePrice?: string | number;
+        }
+      >;
+    };
+  };
   const oc = json.data?.oc;
-  if (!oc) return [];
-  return Object.entries(oc).map(([key, val]) => ({
-    strike: parseFloat(String(val.strikePrice ?? key)),
-    callGamma: val.ce?.greeks?.gamma ?? 0,
-    callOi: val.ce?.oi ?? 0,
-    putGamma: val.pe?.greeks?.gamma ?? 0,
-    putOi: val.pe?.oi ?? 0,
-  }));
+  if (oc == null) return null;
+  return {
+    underlyingLastPrice: Number(json.data?.last_price) > 0 ? Number(json.data?.last_price) : null,
+    rows: Object.entries(oc).map(([key, value]) => ({
+      strike: parseFloat(String(value.strikePrice ?? key)),
+      callGamma: value.ce?.greeks?.gamma ?? 0,
+      callOi: value.ce?.oi ?? 0,
+      putGamma: value.pe?.greeks?.gamma ?? 0,
+      putOi: value.pe?.oi ?? 0,
+    })),
+  };
 }
 
 /** Aggregated option chain data for a single underlying */
@@ -320,7 +458,7 @@ export async function fetchOptionChain(underlyingSecId: number, expiry: string):
         UnderlyingSeg: 'NSE_FNO',
         Expiry: expiry,
       }),
-    }),
+    })
   );
 
   if (resp.status === 429) noteQuote429();
@@ -331,7 +469,15 @@ export async function fetchOptionChain(underlyingSecId: number, expiry: string):
   noteQuoteOk();
 
   const json = (await resp.json()) as {
-    data?: { oc?: Record<string, { ce?: { volume?: number; oi?: number }; pe?: { volume?: number; oi?: number } }> };
+    data?: {
+      oc?: Record<
+        string,
+        {
+          ce?: { volume?: number; oi?: number };
+          pe?: { volume?: number; oi?: number };
+        }
+      >;
+    };
     status: string;
   };
 

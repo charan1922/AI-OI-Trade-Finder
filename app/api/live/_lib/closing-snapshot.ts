@@ -66,7 +66,7 @@ function sessionCloseUtc(date: string): Date {
  */
 async function computeClosingRows(
   allowed: string[],
-  snapshotDate: string,
+  snapshotDate: string
 ): Promise<{ rows: EodRow[]; lastTs: number }> {
   // Baselines strictly BEFORE the snapshot date — once this day's bhavcopy
   // syncs overnight, the unbounded query would compare the day against itself
@@ -77,7 +77,7 @@ async function computeClosingRows(
   ]);
 
   const isToday = snapshotDate === todayIST();
-  // NSE combined-OI feed values live in fyers_candles, which keeps today only.
+  // NSE combined-OI feed values are read from today's retained candle session.
   const nseOi: Map<string, NseOiLatest> = isToday
     ? await getNseOiLatestForSymbols(allowed, snapshotDate).catch(() => new Map<string, NseOiLatest>())
     : new Map<string, NseOiLatest>();
@@ -133,7 +133,7 @@ async function computeClosingRows(
       },
       base,
       isToday ? getMorningContext(s) : null,
-      closeClock,
+      closeClock
     );
     const r = rf ? computeRFactor(rf) : null;
 
@@ -201,7 +201,7 @@ async function captureEodOnce(date: string): Promise<void> {
 
   const trackedRows = await prisma.$queryRawUnsafe<{ symbol: string }[]>(
     `SELECT DISTINCT symbol FROM oi_intraday WHERE date = ?`,
-    date,
+    date
   );
   const tracked = trackedRows.map((r) => r.symbol);
   if (tracked.length === 0) return;
@@ -223,8 +223,11 @@ async function captureEodOnce(date: string): Promise<void> {
  */
 async function getFrozenRows(
   allowed: string[],
-  snapshotDate: string,
-): Promise<Pick<ClosingSnapshotResponse, 'success' | 'marketOpen' | 'snapshot' | 'snapshotDate' | 'asOf' | 'date' | 'rows'> | null> {
+  snapshotDate: string
+): Promise<Pick<
+  ClosingSnapshotResponse,
+  'success' | 'marketOpen' | 'snapshot' | 'snapshotDate' | 'asOf' | 'date' | 'rows'
+> | null> {
   const bySymbol = new Map((await getEodForDate(snapshotDate)).map((r) => [r.symbol, r]));
   const [seriesMap, baselines] = await Promise.all([
     getIntradaySeriesForSymbols(snapshotDate, allowed),
@@ -269,6 +272,10 @@ async function attachOiSpurtsColumns(rows: LiveUrgencyRow[]): Promise<void> {
   const map = await getNseOiRowMap().catch(() => new Map());
   for (const r of rows) {
     const o = map.get(r.symbol);
+    r.nseChgOiPct = o?.changeInOiPct ?? null;
+    r.nseChangeInOi = o?.changeInOi ?? null;
+    r.nseVolume = o?.volume ?? null;
+    r.nseUnderlyingValue = o?.underlyingValue ?? null;
     r.nsePremValueCr = o?.premValueCr ?? null;
     r.nseFutValueCr = o?.futValueCr ?? null;
     r.nseOptValueCr = o?.optValueCr ?? null;
@@ -290,7 +297,11 @@ export async function buildClosingSnapshot(symbols: string[]): Promise<ClosingSn
   for (const s of symbols) {
     const cls = classifyFno(fno.get(s));
     if (cls.ok) allowed.push(s);
-    else excluded.push({ symbol: s, reason: excludeReasonLabel(cls.reason ?? 'not-fno') });
+    else
+      excluded.push({
+        symbol: s,
+        reason: excludeReasonLabel(cls.reason ?? 'not-fno'),
+      });
   }
   if (allowed.length === 0) return null;
 

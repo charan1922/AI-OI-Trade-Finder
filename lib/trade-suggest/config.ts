@@ -32,9 +32,28 @@ export const MIN_OI_LEVEL = 1.1; // futures OI ÷ 20d avg — the TF minimum fin
  * Options-led builds don't register in futures-only OI level — seen live
  * 2026-07-03: SUNPHARMA futures 0.90× avg but NSE combined +8.1%, and TF's
  * winning trade that day was the SUNPHARMA 1920 CE. The gate passes on
- * EITHER futures level ≥ MIN_OI_LEVEL OR NSE combined ≥ this %.
+ * EITHER futures level ≥ MIN_OI_LEVEL OR the NSE-combined path below.
  */
 export const MIN_NSE_OI_PCT = 5;
+/**
+ * The NSE-combined path additionally requires the build to be GENUINELY
+ * options-led and the options tradeable — combined-OI %-change alone was a loose
+ * proxy (it rises on futures builds too). Both thresholds set empirically from
+ * the full 215-name oi-spurts distribution (2026-07-14):
+ *  - `MIN_OPT_SHARE` = options premium ÷ (fut+opt value). The median single-stock
+ *    name is only ~6.4% (Indian single-stock F&O is futures-dominated), so 10% is
+ *    clearly above-normal options participation. NOT higher: 15% is the ~95th pct
+ *    and would reject TATAELXSI (14%), a genuine top-of-board options-led build.
+ *    A ratio, so ~time-invariant through the day.
+ *  - `MIN_OPT_PREMIUM_CR` = a light liquidity floor. premValue is CUMULATIVE and
+ *    the entry window is early (09:45–11:00), so it's only partly accumulated by
+ *    10am — ₹5Cr removes dead option chains without over-blocking the morning
+ *    (real candidates are ₹20Cr+ by EOD). Value is ₹ Crore.
+ * So the options-led path passes on: NSE combined ≥ MIN_NSE_OI_PCT AND
+ * optShare ≥ MIN_OPT_SHARE AND premValue ≥ MIN_OPT_PREMIUM_CR.
+ */
+export const MIN_OPT_SHARE = 0.1;
+export const MIN_OPT_PREMIUM_CR = 5;
 
 /**
  * EXPERIMENTAL third OI-gate path — the price/base-breakout BYPASS.
@@ -71,6 +90,29 @@ export const USE_TF_BREAKOUT_GATE = false;
  *  excluded the no-breakout junk EXIDEIND (ΣR +1.00 → +3.00). */
 export const BREAKOUT_BYPASS_MIN_RFACTOR = 3.6;
 export const BREAKOUT_BYPASS_REQUIRE_TREND = true;
+
+/**
+ * EXPERIMENTAL fourth entry path — the pure MOMENTUM BREAKOUT (no OI, low R).
+ * Off by default. The ADANIGREEN 2026-07-14 class: a short-covering breakout
+ * (price↑ + OI↓) scores near-zero on EVERY accumulation factor BY DESIGN —
+ * replayed tick-by-tick it sat at R 1.7–2.3, confidence 0%, futures OI
+ * 0.97–0.99×, NSE combined ~+1%, setup "quiet", while holding a confirmed
+ * 3-level breakout all window (TF rode it for +₹15,930; our engine blocked it
+ * five ways). No reweighting can pass a name like that — the move needs its own
+ * path. When on, a candidate with a confirmed opening-range breakout, BOTH
+ * Supertrend AND VWAP agreeing (stricter than the OI-gate bypass — with
+ * R-Factor/confidence/OI/setup evidence ALL absent, trend agreement is the only
+ * junk filter left), and ≥ MOMENTUM_MIN_CHANGE_PCT move from open in the trade
+ * direction clears the R-Factor, confidence, OI and quiet-setup gates. The
+ * spread, turnover, price-direction and trend hard gates still apply.
+ * Enable only after the replay benchmark proves it across SEVERAL recorded
+ * days (needs the multi-day candle retention added 2026-07-15 — with today-only
+ * candles the benchmark was stuck at N=1).
+ */
+export const USE_MOMENTUM_BREAKOUT = false;
+/** Minimum move from open (%) for the momentum path — a breakout with no real
+ *  move behind it is just a poke above the opening range. */
+export const MOMENTUM_MIN_CHANGE_PCT = 1.5;
 
 export const MAX_SPREAD_PCT = 0.3; // execution-cost ceiling (matches setup-score)
 /**

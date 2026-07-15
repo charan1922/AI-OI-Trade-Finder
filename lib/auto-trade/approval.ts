@@ -8,6 +8,8 @@
 
 import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
+import { getNumberSetting } from '@/lib/config/feature-toggles';
+import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
 import { getExecutionAdapter } from './brokers';
 import { minuteOfDayIST } from './config';
 import { placeEntryOrder, type ExecOutcome } from './execution';
@@ -20,7 +22,7 @@ import {
   getPendingApprovals,
   getTrade,
   insertDecision,
-  updateTrade,
+  transitionTradeStatus,
 } from './store';
 import { getAutoTradeSettings } from './settings';
 
@@ -29,14 +31,23 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
   const trade = await getTrade(tradeId);
   if (!trade) return { ok: false, message: `no trade ${tradeId}` };
   if (trade.status !== 'pending_approval') {
-    return { ok: false, message: `trade ${tradeId} is ${trade.status}, not pending approval` };
+    return {
+      ok: false,
+      message: `trade ${tradeId} is ${trade.status}, not pending approval`,
+    };
   }
   const date = todayIST();
   if (trade.date !== date) {
-    await updateTrade(tradeId, { status: 'expired', exitReason: 'approval attempted on a later day' });
+    await transitionTradeStatus(tradeId, 'pending_approval', 'expired', 'approval attempted on a later day');
     return { ok: false, message: 'proposal is from a previous day — expired' };
   }
   const settings = await getAutoTradeSettings();
+  if (settings.mode !== 'approval') {
+    return {
+      ok: false,
+      message: `approval blocked because runtime mode is ${settings.mode}; switch back to approval and re-evaluate the proposal`,
+    };
+  }
 
   // Fresh premium + slippage vs the proposal quote.
   const fresh = await fetchOptionQuote(trade.optSecurityId);
@@ -44,18 +55,21 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     fresh != null && trade.entryPremium > 0 ? ((fresh.ltp - trade.entryPremium) / trade.entryPremium) * 100 : null;
 
   // Cap counts EXCLUDING this proposal (it already reserved its own slot).
-  const [entriesToday, exposure, pnl] = [
-    await countEntriesToday(date),
-    await getExposure(date),
-    await dailyRealizedPnl(date),
-  ];
   const adapter = getExecutionAdapter(settings, 'approval');
-  const funds = (await adapter.getFunds()).available;
+  const [entriesToday, exposure, pnl, brokerFunds, entryCutoffMin] = await Promise.all([
+    countEntriesToday(date),
+    getExposure(date),
+    dailyRealizedPnl(date),
+    adapter.getFunds(),
+    getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
+  ]);
+  const funds = brokerFunds.available;
   const verdict = checkEntryGates({
-    settings: { ...settings, mode: 'approval' },
+    settings,
     liveEnvEnabled: isAutoTradeLiveEnabled(),
     marketOpen: isMarketHours(),
     minuteIST: minuteOfDayIST(),
+    entryCutoffMin,
     entriesToday: Math.max(0, entriesToday - 1),
     openLots: Math.max(0, exposure.openLots - trade.lots),
     deployedRupees: Math.max(0, exposure.deployedRupees - Math.round(trade.entryPremium * trade.lotSize * trade.lots)),
@@ -79,10 +93,20 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
       promptTokens: null,
       completionTokens: null,
     });
-    return { ok: false, message: `gates refused at approval time: ${verdict.reasons.join('; ')}` };
+    return {
+      ok: false,
+      message: `gates refused at approval time: ${verdict.reasons.join('; ')}`,
+    };
   }
 
-  await updateTrade(tradeId, { status: 'open' });
+  const claimed = await transitionTradeStatus(tradeId, 'pending_approval', 'placing');
+  if (!claimed) {
+    const current = await getTrade(tradeId);
+    return {
+      ok: false,
+      message: `approval already claimed; trade is ${current?.status ?? 'missing'}`,
+    };
+  }
   const updated = await getTrade(tradeId);
   if (!updated) return { ok: false, message: `trade ${tradeId} vanished` };
   const outcome = await placeEntryOrder(updated, settings, 'approval');
@@ -104,9 +128,19 @@ export async function rejectTrade(tradeId: number): Promise<ExecOutcome> {
   const trade = await getTrade(tradeId);
   if (!trade) return { ok: false, message: `no trade ${tradeId}` };
   if (trade.status !== 'pending_approval') {
-    return { ok: false, message: `trade ${tradeId} is ${trade.status}, not pending approval` };
+    return {
+      ok: false,
+      message: `trade ${tradeId} is ${trade.status}, not pending approval`,
+    };
   }
-  await updateTrade(tradeId, { status: 'rejected', exitReason: 'rejected by operator' });
+  const rejected = await transitionTradeStatus(tradeId, 'pending_approval', 'rejected', 'rejected by operator');
+  if (!rejected) {
+    const current = await getTrade(tradeId);
+    return {
+      ok: false,
+      message: `trade is already ${current?.status ?? 'missing'}`,
+    };
+  }
   await insertDecision({
     date: trade.date,
     pass: 'approval',
@@ -127,8 +161,13 @@ export async function expireStaleApprovals(date: string, ttlMin: number): Promis
   const expired: string[] = [];
   for (const t of pending) {
     if (new Date(t.proposedAt).getTime() < cutoff) {
-      await updateTrade(t.id, { status: 'expired', exitReason: `approval TTL (${ttlMin} min) elapsed` });
-      expired.push(`${t.symbol} ${t.strike}${t.optionType}`);
+      const didExpire = await transitionTradeStatus(
+        t.id,
+        'pending_approval',
+        'expired',
+        `approval TTL (${ttlMin} min) elapsed`
+      );
+      if (didExpire) expired.push(`${t.symbol} ${t.strike}${t.optionType}`);
     }
   }
   return expired;

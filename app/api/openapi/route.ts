@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +23,10 @@ const errorResponse = (description: string) => ({
     'application/json': {
       schema: {
         type: 'object',
-        properties: { success: { type: 'boolean', example: false }, error: { type: 'string' } },
+        properties: {
+          success: { type: 'boolean', example: false },
+          error: { type: 'string' },
+        },
       },
     },
   },
@@ -38,17 +42,50 @@ const spec = {
   },
   servers: [{ url: '/', description: 'This server' }],
   tags: [
-    { name: 'Simulator', description: 'Replay engine: load a dataset, drive playback, stream ticks.' },
-    { name: 'Backtest', description: 'Signal scan + vectorbt backtest over TradeFinder trades.' },
-    { name: 'Market Data', description: 'NSE bhavcopy sync, trading calendar, F&O lot sizes.' },
-    { name: 'Live', description: 'Real-time urgency, intraday OI series, dynamic sector watchlist.' },
-    { name: 'Trade Suggest', description: 'Daily near-ATM option suggestions (09:40–11:00 IST) + same-day scorecard.' },
-    { name: 'Config', description: 'Runtime feature toggles + numeric settings (the /config page).' },
-    { name: 'Fyers', description: 'Fyers auth + the autonomous 5-min candle/OI recorder.' },
-    { name: 'NSE', description: 'Official NSE data: indices heatmap, pulse feeds, EOD movers, OI audit.' },
-    { name: 'Heatmap', description: 'F&O sector treemap + cross-check vs official NSE indices.' },
-    { name: 'AI Assistant', description: 'Azure OpenAI trade assistant with function calling.' },
-    { name: 'Dhan Auth', description: 'Dhan access-token status + TOTP regeneration.' },
+    {
+      name: 'Simulator',
+      description: 'Replay engine: load a dataset, drive playback, stream ticks.',
+    },
+    {
+      name: 'Backtest',
+      description: 'Signal scan + vectorbt backtest over TradeFinder trades.',
+    },
+    {
+      name: 'Market Data',
+      description: 'NSE bhavcopy sync, trading calendar, F&O lot sizes.',
+    },
+    {
+      name: 'Live',
+      description: 'Real-time urgency, intraday OI series, dynamic sector watchlist.',
+    },
+    {
+      name: 'Trade Suggest',
+      description: 'Daily near-ATM option suggestions (09:40–11:00 IST) + same-day scorecard.',
+    },
+    {
+      name: 'Config',
+      description: 'Runtime feature toggles + numeric settings (the /config page).',
+    },
+    {
+      name: 'Fyers',
+      description: 'Fyers auth + the autonomous 5-min candle/OI recorder.',
+    },
+    {
+      name: 'NSE',
+      description: 'Official NSE data: indices heatmap, pulse feeds, EOD movers, OI audit.',
+    },
+    {
+      name: 'Heatmap',
+      description: 'F&O sector treemap + cross-check vs official NSE indices.',
+    },
+    {
+      name: 'AI Assistant',
+      description: 'Azure OpenAI trade assistant with function calling.',
+    },
+    {
+      name: 'Dhan Auth',
+      description: 'Dhan access-token status + TOTP regeneration.',
+    },
   ],
   paths: {
     // ───────────────────────── Simulator ─────────────────────────
@@ -56,7 +93,9 @@ const spec = {
       get: {
         tags: ['Simulator'],
         summary: 'Current replay engine status',
-        responses: { '200': ok('Engine status (loaded dataset, position, play state, speed).') },
+        responses: {
+          '200': ok('Engine status (loaded dataset, position, play state, speed).'),
+        },
       },
       post: {
         tags: ['Simulator'],
@@ -76,13 +115,33 @@ const spec = {
                     enum: ['load', 'play', 'pause', 'step', 'seek', 'seekTime', 'speed', 'reset'],
                   },
                   config: { $ref: '#/components/schemas/SimulatorConfig' },
-                  candleIndex: { type: 'integer', description: 'For action=seek' },
-                  time: { type: 'integer', description: 'For action=seekTime (epoch seconds)' },
-                  speed: { type: 'number', description: 'For action=speed (multiplier)' },
+                  candleIndex: {
+                    type: 'integer',
+                    description: 'For action=seek',
+                  },
+                  time: {
+                    type: 'integer',
+                    description: 'For action=seekTime (epoch seconds)',
+                  },
+                  speed: {
+                    type: 'number',
+                    description: 'For action=speed (multiplier)',
+                  },
                 },
               },
               examples: {
-                load: { value: { action: 'load', config: { symbol: 'RELIANCE', instrumentKind: 'FUTSTK', fromDate: '2026-01-01', toDate: '2026-01-31', interval: '5' } } },
+                load: {
+                  value: {
+                    action: 'load',
+                    config: {
+                      symbol: 'RELIANCE',
+                      instrumentKind: 'FUTSTK',
+                      fromDate: '2026-01-01',
+                      toDate: '2026-01-31',
+                      interval: '5',
+                    },
+                  },
+                },
                 play: { value: { action: 'play' } },
                 seek: { value: { action: 'seek', candleIndex: 42 } },
                 speed: { value: { action: 'speed', speed: 4 } },
@@ -90,14 +149,26 @@ const spec = {
             },
           },
         },
-        responses: { '200': ok('Updated engine status'), '400': errorResponse('Invalid JSON / unknown action'), '500': errorResponse('Engine error') },
+        responses: {
+          '200': ok('Updated engine status'),
+          '400': errorResponse('Invalid JSON / unknown action'),
+          '500': errorResponse('Engine error'),
+        },
       },
     },
     '/api/simulator/search': {
       get: {
         tags: ['Simulator'],
         summary: 'Symbol suggestions for the picker',
-        parameters: [{ name: 'q', in: 'query', required: true, schema: { type: 'string' }, description: 'Search query, e.g. "REL"' }],
+        parameters: [
+          {
+            name: 'q',
+            in: 'query',
+            required: true,
+            schema: { type: 'string' },
+            description: 'Search query, e.g. "REL"',
+          },
+        ],
         responses: {
           '200': ok('Matching symbols: [{ symbol, name, securityId }]'),
           '409': errorResponse('Master contracts not synced (code: MASTER_NOT_SYNCED)'),
@@ -114,13 +185,20 @@ const spec = {
       post: {
         tags: ['Simulator'],
         summary: 'Download real intraday data from Dhan',
-        description: 'Fetches exact intraday candles (with OI for F&O) for a symbol + date window, caches them, and registers the dataset.',
+        description:
+          'Fetches exact intraday candles (with OI for F&O) for a symbol + date window, caches them, and registers the dataset.',
         requestBody: {
           required: true,
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/SimulatorConfig' },
-              example: { symbol: 'RELIANCE', instrumentKind: 'FUTSTK', fromDate: '2026-01-01', toDate: '2026-01-31', interval: '5' },
+              example: {
+                symbol: 'RELIANCE',
+                instrumentKind: 'FUTSTK',
+                fromDate: '2026-01-01',
+                toDate: '2026-01-31',
+                interval: '5',
+              },
             },
           },
         },
@@ -137,9 +215,13 @@ const spec = {
       get: {
         tags: ['Simulator'],
         summary: 'SSE stream of replay ticks',
-        description: 'Server-Sent Events mirroring the live Dhan feed contract. Connect with EventSource — not testable via "Try it out".',
+        description:
+          'Server-Sent Events mirroring the live Dhan feed contract. Connect with EventSource — not testable via "Try it out".',
         responses: {
-          '200': { description: 'text/event-stream of tick events + heartbeats', content: { 'text/event-stream': { schema: { type: 'string' } } } },
+          '200': {
+            description: 'text/event-stream of tick events + heartbeats',
+            content: { 'text/event-stream': { schema: { type: 'string' } } },
+          },
         },
       },
     },
@@ -149,7 +231,8 @@ const spec = {
       post: {
         tags: ['Backtest'],
         summary: 'Stream per-symbol download progress (SSE)',
-        description: 'Downloads equity/futures/option 5-min data + bhavcopy for a list of trades, emitting SSE progress events.',
+        description:
+          'Downloads equity/futures/option 5-min data + bhavcopy for a list of trades, emitting SSE progress events.',
         requestBody: {
           required: true,
           content: {
@@ -173,12 +256,25 @@ const spec = {
                   },
                 },
               },
-              example: { symbols: [{ symbol: 'RELIANCE', optionType: 'CE', strike: 1300, date: '2026-03-20', spotPrice: 1295 }] },
+              example: {
+                symbols: [
+                  {
+                    symbol: 'RELIANCE',
+                    optionType: 'CE',
+                    strike: 1300,
+                    date: '2026-03-20',
+                    spotPrice: 1295,
+                  },
+                ],
+              },
             },
           },
         },
         responses: {
-          '200': { description: 'text/event-stream of progress/error/complete events', content: { 'text/event-stream': { schema: { type: 'string' } } } },
+          '200': {
+            description: 'text/event-stream of progress/error/complete events',
+            content: { 'text/event-stream': { schema: { type: 'string' } } },
+          },
           '400': errorResponse('No symbols provided'),
         },
       },
@@ -187,12 +283,16 @@ const spec = {
       get: {
         tags: ['Backtest'],
         summary: 'TF-validation data status',
-        responses: { '200': ok('Row counts + TF trades'), '500': errorResponse('Status error') },
+        responses: {
+          '200': ok('Row counts + TF trades'),
+          '500': errorResponse('Status error'),
+        },
       },
       post: {
         tags: ['Backtest'],
         summary: 'TF-validation actions (download / backtest / detail …)',
-        description: 'Action-dispatched. Each action takes its own fields (e.g. trade-detail needs symbol/date/optionType/strike).',
+        description:
+          'Action-dispatched. Each action takes its own fields (e.g. trade-detail needs symbol/date/optionType/strike).',
         requestBody: {
           required: true,
           content: {
@@ -204,9 +304,18 @@ const spec = {
                   action: {
                     type: 'string',
                     enum: [
-                      'status', 'download', 'backtest', 'all-tf-trades', 'symbol-status',
-                      'download-symbols', 'download-all-tf', 'trade-detail', 'trade-context',
-                      'simulate', 'tf-trades-list', 'debug',
+                      'status',
+                      'download',
+                      'backtest',
+                      'all-tf-trades',
+                      'symbol-status',
+                      'download-symbols',
+                      'download-all-tf',
+                      'trade-detail',
+                      'trade-context',
+                      'simulate',
+                      'tf-trades-list',
+                      'debug',
                     ],
                   },
                   symbol: { type: 'string' },
@@ -222,12 +331,24 @@ const spec = {
               examples: {
                 status: { value: { action: 'status' } },
                 backtest: { value: { action: 'backtest' } },
-                tradeDetail: { value: { action: 'trade-detail', symbol: 'RELIANCE', date: '2026-03-20', optionType: 'CE', strike: 1300 } },
+                tradeDetail: {
+                  value: {
+                    action: 'trade-detail',
+                    symbol: 'RELIANCE',
+                    date: '2026-03-20',
+                    optionType: 'CE',
+                    strike: 1300,
+                  },
+                },
               },
             },
           },
         },
-        responses: { '200': ok('Action-specific payload'), '400': errorResponse('Unknown action / no symbols'), '500': errorResponse('Action error') },
+        responses: {
+          '200': ok('Action-specific payload'),
+          '400': errorResponse('Unknown action / no symbols'),
+          '500': errorResponse('Action error'),
+        },
       },
     },
 
@@ -236,7 +357,10 @@ const spec = {
       get: {
         tags: ['Market Data'],
         summary: 'Bhavcopy coverage status',
-        responses: { '200': ok('Coverage status of bhavcopy_days'), '500': errorResponse('Status error') },
+        responses: {
+          '200': ok('Coverage status of bhavcopy_days'),
+          '500': errorResponse('Status error'),
+        },
       },
       post: {
         tags: ['Market Data'],
@@ -245,26 +369,43 @@ const spec = {
         requestBody: {
           content: {
             'application/json': {
-              schema: { type: 'object', properties: { days: { type: 'integer', description: 'Lookback in weekdays (optional)' } } },
+              schema: {
+                type: 'object',
+                properties: {
+                  days: {
+                    type: 'integer',
+                    description: 'Lookback in weekdays (optional)',
+                  },
+                },
+              },
               example: { days: 25 },
             },
           },
         },
-        responses: { '200': ok('Sync result + status'), '500': errorResponse('Sync error') },
+        responses: {
+          '200': ok('Sync result + status'),
+          '500': errorResponse('Sync error'),
+        },
       },
     },
     '/api/market-calendar': {
       get: {
         tags: ['Market Data'],
         summary: 'NSE trading-holiday calendar',
-        responses: { '200': ok('Holidays, data-derived closures, special sessions'), '500': errorResponse('Calendar error') },
+        responses: {
+          '200': ok('Holidays, data-derived closures, special sessions'),
+          '500': errorResponse('Calendar error'),
+        },
       },
     },
     '/api/fno-lots': {
       get: {
         tags: ['Market Data'],
         summary: 'F&O lot sizes (Jun/Jul/Aug) per symbol',
-        responses: { '200': ok('[{ name, symbol, lotJun, lotJul, lotAug, sector }]'), '500': errorResponse('CSV read error') },
+        responses: {
+          '200': ok('[{ name, symbol, lotJun, lotJul, lotAug, sector }]'),
+          '500': errorResponse('CSV read error'),
+        },
       },
     },
 
@@ -273,16 +414,29 @@ const spec = {
       post: {
         tags: ['Live'],
         summary: 'Live urgency rows for a watchlist',
-        description: 'Real-time bid/ask spread, order-book imbalance, futures OI level + turnover. Off-hours returns marketOpen:false and no rows. Max 25 symbols.',
+        description:
+          'Real-time bid/ask spread, order-book imbalance, futures OI level + turnover. Off-hours returns marketOpen:false and no rows. Max 25 symbols.',
         requestBody: {
           content: {
             'application/json': {
-              schema: { type: 'object', properties: { symbols: { type: 'array', items: { type: 'string' }, maxItems: 25 } } },
+              schema: {
+                type: 'object',
+                properties: {
+                  symbols: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    maxItems: 25,
+                  },
+                },
+              },
               example: { symbols: ['RELIANCE', 'TCS', 'INFY'] },
             },
           },
         },
-        responses: { '200': ok('{ marketOpen, rows, symbols }'), '500': errorResponse('Quote error') },
+        responses: {
+          '200': ok('{ marketOpen, rows, symbols }'),
+          '500': errorResponse('Quote error'),
+        },
       },
     },
     '/api/live/oi-series': {
@@ -290,38 +444,80 @@ const spec = {
         tags: ['Live'],
         summary: 'Intraday futures-OI series for one symbol',
         parameters: [
-          { name: 'symbol', in: 'query', required: true, schema: { type: 'string' }, example: 'RELIANCE' },
-          { name: 'date', in: 'query', required: false, schema: { type: 'string', format: 'date' }, description: 'Defaults to today (IST)' },
+          {
+            name: 'symbol',
+            in: 'query',
+            required: true,
+            schema: { type: 'string' },
+            example: 'RELIANCE',
+          },
+          {
+            name: 'date',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', format: 'date' },
+            description: 'Defaults to today (IST)',
+          },
         ],
-        responses: { '200': ok('{ symbol, date, series, urgency }'), '400': errorResponse('symbol required'), '500': errorResponse('Series error') },
+        responses: {
+          '200': ok('{ symbol, date, series, urgency }'),
+          '400': errorResponse('symbol required'),
+          '500': errorResponse('Series error'),
+        },
       },
     },
     '/api/live/sector-leaders': {
       get: {
         tags: ['Live'],
         summary: 'Dynamic sector-leader watchlist from bhavcopy',
-        description: 'Per-sector leaders from synced bhavcopy. Gated to F&O-only, excluding the \'avoid\' lot-size band.',
+        description: "Per-sector leaders from synced bhavcopy. Gated to F&O-only, excluding the 'avoid' lot-size band.",
         parameters: [
-          { name: 'basis', in: 'query', required: false, schema: { type: 'string', enum: ['gainers', 'losers', 'movers'], default: 'gainers' } },
-          { name: 'perSector', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 4, default: 2 } },
+          {
+            name: 'basis',
+            in: 'query',
+            required: false,
+            schema: {
+              type: 'string',
+              enum: ['gainers', 'losers', 'movers'],
+              default: 'gainers',
+            },
+          },
+          {
+            name: 'perSector',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', minimum: 1, maximum: 4, default: 2 },
+          },
         ],
-        responses: { '200': ok('{ picks, meta }'), '400': errorResponse('Not enough bhavcopy sessions'), '500': errorResponse('Ranking error') },
+        responses: {
+          '200': ok('{ picks, meta }'),
+          '400': errorResponse('Not enough bhavcopy sessions'),
+          '500': errorResponse('Ranking error'),
+        },
       },
     },
     '/api/live/nse-watchlist': {
       get: {
         tags: ['Live'],
         summary: 'Watchlist from a live NSE movers feed',
-        description: 'Builds a Live Urgency watchlist from an NSE pulse feed, gated to F&O-only names with a live future, excluding the \'avoid\' lot-size band. Same response shape as /api/live/sector-leaders.',
+        description:
+          "Builds a Live Urgency watchlist from an NSE pulse feed, gated to F&O-only names with a live future, excluding the 'avoid' lot-size band. Same response shape as /api/live/sector-leaders.",
         parameters: [
           {
             name: 'source',
             in: 'query',
             required: true,
-            schema: { type: 'string', enum: ['nse-oi', 'nse-gainers', 'nse-losers', 'nse-active-value', 'nse-active-volume', 'nse-52wh'] },
+            schema: {
+              type: 'string',
+              enum: ['nse-oi', 'nse-gainers', 'nse-losers', 'nse-active-value', 'nse-active-volume', 'nse-52wh'],
+            },
           },
         ],
-        responses: { '200': ok('{ picks, meta }'), '400': errorResponse('Unknown source'), '500': errorResponse('Feed / ranking error') },
+        responses: {
+          '200': ok('{ picks, meta }'),
+          '400': errorResponse('Unknown source'),
+          '500': errorResponse('Feed / ranking error'),
+        },
       },
     },
 
@@ -330,12 +526,26 @@ const spec = {
         tags: ['Live'],
         summary: "Today's 5-min candle series for one stock (from the Fyers recorder)",
         description:
-          "A stock's intraday 5-min bars for TODAY from the fyers_candles store (the autonomous poller refills it full-day every 5 min; the store clears at day change — no past dates). instrument=FUT rows carry live open interest per bucket. A symbol not yet tracked is enrolled here and appears within one cycle. Empty series = genuinely no data yet, never fabricated.",
+          "A stock's intraday 5-min bars for TODAY from the fyers_candles store (the autonomous Fyers poller refills it full-day every 5 min). The store retains the newest 20 recorded sessions for replay, while this endpoint deliberately returns today only. instrument=FUT rows carry live open interest per bucket. A symbol not yet tracked is enrolled here and appears within one cycle. Empty series = genuinely no data yet, never fabricated.",
         parameters: [
-          { name: 'symbol', in: 'query', required: true, schema: { type: 'string' }, description: 'NSE underlying, e.g. RELIANCE' },
-          { name: 'instrument', in: 'query', required: false, schema: { type: 'string', enum: ['EQ', 'FUT'], default: 'EQ' } },
+          {
+            name: 'symbol',
+            in: 'query',
+            required: true,
+            schema: { type: 'string' },
+            description: 'NSE underlying, e.g. RELIANCE',
+          },
+          {
+            name: 'instrument',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['EQ', 'FUT'], default: 'EQ' },
+          },
         ],
-        responses: { '200': ok('{ symbol, instrument, date, bars }'), '400': errorResponse('symbol required') },
+        responses: {
+          '200': ok('{ symbol, instrument, date, bars }'),
+          '400': errorResponse('symbol required'),
+        },
       },
     },
 
@@ -347,14 +557,39 @@ const spec = {
         description:
           'Scans the full tradeable F&O universe (~166 names; SCAN_FULL_UNIVERSE toggle drops back to the ~48 movers-feed names) merged with the NSE movers feeds, gates on the TradeFinder fingerprint (OI evidence: futures OI ≥1.1× 20-day avg OR NSE combined fut+opt OI change ≥5%, plus the experimental USE_BREAKOUT_BYPASS path; spread ≤0.3%, R-Factor ≥3.6 on the 1–8 scale, turnover ≥1.2× avg, price/bias agreement), scores survivors (R-Factor, OI urgency, opening-range breakout, sector breadth) and returns the top MAX_PICKS (default 7, /config-tunable 1–10) with nearest listed ATM strike, live option premium (per-lot cost, −40% premium backstop, ₹5k/lot target) + spot-level entry/SL/1:2-target plan. Extended movers (≥3% from open) are hard-skipped while EXCLUDE_EXTENDED is on. Active 09:40–11:00 IST; force=1 bypasses the window (not market hours). Picks persist to trade_suggestions.',
         parameters: [
-          { name: 'force', in: 'query', required: false, schema: { type: 'string', enum: ['1'] }, description: 'Bypass the time window (testing)' },
-          { name: 'view', in: 'query', required: false, schema: { type: 'string', enum: ['leaderboard'] }, description: 'EOD TF-style spread-linear leaderboard from bhavcopy (post-market comparator; supports &date=&limit=)' },
-          { name: 'date', in: 'query', required: false, schema: { type: 'string', format: 'date' }, description: 'Leaderboard session (defaults to latest synced bhavcopy)' },
-          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', default: 15 }, description: 'Leaderboard rows' },
+          {
+            name: 'force',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['1'] },
+            description: 'Bypass the time window (testing)',
+          },
+          {
+            name: 'view',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['leaderboard'] },
+            description:
+              'EOD TF-style spread-linear leaderboard from bhavcopy (post-market comparator; supports &date=&limit=)',
+          },
+          {
+            name: 'date',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', format: 'date' },
+            description: 'Leaderboard session (defaults to latest synced bhavcopy)',
+          },
+          {
+            name: 'limit',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', default: 15 },
+            description: 'Leaderboard rows',
+          },
         ],
         responses: {
           '200': ok(
-            '{ window, marketOpen, scanned, gated, suggestions (each with factors: Supertrend/VWAP/ATR/eqTurnoverRatio/combinedOiLevel/combinedOiSlope30m (build rate, pct-pts per ~30 min)/sectorPct + sectorAdvanceRatio + sectorAligned (turnover-weighted sector alignment)), tilt, sectorFlow, earlierToday }',
+            '{ window, marketOpen, scanned, gated, suggestions (each with factors: Supertrend/VWAP/ATR/eqTurnoverRatio/combinedOiLevel/combinedOiSlope30m (build rate, pct-pts per ~30 min)/sectorPct + sectorAdvanceRatio + sectorAligned (turnover-weighted sector alignment)), tilt, sectorFlow, earlierToday }'
           ),
           '500': errorResponse('Engine error'),
         },
@@ -373,14 +608,22 @@ const spec = {
                 required: ['action'],
                 properties: {
                   action: { type: 'string', enum: ['review', 'stats'] },
-                  days: { type: 'integer', default: 30, description: "Look-back window for action:'stats'" },
+                  days: {
+                    type: 'integer',
+                    default: 30,
+                    description: "Look-back window for action:'stats'",
+                  },
                 },
               },
               example: { action: 'review' },
             },
           },
         },
-        responses: { '200': ok('{ date, reviewed, skipped, suggestions } | { stats }'), '400': errorResponse('Unknown action'), '500': errorResponse('Review error') },
+        responses: {
+          '200': ok('{ date, reviewed, skipped, suggestions } | { stats }'),
+          '400': errorResponse('Unknown action'),
+          '500': errorResponse('Review error'),
+        },
       },
     },
 
@@ -391,13 +634,21 @@ const spec = {
         summary: 'Fyers access-token status (fetches via TOTP login if none cached)',
         description:
           'Current Fyers token: masked preview + expiry. Fetches and caches a token via the TOTP login chain when none is loaded — hit this first to validate the auth setup in isolation. Needs FYERS_ID/APP_ID/SECRET_KEY/TOTP_SECRET/PIN/REDIRECT_URI in .env.local.',
-        responses: { '200': ok('{ tokenPreview, expiresAt, expiresInMinutes }'), '400': errorResponse('Credentials not configured'), '500': errorResponse('Login chain failed') },
+        responses: {
+          '200': ok('{ tokenPreview, expiresAt, expiresInMinutes }'),
+          '400': errorResponse('Credentials not configured'),
+          '500': errorResponse('Login chain failed'),
+        },
       },
       post: {
         tags: ['Fyers'],
         summary: 'Force a FRESH Fyers token (clears cache, re-runs TOTP login)',
-        description: 'Optional body { reveal?: boolean } — full token returned only when reveal is true (masked by default; it is a live credential).',
-        responses: { '200': ok('{ tokenPreview | token, expiresAt }'), '500': errorResponse('Login chain failed') },
+        description:
+          'Optional body { reveal?: boolean } — full token returned only when reveal is true (masked by default; it is a live credential).',
+        responses: {
+          '200': ok('{ tokenPreview | token, expiresAt }'),
+          '500': errorResponse('Login chain failed'),
+        },
       },
     },
     '/api/fyers/poller': {
@@ -406,8 +657,19 @@ const spec = {
         summary: '5-min recorder status (state, last cycle, universe, token expiry)',
         description:
           'Downloader loop status: started/paused, last cycle summary (universe size ~166, bars written, OI attached, errors), next tick. `?coverage=1` adds per-symbol bar counts for today. Also (re)starts the loop defensively.',
-        parameters: [{ name: 'coverage', in: 'query', required: false, schema: { type: 'string', enum: ['1'] }, description: 'Add per-symbol bar coverage for today' }],
-        responses: { '200': ok('{ started, paused, cycles, lastCycle, universe, token }'), '500': errorResponse('Status error') },
+        parameters: [
+          {
+            name: 'coverage',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['1'] },
+            description: 'Add per-symbol bar coverage for today',
+          },
+        ],
+        responses: {
+          '200': ok('{ started, paused, cycles, lastCycle, universe, token }'),
+          '500': errorResponse('Status error'),
+        },
       },
       post: {
         tags: ['Fyers'],
@@ -422,15 +684,25 @@ const spec = {
                 type: 'object',
                 required: ['action'],
                 properties: {
-                  action: { type: 'string', enum: ['pause', 'resume', 'run-once'] },
-                  date: { type: 'string', format: 'date', description: 'Backfill target for run-once' },
+                  action: {
+                    type: 'string',
+                    enum: ['pause', 'resume', 'run-once'],
+                  },
+                  date: {
+                    type: 'string',
+                    format: 'date',
+                    description: 'Backfill target for run-once',
+                  },
                 },
               },
               example: { action: 'run-once' },
             },
           },
         },
-        responses: { '200': ok('{ state }'), '400': errorResponse('Unknown action') },
+        responses: {
+          '200': ok('{ state }'),
+          '400': errorResponse('Unknown action'),
+        },
       },
     },
 
@@ -441,7 +713,10 @@ const spec = {
         summary: 'Runtime feature toggles + numeric settings (the /config page)',
         description:
           'Every registered switch (USE_BREAKOUT_BYPASS, SCAN_FULL_UNIVERSE, EXCLUDE_EXTENDED) and numeric setting (MAX_PICKS, 1–10) with its default, effective value and last-changed time. Stored overrides live in the feature_toggles table; config.ts constants are the defaults/fallback.',
-        responses: { '200': ok('{ data: ToggleState[], numbers: NumberState[] }'), '500': errorResponse('DB error') },
+        responses: {
+          '200': ok('{ data: ToggleState[], numbers: NumberState[] }'),
+          '500': errorResponse('DB error'),
+        },
       },
       post: {
         tags: ['Config'],
@@ -464,7 +739,10 @@ const spec = {
             },
           },
         },
-        responses: { '200': ok('{ data, numbers } (fresh lists)'), '400': errorResponse('Unknown key / bad value') },
+        responses: {
+          '200': ok('{ data, numbers } (fresh lists)'),
+          '400': errorResponse('Unknown key / bad value'),
+        },
       },
     },
 
@@ -475,7 +753,10 @@ const spec = {
         summary: 'Official NSE indices (139) + market status for the /nse/heatmap page',
         description:
           'All NSE indices (sectoral, broad-market, derivatives-eligible) with % change vs previous close, advances/declines — the OFFICIAL free-float index numbers (includes the overnight gap, unlike /api/heatmap which is since-open F&O-universe derived). Sequential upstream calls, 60s cache, serves last-good payload flagged stale on NSE failure.',
-        responses: { '200': ok('{ asOf, count, indices, marketStatus, stale }'), '502': errorResponse('NSE unreachable and no cached payload') },
+        responses: {
+          '200': ok('{ asOf, count, indices, marketStatus, stale }'),
+          '502': errorResponse('NSE unreachable and no cached payload'),
+        },
       },
     },
     '/api/nse/pulse/{feed}': {
@@ -484,8 +765,20 @@ const spec = {
         summary: 'One NSE market-pulse feed (oiSpurts, gainers, losers, activeValue, activeVolume, …)',
         description:
           'A single NSE pulse list fetched independently — one upstream call per feed through a 30s shared in-process cache (same data the /nse/movers page and the trade-suggest candidate builder use). On failure serves the last good value flagged stale, else 502. Never fabricates.',
-        parameters: [{ name: 'feed', in: 'path', required: true, schema: { type: 'string' }, description: 'Feed key (e.g. oiSpurts, gainers, losers, activeValue, activeVolume, week52High)' }],
-        responses: { '200': ok('{ data, asOf, stale }'), '400': errorResponse('Unknown feed'), '502': errorResponse('NSE unreachable, nothing cached') },
+        parameters: [
+          {
+            name: 'feed',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+            description: 'Feed key (e.g. oiSpurts, gainers, losers, activeValue, activeVolume, week52High)',
+          },
+        ],
+        responses: {
+          '200': ok('{ data, asOf, stale }'),
+          '400': errorResponse('Unknown feed'),
+          '502': errorResponse('NSE unreachable, nothing cached'),
+        },
       },
     },
     '/api/nse/movers-history': {
@@ -495,10 +788,25 @@ const spec = {
         description:
           'Per-stock close-to-close stats for a session: pctChange, turnover, volume, and oiPct = day-over-day TOTAL derivatives OI change (futures+options, counted in CONTRACTS — the same basis as NSE’s live OI-spurts). ?dates=true lists available sessions. No NSE/Dhan calls.',
         parameters: [
-          { name: 'dates', in: 'query', required: false, schema: { type: 'string', enum: ['true'] }, description: 'List available session dates instead' },
-          { name: 'date', in: 'query', required: false, schema: { type: 'string', format: 'date' }, description: 'Session to reconstruct (defaults to latest)' },
+          {
+            name: 'dates',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['true'] },
+            description: 'List available session dates instead',
+          },
+          {
+            name: 'date',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', format: 'date' },
+            description: 'Session to reconstruct (defaults to latest)',
+          },
         ],
-        responses: { '200': ok('{ date, rows } | { dates }'), '400': errorResponse('Bhavcopy not synced for the date') },
+        responses: {
+          '200': ok('{ date, rows } | { dates }'),
+          '400': errorResponse('Bhavcopy not synced for the date'),
+        },
       },
     },
     '/api/nse/oi-audit': {
@@ -507,8 +815,19 @@ const spec = {
         summary: 'Data-integrity check: our EOD OI% vs NSE’s live oi-spurts feed',
         description:
           'Per F&O stock, compares day-over-day OI% reconstructed from the last two synced bhavcopy sessions (contracts basis) against NSE’s live feed. Rows over ?threshold (default 5 pct-points) are flagged — usually an NSE live-feed quirk, not local corruption (verified precedent: TECHM 2026-07-02→03).',
-        parameters: [{ name: 'threshold', in: 'query', required: false, schema: { type: 'integer', default: 5 }, description: 'Flag |ours − NSE| above this many points' }],
-        responses: { '200': ok('{ compared, flagged, rows }'), '400': errorResponse('Need 2 synced bhavcopy sessions') },
+        parameters: [
+          {
+            name: 'threshold',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', default: 5 },
+            description: 'Flag |ours − NSE| above this many points',
+          },
+        ],
+        responses: {
+          '200': ok('{ compared, flagged, rows }'),
+          '400': errorResponse('Need 2 synced bhavcopy sessions'),
+        },
       },
     },
 
@@ -517,15 +836,24 @@ const spec = {
       get: {
         tags: ['Heatmap'],
         summary: 'F&O sector treemap (live or EOD)',
-        description: 'Live Dhan quotes during market hours, else last two NSE bhavcopy sessions. Tile size = traded value, color = % change.',
-        responses: { '200': ok('{ source, tiles, sectors }'), '400': errorResponse('Need 2 synced bhavcopy sessions'), '500': errorResponse('Heatmap error') },
+        description:
+          'Live Dhan quotes during market hours, else last two NSE bhavcopy sessions. Tile size = traded value, color = % change.',
+        responses: {
+          '200': ok('{ source, tiles, sectors }'),
+          '400': errorResponse('Need 2 synced bhavcopy sessions'),
+          '500': errorResponse('Heatmap error'),
+        },
       },
     },
     '/api/heatmap/cross-check': {
       get: {
         tags: ['Heatmap'],
         summary: 'Cross-check sector moves vs official NSE indices',
-        responses: { '200': ok('{ sectors, composition, … }'), '400': errorResponse('Need 2 synced bhavcopy sessions'), '500': errorResponse('Cross-check error') },
+        responses: {
+          '200': ok('{ sectors, composition, … }'),
+          '400': errorResponse('Need 2 synced bhavcopy sessions'),
+          '500': errorResponse('Cross-check error'),
+        },
       },
     },
 
@@ -534,7 +862,8 @@ const spec = {
       post: {
         tags: ['AI Assistant'],
         summary: 'Chat with the trade assistant',
-        description: 'Azure OpenAI Responses API with function calling. Returns a friendly reply even on error / when unconfigured.',
+        description:
+          'Azure OpenAI Responses API with function calling. Returns a friendly reply even on error / when unconfigured.',
         requestBody: {
           required: true,
           content: {
@@ -546,15 +875,28 @@ const spec = {
                   message: { type: 'string', maxLength: 2000 },
                   history: {
                     type: 'array',
-                    items: { type: 'object', properties: { role: { type: 'string', enum: ['user', 'assistant'] }, content: { type: 'string' } } },
+                    items: {
+                      type: 'object',
+                      properties: {
+                        role: { type: 'string', enum: ['user', 'assistant'] },
+                        content: { type: 'string' },
+                      },
+                    },
                   },
                 },
               },
-              example: { message: 'Which F&O stocks have the highest OI build today?', history: [] },
+              example: {
+                message: 'Which F&O stocks have the highest OI build today?',
+                history: [],
+              },
             },
           },
         },
-        responses: { '200': ok('{ reply, toolTrace }'), '400': errorResponse('Empty / too-long message'), '500': errorResponse('Model error (still returns a reply)') },
+        responses: {
+          '200': ok('{ reply, toolTrace }'),
+          '400': errorResponse('Empty / too-long message'),
+          '500': errorResponse('Model error (still returns a reply)'),
+        },
       },
     },
 
@@ -563,7 +905,8 @@ const spec = {
       get: {
         tags: ['Dhan Auth'],
         summary: 'Current Dhan access-token status',
-        description: 'Returns whether Dhan auth is configured plus the active token preview (masked) and expiry. Does NOT regenerate.',
+        description:
+          'Returns whether Dhan auth is configured plus the active token preview (masked) and expiry. Does NOT regenerate.',
         responses: {
           '200': ok('{ configured, tokenPreview, expiresAt, expiresInMinutes }'),
           '400': errorResponse('No Dhan credentials configured'),
@@ -573,14 +916,19 @@ const spec = {
       post: {
         tags: ['Dhan Auth'],
         summary: 'Force-regenerate the Dhan access token',
-        description: 'Clears the in-memory + disk cache, then regenerates a fresh token via TOTP (renew / static fallback as configured). Dhan rate-limits this to ~once per 2 minutes.',
+        description:
+          'Clears the in-memory + disk cache, then regenerates a fresh token via TOTP (renew / static fallback as configured). Dhan rate-limits this to ~once per 2 minutes.',
         requestBody: {
           content: {
             'application/json': {
               schema: {
                 type: 'object',
                 properties: {
-                  reveal: { type: 'boolean', default: false, description: 'Return the full token (a live credential — masked by default).' },
+                  reveal: {
+                    type: 'boolean',
+                    default: false,
+                    description: 'Return the full token (a live credential — masked by default).',
+                  },
                 },
               },
               example: { reveal: false },
@@ -602,13 +950,21 @@ const spec = {
         description: 'Partial accepted — unset fields fall back to DEFAULT_SIMULATOR_CONFIG.',
         properties: {
           symbol: { type: 'string', example: 'RELIANCE' },
-          instrumentKind: { type: 'string', enum: ['EQUITY', 'FUTSTK', 'OPTSTK'], example: 'FUTSTK' },
+          instrumentKind: {
+            type: 'string',
+            enum: ['EQUITY', 'FUTSTK', 'OPTSTK'],
+            example: 'FUTSTK',
+          },
           segment: { type: 'string', example: 'NSE_FNO' },
           securityId: { type: 'string' },
           lotSize: { type: 'integer', example: 1 },
           fromDate: { type: 'string', format: 'date', example: '2026-01-01' },
           toDate: { type: 'string', format: 'date', example: '2026-01-31' },
-          interval: { type: 'string', example: '5', description: 'Candle granularity in minutes' },
+          interval: {
+            type: 'string',
+            example: '5',
+            description: 'Candle granularity in minutes',
+          },
           speed: { type: 'number', example: 1 },
           baseTickMs: { type: 'integer', example: 700 },
           ticksPerCandle: { type: 'integer', example: 1 },
@@ -621,6 +977,8 @@ const spec = {
   },
 } as const;
 
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   return NextResponse.json(spec);
 }

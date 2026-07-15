@@ -43,6 +43,27 @@ function oneOf<T extends string>(raw: string, allowed: T[], label: string): T {
   return raw as T;
 }
 
+/** IST minute-of-day setting: accepts plain minutes ("585") or "HH:MM" ("09:45"),
+ *  clamp-validated like every other numeric setting. */
+function minuteInRange(raw: string, min: number, max: number, label: string): number {
+  const hhmm = raw.trim().match(/^(\d{1,2}):(\d{2})$/);
+  let value: number;
+  if (hhmm) {
+    const hour = Number(hhmm[1]);
+    const minute = Number(hhmm[2]);
+    if (hour > 23 || minute > 59) throw new Error(`${label} must be a valid HH:MM clock time (got ${raw})`);
+    value = hour * 60 + minute;
+  } else {
+    value = Number(raw);
+  }
+  const n = Math.round(value);
+  if (!Number.isFinite(n) || n < min || n > max) {
+    const f = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    throw new Error(`${label} must be between ${f(min)} and ${f(max)} IST (got "${raw}")`);
+  }
+  return n;
+}
+
 export const SETTING_DEFS: SettingDef[] = [
   {
     key: 'mode',
@@ -115,10 +136,46 @@ export const SETTING_DEFS: SettingDef[] = [
     label: 'Telegram alerts',
     description: 'ON = send auto-trade alerts, approval buttons, and commentary to Telegram. OFF = silent.',
   },
+  // ── Entry/exit clock (IST minutes from midnight; accepts "HH:MM" too) ──────
+  // Runtime-tunable at the user's request (2026-07-15), previously compile-time
+  // rails. Clamps keep any value inside sane market-hours bounds; enforcement
+  // stays in code (risk gates + position guard). Cross-field order is checked
+  // on every read and write; an invalid persisted triplet falls back safely.
+  {
+    key: 'entryStartMin',
+    parse: (raw) => minuteInRange(raw, 9 * 60 + 30, 12 * 60, 'entryStartMin'),
+    serialize: String,
+    label: 'Entry window opens',
+    description: 'Earliest new entry, IST. Enter minutes-from-midnight or "HH:MM" (default 09:45; clamp 09:30–12:00).',
+  },
+  {
+    key: 'entryEndMin',
+    parse: (raw) => minuteInRange(raw, 10 * 60, 14 * 60 + 30, 'entryEndMin'),
+    serialize: String,
+    label: 'Entry window closes',
+    description: 'Latest new entry, IST. Enter minutes-from-midnight or "HH:MM" (default 11:00; clamp 10:00–14:30).',
+  },
+  {
+    key: 'squareOffMin',
+    parse: (raw) => minuteInRange(raw, 14 * 60, 15 * 60 + 20, 'squareOffMin'),
+    serialize: String,
+    label: 'Forced square-off',
+    description:
+      'Position guard attempts to exit everything open at/after this IST time. Enter minutes or "HH:MM" (default 15:12; clamp 14:00–15:20).',
+  },
 ];
 
 const defByKey = new Map(SETTING_DEFS.map((d) => [d.key, d]));
 let tableReady = false;
+
+function assertClockOrder(settings: AutoTradeSettings): void {
+  if (settings.entryStartMin >= settings.entryEndMin) {
+    throw new Error('entry window open must be earlier than entry window close');
+  }
+  if (settings.entryEndMin >= settings.squareOffMin) {
+    throw new Error('entry window close must be earlier than forced square-off');
+  }
+}
 
 async function ensureTable(): Promise<void> {
   if (tableReady) return;
@@ -137,9 +194,10 @@ async function ensureTable(): Promise<void> {
 export async function getAutoTradeSettings(): Promise<AutoTradeSettings> {
   try {
     await ensureTable();
-    const rows = (await prisma.$queryRawUnsafe(
-      `SELECT key, value FROM auto_trade_settings`,
-    )) as { key: string; value: string }[];
+    const rows = (await prisma.$queryRawUnsafe(`SELECT key, value FROM auto_trade_settings`)) as {
+      key: string;
+      value: string;
+    }[];
     const out: AutoTradeSettings = { ...DEFAULT_SETTINGS };
     for (const row of rows) {
       const def = defByKey.get(row.key as keyof AutoTradeSettings);
@@ -150,6 +208,13 @@ export async function getAutoTradeSettings(): Promise<AutoTradeSettings> {
       } catch {
         // Invalid stored value → keep the default for that key
       }
+    }
+    try {
+      assertClockOrder(out);
+    } catch {
+      out.entryStartMin = DEFAULT_SETTINGS.entryStartMin;
+      out.entryEndMin = DEFAULT_SETTINGS.entryEndMin;
+      out.squareOffMin = DEFAULT_SETTINGS.squareOffMin;
     }
     return out;
   } catch {
@@ -163,13 +228,16 @@ export async function setAutoTradeSetting(key: string, value: string): Promise<A
   const def = defByKey.get(key as keyof AutoTradeSettings);
   if (!def) throw new Error(`unknown auto-trade setting: ${key}`);
   const parsed = def.parse(value); // throws on invalid
+  const candidate = await getAutoTradeSettings();
+  (candidate as unknown as Record<string, unknown>)[def.key] = parsed;
+  assertClockOrder(candidate);
   await ensureTable();
   await prisma.$executeRawUnsafe(
     `INSERT INTO auto_trade_settings (key, value, updatedAt) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt`,
     key,
     def.serialize(parsed),
-    new Date().toISOString(),
+    new Date().toISOString()
   );
   return getAutoTradeSettings();
 }

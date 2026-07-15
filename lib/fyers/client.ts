@@ -8,9 +8,9 @@
  * globalThis because Turbopack HMR re-evaluates modules (same rationale
  * documented in market-feed.ts).
  *
- * Fyers v3 limits: ~10 req/sec, 200/min, 100k/day. A full poller cycle is
- * ~40 symbols × 3 calls = ~120 calls; at 350ms spacing that's ~42s — well
- * inside every window with a 5-min cycle period.
+ * FYERS reserves the right to adjust endpoint limits. This client therefore
+ * enforces its own conservative 350ms dispatch spacing and reacts to observed
+ * 429s with a shared escalating cooldown; concurrency never bypasses either.
  */
 
 import { fyersModel } from 'fyers-api-v3';
@@ -18,7 +18,7 @@ import path from 'node:path';
 import { FyersAuthError, clearFyersToken, fyersAppId, getFyersAccessToken } from '@/lib/fyers/auth';
 
 const TAG = '[FyersClient]';
-const MIN_INTERVAL_MS = 350; // ~2.8 req/sec — comfortable margin under 10/sec and 200/min
+const MIN_INTERVAL_MS = 350; // configured ceiling ≈2.8 dispatches/sec (≈171/min)
 const BACKOFF_BASE_MS = 2000; // first 429 cool-off; doubles per consecutive 429
 const BACKOFF_MAX_MS = 30_000;
 
@@ -37,22 +37,29 @@ const gateHost = globalThis as unknown as {
   __fyersGate?: FyersGateState;
   __fyersModel?: fyersModel;
 };
-gateHost.__fyersGate ??= { tail: Promise.resolve(), lastDispatchAt: 0, cooldownUntil: 0, consecutive429: 0 };
+gateHost.__fyersGate ??= {
+  tail: Promise.resolve(),
+  lastDispatchAt: 0,
+  cooldownUntil: 0,
+  consecutive429: 0,
+};
 const gate = gateHost.__fyersGate;
 
 function throughFyersGate<T>(task: () => Promise<T>): Promise<T> {
-  const run = gate.tail.then(async (): Promise<T> => {
+  // Serialize DISPATCH times, not whole HTTP response times. Callers may use a
+  // small bounded worker pool without increasing the configured request rate;
+  // slow responses no longer create avoidable head-of-line blocking.
+  const dispatch = gate.tail.then(async (): Promise<void> => {
     const target = Math.max(gate.lastDispatchAt + MIN_INTERVAL_MS, gate.cooldownUntil);
     const wait = target - Date.now();
     if (wait > 0) await sleep(wait);
     gate.lastDispatchAt = Date.now();
-    return task();
   });
-  gate.tail = run.then(
+  gate.tail = dispatch.then(
     () => undefined,
-    () => undefined,
+    () => undefined
   );
-  return run;
+  return dispatch.then(task);
 }
 
 function noteFyers429(): void {
@@ -87,7 +94,10 @@ async function getFyers(): Promise<fyersModel> {
  * throw FyersAuthError (poller regenerates + retries once); rate limits note the
  * gate cooldown and report `rateLimited`; anything else is a plain error string.
  */
-function classifyFailure(res: Record<string, unknown>): { rateLimited: boolean; message: string } {
+function classifyFailure(res: Record<string, unknown>): {
+  rateLimited: boolean;
+  message: string;
+} {
   const code = Number(res.code ?? 0);
   const message = String(res.message ?? JSON.stringify(res).slice(0, 200));
   if (code === -15 || code === -16 || code === -17 || /authenticate|token.*(invalid|expired)/i.test(message)) {
@@ -129,7 +139,7 @@ export async function fetchHistory5m(fyersSymbol: string, date: string): Promise
         range_from: date,
         range_to: date,
         cont_flag: '1',
-      }),
+      })
     );
   } catch (err) {
     if (err instanceof FyersAuthError) throw err;
@@ -146,7 +156,14 @@ export async function fetchHistory5m(fyersSymbol: string, date: string): Promise
   const candles = Array.isArray(res.candles) ? (res.candles as number[][]) : [];
   return candles
     .filter((c) => Array.isArray(c) && c.length >= 6)
-    .map((c) => ({ bucketTs: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5] }));
+    .map((c) => ({
+      bucketTs: c[0],
+      open: c[1],
+      high: c[2],
+      low: c[3],
+      close: c[4],
+      volume: c[5],
+    }));
 }
 
 /**

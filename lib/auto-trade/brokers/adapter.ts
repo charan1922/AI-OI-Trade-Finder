@@ -25,6 +25,9 @@ export interface OrderTicket {
   /** Deterministic idempotency key — adapters pass it as correlation/tag where
    *  the API supports one; the store enforces uniqueness before placement. */
   idemKey: string;
+  /** Broker-safe deterministic tag persisted before submission. It is the
+   *  recovery key when the venue accepted an order but the response was lost. */
+  correlationId: string;
 }
 
 export interface PlacedOrder {
@@ -37,7 +40,25 @@ export interface PlacedOrder {
 export interface OrderState {
   status: 'filled' | 'pending' | 'rejected' | 'cancelled' | 'unknown';
   avgFillPrice: number | null;
+  /** Executed units when the venue reports them. A terminal status with a
+   * positive partial quantity is never treated as a clean rejection/cancel. */
+  filledQtyUnits?: number | null;
   detail?: string;
+}
+
+export interface RecoveredOrder extends OrderState {
+  brokerOrderId: string;
+}
+
+/** The caller cannot prove whether a placement reached the broker. */
+export class BrokerSubmissionError extends Error {
+  constructor(
+    message: string,
+    readonly ambiguous: boolean
+  ) {
+    super(message);
+    this.name = 'BrokerSubmissionError';
+  }
 }
 
 export interface BrokerFunds {
@@ -52,6 +73,9 @@ export interface BrokerAdapter {
    *  at the API layer; returns the broker's order id otherwise. */
   placeMarketOrder(ticket: OrderTicket): Promise<PlacedOrder>;
   getOrderState(brokerOrderId: string): Promise<OrderState>;
+  /** Recover a placement response by its durable broker tag. Null means the
+   *  venue returned no match; throwing means the lookup itself was unavailable. */
+  getOrderByCorrelationId?(correlationId: string): Promise<RecoveredOrder | null>;
   cancelOrder(brokerOrderId: string): Promise<void>;
 }
 

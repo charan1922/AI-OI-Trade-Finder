@@ -20,7 +20,10 @@ import {
   SCAN_OUTSIDE_WINDOW,
   USE_BREAKOUT_BYPASS,
   USE_EXTENDED_TREND_BYPASS,
+  USE_MOMENTUM_BREAKOUT,
   USE_TF_BREAKOUT_GATE,
+  WINDOW_END_MIN,
+  WINDOW_START_MIN,
 } from '@/lib/trade-suggest/config';
 
 export interface ToggleDef {
@@ -83,6 +86,14 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     description:
       'Works WITH “Skip already-extended movers”. That rule throws away every stock already 3%+ from the open — but on a genuine TREND day, a stock can keep running much further all day. ON: such a stock is let back in, and ONLY while it is still pushing to fresh highs/lows, holding the right side of VWAP, and its Supertrend agrees with the direction — a spike that has stalled or lost VWAP stays excluded. Let-back-in stocks still carry the “extended” score penalty, so they rank cautiously. OFF (default): every 3%+ mover stays excluded, full stop. Experimental — turn ON only to gather evidence on the Trade Log before trusting it.',
   },
+  {
+    key: 'USE_MOMENTUM_BREAKOUT',
+    label: 'Momentum-breakout path',
+    category: 'Trade Suggest',
+    default: USE_MOMENTUM_BREAKOUT,
+    description:
+      'A fourth way for a stock to qualify, built for SHORT-COVERING breakouts (price rising while open interest falls — ADANIGREEN 14-Jul was the textbook case: TradeFinder rode it for ₹15.9k while every OI-based rule here rejected it, by design). ON: a stock with NO accumulation evidence (low R-Factor, no OI build, quiet setup) can still be suggested — but ONLY with a confirmed opening-range breakout, BOTH Supertrend AND VWAP agreeing, and at least a 1.5% move from the open in the trade direction. Liquidity, turnover and direction rules still apply. OFF (default): keep it off until the nightly replay benchmark proves it catches these winners without letting fakeouts through across several recorded days — one good day is not proof.',
+  },
 ];
 
 /** Numeric runtime settings — same storage table (INTEGER value), rendered as
@@ -107,6 +118,40 @@ export const NUMBER_DEFS: NumberDef[] = [
     max: 10,
     description:
       'How many qualified stocks a scan may suggest at most. The quality gates are the real constraint — quiet days produce 1–2 regardless. With a ₹50–60k account only the top 1–3 are actionable; anything beyond that is a watchlist.',
+  },
+  // Times are IST minutes from midnight (e.g. 09:40 = 580, 11:00 = 660).
+  {
+    key: 'WINDOW_START_MIN',
+    label: 'Scan window opens (min IST)',
+    category: 'Entry & Exit Times',
+    default: WINDOW_START_MIN,
+    min: 9 * 60 + 15,
+    max: 13 * 60,
+    description:
+      'When the scanner window OPENS, as IST minutes from midnight (default 580 = 09:40 — the proven morning window). The window is where suggestions are normal; “Scan outside the window” overrides it entirely when ON.',
+  },
+  {
+    key: 'WINDOW_END_MIN',
+    label: 'Scan window closes (min IST)',
+    category: 'Entry & Exit Times',
+    default: WINDOW_END_MIN,
+    min: 10 * 60,
+    max: 14 * 60 + 30,
+    description:
+      'When the scanner window CLOSES, as IST minutes from midnight (default 660 = 11:00). Late-window momentum fades fastest — widen deliberately, not casually.',
+  },
+  {
+    key: 'COMMENTARY_ENTRY_CUTOFF_MIN',
+    label: 'Commentary entry cutoff (min IST)',
+    category: 'Entry & Exit Times',
+    // Default mirrors COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT in
+    // lib/ai-commentary/generate.ts (kept a literal here to avoid an import
+    // cycle: generate.ts reads this module for the runtime value).
+    default: 12 * 60 + 30,
+    min: 11 * 60,
+    max: 15 * 60,
+    description:
+      'After this IST time (minutes from midnight; default 750 = 12:30) the AI commentary stops pitching fresh entries and focuses on managing/exiting open positions. Deterministic — injected by code, not left to the model.',
   },
 ];
 
@@ -137,13 +182,19 @@ export interface ToggleState extends ToggleDef {
 /** Every toggle with its effective (stored-or-default) value. */
 export async function getAllToggles(): Promise<ToggleState[]> {
   await ensureTable();
-  const rows = (await prisma.$queryRawUnsafe(
-    `SELECT key, value, updatedAt FROM feature_toggles`,
-  )) as { key: string; value: number; updatedAt: string }[];
+  const rows = (await prisma.$queryRawUnsafe(`SELECT key, value, updatedAt FROM feature_toggles`)) as {
+    key: string;
+    value: number;
+    updatedAt: string;
+  }[];
   const stored = new Map(rows.map((r) => [r.key, r]));
   return TOGGLE_DEFS.map((d) => {
     const row = stored.get(d.key);
-    return { ...d, value: row ? row.value === 1 : d.default, updatedAt: row?.updatedAt ?? null };
+    return {
+      ...d,
+      value: row ? row.value === 1 : d.default,
+      updatedAt: row?.updatedAt ?? null,
+    };
   });
 }
 
@@ -154,10 +205,9 @@ export async function getAllToggles(): Promise<ToggleState[]> {
 export async function getToggle(key: string, fallback: boolean): Promise<boolean> {
   try {
     await ensureTable();
-    const rows = (await prisma.$queryRawUnsafe(
-      `SELECT value FROM feature_toggles WHERE key = ?`,
-      key,
-    )) as { value: number }[];
+    const rows = (await prisma.$queryRawUnsafe(`SELECT value FROM feature_toggles WHERE key = ?`, key)) as {
+      value: number;
+    }[];
     return rows.length > 0 ? rows[0].value === 1 : fallback;
   } catch {
     return fallback;
@@ -173,7 +223,7 @@ export async function setToggle(key: string, value: boolean): Promise<void> {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt`,
     key,
     value ? 1 : 0,
-    new Date().toISOString(),
+    new Date().toISOString()
   );
 }
 
@@ -186,9 +236,11 @@ export interface NumberState extends NumberDef {
 /** Every numeric setting with its effective (stored-or-default) value. */
 export async function getAllNumberSettings(): Promise<NumberState[]> {
   await ensureTable();
-  const rows = (await prisma.$queryRawUnsafe(
-    `SELECT key, value, updatedAt FROM feature_toggles`,
-  )) as { key: string; value: number; updatedAt: string }[];
+  const rows = (await prisma.$queryRawUnsafe(`SELECT key, value, updatedAt FROM feature_toggles`)) as {
+    key: string;
+    value: number;
+    updatedAt: string;
+  }[];
   const stored = new Map(rows.map((r) => [r.key, r]));
   return NUMBER_DEFS.map((d) => {
     const row = stored.get(d.key);
@@ -203,10 +255,9 @@ export async function getNumberSetting(key: string, fallback: number): Promise<n
   const def = numberByKey.get(key);
   try {
     await ensureTable();
-    const rows = (await prisma.$queryRawUnsafe(
-      `SELECT value FROM feature_toggles WHERE key = ?`,
-      key,
-    )) as { value: number }[];
+    const rows = (await prisma.$queryRawUnsafe(`SELECT value FROM feature_toggles WHERE key = ?`, key)) as {
+      value: number;
+    }[];
     if (rows.length === 0) return fallback;
     const v = Math.round(rows[0].value);
     return def ? Math.min(def.max, Math.max(def.min, v)) : v;
@@ -222,12 +273,21 @@ export async function setNumberSetting(key: string, value: number): Promise<void
   if (!Number.isFinite(value) || Math.round(value) < def.min || Math.round(value) > def.max) {
     throw new Error(`${key} must be an integer between ${def.min} and ${def.max}`);
   }
+  if (key === 'WINDOW_START_MIN' || key === 'WINDOW_END_MIN') {
+    const next = Math.round(value);
+    const otherKey = key === 'WINDOW_START_MIN' ? 'WINDOW_END_MIN' : 'WINDOW_START_MIN';
+    const otherFallback = otherKey === 'WINDOW_START_MIN' ? WINDOW_START_MIN : WINDOW_END_MIN;
+    const other = await getNumberSetting(otherKey, otherFallback);
+    const start = key === 'WINDOW_START_MIN' ? next : other;
+    const end = key === 'WINDOW_END_MIN' ? next : other;
+    if (start >= end) throw new Error('scan window open must be earlier than scan window close');
+  }
   await ensureTable();
   await prisma.$executeRawUnsafe(
     `INSERT INTO feature_toggles (key, value, updatedAt) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt`,
     key,
     Math.round(value),
-    new Date().toISOString(),
+    new Date().toISOString()
   );
 }

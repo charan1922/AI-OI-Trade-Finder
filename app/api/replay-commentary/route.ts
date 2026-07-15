@@ -7,6 +7,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { NextResponse } from 'next/server';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,6 +15,8 @@ export const runtime = 'nodejs';
 const DIR = join(process.cwd(), 'data', 'replay-commentary');
 
 export async function GET(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
     const url = new URL(req.url);
     const run = url.searchParams.get('run');
@@ -31,14 +34,31 @@ export async function GET(req: Request) {
     }
     const entries = names.map((f) => {
       const p = join(DIR, f);
-      const j = JSON.parse(readFileSync(p, 'utf8')) as { runName: string; date: string; label: string; createdAt: string; dry: boolean; metrics: unknown };
+      const j = JSON.parse(readFileSync(p, 'utf8')) as {
+        runName: string;
+        date: string;
+        label: string;
+        createdAt: string;
+        dry: boolean;
+        metrics: unknown;
+      };
       return {
         mtime: statSync(p).mtimeMs,
-        data: { runName: j.runName, date: j.date, label: j.label, createdAt: j.createdAt, dry: j.dry, metrics: j.metrics },
+        data: {
+          runName: j.runName,
+          date: j.date,
+          label: j.label,
+          createdAt: j.createdAt,
+          dry: j.dry,
+          metrics: j.metrics,
+        },
       };
     });
     entries.sort((a, b) => b.mtime - a.mtime);
-    return NextResponse.json({ success: true, runs: entries.map((e) => e.data) });
+    return NextResponse.json({
+      success: true,
+      runs: entries.map((e) => e.data),
+    });
   } catch (e) {
     return NextResponse.json({ success: false, error: (e as Error).message }, { status: 500 });
   }

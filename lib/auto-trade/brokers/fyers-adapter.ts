@@ -16,7 +16,15 @@
 import path from 'node:path';
 import { fyersModel } from 'fyers-api-v3';
 import { fyersAppId, getFyersAccessToken } from '@/lib/fyers/auth';
-import type { BrokerAdapter, BrokerFunds, OrderState, OrderTicket, PlacedOrder } from './adapter';
+import {
+  BrokerSubmissionError,
+  type BrokerAdapter,
+  type BrokerFunds,
+  type OrderState,
+  type OrderTicket,
+  type PlacedOrder,
+  type RecoveredOrder,
+} from './adapter';
 import { ticketQtyUnits } from './adapter';
 
 const TAG = '[FyersTrade]';
@@ -43,14 +51,17 @@ function serial<T>(task: () => Promise<T>): Promise<T> {
   });
   gate.tail = run.then(
     () => undefined,
-    () => undefined,
+    () => undefined
   );
   return run;
 }
 
 async function getFyers(): Promise<fyersModel> {
   if (!g.__fyersTradeModel) {
-    g.__fyersTradeModel = new fyersModel({ path: path.join(process.cwd(), 'data'), enableLogging: false });
+    g.__fyersTradeModel = new fyersModel({
+      path: path.join(process.cwd(), 'data'),
+      enableLogging: false,
+    });
   }
   const fyers = g.__fyersTradeModel;
   fyers.setAppId(fyersAppId());
@@ -87,7 +98,15 @@ export class FyersAdapter implements BrokerAdapter {
   }
 
   async placeMarketOrder(ticket: OrderTicket): Promise<PlacedOrder> {
-    const fyers = await getFyers();
+    let fyers: fyersModel;
+    try {
+      fyers = await getFyers();
+    } catch (err) {
+      throw new BrokerSubmissionError(
+        `${TAG} credentials unavailable before placement: ${(err as Error).message}`,
+        false
+      );
+    }
     const req = {
       symbol: toFyersOptionSymbol(ticket),
       qty: ticketQtyUnits(ticket),
@@ -102,7 +121,7 @@ export class FyersAdapter implements BrokerAdapter {
       // Fyers orderTag is alphanumeric only (and shouldn't lead with a digit) —
       // our idemKey has colons/hyphens, so strip and prefix a letter. Mirrors
       // the Dhan correlationId fix; real idempotency is the DB UNIQUE idemKey.
-      orderTag: `t${ticket.idemKey.replace(/[^a-zA-Z0-9]/g, '')}`.slice(0, 20),
+      orderTag: ticket.correlationId,
     };
     let res: Record<string, unknown>;
     try {
@@ -110,11 +129,14 @@ export class FyersAdapter implements BrokerAdapter {
     } catch (err) {
       // SDK rejects with { s:'error', code, message } via its errorHandler.
       const e = (err ?? {}) as Record<string, unknown>;
-      throw new Error(`${TAG} place_order failed: ${String(e.message ?? e)}`);
+      throw new BrokerSubmissionError(`${TAG} place_order failed: ${String(e.message ?? e)}`, true);
     }
     const orderId = String(res?.id ?? '');
     if (res?.s !== 'ok' || !orderId) {
-      throw new Error(`${TAG} place_order rejected: ${String(res?.message ?? JSON.stringify(res ?? {}).slice(0, 200))}`);
+      throw new BrokerSubmissionError(
+        `${TAG} place_order rejected: ${String(res?.message ?? JSON.stringify(res ?? {}).slice(0, 200))}`,
+        false
+      );
     }
     return { brokerOrderId: orderId };
   }
@@ -128,28 +150,92 @@ export class FyersAdapter implements BrokerAdapter {
       // bounded; if perf becomes an issue, consider caching the book for a few
       // seconds on globalThis.
       const res = await serial(() => fyers.get_orders());
-      if (!res || res.s !== 'ok') return { status: 'unknown', avgFillPrice: null, detail: 'orderbook unavailable' };
+      if (!res || res.s !== 'ok')
+        return {
+          status: 'unknown',
+          avgFillPrice: null,
+          detail: 'orderbook unavailable',
+        };
       const book = Array.isArray(res.orderBook) ? (res.orderBook as Record<string, unknown>[]) : [];
       const row = book.find((o) => String(o.id) === brokerOrderId);
-      if (!row) return { status: 'unknown', avgFillPrice: null, detail: 'order not in today\'s book' };
+      if (!row)
+        return {
+          status: 'unknown',
+          avgFillPrice: null,
+          detail: "order not in today's book",
+        };
       const price = Number(row.tradedPrice);
       const fill = Number.isFinite(price) && price > 0 ? price : null;
+      const filledQty = Number(row.filledQty ?? row.tradedQty);
+      const filledQtyUnits = Number.isFinite(filledQty) && filledQty > 0 ? filledQty : null;
       switch (Number(row.status)) {
         case 2:
-          return { status: 'filled', avgFillPrice: fill };
+          return { status: 'filled', avgFillPrice: fill, filledQtyUnits };
         case 5:
-          return { status: 'rejected', avgFillPrice: null, detail: String(row.message ?? 'rejected') };
+          return {
+            status: 'rejected',
+            avgFillPrice: fill,
+            filledQtyUnits,
+            detail: String(row.message ?? 'rejected'),
+          };
         case 1:
-          return { status: 'cancelled', avgFillPrice: null };
+          return { status: 'cancelled', avgFillPrice: fill, filledQtyUnits };
         case 4:
         case 6:
-          return { status: 'pending', avgFillPrice: null };
+          return { status: 'pending', avgFillPrice: fill, filledQtyUnits };
         default:
-          return { status: 'unknown', avgFillPrice: fill, detail: `status code ${String(row.status)}` };
+          return {
+            status: 'unknown',
+            avgFillPrice: fill,
+            filledQtyUnits,
+            detail: `status code ${String(row.status)}`,
+          };
       }
     } catch (err) {
-      return { status: 'unknown', avgFillPrice: null, detail: (err as Error).message };
+      return {
+        status: 'unknown',
+        avgFillPrice: null,
+        detail: (err as Error).message,
+      };
     }
+  }
+
+  async getOrderByCorrelationId(correlationId: string): Promise<RecoveredOrder | null> {
+    const fyers = await getFyers();
+    const res = await serial(() => fyers.get_orders());
+    if (!res || res.s !== 'ok') throw new Error(`${TAG} orderbook unavailable during tag recovery`);
+    const book = Array.isArray(res.orderBook) ? (res.orderBook as Record<string, unknown>[]) : [];
+    const row = book.find((o) => String(o.orderTag ?? '') === correlationId);
+    if (!row) return null;
+    const brokerOrderId = String(row.id ?? '');
+    if (!brokerOrderId) return null;
+    const price = Number(row.tradedPrice);
+    const fill = Number.isFinite(price) && price > 0 ? price : null;
+    const filledQty = Number(row.filledQty ?? row.tradedQty);
+    const filledQtyUnits = Number.isFinite(filledQty) && filledQty > 0 ? filledQty : null;
+    let status: OrderState['status'] = 'unknown';
+    switch (Number(row.status)) {
+      case 2:
+        status = 'filled';
+        break;
+      case 5:
+        status = 'rejected';
+        break;
+      case 1:
+        status = 'cancelled';
+        break;
+      case 4:
+      case 6:
+        status = 'pending';
+        break;
+    }
+    return {
+      brokerOrderId,
+      status,
+      avgFillPrice: fill,
+      filledQtyUnits,
+      detail: row.message ? String(row.message) : undefined,
+    };
   }
 
   async cancelOrder(brokerOrderId: string): Promise<void> {

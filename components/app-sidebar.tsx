@@ -1,9 +1,35 @@
-"use client"
+'use client';
 
-import Link from "next/link"
-import { usePathname } from "next/navigation"
-import { useState } from "react"
-import { Activity, Banknote, Bot, BookOpen, CalendarClock, CalendarDays, ChevronDown, ChevronRight, Database, Download, Eye, Flame, FlaskConical, Gauge, Grid3x3, History, LayoutGrid, type LucideIcon, NotebookText, Radio, ScrollText, Sparkles, Table2, Target, Zap } from "lucide-react"
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { useState } from 'react';
+import {
+  Activity,
+  Banknote,
+  Bot,
+  BookOpen,
+  CalendarClock,
+  CalendarDays,
+  ChevronDown,
+  ChevronRight,
+  Database,
+  Download,
+  Eye,
+  Flame,
+  FlaskConical,
+  Gauge,
+  Grid3x3,
+  History,
+  LayoutGrid,
+  type LucideIcon,
+  NotebookText,
+  Radio,
+  ScrollText,
+  Sparkles,
+  Table2,
+  Target,
+  Zap,
+} from 'lucide-react';
 
 import {
   Sidebar,
@@ -15,72 +41,78 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
-} from "@/components/ui/sidebar"
-import { cn } from "@/lib/utils"
+} from '@/components/ui/sidebar';
+import { isAdminOnlyPage } from '@/lib/auth/rbac';
+import { useRole } from '@/lib/auth/use-role';
+import { cn } from '@/lib/utils';
 
 interface NavItem {
-  title: string
-  href: string
-  icon: LucideIcon
+  title: string;
+  href: string;
+  icon: LucideIcon;
 }
 
 interface NavGroup {
-  label: string
-  icon: LucideIcon
-  children: NavItem[]
+  label: string;
+  icon: LucideIcon;
+  children: NavItem[];
 }
 
 const NAV_GROUPS: NavGroup[] = [
   {
-    label: "Live Market",
+    label: 'Live Market',
     icon: Activity,
     children: [
-      { title: "Live Urgency", href: "/live", icon: Gauge },
-      { title: "NSE Movers", href: "/nse/movers", icon: Flame },
-      { title: "NSE Heatmap", href: "/nse/heatmap", icon: LayoutGrid },
-      { title: "Heatmap", href: "/heatmap", icon: Grid3x3 },
-      { title: "Fyers Live", href: "/fyers", icon: Radio },
-      { title: "Dhan", href: "/dhan", icon: Banknote },
+      { title: 'Live Urgency', href: '/live', icon: Gauge },
+      { title: 'NSE Movers', href: '/nse/movers', icon: Flame },
+      { title: 'NSE Heatmap', href: '/nse/heatmap', icon: LayoutGrid },
+      { title: 'Heatmap', href: '/heatmap', icon: Grid3x3 },
+      { title: 'Fyers Live', href: '/fyers', icon: Radio },
+      { title: 'Dhan', href: '/dhan', icon: Banknote },
     ],
   },
   {
-    label: "Simulation",
+    label: 'Simulation',
     icon: FlaskConical,
     children: [
-      { title: "Trade Viewer", href: "/trade-viewer", icon: Eye },
-      { title: "Data Downloader", href: "/data-downloader", icon: Download },
+      { title: 'Trade Viewer', href: '/trade-viewer', icon: Eye },
+      { title: 'Data Downloader', href: '/data-downloader', icon: Download },
     ],
   },
   {
-    label: "Assistant",
+    label: 'Assistant',
     icon: Bot,
     children: [
-      { title: "Trade Assistant", href: "/trade-assistant", icon: Bot },
-      { title: "Trade Suggest", href: "/trade-suggest", icon: Target },
-      { title: "Trade Commentary", href: "/trade-commentary", icon: Sparkles },
-      { title: "Auto Trade", href: "/auto-trade", icon: Zap },
-      { title: "Trade Log", href: "/trade-suggest/history", icon: NotebookText },
+      { title: 'Trade Assistant', href: '/trade-assistant', icon: Bot },
+      { title: 'Trade Suggest', href: '/trade-suggest', icon: Target },
+      { title: 'Trade Commentary', href: '/trade-commentary', icon: Sparkles },
+      { title: 'Auto Trade', href: '/auto-trade', icon: Zap },
+      {
+        title: 'Trade Log',
+        href: '/trade-suggest/history',
+        icon: NotebookText,
+      },
     ],
   },
   {
-    label: "Reference",
+    label: 'Reference',
     icon: BookOpen,
     children: [
-      { title: "EOD Movers", href: "/nse/movers-history", icon: History },
-      { title: "EOD Live Urgency", href: "/live/history", icon: CalendarClock },
-      { title: "Market Holidays", href: "/holidays", icon: CalendarDays },
-      { title: "F&O Lot Sizes", href: "/fno-lots", icon: Table2 },
-      { title: "Database", href: "/db-explorer", icon: Database },
-      { title: "AI Prompts", href: "/prompts", icon: ScrollText },
-      { title: "API Docs", href: "/api-docs", icon: BookOpen },
+      { title: 'EOD Movers', href: '/nse/movers-history', icon: History },
+      { title: 'EOD Live Urgency', href: '/live/history', icon: CalendarClock },
+      { title: 'Market Holidays', href: '/holidays', icon: CalendarDays },
+      { title: 'F&O Lot Sizes', href: '/fno-lots', icon: Table2 },
+      { title: 'Database', href: '/db-explorer', icon: Database },
+      { title: 'AI Prompts', href: '/prompts', icon: ScrollText },
+      { title: 'API Docs', href: '/api-docs', icon: BookOpen },
     ],
   },
-]
+];
 
 /** One collapsible nav group — expanded by default; an active child keeps it open. */
 function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: string }) {
-  const [open, setOpen] = useState(true)
-  const isChildActive = group.children.some((c) => pathname.startsWith(c.href))
+  const [open, setOpen] = useState(true);
+  const isChildActive = group.children.some((c) => pathname.startsWith(c.href));
 
   return (
     <SidebarGroup>
@@ -88,13 +120,13 @@ function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: strin
         <button
           onClick={() => setOpen((v) => !v)}
           className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider",
-            "text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors cursor-pointer",
-            "group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+            'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[11px] font-medium tracking-wider uppercase',
+            'cursor-pointer text-sidebar-foreground/60 transition-colors hover:text-sidebar-foreground',
+            'group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0'
           )}
         >
           <group.icon className="size-4 shrink-0" />
-          <span className="group-data-[collapsible=icon]:hidden flex-1 text-left">{group.label}</span>
+          <span className="flex-1 text-left group-data-[collapsible=icon]:hidden">{group.label}</span>
           {open ? (
             <ChevronDown className="size-3.5 shrink-0 group-data-[collapsible=icon]:hidden" />
           ) : (
@@ -106,7 +138,7 @@ function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: strin
       {(open || isChildActive) && (
         <SidebarMenu className="mt-1">
           {group.children.map((item) => {
-            const active = pathname.startsWith(item.href)
+            const active = pathname.startsWith(item.href);
             return (
               <SidebarMenuItem key={item.href}>
                 <SidebarMenuButton asChild isActive={active} tooltip={item.title} className="text-xs">
@@ -116,16 +148,26 @@ function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: strin
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
-            )
+            );
           })}
         </SidebarMenu>
       )}
     </SidebarGroup>
-  )
+  );
 }
 
 export function AppSidebar() {
-  const pathname = usePathname()
+  const pathname = usePathname();
+  const { readOnly } = useRole();
+
+  // Viewers never see admin-only entries (the rbac list is the single source —
+  // the proxy enforces, this hiding is the UX half). Groups left empty vanish.
+  const groups = readOnly
+    ? NAV_GROUPS.map((g) => ({
+        ...g,
+        children: g.children.filter((c) => !isAdminOnlyPage(c.href)),
+      })).filter((g) => g.children.length > 0)
+    : NAV_GROUPS;
 
   return (
     <Sidebar collapsible="icon">
@@ -148,12 +190,12 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        {NAV_GROUPS.map((group) => (
+        {groups.map((group) => (
           <NavGroupSection key={group.label} group={group} pathname={pathname} />
         ))}
       </SidebarContent>
 
       <SidebarRail />
     </Sidebar>
-  )
+  );
 }

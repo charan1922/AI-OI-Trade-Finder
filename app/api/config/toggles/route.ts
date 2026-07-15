@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
 
 import { getAllNumberSettings, getAllToggles, setNumberSetting, setToggle } from '@/lib/config/feature-toggles';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 
 /** GET — every toggle + numeric setting with its definition + effective value. */
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
     const [data, numbers] = [await getAllToggles(), await getAllNumberSettings()];
     return NextResponse.json({ success: true, data, numbers });
@@ -17,6 +20,8 @@ export async function GET() {
 /** POST { key, value } — boolean flips a toggle, number sets a numeric setting;
  *  returns the fresh lists either way. */
 export async function POST(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
     const body = (await req.json()) as { key?: unknown; value?: unknown };
     if (typeof body.key !== 'string' || (typeof body.value !== 'boolean' && typeof body.value !== 'number')) {

@@ -4,8 +4,8 @@
  * A swing high is a bar whose high exceeds the highs of the K bars on each
  * side (mirror for swing lows) — the "previous swing high" the TF trader
  * counts as one of the levels a strong surge shatters. Only today's bars are
- * available (fyers_candles keeps today only), so these are intraday swings;
- * multi-day structure comes from bhavcopy levels instead (levels.ts).
+ * available for the requested session. These are deliberately intraday
+ * swings; multi-day structure comes from bhavcopy levels instead (levels.ts).
  */
 
 export interface SwingBar {

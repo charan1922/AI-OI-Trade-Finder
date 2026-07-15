@@ -7,7 +7,7 @@
  *   1. Session cookie (browsers) — set by /api/auth/login after the /login page
  *      posts the password; cleared by /api/auth/logout. Signed (lib/auth/session).
  *   2. Google sign-in (browsers) — Auth.js session JWT (auth.ts); only emails
- *      on ADMIN_GOOGLE_EMAILS ever get a session, and they resolve to admin.
+ *      in ADMIN_GOOGLE_EMAILS or GOOGLE_VIEWER_EMAILS get a session.
  *   3. HTTP Basic Auth (non-browser clients only: the internal server-to-self
  *      calls in engine.ts / poller.ts, curl). Ignored when the request carries
  *      Sec-Fetch-Dest/Site (i.e. comes from a browser) — see roleFromBasicAuth.
@@ -15,7 +15,7 @@
  * Roles:
  *   APP_PASSWORD           → admin  (full access)
  *   ADMIN_GOOGLE_EMAILS    → admin  (via Google)
- *   any other Google login → viewer (read-only)
+ *   GOOGLE_VIEWER_EMAILS   → viewer (read-only)
  *   APP_READONLY_PASSWORD  → viewer (every page + read API; actions 403)
  *
  * Active ONLY when APP_PASSWORD is set. Unset (local dev) → no-op, every request
@@ -112,8 +112,8 @@ export const proxy = auth(async (req) => {
   }
 
   // Google session → role via the central policy (lib/auth/rbac.ts):
-  // the operator's email → admin, any other signed-in Google account → viewer.
-  const googleRole: Role | null = roleForGoogleEmail(req.auth?.user?.email);
+  // the operator's email → admin, explicit viewer allowlist → viewer.
+  const googleRole: Role | null = roleForGoogleEmail(req.auth?.user?.email, process.env.GOOGLE_VIEWER_EMAILS);
 
   // Resolve the caller's role: password cookie, then Google session, then Basic Auth.
   const role =
@@ -140,6 +140,11 @@ export const proxy = auth(async (req) => {
 
   const permission = requiredPermission(req.method, pathname, searchParams);
   if (permission && !roleHas(role, permission)) {
+    // A viewer NAVIGATING to an admin-only page goes home (no JSON error page);
+    // API calls and non-navigation fetches keep the explicit 403.
+    if (isBrowserNavigation(req) && !pathname.startsWith('/api/')) {
+      return NextResponse.redirect(new URL('/', req.url));
+    }
     return NextResponse.json(
       {
         success: false,
@@ -147,7 +152,7 @@ export const proxy = auth(async (req) => {
         role,
         requiredPermission: permission,
       },
-      { status: 403 },
+      { status: 403 }
     );
   }
 

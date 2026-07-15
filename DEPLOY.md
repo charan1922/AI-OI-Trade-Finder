@@ -18,7 +18,7 @@ First run signs you in (opens your browser) and creates the project + service,
 then builds the `Dockerfile` and deploys. The first build takes a few minutes
 (native modules compile).
 
-### 2. Add the persistent volume  ← do this before trusting any data
+### 2. Add the persistent volume ← do this before trusting any data
 
 Railway dashboard → the service → **Settings → Add Volume** → mount path:
 
@@ -59,10 +59,15 @@ Add these (copy the values from your local `.env.local`):
 - **`APP_PASSWORD`** — the password gate (and the auth the in-process
   capture uses for its internal API calls). Required for the deployed app.
   Grants the **admin** role (full access).
-- **`APP_READONLY_PASSWORD`** *(optional)* — a second password granting the
+- **`APP_READONLY_PASSWORD`** _(optional)_ — a second password granting the
   **viewer** role: every page and read API works, but any state-changing /
   paid / download action returns 403 and its UI control is disabled. Policy
   lives in `lib/auth/rbac.ts`; only meaningful alongside `APP_PASSWORD`.
+- **Google sign-in** _(optional)_ — `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`,
+  `AUTH_SECRET`, and the public `AUTH_URL`. `GOOGLE_VIEWER_EMAILS` is an
+  explicit comma-separated viewer allowlist; an otherwise valid Google account
+  is denied. The operator allowlist lives in `lib/auth/rbac.ts`. Register
+  `<AUTH_URL>/api/auth/callback/google` in the Google OAuth client.
 - **`PORT=5001`** — see the port note below.
 - **`DATABASE_URL`** set to the absolute volume path (not your local value):
 
@@ -209,21 +214,45 @@ manually as **up** so the service is on. (Or delete the workflow file and push.)
 While the service is **up**:
 
 - **Autonomous (server-side, no browser/machine):** the Fyers poller records
-  5-min **equity + futures candles + futures OI** for the whole tracked universe,
-  every 5 min during market hours (`instrumentation.ts` → `lib/fyers/poller.ts`).
-  This is the persistent candle history `/trade-suggest` and `/fyers` rely on.
-- **On-request (needs the page open, OR a scheduled poll, OR a `/trade-suggest`
-  run):** the live NSE movers feeds (`/live`, `/nse/movers`), the intraday **OI
-  urgency** series (`oi_intraday`, written by `/api/live/quote`), and
-  `/trade-suggest` picks. These are fetched live and only *persisted* when
-  something calls the endpoint — nobody watching means the movers feeds aren't
-  archived and the urgency series isn't filled (beyond the poller's futures OI).
+  5-min **equity + futures candles + futures OI** for the full non-avoid
+  universe. Each cycle also freezes the NSE candidate snapshot, refreshes the
+  priority EQ candles, runs `/trade-suggest`, runs the deterministic guard and
+  AI decision pass, records rank/OI snapshots, and then finishes the remaining
+  Fyers recorder work. `instrumentation.ts` boots both this poller and the fast
+  guard loop.
+- **On-request:** pages read the resulting stores/caches and may refresh their
+  own NSE presentation feeds. Opening `/live` is not required for scanning,
+  trading, candle retention, or the display-only NIFTY gamma cache.
 
-So: candles record hands-off; the urgency/movers/picks capture needs a trigger.
-The `/loop 5m /trade-suggest` (run from Claude Code on your machine) is one such
-trigger. For fully machine-independent capture, a Railway-side cron hitting
-`/api/trade-suggest` every 5 min during the up-window would do it (not set up by
-default — ask if you want it).
+### Live-trading latency and safety invariants
+
+- Candles are downloaded from **Fyers**. Priority EQ history is dispatched with
+  bounded concurrency while one shared gate preserves at least 350 ms between
+  request dispatches and applies a process-wide 429 cooldown. Do not increase
+  this concurrency or spacing from anecdotal timing alone.
+- The scan/AI starts after bounded refresh attempts for the frozen priority set;
+  successful/attempted freshness is recorded explicitly and failed names use
+  their last stored candle context. The rest of the universe continues afterward
+  for replay coverage. Poller status records tick→capture, tick→scan,
+  scan→decision, and tick→decision. Treat the first live-market session as the
+  performance proof—do not quote an estimate as a measured SLA.
+- The fast guard targets a 60-second cadence when risk-bearing orders exist.
+  Scheduling, broker response time, and deploys can add drift, so the heartbeat
+  reports actual duration. It is exits/reconciliation only and never creates an
+  entry.
+- Runtime DB leases prevent duplicate poller, engine, and fast-guard leaders
+  during rolling deploy overlap. Order placement persists a broker correlation
+  ID before the POST; ambiguous and partial fills remain unresolved for broker
+  reconciliation and are never blindly retried.
+- The NIFTY public-OI gamma balance remains visible on `/live` as an
+  **experimental display-only** cache. Public OI cannot establish dealer
+  positioning. It is refreshed only after this process owned the decision path,
+  skipped while any order/position bears risk, and is absent from scan, AI,
+  entries, exits, and replay.
+- Fyers candles and rank snapshots retain the newest 20 recorded sessions. A
+  local 166-symbol measurement was about 4.8 MB of candles plus 1.0 MB of ranks
+  per session (roughly 117 MB for 20 sessions). Monitor production volume free
+  space; local sizing is not a production measurement.
 
 ## EOD data sync (bhavcopy)
 
@@ -245,11 +274,12 @@ switch, etc.) to a Telegram bot, and the bot can receive commands
 
 Add these to Railway → Variables (or `.env.local` for local dev):
 
-| Variable | Required | Description |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | Yes | Your numeric chat id (send `/start` to @userinfobot) |
-| `TELEGRAM_WEBHOOK_SECRET` | Yes | Arbitrary secret string — Telegram sends it back in the `X-Telegram-Bot-Api-Secret-Token` header for webhook verification |
+| Variable                   | Required | Description                                                                                                                                                                                                                                                                |
+| -------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TELEGRAM_BOT_TOKEN`       | Yes      | Bot token from @BotFather                                                                                                                                                                                                                                                  |
+| `TELEGRAM_CHAT_ID`         | Yes      | Your numeric chat id (send `/start` to @userinfobot)                                                                                                                                                                                                                       |
+| `TELEGRAM_VIEWER_CHAT_IDS` | No       | Extra read-only recipients for the trade-commentary broadcasts, comma-separated numeric chat ids (each person must `/start` the bot once so Telegram allows it to message them). They receive commentary only — commands and approval prompts stay with `TELEGRAM_CHAT_ID` |
+| `TELEGRAM_WEBHOOK_SECRET`  | Yes      | Arbitrary secret string — Telegram sends it back in the `X-Telegram-Bot-Api-Secret-Token` header for webhook verification                                                                                                                                                  |
 
 > **`AUTO_TRADE_ALERT_WEBHOOK`** (the legacy one-way webhook) is still
 > supported as a fallback. If the three `TELEGRAM_*` vars are set, alerts
@@ -268,6 +298,7 @@ npx tsx scripts/setup-telegram-webhook.ts
 Or via the API endpoint (after deploy):
 
 **Linux / macOS (bash):**
+
 ```bash
 curl -X POST https://<your-railway-url>/api/telegram/setup \
   -H "Authorization: Basic $(echo -n ':YOUR_APP_PASSWORD' | base64)" \
@@ -276,11 +307,13 @@ curl -X POST https://<your-railway-url>/api/telegram/setup \
 ```
 
 **Windows cmd:**
+
 ```cmd
 curl.exe -X POST https://<your-railway-url>/api/telegram/setup -H "Authorization: Basic <base64_of_:YOUR_APP_PASSWORD>" -H "Content-Type: application/json" -d "{\"action\":\"register\"}"
 ```
 
 **Windows PowerShell (curl — use single quotes around JSON body):**
+
 ```powershell
 curl.exe -X POST "https://<your-railway-url>/api/telegram/setup" `
   -H "Authorization: Basic <base64_of_:YOUR_APP_PASSWORD>" `
@@ -288,9 +321,10 @@ curl.exe -X POST "https://<your-railway-url>/api/telegram/setup" `
   -d '{"action":"register"}'
 ```
 
-> ⚠️ **PowerShell + curl gotcha:** PowerShell single-quoted strings are *literal* — `\"` does **not** escape, it sends a literal backslash. Always put JSON in single quotes `'...'` so double quotes inside pass through unchanged. Do **not** use `\"` inside single quotes.
+> ⚠️ **PowerShell + curl gotcha:** PowerShell single-quoted strings are _literal_ — `\"` does **not** escape, it sends a literal backslash. Always put JSON in single quotes `'...'` so double quotes inside pass through unchanged. Do **not** use `\"` inside single quotes.
 
 **Windows PowerShell (recommended — Invoke-RestMethod):**
+
 ```powershell
 $body = @{ action = "register" } | ConvertTo-Json
 Invoke-RestMethod `
@@ -308,11 +342,13 @@ Invoke-RestMethod `
 To send a test message via curl on Windows, avoid `\"` escaping inside double-quoted strings. Use this approach:
 
 **Windows cmd:**
+
 ```cmd
 curl.exe -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage" -H "Content-Type: application/json" -d "{""chat_id"":""<YOUR_CHAT_ID>"",""text"":""Test message""}"
 ```
 
 **Windows PowerShell (curl — single quotes around JSON):**
+
 ```powershell
 curl.exe -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage" `
   -H "Content-Type: application/json" `
@@ -320,6 +356,7 @@ curl.exe -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage" `
 ```
 
 **Windows PowerShell (recommended — Invoke-RestMethod):**
+
 ```powershell
 $body = @{
     chat_id = "<YOUR_CHAT_ID>"
@@ -337,25 +374,28 @@ Invoke-RestMethod `
 
 ### Available bot commands
 
-| Command | Description |
-|---|---|
-| `/status` | Engine mode, broker, kill switch, caps, open positions |
-| `/positions` | Open positions with entry/SL/target |
-| `/trades` | Today's trade history |
-| `/pnl` | Daily P&L summary |
-| `/decisions` | Recent AI decisions |
-| `/kill` | Activate kill switch (halt new orders) |
-| `/unkill` | Deactivate kill switch |
-| `/mode` | Check or change mode (`/mode paper`, `/mode off`) |
-| `/help` | List all commands |
+| Command      | Description                                            |
+| ------------ | ------------------------------------------------------ |
+| `/status`    | Engine mode, broker, kill switch, caps, open positions |
+| `/positions` | Open positions with entry/SL/target                    |
+| `/trades`    | Today's trade history                                  |
+| `/pnl`       | Daily P&L summary                                      |
+| `/decisions` | Recent AI decisions                                    |
+| `/kill`      | Activate kill switch (halt new orders)                 |
+| `/unkill`    | Deactivate kill switch                                 |
+| `/mode`      | Check or change mode (`/mode paper`, `/mode off`)      |
+| `/help`      | List all commands                                      |
 
 ### What Telegram receives
 
 **Automatic alerts** (from the auto-trade engine):
-- 🟢 Trade placed  ·  🔴 Trade exited  ·  🚨 Kill switch  ·  🛑 Daily loss halt
-- ⚠️ Exit failures  ·  ⏰ EOD square-off  ·  👻 Stale phantom
+
+- 🟢 Trade placed · 🔴 Trade exited · 🚨 Kill switch · 🛑 Daily loss halt
+- ⚠️ Exit failures requiring manual intervention · 🚨 partial/unresolved
+  broker orders · ⏰ EOD square-off
 
 **Automatic trade commentary** (from the AI commentary engine):
+
 - Every time `/trade-suggest` runs and generates a new commentary, it is pushed to Telegram in real-time — the same narration you see on `/trade-commentary`.
 
 **Bot commands** (send any of these to @live_ait_bot):
@@ -371,7 +411,8 @@ Invoke-RestMethod `
 
 The webhook endpoint (`/api/telegram/webhook`) is allowlisted in `proxy.ts`
 as a public route (like `/api/health`), so Telegram's servers can reach it
-without the app password.
+without the app password. In production, the route fails closed when
+`TELEGRAM_WEBHOOK_SECRET` is missing or the header does not match.
 
 ## Cost levers (later)
 

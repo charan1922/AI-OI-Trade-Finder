@@ -3,6 +3,7 @@ import { getDhanTokenStatus, hasDhanAuth } from '@/lib/dhan/auth';
 import { prisma } from '@/lib/db';
 import { dhanMarketFeed, isMarketHours } from '@/lib/dhan/market-feed';
 import { getFyersPollerStatus } from '@/lib/fyers/poller';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,7 +17,9 @@ const NO_CREDS =
  * external call, no DB, and — unlike GET /api/dhan/token — NO token-generation
  * side effect, so polling it never spends quota or mints tokens.
  */
-export function GET(): Response {
+export function GET(req: Request): Response {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   return NextResponse.json({
     success: true,
     marketOpen: isMarketHours(),
@@ -39,6 +42,8 @@ const RELIANCE_FALLBACK_ID = 2885;
  * quota-spending action.
  */
 export async function POST(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   const body = (await req.json().catch(() => ({}))) as { action?: string };
   if (body.action !== 'test-call') {
     return NextResponse.json({ success: false, error: "action must be 'test-call'" }, { status: 400 });
@@ -48,7 +53,10 @@ export async function POST(req: Request) {
   }
   try {
     const row = await prisma.masterContract
-      .findFirst({ where: { symbol: 'RELIANCE', segment: 'NSE_EQ' }, select: { securityId: true } })
+      .findFirst({
+        where: { symbol: 'RELIANCE', segment: 'NSE_EQ' },
+        select: { securityId: true },
+      })
       .catch(() => null);
     const id = Number(row?.securityId ?? RELIANCE_FALLBACK_ID);
     const t0 = Date.now();

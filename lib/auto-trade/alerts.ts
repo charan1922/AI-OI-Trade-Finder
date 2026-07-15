@@ -23,78 +23,99 @@ function webhookUrl(): string | null {
   return env.AUTO_TRADE_ALERT_WEBHOOK ?? null;
 }
 
-/** Send an alert. Fire-and-forget — never throws, never blocks.
- *  Checks the telegramAlerts toggle before sending to Telegram. */
+/** Queue an alert without blocking the trading path. Delivery is checked and
+ * logged by the Telegram/webhook client; a settings failure suppresses it. */
 export function sendAlert(message: string): void {
   // Priority 1: native Telegram bot (richer — Markdown, webhook replies)
   if (isTelegramConfigured()) {
-    // Check the toggle (async, but we fire-and-forget — read from cache/settings)
-    getAutoTradeSettings().then((s) => {
-      if (s.telegramAlerts) sendMessage(message);
-    }).catch(() => {
-      // Default to sending if settings fail to load (fail-open for alerts)
-      sendMessage(message);
-    });
+    // Check the toggle asynchronously; the trading path never waits on chat.
+    getAutoTradeSettings()
+      .then((s) => {
+        if (s.telegramAlerts) sendMessage(message);
+      })
+      .catch((err) => {
+        console.warn(`${TAG} settings lookup failed; alert suppressed: ${(err as Error).message}`);
+      });
     return;
   }
 
   // Priority 2: legacy generic webhook
   const url = webhookUrl();
   if (!url) return;
-  // Fire-and-forget — don't await, don't block the engine
-  fetch(url, {
+  // Asynchronous delivery; response status is still verified below.
+  void fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text: message }),
     signal: AbortSignal.timeout(5_000),
-  }).catch((err) => {
-    console.warn(`${TAG} alert failed: ${(err as Error).message}`);
-  });
+  })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`webhook HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    })
+    .catch((err) => {
+      console.warn(`${TAG} alert failed: ${(err as Error).message}`);
+    });
 }
 
 /** Shorthand severity levels for common events. */
 export const alerts = {
-  tradePlaced: (symbol: string, side: string, price: number) =>
-    sendAlert(`🟢 TRADE ${side} ${symbol} @ ₹${price}`),
+  tradePlaced: (symbol: string, side: string, price: number) => sendAlert(`🟢 TRADE ${side} ${symbol} @ ₹${price}`),
 
   tradeExited: (symbol: string, reason: string, pnl: number | null) =>
     sendAlert(`🔴 EXIT ${symbol}: ${reason}${pnl != null ? ` (P&L ₹${pnl})` : ''}`),
 
   /** Send a pending-approval alert with inline Approve / Reject buttons. */
-  approvalRequested: (tradeId: number, symbol: string, optionType: string, strike: number, premium: number | null, reason: string) => {
+  approvalRequested: (
+    tradeId: number,
+    symbol: string,
+    optionType: string,
+    strike: number,
+    premium: number | null,
+    reason: string
+  ) => {
+    const html = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const premiumStr = premium != null ? ` @ ₹${premium}` : '';
     const text =
-      `⏳ *APPROVAL NEEDED* #${tradeId}\n\n` +
-      `*${symbol}* ${optionType} ${strike}${premiumStr}\n` +
-      `Reason: ${reason.slice(0, 200)}\n\n` +
+      `⏳ <b>APPROVAL NEEDED</b> #${tradeId}\n\n` +
+      `<b>${html(symbol)}</b> ${html(optionType)} ${strike}${premiumStr}\n` +
+      `Reason: ${html(reason.slice(0, 200))}\n\n` +
       `⏰ Expires in a few minutes — tap a button below:`;
     const options: SendMessageOptions = {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
           [
-            { text: `✅ Approve #${tradeId}`, callback_data: `/approve ${tradeId}` },
-            { text: `❌ Reject #${tradeId}`, callback_data: `/reject ${tradeId}` },
+            {
+              text: `✅ Approve #${tradeId}`,
+              callback_data: `/approve ${tradeId}`,
+            },
+            {
+              text: `❌ Reject #${tradeId}`,
+              callback_data: `/reject ${tradeId}`,
+            },
           ],
         ],
       },
     };
     if (!isTelegramConfigured()) return;
-    sendMessage(text, options);
+    void getAutoTradeSettings()
+      .then((settings) => {
+        if (settings.telegramAlerts) sendMessage(text, options);
+      })
+      .catch((err) => {
+        console.warn(`${TAG} approval alert suppressed: ${(err as Error).message}`);
+      });
   },
 
-  killSwitchActivated: () =>
-    sendAlert(`🚨 KILL SWITCH activated — no new orders`),
+  killSwitchActivated: () => sendAlert(`🚨 KILL SWITCH activated — no new orders`),
 
-  dailyLossHalt: (loss: number) =>
-    sendAlert(`🛑 DAILY LOSS HALT: ₹${loss} — no new entries`),
+  dailyLossHalt: (loss: number) => sendAlert(`🛑 DAILY LOSS HALT: ₹${loss} — no new entries`),
 
   exitFailureEscalation: (symbol: string, failures: number) =>
     sendAlert(`⚠️ ${symbol}: ${failures} consecutive exit failures — MANUAL INTERVENTION NEEDED`),
 
-  eodSquareOff: (symbol: string) =>
-    sendAlert(`⏰ EOD square-off: ${symbol}`),
+  manualReconciliation: (symbol: string, side: 'BUY' | 'SELL', reference: string, detail: string) =>
+    sendAlert(`🚨 ${symbol} ${side} ORDER UNRESOLVED — verify at broker now. Ref ${reference}. ${detail}`),
 
-  stalePhantom: (symbol: string) =>
-    sendAlert(`👻 STALE PHANTOM: ${symbol} — entry fill unconfirmed >5 min, trade FAILED`),
+  eodSquareOff: (symbol: string) => sendAlert(`⏰ EOD square-off: ${symbol}`),
 };

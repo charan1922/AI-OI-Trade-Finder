@@ -16,25 +16,40 @@ export interface OptionQuote {
   spreadPct: number | null;
 }
 
+/**
+ * Live quotes for many option contracts in ONE Dhan request. Dhan accepts up
+ * to 1000 instruments per quote call, while auto-trade allows at most four
+ * open lots, so the guard never needs one request per position.
+ */
+export async function fetchOptionQuotes(optSecurityIds: readonly string[]): Promise<Map<string, OptionQuote>> {
+  const ids = [...new Set(optSecurityIds.map(Number).filter((id) => Number.isFinite(id) && id > 0))];
+  const out = new Map<string, OptionQuote>();
+  if (ids.length === 0) return out;
+  try {
+    const q = await dhanMarketFeed('quote', { NSE_FNO: ids });
+    for (const id of ids) {
+      const oq = q.NSE_FNO?.[String(id)];
+      const ltp = oq?.last_price ?? 0;
+      if (!oq || ltp <= 0) continue;
+      const book = bestBidAsk(oq);
+      out.set(String(id), {
+        ltp,
+        bid: book?.bid ?? null,
+        ask: book?.ask ?? null,
+        spreadPct: book == null ? null : Math.round(book.spreadPct * 100) / 100,
+      });
+    }
+  } catch {
+    // A missing live quote must never stop deterministic spot-level checks.
+  }
+  return out;
+}
+
 /** Live quote of one option contract. Null when the feed has no price. */
 export async function fetchOptionQuote(optSecurityId: string): Promise<OptionQuote | null> {
   const id = Number(optSecurityId);
   if (!Number.isFinite(id) || id <= 0) return null;
-  try {
-    const q = await dhanMarketFeed('quote', { NSE_FNO: [id] });
-    const oq = q.NSE_FNO?.[String(id)];
-    const ltp = oq?.last_price ?? 0;
-    if (!oq || ltp <= 0) return null;
-    const book = bestBidAsk(oq);
-    return {
-      ltp,
-      bid: book?.bid ?? null,
-      ask: book?.ask ?? null,
-      spreadPct: book == null ? null : Math.round(book.spreadPct * 100) / 100,
-    };
-  } catch {
-    return null;
-  }
+  return (await fetchOptionQuotes([optSecurityId])).get(String(id)) ?? null;
 }
 
 /** Latest recorded 5-min equity close for a symbol today (the poller's
@@ -46,7 +61,7 @@ export async function latestSpot(symbol: string, date: string): Promise<number |
         WHERE symbol = ? AND instrument = 'EQ' AND date = ?
         ORDER BY bucketTs DESC LIMIT 1`,
       symbol,
-      date,
+      date
     )) as { close: number }[];
     const close = Number(rows[0]?.close ?? 0);
     return close > 0 ? close : null;

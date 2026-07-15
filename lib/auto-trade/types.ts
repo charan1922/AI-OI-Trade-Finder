@@ -38,11 +38,18 @@ export interface AutoTradeSettings {
   approvalTtlMin: number;
   /** Send auto-trade alerts + commentary to Telegram. Toggle from /telegram command. */
   telegramAlerts: boolean;
+  /** Entry window bounds + forced square-off, IST minutes from midnight.
+   *  Runtime-tunable within CLAMPED rails (settings.ts registry) — enforcement
+   *  stays in code (risk gates + position guard), same two-layer pattern as
+   *  the other risk caps. Defaults = the long-standing 09:45 / 11:00 / 15:12. */
+  entryStartMin: number;
+  entryEndMin: number;
+  squareOffMin: number;
 }
 
-/** Position lifecycle. pending_approval → (open | rejected | expired);
- *  open → closed; anything that never got a working order → failed. */
-export type TradeStatus = 'pending_approval' | 'rejected' | 'expired' | 'open' | 'closed' | 'failed';
+/** Position lifecycle. pending approval → placing → open → closed. `placing`
+ * reserves risk while broker acceptance/fill is being reconciled. */
+export type TradeStatus = 'placing' | 'pending_approval' | 'rejected' | 'expired' | 'open' | 'closed' | 'failed';
 
 /** One auto-trade position (a row in auto_trades). Premium fields are ₹/share
  *  of premium; rupee P&L multiplies by lotSize × lots. */
@@ -95,10 +102,13 @@ export interface AutoOrder {
   mode: TradeMode;
   side: OrderSide;
   qtyUnits: number;
+  correlationId: string | null;
   brokerOrderId: string | null;
   status: OrderStatus;
   avgFillPrice: number | null;
   error: string | null;
+  reconcileAttempts: number;
+  lastReconciledAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -132,6 +142,9 @@ export interface AccountState {
   liveEnvEnabled: boolean;
   marketOpen: boolean;
   entryWindowActive: boolean;
+  entryWindowOpensAt: string;
+  entryWindowClosesAt: string;
+  squareOffAt: string;
   nowIST: string;
   entriesToday: number;
   maxTradesPerDay: number;
@@ -143,6 +156,9 @@ export interface AccountState {
   dailyLossHaltRupees: number;
   pendingApprovals: number;
   brokerFundsAvailable: number | null;
+  /** Real broker funds are fetched only inside the placement/approval gate so
+   * routine AI context never waits on a broker account endpoint. */
+  brokerFundsCheckedAtPlacement: boolean;
 }
 
 /** Trace of one tool execution — mirrors lib/ai-assistant's ToolTraceEntry. */

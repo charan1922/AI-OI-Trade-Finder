@@ -4,20 +4,38 @@
  * manual exit button), so idempotency, fill handling, and audit behave
  * identically regardless of who initiated.
  *
- * Idempotency: entry key `${date}:${symbol}:${optionType}:entry`, exit key
- * `...:exit:${tradeId}` — a second placement attempt for the same key is
- * refused at the store before any broker call.
+ * Idempotency: entry keys are trade-scoped. Exit keys use numbered attempts;
+ * one atomic store claim blocks concurrent placements while allowing a fresh
+ * attempt after an explicitly rejected/cancelled order.
  */
 
+import { createHash } from 'node:crypto';
+import { alerts } from './alerts';
 import { FILL_POLL_ATTEMPTS, FILL_POLL_DELAY_MS, MAX_LOSS_PER_LOT_FALLBACK, TARGET_PER_LOT_FALLBACK } from './config';
 import { getAdapterById, getExecutionAdapter } from './brokers';
 import type { BrokerAdapter, OrderTicket } from './brokers/adapter';
 import { ticketQtyUnits } from './brokers/adapter';
-import { insertOrder, orderExistsForKey, updateOrder, updateTrade } from './store';
+import {
+  claimEntryOrder,
+  claimExitOrder,
+  getTrade,
+  getUnresolvedOrders,
+  markOrderReconciled,
+  updateOrder,
+  updateTrade,
+} from './store';
 import type { AutoTrade, AutoTradeSettings, TradeMode } from './types';
 
 const TAG = '[AutoTradeExec]';
+import { BrokerSubmissionError } from './brokers/adapter';
+import type { OrderState, RecoveredOrder } from './brokers/adapter';
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Broker-safe alphanumeric tag (20 chars, valid for Dhan and Fyers). */
+export function correlationIdForOrder(idemKey: string): string {
+  return `R${createHash('sha256').update(idemKey).digest('hex').slice(0, 19)}`;
+}
 
 /** Premium backstops re-anchored to the ACTUAL fill: stop = tighter of −40%
  *  and −₹cap/lot; target = +₹target/lot (mirrors the scanner's math). */
@@ -41,23 +59,151 @@ function ticketFromTrade(trade: AutoTrade, side: 'BUY' | 'SELL', idemKey: string
     lotSize: trade.lotSize,
     lots: trade.lots,
     idemKey,
+    correlationId: correlationIdForOrder(idemKey),
   };
 }
 
 export interface ExecOutcome {
   ok: boolean;
   message: string;
+  state?: 'filled' | 'pending' | 'unknown' | 'rejected';
+}
+
+async function recoverByCorrelation(adapter: BrokerAdapter, correlationId: string): Promise<RecoveredOrder | null> {
+  if (!adapter.getOrderByCorrelationId) return null;
+  return adapter.getOrderByCorrelationId(correlationId);
+}
+
+function isTerminalFailure(state: OrderState): state is OrderState & { status: 'rejected' | 'cancelled' } {
+  return state.status === 'rejected' || state.status === 'cancelled';
+}
+
+function partialFillUnits(state: OrderState): number {
+  const units = Number(state.filledQtyUnits ?? 0);
+  return Number.isFinite(units) && units > 0 ? units : 0;
+}
+
+async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): Promise<void> {
+  const stops = backstopsFromFill(fill, trade.lotSize);
+  await updateOrder(orderId, {
+    status: 'filled',
+    avgFillPrice: fill,
+    error: null,
+  });
+  await updateTrade(trade.id, {
+    status: 'open',
+    entryFillPremium: fill,
+    slPremium: stops.slPremium,
+    targetPremium: stops.targetPremium,
+    openedAt: new Date().toISOString(),
+    exitReason: null,
+  });
+  alerts.tradePlaced(trade.symbol, trade.optionType, fill);
+}
+
+async function applyExitFill(orderId: number, trade: AutoTrade, fill: number): Promise<void> {
+  const entryFill = trade.entryFillPremium ?? trade.entryPremium;
+  const pnl = Math.round((fill - entryFill) * trade.lotSize * trade.lots);
+  await updateOrder(orderId, {
+    status: 'filled',
+    avgFillPrice: fill,
+    error: null,
+  });
+  await updateTrade(trade.id, {
+    status: 'closed',
+    exitFillPremium: fill,
+    realizedPnlRupees: pnl,
+    closedAt: new Date().toISOString(),
+  });
+  alerts.tradeExited(trade.symbol, trade.exitReason ?? 'broker-confirmed exit', pnl);
+}
+
+async function applyEntryState(
+  orderId: number,
+  trade: AutoTrade,
+  state: OrderState,
+  notifyManual = false,
+  reference = String(orderId)
+): Promise<ExecOutcome | null> {
+  if (state.status === 'filled' && state.avgFillPrice != null) {
+    await applyEntryFill(orderId, trade, state.avgFillPrice);
+    return {
+      ok: true,
+      state: 'filled',
+      message: `filled at ₹${state.avgFillPrice}`,
+    };
+  }
+  if (isTerminalFailure(state)) {
+    const partialUnits = partialFillUnits(state);
+    if (partialUnits > 0 || state.avgFillPrice != null) {
+      const detail = `entry ${state.status} after a partial fill (${partialUnits || 'unknown'} units${state.avgFillPrice != null ? ` at ₹${state.avgFillPrice}` : ''}); manual broker reconciliation required`;
+      await updateOrder(orderId, { status: 'unknown', error: detail });
+      if (notifyManual) alerts.manualReconciliation(trade.symbol, 'BUY', reference, detail);
+      return { ok: true, state: 'unknown', message: detail };
+    }
+    await updateOrder(orderId, {
+      status: state.status,
+      error: state.detail ?? null,
+    });
+    await updateTrade(trade.id, {
+      status: 'failed',
+      exitReason: `entry ${state.status}: ${state.detail ?? 'no detail'}`,
+    });
+    return {
+      ok: false,
+      state: 'rejected',
+      message: `entry ${state.status}: ${state.detail ?? 'no detail'}`,
+    };
+  }
+  return null;
+}
+
+async function applyExitState(
+  orderId: number,
+  trade: AutoTrade,
+  state: OrderState,
+  notifyManual = false,
+  reference = String(orderId)
+): Promise<ExecOutcome | null> {
+  if (state.status === 'filled' && state.avgFillPrice != null) {
+    await applyExitFill(orderId, trade, state.avgFillPrice);
+    return {
+      ok: true,
+      state: 'filled',
+      message: `exited at ₹${state.avgFillPrice}`,
+    };
+  }
+  if (isTerminalFailure(state)) {
+    const partialUnits = partialFillUnits(state);
+    if (partialUnits > 0 || state.avgFillPrice != null) {
+      const detail = `exit ${state.status} after a partial fill (${partialUnits || 'unknown'} units${state.avgFillPrice != null ? ` at ₹${state.avgFillPrice}` : ''}); automatic retry blocked to prevent an oversized sell`;
+      await updateOrder(orderId, { status: 'unknown', error: detail });
+      if (notifyManual) alerts.manualReconciliation(trade.symbol, 'SELL', reference, detail);
+      return { ok: true, state: 'unknown', message: detail };
+    }
+    await updateOrder(orderId, {
+      status: state.status,
+      error: state.detail ?? null,
+    });
+    return {
+      ok: false,
+      state: 'rejected',
+      message: `exit ${state.status}; a new attempt may be made`,
+    };
+  }
+  return null;
 }
 
 /**
  * Place the ENTRY order for a trade row that has already passed the gates.
  * Handles paper immediate fills, live fill polling, and failure bookkeeping.
- * The trade row must exist (status 'open') before calling.
+ * The trade row must exist in status `placing` before calling; that state
+ * reserves risk until the broker confirms a fill or a clear rejection.
  */
 export async function placeEntryOrder(
   trade: AutoTrade,
   settings: AutoTradeSettings,
-  executionMode: TradeMode,
+  executionMode: TradeMode
 ): Promise<ExecOutcome> {
   // Per-trade key (symmetric with the exit key `…:exit:${id}`). A prior
   // rejected attempt for the same symbol leaves its own order row holding the
@@ -67,16 +213,14 @@ export async function placeEntryOrder(
   // trade.id makes each attempt's key distinct; the store still blocks a true
   // double-placement for the SAME trade row.
   const idemKey = `${trade.date}:${trade.symbol}:${trade.optionType}:entry:${trade.id}`;
-  if (await orderExistsForKey(idemKey)) {
-    return { ok: false, message: `entry order for ${trade.symbol} already exists (idempotency)` };
-  }
   const adapter = getExecutionAdapter(settings, executionMode);
   const ticket = ticketFromTrade(trade, 'BUY', idemKey);
   let orderId: number;
   try {
-    orderId = await insertOrder({
+    const claimed = await claimEntryOrder({
       tradeId: trade.id,
       idemKey,
+      correlationId: ticket.correlationId,
       broker: adapter.id,
       mode: executionMode,
       side: 'BUY',
@@ -86,11 +230,22 @@ export async function placeEntryOrder(
       avgFillPrice: null,
       error: null,
     });
+    if (claimed == null) {
+      return {
+        ok: true,
+        state: 'pending',
+        message: `entry for ${trade.symbol} is already claimed; reconciliation owns it`,
+      };
+    }
+    orderId = claimed;
   } catch (err) {
     // Could not even record the order — the trade row must NOT linger 'open'
     // with no live broker order behind it (that was the phantom).
     const message = (err as Error).message;
-    await updateTrade(trade.id, { status: 'failed', exitReason: `entry not placed: ${message}` });
+    await updateTrade(trade.id, {
+      status: 'failed',
+      exitReason: `entry not placed: ${message}`,
+    });
     return { ok: false, message: `entry not placed: ${message}` };
   }
 
@@ -99,45 +254,81 @@ export async function placeEntryOrder(
     placed = await adapter.placeMarketOrder(ticket);
   } catch (err) {
     const message = (err as Error).message;
-    await updateOrder(orderId, { status: 'rejected', error: message });
-    await updateTrade(trade.id, { status: 'failed', exitReason: `entry order failed: ${message}` });
-    return { ok: false, message: `entry order failed: ${message}` };
+    const ambiguous = !(err instanceof BrokerSubmissionError) || err.ambiguous;
+    let recovered: RecoveredOrder | null = null;
+    try {
+      recovered = await recoverByCorrelation(adapter, ticket.correlationId);
+    } catch (lookupErr) {
+      const detail = `${message}; recovery lookup failed: ${(lookupErr as Error).message}`;
+      await updateOrder(orderId, { status: 'unknown', error: detail });
+      return {
+        ok: true,
+        state: 'unknown',
+        message: `entry submission state is unknown; reconciliation will recover it (${detail})`,
+      };
+    }
+    if (recovered) {
+      await updateOrder(orderId, {
+        brokerOrderId: recovered.brokerOrderId,
+        status: recovered.status === 'unknown' ? 'unknown' : 'sent',
+        error: message,
+      });
+      const outcome = await applyEntryState(orderId, trade, recovered, true, ticket.correlationId);
+      if (outcome) return outcome;
+      placed = { brokerOrderId: recovered.brokerOrderId };
+    } else if (ambiguous) {
+      await updateOrder(orderId, { status: 'unknown', error: message });
+      return {
+        ok: true,
+        state: 'unknown',
+        message: `entry submission state is unknown; reconciliation will recover correlation ${ticket.correlationId}`,
+      };
+    } else {
+      await updateOrder(orderId, { status: 'rejected', error: message });
+      await updateTrade(trade.id, {
+        status: 'failed',
+        exitReason: `entry order rejected: ${message}`,
+      });
+      return {
+        ok: false,
+        state: 'rejected',
+        message: `entry order rejected: ${message}`,
+      };
+    }
   }
   await updateOrder(orderId, { brokerOrderId: placed.brokerOrderId });
 
-  const applyFill = async (fill: number): Promise<void> => {
-    const stops = backstopsFromFill(fill, trade.lotSize);
-    await updateOrder(orderId, { status: 'filled', avgFillPrice: fill });
-    await updateTrade(trade.id, {
-      entryFillPremium: fill,
-      slPremium: stops.slPremium,
-      targetPremium: stops.targetPremium,
-      openedAt: new Date().toISOString(),
-    });
-  };
-
   if (placed.immediateFillPrice != null) {
-    await applyFill(placed.immediateFillPrice);
-    return { ok: true, message: `filled at ₹${placed.immediateFillPrice} (${adapter.id})` };
+    await applyEntryFill(orderId, trade, placed.immediateFillPrice);
+    return {
+      ok: true,
+      state: 'filled',
+      message: `filled at ₹${placed.immediateFillPrice} (${adapter.id})`,
+    };
   }
 
   // Live venue: poll briefly; an unresolved order is picked up by the next
   // cycle's reconcile step — never assumed filled, never assumed dead.
+  let observedPartialUnits = 0;
   for (let i = 0; i < FILL_POLL_ATTEMPTS; i++) {
     await sleep(FILL_POLL_DELAY_MS);
     const state = await adapter.getOrderState(placed.brokerOrderId);
-    if (state.status === 'filled' && state.avgFillPrice != null) {
-      await applyFill(state.avgFillPrice);
-      return { ok: true, message: `filled at ₹${state.avgFillPrice} (${adapter.id} order ${placed.brokerOrderId})` };
-    }
-    if (state.status === 'rejected' || state.status === 'cancelled') {
-      await updateOrder(orderId, { status: state.status, error: state.detail ?? null });
-      await updateTrade(trade.id, { status: 'failed', exitReason: `entry ${state.status}: ${state.detail ?? ''}` });
-      return { ok: false, message: `entry ${state.status}: ${state.detail ?? 'no detail'}` };
-    }
+    observedPartialUnits = Math.max(observedPartialUnits, partialFillUnits(state));
+    const outcome = await applyEntryState(orderId, trade, state, true, placed.brokerOrderId);
+    if (outcome) return outcome;
+  }
+  if (observedPartialUnits > 0) {
+    const detail = `entry has ${observedPartialUnits} partially filled units and remains unresolved; manual broker verification required`;
+    await updateOrder(orderId, { status: 'unknown', error: detail });
+    alerts.manualReconciliation(trade.symbol, 'BUY', placed.brokerOrderId, detail);
+    return { ok: true, state: 'unknown', message: detail };
   }
   console.warn(`${TAG} entry order ${placed.brokerOrderId} unresolved after polling — reconcile will follow up`);
-  return { ok: true, message: `order ${placed.brokerOrderId} placed; fill pending confirmation (${adapter.id})` };
+  return {
+    ok: true,
+    state: 'pending',
+    message: `order ${placed.brokerOrderId} placed; fill pending confirmation (${adapter.id})`,
+  };
 }
 
 /**
@@ -146,73 +337,211 @@ export async function placeEntryOrder(
  * when both fills are known — never estimated.
  */
 export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: string): Promise<ExecOutcome> {
-  if (trade.status !== 'open') return { ok: false, message: `trade ${trade.id} is ${trade.status}, not open` };
-  const idemKey = `${trade.date}:${trade.symbol}:${trade.optionType}:exit:${trade.id}`;
-  if (await orderExistsForKey(idemKey)) {
-    return { ok: false, message: `exit for ${trade.symbol} already in flight` };
-  }
+  if (trade.status !== 'open')
+    return {
+      ok: false,
+      message: `trade ${trade.id} is ${trade.status}, not open`,
+    };
   const adapter = getAdapterById(trade.broker);
-  const ticket = ticketFromTrade(trade, 'SELL', idemKey);
-  const orderId = await insertOrder({
+  const claim = await claimExitOrder({
     tradeId: trade.id,
-    idemKey,
+    idemKeyBase: `${trade.date}:${trade.symbol}:${trade.optionType}:exit:${trade.id}`,
     broker: adapter.id,
     mode: trade.mode,
-    side: 'SELL',
-    qtyUnits: ticketQtyUnits(ticket),
-    brokerOrderId: null,
-    status: 'sent',
-    avgFillPrice: null,
-    error: null,
+    qtyUnits: trade.lotSize * trade.lots,
   });
+  if (!claim) return { ok: false, message: `exit for ${trade.symbol} already in flight` };
+  const { id: orderId, idemKey } = claim;
+  const ticket = ticketFromTrade(trade, 'SELL', idemKey);
+  await updateOrder(orderId, { correlationId: ticket.correlationId });
+  // Persist the exit intent before the broker POST. If the response is lost or
+  // the process restarts, correlation-based reconciliation can close the fill
+  // with the exact operator/guard/AI reason instead of inventing one later.
+  await updateTrade(trade.id, {
+    exitReason: reason,
+    ...(aiReason ? { aiReasonExit: aiReason } : {}),
+  });
+  const exitingTrade: AutoTrade = {
+    ...trade,
+    exitReason: reason,
+    ...(aiReason ? { aiReasonExit: aiReason } : {}),
+  };
 
   let placed: { brokerOrderId: string; immediateFillPrice?: number };
   try {
     placed = await adapter.placeMarketOrder(ticket);
   } catch (err) {
     const message = (err as Error).message;
-    // A failed exit keeps the trade OPEN and retryable (rejected orders don't
-    // block the idempotency key) — the guard retries next cycle.
-    await updateOrder(orderId, { status: 'rejected', error: message });
-    return { ok: false, message: `exit order failed (will retry): ${message}` };
+    const ambiguous = !(err instanceof BrokerSubmissionError) || err.ambiguous;
+    let recovered: RecoveredOrder | null = null;
+    try {
+      recovered = await recoverByCorrelation(adapter, ticket.correlationId);
+    } catch (lookupErr) {
+      const detail = `${message}; recovery lookup failed: ${(lookupErr as Error).message}`;
+      await updateOrder(orderId, { status: 'unknown', error: detail });
+      return {
+        ok: true,
+        state: 'unknown',
+        message: `exit submission state is unknown; reconciliation will recover it (${detail})`,
+      };
+    }
+    if (recovered) {
+      await updateOrder(orderId, {
+        brokerOrderId: recovered.brokerOrderId,
+        status: recovered.status === 'unknown' ? 'unknown' : 'sent',
+        error: message,
+      });
+      const outcome = await applyExitState(orderId, exitingTrade, recovered, true, ticket.correlationId);
+      if (outcome) return outcome;
+      placed = { brokerOrderId: recovered.brokerOrderId };
+    } else if (ambiguous) {
+      await updateOrder(orderId, { status: 'unknown', error: message });
+      return {
+        ok: true,
+        state: 'unknown',
+        message: `exit submission state is unknown; reconciliation will recover correlation ${ticket.correlationId}`,
+      };
+    } else {
+      // Only an explicit broker rejection is retryable. A timeout never is.
+      await updateOrder(orderId, { status: 'rejected', error: message });
+      return {
+        ok: false,
+        state: 'rejected',
+        message: `exit order rejected: ${message}`,
+      };
+    }
   }
   await updateOrder(orderId, { brokerOrderId: placed.brokerOrderId });
-  await updateTrade(trade.id, { exitReason: reason, ...(aiReason ? { aiReasonExit: aiReason } : {}) });
-
-  const applyClose = async (fill: number): Promise<void> => {
-    const entryFill = trade.entryFillPremium ?? trade.entryPremium;
-    const pnl = Math.round((fill - entryFill) * trade.lotSize * trade.lots);
-    await updateOrder(orderId, { status: 'filled', avgFillPrice: fill });
-    await updateTrade(trade.id, {
-      status: 'closed',
-      exitFillPremium: fill,
-      realizedPnlRupees: pnl,
-      closedAt: new Date().toISOString(),
-    });
-  };
 
   if (placed.immediateFillPrice != null) {
-    await applyClose(placed.immediateFillPrice);
-    return { ok: true, message: `exited at ₹${placed.immediateFillPrice} (${reason})` };
+    await applyExitFill(orderId, exitingTrade, placed.immediateFillPrice);
+    return {
+      ok: true,
+      state: 'filled',
+      message: `exited at ₹${placed.immediateFillPrice} (${reason})`,
+    };
   }
 
+  let observedPartialUnits = 0;
   for (let i = 0; i < FILL_POLL_ATTEMPTS; i++) {
     await sleep(FILL_POLL_DELAY_MS);
     const state = await adapter.getOrderState(placed.brokerOrderId);
-    if (state.status === 'filled' && state.avgFillPrice != null) {
-      await applyClose(state.avgFillPrice);
-      return { ok: true, message: `exited at ₹${state.avgFillPrice} (${reason})` };
-    }
-    if (state.status === 'rejected' || state.status === 'cancelled') {
-      await updateOrder(orderId, { status: state.status, error: state.detail ?? null });
-      return { ok: false, message: `exit ${state.status} (will retry): ${state.detail ?? 'no detail'}` };
-    }
+    observedPartialUnits = Math.max(observedPartialUnits, partialFillUnits(state));
+    const outcome = await applyExitState(orderId, exitingTrade, state, true, placed.brokerOrderId);
+    if (outcome) return outcome;
+  }
+  if (observedPartialUnits > 0) {
+    const detail = `exit has ${observedPartialUnits} partially filled units and remains unresolved; automatic retry blocked to prevent an oversized sell`;
+    await updateOrder(orderId, { status: 'unknown', error: detail });
+    alerts.manualReconciliation(trade.symbol, 'SELL', placed.brokerOrderId, detail);
+    return { ok: true, state: 'unknown', message: detail };
   }
   console.warn(`${TAG} exit order ${placed.brokerOrderId} unresolved after polling — reconcile will follow up`);
-  return { ok: true, message: `exit order ${placed.brokerOrderId} placed; fill pending confirmation` };
+  return {
+    ok: true,
+    state: 'pending',
+    message: `exit order ${placed.brokerOrderId} placed; fill pending confirmation`,
+  };
 }
 
-/** Adapter accessor for the reconcile step (keeps brokers/ out of engine.ts). */
-export function adapterFor(brokerId: string): BrokerAdapter {
-  return getAdapterById(brokerId);
+const MAX_RECONCILE_ORDERS = 20;
+let reconcilePromise: Promise<string[]> | null = null;
+
+/**
+ * Recover orders left unresolved by a timeout, process restart, or a broker
+ * acknowledgement without an immediate fill. Missing broker state is never
+ * treated as proof that no position exists.
+ */
+export function reconcileUnresolvedOrders(): Promise<string[]> {
+  if (reconcilePromise) return reconcilePromise;
+  reconcilePromise = reconcileUnresolvedOrdersInner().finally(() => {
+    reconcilePromise = null;
+  });
+  return reconcilePromise;
+}
+
+async function reconcileUnresolvedOrdersInner(): Promise<string[]> {
+  // getUnresolvedOrders() is oldest-first. Always service the oldest bounded
+  // batch so a stream of new orders cannot starve an earlier ambiguous order.
+  const unresolved = (await getUnresolvedOrders()).slice(0, MAX_RECONCILE_ORDERS);
+  const notes: string[] = [];
+  for (const order of unresolved) {
+    const trade = await getTrade(order.tradeId);
+    if (!trade) {
+      await markOrderReconciled(order.id, 'trade row missing');
+      notes.push(`order ${order.id} needs manual review: trade row missing`);
+      continue;
+    }
+
+    const adapter = getAdapterById(order.broker);
+    let state: OrderState | null = null;
+    try {
+      if (order.brokerOrderId) {
+        state = await adapter.getOrderState(order.brokerOrderId);
+      } else if (order.correlationId) {
+        const recovered = await recoverByCorrelation(adapter, order.correlationId);
+        if (recovered) {
+          await updateOrder(order.id, {
+            brokerOrderId: recovered.brokerOrderId,
+          });
+          state = recovered;
+        }
+      }
+    } catch (err) {
+      const detail = `reconcile lookup failed: ${(err as Error).message}`;
+      await markOrderReconciled(order.id, detail);
+      notes.push(`${trade.symbol} ${order.side} ${detail}`);
+      continue;
+    }
+
+    await markOrderReconciled(order.id, state ? null : 'broker order not found by id or correlation yet');
+    if (!state || state.status === 'pending' || state.status === 'unknown') {
+      const ageMs = Date.now() - new Date(order.createdAt).getTime();
+      const nextAttempt = order.reconcileAttempts + 1;
+      const partialUnits = state ? partialFillUnits(state) : 0;
+      if (partialUnits > 0) {
+        notes.push(
+          `${trade.symbol} ${order.side} has ${partialUnits} partially filled units; automatic retry is blocked pending broker resolution`
+        );
+      }
+      if (nextAttempt >= 3 || ageMs >= 90_000) {
+        notes.push(
+          `${trade.symbol} ${order.side} still unresolved after ${nextAttempt} checks; manual broker verification required`
+        );
+      }
+      // Alert once at the normal third check, or immediately when the first
+      // check discovers an already-old order after a restart. The DB attempt
+      // counter makes this stable across both the engine and fast guard loops.
+      if (nextAttempt === 3 || (order.reconcileAttempts === 0 && order.lastReconciledAt == null && ageMs >= 90_000)) {
+        alerts.manualReconciliation(
+          trade.symbol,
+          order.side,
+          order.brokerOrderId ?? order.correlationId ?? String(order.id),
+          partialUnits > 0
+            ? `${partialUnits} units are reported partially filled; automatic retry is blocked.`
+            : `No terminal broker state after ${nextAttempt} reconciliation checks.`
+        );
+      }
+      continue;
+    }
+
+    const outcome =
+      order.side === 'BUY'
+        ? await applyEntryState(
+            order.id,
+            trade,
+            state,
+            order.status !== 'unknown',
+            order.brokerOrderId ?? order.correlationId ?? String(order.id)
+          )
+        : await applyExitState(
+            order.id,
+            trade,
+            state,
+            order.status !== 'unknown',
+            order.brokerOrderId ?? order.correlationId ?? String(order.id)
+          );
+    if (outcome) notes.push(`${trade.symbol} ${order.side}: ${outcome.message}`);
+  }
+  return notes;
 }

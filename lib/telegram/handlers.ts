@@ -11,7 +11,14 @@
 
 import { approveTrade, rejectTrade } from '@/lib/auto-trade/approval';
 import { getAutoTradeSettings, setAutoTradeSetting } from '@/lib/auto-trade/settings';
-import { getOpenTrades, getTradesByDate, dailyRealizedPnl, getExposure, countEntriesToday, getDecisions } from '@/lib/auto-trade/store';
+import {
+  getOpenTrades,
+  getTradesByDate,
+  dailyRealizedPnl,
+  getExposure,
+  countEntriesToday,
+  getDecisions,
+} from '@/lib/auto-trade/store';
 import { env } from '@/lib/env';
 import { nowIST, todayIST } from '@/lib/ist';
 import type { AutoTradeSettings } from '@/lib/auto-trade/types';
@@ -34,7 +41,7 @@ type Handler = (args: string, chatId: number) => Promise<HandlerResult>;
 /** True if chatId matches the configured operator (TELEGRAM_CHAT_ID). */
 function isOperator(chatId: number): boolean {
   const opChatId = env.TELEGRAM_CHAT_ID;
-  if (!opChatId) return true; // no restriction if not configured
+  if (!opChatId) return false; // command surface fails closed when unconfigured
   return chatId === Number(opChatId);
 }
 
@@ -136,7 +143,9 @@ register('/status', 'Auto-trade engine status', async () => {
   ];
 
   for (const t of openTrades) {
-    lines.push(`  • ${t.symbol} ${t.optionType} ${t.strike} — ${t.lots} lot(s) @ ₹${t.entryFillPremium ?? t.entryPremium}`);
+    lines.push(
+      `  • ${t.symbol} ${t.optionType} ${t.strike} — ${t.lots} lot(s) @ ₹${t.entryFillPremium ?? t.entryPremium}`
+    );
   }
 
   return { text: lines.join('\n'), reply_markup: quickActionsKeyboard() };
@@ -144,7 +153,11 @@ register('/status', 'Auto-trade engine status', async () => {
 
 register('/positions', 'Open positions', async () => {
   const openTrades = await getOpenTrades();
-  if (openTrades.length === 0) return { text: '📭 No open positions.', reply_markup: quickActionsKeyboard() };
+  if (openTrades.length === 0)
+    return {
+      text: '📭 No open positions.',
+      reply_markup: quickActionsKeyboard(),
+    };
 
   const lines = ['📈 *Open Positions*\n'];
   for (const t of openTrades) {
@@ -152,15 +165,15 @@ register('/positions', 'Open positions', async () => {
     const pnlStr = t.realizedPnlRupees != null ? ` (P&L ₹${t.realizedPnlRupees})` : '';
     lines.push(
       `*${t.symbol}* ${t.optionType} ${t.strike}\n` +
-      `  Entry: ₹${entry} | SL: ₹${t.slPremium} | Target: ₹${t.targetPremium}\n` +
-      `  Lots: ${t.lots} × ${t.lotSize} | Mode: ${t.mode}${pnlStr}\n` +
-      `  Reason: ${t.aiReasonEntry.slice(0, 120)}`,
+        `  Entry: ₹${entry} | SL: ₹${t.slPremium} | Target: ₹${t.targetPremium}\n` +
+        `  Lots: ${t.lots} × ${t.lotSize} | Mode: ${t.mode}${pnlStr}\n` +
+        `  Reason: ${t.aiReasonEntry.slice(0, 120)}`
     );
   }
   return { text: lines.join('\n'), reply_markup: quickActionsKeyboard() };
 });
 
-register('/trades', 'Today\'s trade history', async () => {
+register('/trades', "Today's trade history", async () => {
   const date = todayIST();
   const trades = await getTradesByDate(date);
   if (trades.length === 0) return { text: '📭 No trades today.', reply_markup: quickActionsKeyboard() };
@@ -179,7 +192,11 @@ register('/trades', 'Today\'s trade history', async () => {
 register('/decisions', 'Recent AI decisions', async () => {
   const date = todayIST();
   const decisions = await getDecisions(date, 5);
-  if (decisions.length === 0) return { text: '📭 No AI decisions today.', reply_markup: quickActionsKeyboard() };
+  if (decisions.length === 0)
+    return {
+      text: '📭 No AI decisions today.',
+      reply_markup: quickActionsKeyboard(),
+    };
 
   const lines = ['🤖 *Recent AI Decisions*\n'];
   for (const d of decisions) {
@@ -194,10 +211,16 @@ register('/approve', 'Approve a pending trade', async (args, chatId) => {
   }
   const tradeId = Number(args.trim());
   if (!Number.isFinite(tradeId)) {
-    return { text: 'Usage: /approve <tradeId>', reply_markup: quickActionsKeyboard() };
+    return {
+      text: 'Usage: /approve <tradeId>',
+      reply_markup: quickActionsKeyboard(),
+    };
   }
   const outcome = await approveTrade(tradeId);
-  return { text: outcome.ok ? `✅ ${outcome.message}` : `❌ ${outcome.message}`, reply_markup: quickActionsKeyboard() };
+  return {
+    text: outcome.ok ? `✅ ${outcome.message}` : `❌ ${outcome.message}`,
+    reply_markup: quickActionsKeyboard(),
+  };
 });
 
 register('/reject', 'Reject a pending trade', async (args, chatId) => {
@@ -206,10 +229,16 @@ register('/reject', 'Reject a pending trade', async (args, chatId) => {
   }
   const tradeId = Number(args.trim());
   if (!Number.isFinite(tradeId)) {
-    return { text: 'Usage: /reject <tradeId>', reply_markup: quickActionsKeyboard() };
+    return {
+      text: 'Usage: /reject <tradeId>',
+      reply_markup: quickActionsKeyboard(),
+    };
   }
   const outcome = await rejectTrade(tradeId);
-  return { text: outcome.ok ? `✅ ${outcome.message}` : `❌ ${outcome.message}`, reply_markup: quickActionsKeyboard() };
+  return {
+    text: outcome.ok ? `✅ ${outcome.message}` : `❌ ${outcome.message}`,
+    reply_markup: quickActionsKeyboard(),
+  };
 });
 
 register('/kill', 'Activate kill switch (halt new orders)', async (_args, chatId) => {
@@ -218,10 +247,16 @@ register('/kill', 'Activate kill switch (halt new orders)', async (_args, chatId
   }
   const settings = await getAutoTradeSettings();
   if (settings.killSwitch) {
-    return { text: '⚠️ Kill switch is already *ON*. No new orders will be placed.\nUse /unkill to deactivate.', reply_markup: quickActionsKeyboard() };
+    return {
+      text: '⚠️ Kill switch is already *ON*. No new orders will be placed.\nUse /unkill to deactivate.',
+      reply_markup: quickActionsKeyboard(),
+    };
   }
   await setAutoTradeSetting('killSwitch', '1');
-  return { text: '🚨 *Kill switch ACTIVATED*\nNo new orders will be placed. Open positions still guarded.\nUse /unkill to deactivate.', reply_markup: quickActionsKeyboard() };
+  return {
+    text: '🚨 *Kill switch ACTIVATED*\nNo new orders will be placed. Open positions still guarded.\nUse /unkill to deactivate.',
+    reply_markup: quickActionsKeyboard(),
+  };
 });
 
 register('/unkill', 'Deactivate kill switch', async (_args, chatId) => {
@@ -230,10 +265,16 @@ register('/unkill', 'Deactivate kill switch', async (_args, chatId) => {
   }
   const settings = await getAutoTradeSettings();
   if (!settings.killSwitch) {
-    return { text: '✅ Kill switch is already *OFF*. Orders can be placed normally.', reply_markup: quickActionsKeyboard() };
+    return {
+      text: '✅ Kill switch is already *OFF*. Orders can be placed normally.',
+      reply_markup: quickActionsKeyboard(),
+    };
   }
   await setAutoTradeSetting('killSwitch', '0');
-  return { text: '✅ *Kill switch DEACTIVATED*\nNew orders can now be placed.', reply_markup: quickActionsKeyboard() };
+  return {
+    text: '✅ *Kill switch DEACTIVATED*\nNew orders can now be placed.',
+    reply_markup: quickActionsKeyboard(),
+  };
 });
 
 register('/telegram', 'Toggle Telegram alerts on/off', async (args, chatId) => {
@@ -245,20 +286,32 @@ register('/telegram', 'Toggle Telegram alerts on/off', async (args, chatId) => {
 
   if (!trimmed || trimmed === 'status') {
     const status = settings.telegramAlerts ? '✅ ON' : '🔕 OFF';
-    return { text: `Telegram alerts: ${status}\n\nToggle with: /telegram on|off`, reply_markup: quickActionsKeyboard() };
+    return {
+      text: `Telegram alerts: ${status}\n\nToggle with: /telegram on|off`,
+      reply_markup: quickActionsKeyboard(),
+    };
   }
 
   if (trimmed === 'on') {
     await setAutoTradeSetting('telegramAlerts', '1');
-    return { text: '✅ Telegram alerts turned ON', reply_markup: quickActionsKeyboard() };
+    return {
+      text: '✅ Telegram alerts turned ON',
+      reply_markup: quickActionsKeyboard(),
+    };
   }
 
   if (trimmed === 'off') {
     await setAutoTradeSetting('telegramAlerts', '0');
-    return { text: '🔕 Telegram alerts turned OFF', reply_markup: quickActionsKeyboard() };
+    return {
+      text: '🔕 Telegram alerts turned OFF',
+      reply_markup: quickActionsKeyboard(),
+    };
   }
 
-  return { text: 'Usage: /telegram on|off|status', reply_markup: quickActionsKeyboard() };
+  return {
+    text: 'Usage: /telegram on|off|status',
+    reply_markup: quickActionsKeyboard(),
+  };
 });
 
 register('/mode', 'Check or change trading mode', async (args, chatId) => {
@@ -267,19 +320,28 @@ register('/mode', 'Check or change trading mode', async (args, chatId) => {
 
   if (!trimmed) {
     const settings = await getAutoTradeSettings();
-    return { text: `Current mode: *${modeLabel(settings)}*\n\nChange with: /mode off|paper|approval|live`, reply_markup: quickActionsKeyboard() };
+    return {
+      text: `Current mode: *${modeLabel(settings)}*\n\nChange with: /mode off|paper|approval|live`,
+      reply_markup: quickActionsKeyboard(),
+    };
   }
 
   if (!isOperator(chatId)) {
     return { text: '❌ Operator-only command (mode change).' };
   }
 
-  if (!validModes.includes(trimmed as typeof validModes[number])) {
-    return { text: `❌ Invalid mode "${trimmed}". Valid: ${validModes.join(', ')}`, reply_markup: quickActionsKeyboard() };
+  if (!validModes.includes(trimmed as (typeof validModes)[number])) {
+    return {
+      text: `❌ Invalid mode "${trimmed}". Valid: ${validModes.join(', ')}`,
+      reply_markup: quickActionsKeyboard(),
+    };
   }
 
   const settings = await setAutoTradeSetting('mode', trimmed);
-  return { text: `✅ Mode changed to *${modeLabel(settings)}*`, reply_markup: quickActionsKeyboard() };
+  return {
+    text: `✅ Mode changed to *${modeLabel(settings)}*`,
+    reply_markup: quickActionsKeyboard(),
+  };
 });
 
 register('/pnl', 'Daily P&L summary', async () => {
@@ -313,15 +375,14 @@ register('/pnl', 'Daily P&L summary', async () => {
  * Otherwise, ignore (or add free-text handling later).
  * Returns { text, reply_markup? } for the caller to send.
  */
-export async function handleTelegramMessage(
-  text: string,
-  chatId: number,
-): Promise<HandlerResult | null> {
+export async function handleTelegramMessage(text: string, chatId: number): Promise<HandlerResult | null> {
   if (!text.startsWith('/')) return null;
 
   // Non-operators can only read — they see commentary/alerts but cannot run commands
   if (!isOperator(chatId)) {
-    return { text: '🔒 This is a read-only bot. Only the operator can run commands.\nYou will receive trade commentary and alerts automatically.' };
+    return {
+      text: '🔒 This is a read-only bot. Only the operator can run commands.\nYou will receive trade commentary and alerts automatically.',
+    };
   }
 
   // Split "/cmd args" — strip bot username suffix like /status@MyBot
@@ -332,7 +393,9 @@ export async function handleTelegramMessage(
 
   const entry = commands.get(cmd);
   if (!entry) {
-    return { text: `❓ Unknown command: ${cmd}\n\nType /help for available commands.` };
+    return {
+      text: `❓ Unknown command: ${cmd}\n\nType /help for available commands.`,
+    };
   }
 
   try {
@@ -348,10 +411,7 @@ export async function handleTelegramMessage(
 /* ------------------------------------------------------------------ */
 
 function helpText(): string {
-  const lines = [
-    `🤖 *Project-R Auto-Trade Bot*\n`,
-    `Available commands:\n`,
-  ];
+  const lines = [`🤖 *Project-R Auto-Trade Bot*\n`, `Available commands:\n`];
   for (const [cmd, { description }] of commands) {
     lines.push(`${cmd} — ${description}`);
   }

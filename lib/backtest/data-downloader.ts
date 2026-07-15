@@ -4,7 +4,8 @@
  * Downloads 5-min OHLCV data from Dhan APIs and stores in DuckDB.
  * Supports: equity, futures (with OI), and rolling options (with IV/OI/spot).
  *
- * Rate limits: 4 req/sec (250ms between calls).
+ * Chart calls use the shared Dhan data gate, spaced below the documented
+ * 5 requests/second account limit.
  */
 
 import { dhanRequest } from '@/lib/dhan/rate-limiter';
@@ -34,7 +35,7 @@ export async function downloadEquity5min(
   symbol: string,
   fromDate: string,
   toDate: string,
-  opts?: { securityId?: string },
+  opts?: { securityId?: string }
 ): Promise<{ rows: number; error?: string; securityId?: string }> {
   try {
     // Preserved contract ID (from trade_contracts) skips master resolution —
@@ -72,7 +73,7 @@ export async function downloadEquity5min(
       const unix = ts;
       const date = unixToISTDate(unix);
       values.push(
-        `('${esc(symbol)}', '${date}', ${unix}, ${data.open[i]}, ${data.high![i]}, ${data.low![i]}, ${data.close![i]}, ${data.volume?.[i] ?? 0})`,
+        `('${esc(symbol)}', '${date}', ${unix}, ${data.open[i]}, ${data.high![i]}, ${data.low![i]}, ${data.close![i]}, ${data.volume?.[i] ?? 0})`
       );
     }
 
@@ -95,7 +96,7 @@ export async function downloadFutures5min(
   symbol: string,
   fromDate: string,
   toDate: string,
-  opts?: { securityId?: string; expiry?: string; lotSize?: number },
+  opts?: { securityId?: string; expiry?: string; lotSize?: number }
 ): Promise<{ rows: number; error?: string; securityId?: string; expiry?: string; lotSize?: number }> {
   try {
     // Preserved contract first — the exact contract that backed this trade,
@@ -137,7 +138,7 @@ export async function downloadFutures5min(
       const unix = ts;
       const date = unixToISTDate(unix);
       values.push(
-        `('${esc(symbol)}', '${date}', ${unix}, ${data.open[i]}, ${data.high![i]}, ${data.low![i]}, ${data.close![i]}, ${data.volume?.[i] ?? 0}, ${data.open_interest?.[i] ?? 0})`,
+        `('${esc(symbol)}', '${date}', ${unix}, ${data.open[i]}, ${data.high![i]}, ${data.low![i]}, ${data.close![i]}, ${data.volume?.[i] ?? 0}, ${data.open_interest?.[i] ?? 0})`
       );
     }
 
@@ -169,7 +170,7 @@ export async function downloadOption5min(
   strike: number,
   fromDate: string,
   toDate: string,
-  opts?: { spotPrice?: number; securityId?: string },
+  opts?: { spotPrice?: number; securityId?: string }
 ): Promise<{ rows: number; error?: string; via?: string; securityId?: string }> {
   try {
     // If strike is 0, resolve ATM from equity spot (use last known close)
@@ -224,7 +225,7 @@ export async function downloadOption5min(
       const unix = data.timestamp?.[i] ?? 0;
       const date = unixToISTDate(unix);
       values.push(
-        `('${esc(symbol)}', '${date}', ${unix}, '${optionType}', ${targetStrike}, ${data.open[i]}, ${data.high![i]}, ${data.low![i]}, ${data.close![i]}, ${data.volume?.[i] ?? 0}, ${data.open_interest?.[i] ?? 0}, 0, 0)`,
+        `('${esc(symbol)}', '${date}', ${unix}, '${optionType}', ${targetStrike}, ${data.open[i]}, ${data.high![i]}, ${data.low![i]}, ${data.close![i]}, ${data.volume?.[i] ?? 0}, ${data.open_interest?.[i] ?? 0}, 0, 0)`
       );
     }
 
@@ -273,7 +274,7 @@ export async function downloadExpiredOption5min(
   strike: number,
   fromDate: string,
   toDate: string,
-  spotPrice?: number,
+  spotPrice?: number
 ): Promise<{ rows: number; error?: string; via?: string }> {
   try {
     const eq = await resolveSymbol(symbol, 'NSE');
@@ -324,7 +325,7 @@ export async function downloadExpiredOption5min(
         const unix = p.timestamp[i];
         const date = unixToISTDate(unix);
         values.push(
-          `('${esc(symbol)}', '${date}', ${unix}, '${optionType}', ${strike}, ${p.open?.[i] ?? 0}, ${p.high?.[i] ?? 0}, ${p.low?.[i] ?? 0}, ${p.close?.[i] ?? 0}, ${p.volume?.[i] ?? 0}, ${p.oi?.[i] ?? 0}, ${p.iv?.[i] ?? 0}, ${p.spot?.[i] ?? 0})`,
+          `('${esc(symbol)}', '${date}', ${unix}, '${optionType}', ${strike}, ${p.open?.[i] ?? 0}, ${p.high?.[i] ?? 0}, ${p.low?.[i] ?? 0}, ${p.close?.[i] ?? 0}, ${p.volume?.[i] ?? 0}, ${p.oi?.[i] ?? 0}, ${p.iv?.[i] ?? 0}, ${p.spot?.[i] ?? 0})`
         );
       }
       if (values.length === 0) continue;
@@ -375,21 +376,9 @@ export async function loadAllTFTrades(): Promise<{
 }> {
   const { promises: fs } = await import('node:fs');
   const path = await import('node:path');
-  // The trade log lives in data/ in this project; fall back to the project root.
-  const candidates = [
-    path.join(process.cwd(), 'data', 'tradefinder_platform_trades.json'),
-    path.join(process.cwd(), 'tradefinder_platform_trades.json'),
-  ];
-  let filePath = candidates[0];
-  for (const c of candidates) {
-    try {
-      await fs.access(c);
-      filePath = c;
-      break;
-    } catch {
-      // try next candidate
-    }
-  }
+  // Keep the runtime read statically scoped under data/. A project-root
+  // fallback made Turbopack conservatively trace the entire repository.
+  const filePath = path.join(process.cwd(), 'data', 'tradefinder_platform_trades.json');
   const raw = JSON.parse(await fs.readFile(filePath, 'utf8'));
 
   const trades: TFTrade[] = [];
@@ -420,7 +409,7 @@ export async function loadAllTFTrades(): Promise<{
       const d = new Date(`${dateStr}T00:00:00`);
       if (Number.isNaN(d.getTime())) continue;
       trades.push({
-        date: dateStr, 
+        date: dateStr,
         symbol: t.stock_name,
         optionType: t.instrument_type ?? 'CE',
         strike: t.strike_price ?? 0,
@@ -472,7 +461,7 @@ export async function downloadSymbols(
   fromDate: string,
   toDate: string,
   includeOptions: { symbol: string; optionType: 'CE' | 'PE'; strike: number; spotPrice?: number }[] = [],
-  onProgress?: (msg: string) => void,
+  onProgress?: (msg: string) => void
 ): Promise<{ total: number; errors: string[] }> {
   const errors: string[] = [];
   let total = 0;
@@ -507,7 +496,7 @@ export async function downloadSymbols(
       if (opt.error) errors.push(`${sym} option: ${opt.error}`);
       else total += opt.rows;
       log(
-        `[${sym}] Option: ${opt.rows} rows${opt.via ? ` via ${opt.via}` : ''}${opt.error ? ` (ERROR: ${opt.error})` : ''}`,
+        `[${sym}] Option: ${opt.rows} rows${opt.via ? ` via ${opt.via}` : ''}${opt.error ? ` (ERROR: ${opt.error})` : ''}`
       );
     }
   }
@@ -547,7 +536,7 @@ export const TF_TRADES: TFTrade[] = [
  * Downloads 25 trading days before the trade date for R-Factor baseline.
  */
 export async function downloadAllTFData(
-  onProgress?: (msg: string) => void,
+  onProgress?: (msg: string) => void
 ): Promise<{ total: number; errors: string[] }> {
   const errors: string[] = [];
   let total = 0;
@@ -593,7 +582,7 @@ export async function downloadAllTFData(
       if (opt.error) errors.push(`${sym} ${trade.optionType}: ${opt.error}`);
       else total += opt.rows;
       log(
-        `[${sym}] Option ${trade.optionType} ${trade.strike}: ${opt.rows} rows ${opt.via ? `via ${opt.via} ` : ''}${opt.error ? `(ERROR: ${opt.error})` : ''}`,
+        `[${sym}] Option ${trade.optionType} ${trade.strike}: ${opt.rows} rows ${opt.via ? `via ${opt.via} ` : ''}${opt.error ? `(ERROR: ${opt.error})` : ''}`
       );
       break; // One option type per symbol is enough
     }

@@ -9,12 +9,14 @@
 
 import { isMarketHours } from '@/lib/dhan/market-feed';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
+import { getNumberSetting } from '@/lib/config/feature-toggles';
+import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
 import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types';
 import { alerts } from '../alerts';
 import { getExecutionAdapter } from '../brokers';
-import { isEntryWindow, minuteOfDayIST, nowISTClock } from '../config';
-import { exitTrade, placeEntryOrder } from '../execution';
-import { fetchOptionQuote, latestSpot } from '../quotes';
+import { isEntryWindow, istMinuteLabel, minuteOfDayIST, nowISTClock } from '../config';
+import { exitTrade, placeEntryOrder, type ExecOutcome } from '../execution';
+import { fetchOptionQuote, fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
 import { checkEntryGates, checkStopMove, type EntryGateInput } from '../risk/gates';
 import {
   countEntriesToday,
@@ -59,7 +61,10 @@ function trimPick(s: TradeSuggestion): Record<string, unknown> {
     oiLevel: s.oiLevel,
     oiUrgency: s.oiUrgency,
     orBreakout: s.orBreakout,
-    tfBreakout: s.tfBreakout && { grade: s.tfBreakout.grade, direction: s.tfBreakout.direction },
+    tfBreakout: s.tfBreakout && {
+      grade: s.tfBreakout.grade,
+      direction: s.tfBreakout.direction,
+    },
     extended: s.extended,
     entrySpot: s.plan.entrySpot,
     slSpot: s.plan.slSpot,
@@ -79,20 +84,44 @@ function trimPick(s: TradeSuggestion): Record<string, unknown> {
   };
 }
 
-async function buildAccountState(rt: ToolRuntime): Promise<AccountState> {
-  const [entriesToday, exposure, pnl, pending] = [
-    await countEntriesToday(rt.date),
-    await getExposure(rt.date),
-    await dailyRealizedPnl(rt.date),
-    await getPendingApprovals(rt.date),
-  ];
+/** Scanner context small enough to include directly in the model's first turn. */
+export function buildScanContext(scan: SuggestResponse | null): Record<string, unknown> {
+  if (!scan) return { note: 'no scan this cycle; manage open positions only', picks: [] };
+  return {
+    window: scan.window,
+    scanned: scan.scanned,
+    gated: scan.gated,
+    tilt: scan.tilt,
+    picks: (scan.suggestions ?? []).map(trimPick),
+  };
+}
+
+export async function buildAccountState(
+  rt: ToolRuntime,
+  options: { includeBrokerFunds?: boolean } = {}
+): Promise<AccountState> {
   const s = rt.settings;
+  const brokerFundsPromise =
+    options.includeBrokerFunds && (s.mode === 'approval' || s.mode === 'live')
+      ? getExecutionAdapter(s, s.mode).getFunds()
+      : Promise.resolve({ available: null });
+  const [entriesToday, exposure, pnl, pending, entryCutoffMin, brokerFunds] = await Promise.all([
+    countEntriesToday(rt.date),
+    getExposure(rt.date),
+    dailyRealizedPnl(rt.date),
+    getPendingApprovals(rt.date),
+    getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT).catch(
+      () => COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT
+    ),
+    brokerFundsPromise,
+  ]);
   let brokerFundsAvailable: number | null = null;
   if (s.mode === 'paper') {
     brokerFundsAvailable = Math.max(0, s.maxCapitalRupees - exposure.deployedRupees);
-  } else if (s.mode === 'approval' || s.mode === 'live') {
-    brokerFundsAvailable = (await getExecutionAdapter(s, s.mode).getFunds()).available;
+  } else if (options.includeBrokerFunds) {
+    brokerFundsAvailable = brokerFunds.available;
   }
+  const effectiveEntryEndMin = Math.min(s.entryEndMin, entryCutoffMin - 1, s.squareOffMin - 1);
   return {
     mode: s.mode,
     broker: s.mode === 'paper' ? 'paper' : s.broker,
@@ -100,7 +129,10 @@ async function buildAccountState(rt: ToolRuntime): Promise<AccountState> {
     killSwitch: s.killSwitch,
     liveEnvEnabled: isAutoTradeLiveEnabled(),
     marketOpen: isMarketHours(),
-    entryWindowActive: isEntryWindow(),
+    entryWindowActive: isEntryWindow(undefined, s.entryStartMin, effectiveEntryEndMin),
+    entryWindowOpensAt: istMinuteLabel(s.entryStartMin),
+    entryWindowClosesAt: istMinuteLabel(effectiveEntryEndMin),
+    squareOffAt: istMinuteLabel(s.squareOffMin),
     nowIST: nowISTClock(),
     entriesToday,
     maxTradesPerDay: s.maxTradesPerDay,
@@ -112,18 +144,88 @@ async function buildAccountState(rt: ToolRuntime): Promise<AccountState> {
     dailyLossHaltRupees: s.dailyLossHaltRupees,
     pendingApprovals: pending.length,
     brokerFundsAvailable,
+    brokerFundsCheckedAtPlacement: true,
   };
+}
+
+export interface PositionMarketSeed {
+  optionQuotes?: ReadonlyMap<string, OptionQuote>;
+  attemptedOptionIds?: ReadonlySet<string>;
+  spotBySymbol?: ReadonlyMap<string, number | null>;
+}
+
+/**
+ * Every open position with one batched option quote. A guard snapshot can seed
+ * this function so the first AI message reuses prices already fetched seconds
+ * earlier instead of issuing another Dhan call.
+ */
+export async function buildOpenPositionsContext(
+  rt: ToolRuntime,
+  seed: PositionMarketSeed = {}
+): Promise<Record<string, unknown>[]> {
+  const open = await getOpenTrades();
+  const quotes = new Map(seed.optionQuotes ?? []);
+  const missingIds = open
+    .map((trade) => trade.optSecurityId)
+    .filter((id) => {
+      const normalized = String(Number(id));
+      return !quotes.has(normalized) && !seed.attemptedOptionIds?.has(normalized);
+    });
+  for (const [id, quote] of await fetchOptionQuotes(missingIds)) quotes.set(id, quote);
+
+  return Promise.all(
+    open.map(async (trade) => {
+      const quote = quotes.get(String(Number(trade.optSecurityId))) ?? null;
+      const spot = seed.spotBySymbol?.has(trade.symbol)
+        ? (seed.spotBySymbol.get(trade.symbol) ?? null)
+        : await latestSpot(trade.symbol, rt.date);
+      return {
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        direction: trade.direction,
+        contract: `${trade.strike}${trade.optionType}`,
+        lots: trade.lots,
+        entrySpot: trade.entrySpot,
+        slSpot: trade.slSpot,
+        targetSpot: trade.targetSpot,
+        entryFillPremium: trade.entryFillPremium,
+        slPremium: trade.slPremium,
+        targetPremium: trade.targetPremium,
+        livePremium: quote?.ltp ?? null,
+        liveSpot: spot,
+        spotPointsFromEntry: spot != null ? Math.round((spot - trade.entrySpot) * 100) / 100 : null,
+        openedAt: trade.openedAt,
+        entryReason: trade.aiReasonEntry,
+      };
+    })
+  );
+}
+
+export async function buildInitialDecisionContext(
+  rt: ToolRuntime,
+  seed: PositionMarketSeed = {}
+): Promise<{
+  accountState: AccountState;
+  openPositions: Record<string, unknown>[];
+  scan: Record<string, unknown>;
+}> {
+  const [accountState, openPositions] = await Promise.all([buildAccountState(rt), buildOpenPositionsContext(rt, seed)]);
+  return { accountState, openPositions, scan: buildScanContext(rt.scan) };
 }
 
 /** Assemble the gate input for one pick, with a FRESH premium quote (the
  *  slippage guard compares it to the scanner's quote from this cycle). */
 async function buildGateInput(
   rt: ToolRuntime,
-  pick: TradeSuggestion,
+  pick: TradeSuggestion
 ): Promise<{ input: EntryGateInput; freshPremium: number | null }> {
-  const state = await buildAccountState(rt);
   const scanPremium = pick.option?.premium?.ltp ?? null;
-  const fresh = pick.option ? await fetchOptionQuote(pick.option.optSecurityId) : null;
+  const [state, fresh, tradedToday, entryCutoffMin] = await Promise.all([
+    buildAccountState(rt, { includeBrokerFunds: true }),
+    pick.option ? fetchOptionQuote(pick.option.optSecurityId) : null,
+    symbolTradedToday(rt.date, pick.symbol),
+    getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
+  ]);
   const freshPremium = fresh?.ltp ?? null;
   const slippagePct =
     scanPremium != null && scanPremium > 0 && freshPremium != null
@@ -136,11 +238,12 @@ async function buildGateInput(
       liveEnvEnabled: state.liveEnvEnabled,
       marketOpen: state.marketOpen,
       minuteIST: minuteOfDayIST(),
+      entryCutoffMin,
       entriesToday: state.entriesToday,
       openLots: state.openLots,
       deployedRupees: state.deployedRupees,
       dailyRealizedPnl: state.dailyRealizedPnlRupees,
-      symbolTradedToday: await symbolTradedToday(rt.date, pick.symbol),
+      symbolTradedToday: tradedToday,
       lots: 1,
       perLotCost: freshPremium != null && lotSize > 0 ? Math.round(freshPremium * lotSize * 100) / 100 : null,
       slippagePct,
@@ -156,23 +259,21 @@ async function buildGateInput(
 export async function executeAutoTradeTool(
   rt: ToolRuntime,
   name: string,
-  args: Record<string, unknown>,
+  args: Record<string, unknown>
 ): Promise<ToolResult> {
   try {
     if (name === 'get_scan_picks') {
-      if (!rt.scan) {
-        const result = { note: 'no scan this cycle (out of scan window) — no entries possible, manage positions only' };
-        return { result, trace: { name, args, ok: true, summary: 'no scan this cycle' } };
-      }
-      const picks = (rt.scan.suggestions ?? []).map(trimPick);
-      const result = {
-        window: rt.scan.window,
-        scanned: rt.scan.scanned,
-        gated: rt.scan.gated,
-        tilt: rt.scan.tilt,
-        picks,
+      const result = buildScanContext(rt.scan);
+      const picks = rt.scan?.suggestions?.length ?? 0;
+      return {
+        result,
+        trace: {
+          name,
+          args,
+          ok: true,
+          summary: rt.scan ? `${picks} pick(s) from ${rt.scan.scanned} scanned` : 'no scan this cycle',
+        },
       };
-      return { result, trace: { name, args, ok: true, summary: `${picks.length} pick(s) from ${rt.scan.scanned} scanned` } };
     }
 
     if (name === 'get_account_state') {
@@ -195,10 +296,24 @@ export async function executeAutoTradeTool(
       const optSecurityId = open?.optSecurityId ?? pick?.option?.optSecurityId ?? null;
       const premium = optSecurityId ? await fetchOptionQuote(optSecurityId) : null;
       const spot = await latestSpot(symbol, rt.date);
-      const result = { symbol, premium, spot, contract: open ? `${open.strike}${open.optionType}` : pick?.option ? `${pick.option.strike}${pick.option.optionType}` : null };
+      const result = {
+        symbol,
+        premium,
+        spot,
+        contract: open
+          ? `${open.strike}${open.optionType}`
+          : pick?.option
+            ? `${pick.option.strike}${pick.option.optionType}`
+            : null,
+      };
       return {
         result,
-        trace: { name, args, ok: premium != null || spot != null, summary: `${symbol}: premium ${premium?.ltp ?? '—'}, spot ${spot ?? '—'}` },
+        trace: {
+          name,
+          args,
+          ok: premium != null || spot != null,
+          summary: `${symbol}: premium ${premium?.ltp ?? '—'}, spot ${spot ?? '—'}`,
+        },
       };
     }
 
@@ -206,14 +321,30 @@ export async function executeAutoTradeTool(
       const symbol = String(args.symbol ?? '').toUpperCase();
       const pick = findPick(rt, symbol);
       if (!pick) {
-        const result = { allow: false, reasons: [`${symbol} is not in this cycle's scanner picks — only scanner picks are tradeable`] };
-        return { result, trace: { name, args, ok: false, summary: `${symbol}: not a scanner pick` } };
+        const result = {
+          allow: false,
+          reasons: [`${symbol} is not in this cycle's scanner picks — only scanner picks are tradeable`],
+        };
+        return {
+          result,
+          trace: {
+            name,
+            args,
+            ok: false,
+            summary: `${symbol}: not a scanner pick`,
+          },
+        };
       }
       const { input } = await buildGateInput(rt, pick);
       const verdict = checkEntryGates(input);
       return {
         result: verdict,
-        trace: { name, args, ok: verdict.allow, summary: `${symbol}: ${verdict.allow ? 'ALLOW' : `REJECT (${verdict.reasons.length} gate(s))`}` },
+        trace: {
+          name,
+          args,
+          ok: verdict.allow,
+          summary: `${symbol}: ${verdict.allow ? 'ALLOW' : `REJECT (${verdict.reasons.length} gate(s))`}`,
+        },
       };
     }
 
@@ -222,23 +353,50 @@ export async function executeAutoTradeTool(
       const reason = String(args.reason ?? '').slice(0, 500);
       const pick = findPick(rt, symbol);
       if (!pick) {
-        const result = { placed: false, reasons: [`${symbol} is not in this cycle's scanner picks`] };
-        return { result, trace: { name, args, ok: false, summary: `${symbol}: not a scanner pick` } };
+        const result = {
+          placed: false,
+          reasons: [`${symbol} is not in this cycle's scanner picks`],
+        };
+        return {
+          result,
+          trace: {
+            name,
+            args,
+            ok: false,
+            summary: `${symbol}: not a scanner pick`,
+          },
+        };
       }
       if (!pick.option?.premium || pick.plan.slSpot == null) {
-        const result = { placed: false, reasons: [`${symbol} is not eligible (missing contract, premium, or stop)`] };
-        return { result, trace: { name, args, ok: false, summary: `${symbol}: ineligible pick` } };
+        const result = {
+          placed: false,
+          reasons: [`${symbol} is not eligible (missing contract, premium, or stop)`],
+        };
+        return {
+          result,
+          trace: {
+            name,
+            args,
+            ok: false,
+            summary: `${symbol}: ineligible pick`,
+          },
+        };
       }
       const { input, freshPremium } = await buildGateInput(rt, pick);
       const verdict = checkEntryGates(input);
       if (!verdict.allow) {
         return {
           result: { placed: false, reasons: verdict.reasons },
-          trace: { name, args, ok: false, summary: `${symbol}: gates rejected (${verdict.reasons[0]})` },
+          trace: {
+            name,
+            args,
+            ok: false,
+            summary: `${symbol}: gates rejected (${verdict.reasons[0]})`,
+          },
         };
       }
       const entryPremium = freshPremium ?? pick.option.premium.ltp;
-      const status = rt.settings.mode === 'approval' ? 'pending_approval' : 'open';
+      const status = rt.settings.mode === 'approval' ? 'pending_approval' : 'placing';
       const tradeId = await insertTrade({
         date: rt.date,
         symbol: pick.symbol,
@@ -260,64 +418,89 @@ export async function executeAutoTradeTool(
         targetPremium: pick.option.premium.targetPremium,
         aiReasonEntry: reason,
       });
+      if (tradeId == null) {
+        const result = {
+          placed: false,
+          reasons: [`${symbol} was already claimed or attempted today by another pass`],
+        };
+        return {
+          result,
+          trace: {
+            name,
+            args,
+            ok: false,
+            summary: `${symbol}: concurrent or prior trade claim blocked`,
+          },
+        };
+      }
       if (rt.settings.mode === 'approval') {
         // Push approval alert with Approve/Reject buttons to Telegram
-        const { alerts } = await import('@/lib/auto-trade/alerts');
-        alerts.approvalRequested(tradeId, pick.symbol, pick.option.optionType, pick.option.strike, entryPremium, reason);
+        alerts.approvalRequested(
+          tradeId,
+          pick.symbol,
+          pick.option.optionType,
+          pick.option.strike,
+          entryPremium,
+          reason
+        );
         const result = {
           placed: false,
           queued: true,
           tradeId,
           message: `queued for human approval (expires in ${rt.settings.approvalTtlMin} min) — do not place again`,
         };
-        return { result, trace: { name, args, ok: true, summary: `${symbol}: queued for approval (trade ${tradeId})` } };
+        return {
+          result,
+          trace: {
+            name,
+            args,
+            ok: true,
+            summary: `${symbol}: queued for approval (trade ${tradeId})`,
+          },
+        };
       }
       const trade = await getTrade(tradeId);
       if (!trade) throw new Error(`trade ${tradeId} vanished after insert`);
-      // Safety net: a live trade row is already 'open' at this point. If
-      // placement throws unexpectedly, fail the trade so it can never linger
-      // as a phantom 'open' position with no broker order behind it.
-      let outcome: { ok: boolean; message: string };
+      let outcome: ExecOutcome;
       try {
         outcome = await placeEntryOrder(trade, rt.settings, rt.settings.mode);
       } catch (err) {
         const message = (err as Error).message;
-        await updateTrade(tradeId, { status: 'failed', exitReason: `entry crashed: ${message}` });
-        outcome = { ok: false, message: `entry crashed: ${message}` };
+        // The broker may already have accepted the order. Never turn an
+        // unexpected post-submit exception into a retryable local failure.
+        outcome = {
+          ok: true,
+          state: 'unknown',
+          message: `entry state uncertain after internal error; reconciliation required: ${message}`,
+        };
       }
-      if (outcome.ok) alerts.tradePlaced(symbol, pick.option.optionType, entryPremium);
-      const result = { placed: outcome.ok, tradeId, message: outcome.message };
-      return { result, trace: { name, args, ok: outcome.ok, summary: `${symbol}: ${outcome.message}` } };
+      const result = {
+        placed: outcome.state === 'filled',
+        pending: outcome.state === 'pending' || outcome.state === 'unknown',
+        tradeId,
+        message: outcome.message,
+      };
+      return {
+        result,
+        trace: {
+          name,
+          args,
+          ok: outcome.ok,
+          summary: `${symbol}: ${outcome.message}`,
+        },
+      };
     }
 
     if (name === 'get_open_positions') {
-      const open = await getOpenTrades();
-      const positions = [];
-      for (const t of open) {
-        const premium = await fetchOptionQuote(t.optSecurityId);
-        const spot = await latestSpot(t.symbol, rt.date);
-        positions.push({
-          tradeId: t.id,
-          symbol: t.symbol,
-          direction: t.direction,
-          contract: `${t.strike}${t.optionType}`,
-          lots: t.lots,
-          entrySpot: t.entrySpot,
-          slSpot: t.slSpot,
-          targetSpot: t.targetSpot,
-          entryFillPremium: t.entryFillPremium,
-          slPremium: t.slPremium,
-          targetPremium: t.targetPremium,
-          livePremium: premium?.ltp ?? null,
-          liveSpot: spot,
-          spotPointsFromEntry: spot != null ? Math.round((spot - t.entrySpot) * 100) / 100 : null,
-          openedAt: t.openedAt,
-          entryReason: t.aiReasonEntry,
-        });
-      }
+      const positions = await buildOpenPositionsContext(rt);
       return {
         result: { positions },
-        trace: { name, args, ok: true, summary: `${positions.length} open position(s)` },
+        trace: {
+          name,
+          args,
+          ok: true,
+          summary: `${positions.length} open position(s)`,
+        },
       };
     }
 
@@ -326,16 +509,41 @@ export async function executeAutoTradeTool(
       const newSlSpot = Number(args.newSlSpot);
       const trade = await getTrade(tradeId);
       if (!trade || trade.status !== 'open') {
-        const result = { moved: false, reasons: [`trade ${tradeId} is not an open position`] };
-        return { result, trace: { name, args, ok: false, summary: `trade ${tradeId}: not open` } };
+        const result = {
+          moved: false,
+          reasons: [`trade ${tradeId} is not an open position`],
+        };
+        return {
+          result,
+          trace: {
+            name,
+            args,
+            ok: false,
+            summary: `trade ${tradeId}: not open`,
+          },
+        };
       }
       const verdict = checkStopMove(trade.direction, trade.slSpot, newSlSpot);
       if (!verdict.allow) {
-        return { result: { moved: false, reasons: verdict.reasons }, trace: { name, args, ok: false, summary: verdict.reasons[0] } };
+        return {
+          result: { moved: false, reasons: verdict.reasons },
+          trace: { name, args, ok: false, summary: verdict.reasons[0] },
+        };
       }
       await updateTrade(tradeId, { slSpot: newSlSpot });
-      const result = { moved: true, message: `${trade.symbol} stop → ${newSlSpot}` };
-      return { result, trace: { name, args, ok: true, summary: `${trade.symbol} stop → ${newSlSpot}` } };
+      const result = {
+        moved: true,
+        message: `${trade.symbol} stop → ${newSlSpot}`,
+      };
+      return {
+        result,
+        trace: {
+          name,
+          args,
+          ok: true,
+          summary: `${trade.symbol} stop → ${newSlSpot}`,
+        },
+      };
     }
 
     if (name === 'exit_position') {
@@ -343,20 +551,44 @@ export async function executeAutoTradeTool(
       const reason = String(args.reason ?? '').slice(0, 500);
       const trade = await getTrade(tradeId);
       if (!trade) {
-        return { result: { exited: false, reasons: [`no trade ${tradeId}`] }, trace: { name, args, ok: false, summary: `no trade ${tradeId}` } };
+        return {
+          result: { exited: false, reasons: [`no trade ${tradeId}`] },
+          trace: { name, args, ok: false, summary: `no trade ${tradeId}` },
+        };
       }
       const outcome = await exitTrade(trade, `AI exit: ${reason}`, reason);
-      return { result: { exited: outcome.ok, message: outcome.message }, trace: { name, args, ok: outcome.ok, summary: `${trade.symbol}: ${outcome.message}` } };
+      return {
+        result: {
+          exited: outcome.state === 'filled',
+          pending: outcome.state === 'pending' || outcome.state === 'unknown',
+          message: outcome.message,
+        },
+        trace: {
+          name,
+          args,
+          ok: outcome.ok,
+          summary: `${trade.symbol}: ${outcome.message}`,
+        },
+      };
     }
 
     if (name === 'record_note') {
       const note = String(args.note ?? '').slice(0, 500);
-      return { result: { recorded: true }, trace: { name, args, ok: true, summary: note } };
+      return {
+        result: { recorded: true },
+        trace: { name, args, ok: true, summary: note },
+      };
     }
 
-    return { result: { error: `Unknown tool: ${name}` }, trace: { name, args, ok: false, summary: `Unknown tool: ${name}` } };
+    return {
+      result: { error: `Unknown tool: ${name}` },
+      trace: { name, args, ok: false, summary: `Unknown tool: ${name}` },
+    };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { result: { error: msg }, trace: { name, args, ok: false, summary: `Error: ${msg}` } };
+    return {
+      result: { error: msg },
+      trace: { name, args, ok: false, summary: `Error: ${msg}` },
+    };
   }
 }

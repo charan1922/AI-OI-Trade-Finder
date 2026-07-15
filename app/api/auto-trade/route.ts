@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
 import { todayIST } from '@/lib/dhan/market-feed';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
-import { ENTRY_WINDOW_LABEL, isEntryWindow, nowISTClock } from '@/lib/auto-trade/config';
+import { adminOnly } from '@/lib/auth/server';
+import { istMinuteLabel, isEntryWindow, nowISTClock } from '@/lib/auto-trade/config';
 import { getAutoTradeSettings, SETTING_DEFS } from '@/lib/auto-trade/settings';
+import { getNumberSetting } from '@/lib/config/feature-toggles';
+import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
 import {
   countEntriesToday,
   dailyRealizedPnl,
@@ -22,31 +25,45 @@ export const runtime = 'nodejs';
  * Read-only; all mutations go through /settings and /action (admin-only).
  */
 export async function GET(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
     const url = new URL(req.url);
     const date = url.searchParams.get('date') ?? todayIST();
     const settings = await getAutoTradeSettings();
-    const [trades, pending, decisions, entriesToday, exposure, pnl] = [
-      await getTradesByDate(date),
-      await getPendingApprovals(date),
-      await getDecisions(date, 30),
-      await countEntriesToday(date),
-      await getExposure(date),
-      await dailyRealizedPnl(date),
-    ];
+    const [trades, pending, decisions, entriesToday, exposure, pnl, commentaryCutoffMin] = await Promise.all([
+      getTradesByDate(date),
+      getPendingApprovals(date),
+      getDecisions(date, 30),
+      countEntriesToday(date),
+      getExposure(date),
+      dailyRealizedPnl(date),
+      getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT).catch(
+        () => COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT
+      ),
+    ]);
+    const effectiveEntryEndMin = Math.min(settings.entryEndMin, commentaryCutoffMin - 1, settings.squareOffMin - 1);
     // Attach each trade's broker orders so the console can show why an entry
     // failed / where it stands (broker order id, status, fill, error).
     const tradesWithOrders = await Promise.all(
-      trades.map(async (t) => ({ ...t, orders: await getOrdersForTrade(t.id) })),
+      trades.map(async (t) => ({ ...t, orders: await getOrdersForTrade(t.id) }))
     );
     return NextResponse.json({
       success: true,
       date,
       nowIST: nowISTClock(),
       settings,
-      settingDefs: SETTING_DEFS.map((d) => ({ key: d.key, label: d.label, description: d.description })),
+      settingDefs: SETTING_DEFS.map((d) => ({
+        key: d.key,
+        label: d.label,
+        description: d.description,
+      })),
       liveEnvEnabled: isAutoTradeLiveEnabled(),
-      entryWindow: { ...ENTRY_WINDOW_LABEL, active: isEntryWindow() },
+      entryWindow: {
+        opensAt: istMinuteLabel(settings.entryStartMin),
+        closesAt: istMinuteLabel(effectiveEntryEndMin),
+        active: isEntryWindow(undefined, settings.entryStartMin, effectiveEntryEndMin),
+      },
       today: {
         entriesUsed: entriesToday,
         openLots: exposure.openLots,

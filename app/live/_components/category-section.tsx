@@ -12,7 +12,7 @@ const fmtTime = (iso: string | null): string =>
 /** Mover symbols as plain chips — used after hours, when there's no live depth to show. */
 function PickChips({ picks }: { picks: SectorPick[] }) {
   return (
-    <div className="flex flex-wrap gap-1.5 px-2.5 py-2">
+    <div className="flex flex-wrap gap-1 px-2 py-1.5">
       {picks.map((p) => (
         <span
           key={p.symbol}
@@ -54,8 +54,20 @@ export function CategorySection({
   refreshSignal: number;
   onStatus?: (marketOpen: boolean | null, asOf: string | null) => void;
 }) {
-  const { picks, meta, rows, sectors, marketOpen, snapshot, snapshotDate, asOf, listLoading, quoteLoading, error, refresh } =
-    useCategoryUrgency(source, staggerIndex);
+  const {
+    picks,
+    meta,
+    rows,
+    sectors,
+    marketOpen,
+    snapshot,
+    snapshotDate,
+    asOf,
+    listLoading,
+    quoteLoading,
+    error,
+    refresh,
+  } = useCategoryUrgency(source, staggerIndex);
 
   // Lift market-open / last-update up to the page header. Guarded so it only
   // reports real values (the page de-dupes identical updates).
@@ -78,16 +90,16 @@ export function CategorySection({
 
   let body: React.ReactNode;
   if (error && picks.length === 0) {
-    body = <div className="px-3 py-5 text-center text-[11px] text-red-600 dark:text-red-400">{error}</div>;
+    body = <div className="px-2 py-3 text-center text-[11px] text-red-600 dark:text-red-400">{error}</div>;
   } else if (listLoading && picks.length === 0) {
     body = (
-      <div className="flex items-center justify-center gap-2 px-3 py-5 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-center gap-1.5 px-2 py-3 text-[11px] text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin text-primary" /> Loading movers…
       </div>
     );
   } else if (picks.length === 0) {
     body = (
-      <div className="px-3 py-5 text-center text-[11px] text-muted-foreground">
+      <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
         No tradeable F&amp;O names in this feed right now.
       </div>
     );
@@ -98,8 +110,8 @@ export function CategorySection({
     body = (
       <>
         <p className="border-b border-amber-300/40 bg-amber-50 px-2.5 py-1 text-[10px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
-          Closing snapshot · {snapshotDate ?? 'last session'} — the day&apos;s final recorded values (no live
-          order book after close). Live depth resumes at the next open.
+          Closing snapshot · {snapshotDate ?? 'last session'} — the day&apos;s final recorded values (no live order book
+          after close). Live depth resumes at the next open.
         </p>
         <UrgencyTable rows={rows} sectors={sectors} />
       </>
@@ -111,14 +123,14 @@ export function CategorySection({
       <>
         <PickChips picks={picks} />
         <p className="border-t border-border/50 px-2.5 py-1.5 text-[10px] text-muted-foreground">
-          Market closed (NSE 9:15–15:30 IST) — nothing recorded for this list&apos;s names in the last session;
-          live depth, spread &amp; OI urgency resume at the open.
+          Market closed (NSE 9:15–15:30 IST) — nothing recorded for this list&apos;s names in the last session; live
+          depth, spread &amp; OI urgency resume at the open.
         </p>
       </>
     );
   } else if (rows.length === 0) {
     body = (
-      <div className="flex items-center justify-center gap-2 px-3 py-5 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-center gap-1.5 px-2 py-3 text-[11px] text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin text-primary" />
         {marketOpen === null ? 'Connecting to the live quote feed…' : 'Fetching live depth…'}
       </div>
@@ -129,10 +141,10 @@ export function CategorySection({
 
   return (
     <section className="rounded-lg border border-border bg-card">
-      <header className="flex flex-wrap items-center gap-2 border-b border-border px-2.5 py-1.5">
+      <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1">
         <div className="flex items-center gap-1.5">
           {icon}
-          <h2 className="text-[12px] font-semibold uppercase tracking-wide text-foreground">{title}</h2>
+          <h2 className="text-[12px] font-semibold tracking-wide text-foreground uppercase">{title}</h2>
           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
             {picks.length} F&amp;O
           </span>
@@ -143,7 +155,10 @@ export function CategorySection({
         <div className="ml-auto flex items-center gap-2">
           {headerRight}
           {asOf && (
-            <span className="text-[10px] tabular-nums text-muted-foreground" title="When this section's quotes last updated">
+            <span
+              className="text-[10px] text-muted-foreground tabular-nums"
+              title="When this section's quotes last updated"
+            >
               live {fmtTime(asOf)}
             </span>
           )}

@@ -1,9 +1,8 @@
 /**
  * Dhan execution adapter — MARKET INTRADAY stock-option orders via raw Dhan V2
  * REST (the SDK is bypassed for the same reason as lib/dhan/market-feed.ts).
- * Auth reuses lib/dhan/auth.ts's TOTP token chain. Order APIs allow 25 req/s —
- * a light serializer still spaces calls, matching the repo's no-parallel-Dhan
- * rule.
+ * Auth reuses lib/dhan/auth.ts's TOTP token chain. A light serializer spaces
+ * calls well below Dhan's current order-API limit and preserves ordering.
  *
  * Endpoints (document.json, parent repo):
  *   POST   /v2/orders          → { orderId, orderStatus }
@@ -14,17 +13,28 @@
 
 import { getDhanAccessToken } from '@/lib/dhan/auth';
 import { env } from '@/lib/env';
-import type { BrokerAdapter, BrokerFunds, OrderState, OrderTicket, PlacedOrder } from './adapter';
+import {
+  BrokerSubmissionError,
+  type BrokerAdapter,
+  type BrokerFunds,
+  type OrderState,
+  type OrderTicket,
+  type PlacedOrder,
+  type RecoveredOrder,
+} from './adapter';
 import { ticketQtyUnits } from './adapter';
 
 const TAG = '[DhanTrade]';
 const BASE = 'https://api.dhan.co/v2';
 const MIN_INTERVAL_MS = 300;
-const RETRY_STATUS = new Set([429, 502, 503, 504]);
+const RETRY_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const AMBIGUOUS_ORDER_CODES = new Set(['DH-904', 'DH-908', 'DH-909', '800', '805']);
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-const g = globalThis as unknown as { __dhanTradeGate?: { tail: Promise<unknown>; lastAt: number } };
+const g = globalThis as unknown as {
+  __dhanTradeGate?: { tail: Promise<unknown>; lastAt: number };
+};
 g.__dhanTradeGate ??= { tail: Promise.resolve(), lastAt: 0 };
 const gate = g.__dhanTradeGate;
 
@@ -37,18 +47,43 @@ function serial<T>(task: () => Promise<T>): Promise<T> {
   });
   gate.tail = run.then(
     () => undefined,
-    () => undefined,
+    () => undefined
   );
   return run;
 }
 
-/** Single retry on transient HTTP errors (502/503/504/429) — Dhan and Railway
- *  occasionally return these under load. One retry is enough; persistent
- *  failures surface immediately. */
+class DhanHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null
+  ) {
+    super(message);
+    this.name = 'DhanHttpError';
+  }
+}
+
+class DhanPreflightError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DhanPreflightError';
+  }
+}
+
+/** GETs are safe to retry once. Mutating requests are never retried here: a
+ * transient response after POST /orders is ambiguous and must be recovered by
+ * correlationId before any new submission is considered. */
 async function dhanFetch(pathname: string, init: { method: string; body?: unknown }): Promise<Record<string, unknown>> {
-  const token = await getDhanAccessToken();
+  let token: string;
+  try {
+    token = await getDhanAccessToken();
+  } catch (err) {
+    throw new DhanPreflightError(`${TAG} access token unavailable before request: ${(err as Error).message}`);
+  }
   const clientId = env.DHAN_CLIENT_ID;
-  if (!clientId) throw new Error(`${TAG} DHAN_CLIENT_ID is not configured`);
+  if (!clientId) {
+    throw new DhanPreflightError(`${TAG} DHAN_CLIENT_ID is not configured`);
+  }
 
   const doFetch = async (): Promise<{ res: Response; text: string }> => {
     const res = await serial(() =>
@@ -61,17 +96,25 @@ async function dhanFetch(pathname: string, init: { method: string; body?: unknow
           Accept: 'application/json',
         },
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      }),
+      })
     );
     const text = await res.text();
     return { res, text };
   };
 
-  let { res, text } = await doFetch();
+  let response: { res: Response; text: string };
+  try {
+    response = await doFetch();
+  } catch (err) {
+    if (init.method !== 'GET') throw err;
+    console.warn(`${TAG} GET ${pathname} network failure, retrying once: ${(err as Error).message}`);
+    await sleep(1000);
+    response = await doFetch();
+  }
+  let { res, text } = response;
 
-  // One retry on transient errors
-  if (RETRY_STATUS.has(res.status)) {
-    console.warn(`${TAG} ${init.method} ${pathname} → ${res.status}, retrying in 1s...`);
+  if (init.method === 'GET' && RETRY_STATUS.has(res.status)) {
+    console.warn(`${TAG} GET ${pathname} → ${res.status}, retrying once in 1s...`);
     await sleep(1000);
     ({ res, text } = await doFetch());
   }
@@ -83,8 +126,21 @@ async function dhanFetch(pathname: string, init: { method: string; body?: unknow
     data = { raw: text.slice(0, 300) };
   }
   if (!res.ok) {
-    const detail = String(data.errorMessage ?? data.internalErrorMessage ?? text.slice(0, 200));
-    throw new Error(`${TAG} ${init.method} ${pathname} → ${res.status}: ${detail}`);
+    const remarks = data.remarks && typeof data.remarks === 'object' ? (data.remarks as Record<string, unknown>) : {};
+    const codeValue = data.errorCode ?? data.internalErrorCode ?? remarks.error_code ?? remarks.errorCode;
+    const code = codeValue == null ? null : String(codeValue);
+    const detail = String(
+      data.errorMessage ??
+        data.internalErrorMessage ??
+        remarks.error_message ??
+        remarks.errorMessage ??
+        text.slice(0, 200)
+    );
+    throw new DhanHttpError(
+      `${TAG} ${init.method} ${pathname} → ${res.status}${code ? ` (${code})` : ''}: ${detail}`,
+      res.status,
+      code
+    );
   }
   return data;
 }
@@ -97,6 +153,7 @@ function mapStatus(orderStatus: string): OrderState['status'] {
     case 'REJECTED':
       return 'rejected';
     case 'CANCELLED':
+    case 'EXPIRED':
       return 'cancelled';
     case 'TRANSIT':
     case 'PENDING':
@@ -122,52 +179,88 @@ export class DhanAdapter implements BrokerAdapter {
   }
 
   async placeMarketOrder(ticket: OrderTicket): Promise<PlacedOrder> {
-    // Dhan's live API rejects any correlationId with non-alphanumeric chars
-    // ("400: Invalid correlationId") even though the OpenAPI spec only caps
-    // length at 30. Our idemKey has colons/hyphens (e.g. 2026-07-13:LTF:CE:…),
-    // so strip to alphanumerics. Determinism is preserved (same idemKey → same
-    // id); real idempotency is enforced by the auto_orders UNIQUE idemKey, not
-    // by this broker-side tracking tag.
-    const correlationId = ticket.idemKey.replace(/[^a-zA-Z0-9]/g, '').slice(0, 25);
-    const data = await dhanFetch('/orders', {
-      method: 'POST',
-      body: {
-        dhanClientId: env.DHAN_CLIENT_ID,
-        correlationId,
-        transactionType: ticket.side,
-        exchangeSegment: 'NSE_FNO',
-        productType: 'INTRADAY',
-        orderType: 'MARKET',
-        validity: 'DAY',
-        securityId: ticket.optSecurityId,
-        quantity: ticketQtyUnits(ticket),
-        disclosedQuantity: 0,
-        price: 0,
-        afterMarketOrder: false,
-      },
-    });
+    // The caller supplies a persisted, deterministic, alphanumeric broker
+    // correlation ID. It is the recovery key if the POST response is lost.
+    let data: Record<string, unknown>;
+    try {
+      data = await dhanFetch('/orders', {
+        method: 'POST',
+        body: {
+          dhanClientId: env.DHAN_CLIENT_ID,
+          correlationId: ticket.correlationId,
+          transactionType: ticket.side,
+          exchangeSegment: 'NSE_FNO',
+          productType: 'INTRADAY',
+          orderType: 'MARKET',
+          validity: 'DAY',
+          securityId: ticket.optSecurityId,
+          quantity: ticketQtyUnits(ticket),
+          disclosedQuantity: 0,
+          price: 0,
+          afterMarketOrder: false,
+        },
+      });
+    } catch (err) {
+      const ambiguous =
+        err instanceof DhanPreflightError
+          ? false
+          : !(err instanceof DhanHttpError) ||
+            RETRY_STATUS.has(err.status) ||
+            (err.code != null && AMBIGUOUS_ORDER_CODES.has(err.code));
+      throw new BrokerSubmissionError((err as Error).message, ambiguous);
+    }
     const orderId = String(data.orderId ?? '');
-    if (!orderId) throw new Error(`${TAG} order accepted but no orderId in response`);
+    if (!orderId) throw new BrokerSubmissionError(`${TAG} order response had no orderId`, true);
     if (String(data.orderStatus) === 'REJECTED') {
-      throw new Error(`${TAG} order ${orderId} rejected at placement`);
+      throw new BrokerSubmissionError(`${TAG} order ${orderId} rejected at placement`, false);
     }
     return { brokerOrderId: orderId };
   }
 
+  async getOrderByCorrelationId(correlationId: string): Promise<RecoveredOrder | null> {
+    try {
+      const data = await dhanFetch(`/orders/external/${encodeURIComponent(correlationId)}`, { method: 'GET' });
+      const row = (Array.isArray(data) ? (data as Record<string, unknown>[])[0] : data) ?? {};
+      const brokerOrderId = String(row.orderId ?? '');
+      if (!brokerOrderId) return null;
+      const status = mapStatus(String(row.orderStatus ?? ''));
+      const price = Number(row.averageTradedPrice);
+      const filledQty = Number(row.filledQty ?? row.tradedQuantity ?? row.filledQuantity);
+      return {
+        brokerOrderId,
+        status,
+        avgFillPrice: Number.isFinite(price) && price > 0 ? price : null,
+        filledQtyUnits: Number.isFinite(filledQty) && filledQty > 0 ? filledQty : null,
+        detail: row.omsErrorDescription ? String(row.omsErrorDescription) : undefined,
+      };
+    } catch (err) {
+      if (err instanceof DhanHttpError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
   async getOrderState(brokerOrderId: string): Promise<OrderState> {
     try {
-      const data = await dhanFetch(`/orders/${brokerOrderId}`, { method: 'GET' });
+      const data = await dhanFetch(`/orders/${brokerOrderId}`, {
+        method: 'GET',
+      });
       // GET /orders/{id} returns the order object (some deployments wrap in an array).
       const row = (Array.isArray(data) ? (data as Record<string, unknown>[])[0] : data) ?? {};
       const status = mapStatus(String(row.orderStatus ?? ''));
       const price = Number(row.averageTradedPrice);
+      const filledQty = Number(row.filledQty ?? row.tradedQuantity ?? row.filledQuantity);
       return {
         status,
-        avgFillPrice: status === 'filled' && Number.isFinite(price) && price > 0 ? price : null,
+        avgFillPrice: Number.isFinite(price) && price > 0 ? price : null,
+        filledQtyUnits: Number.isFinite(filledQty) && filledQty > 0 ? filledQty : null,
         detail: row.omsErrorDescription ? String(row.omsErrorDescription) : undefined,
       };
     } catch (err) {
-      return { status: 'unknown', avgFillPrice: null, detail: (err as Error).message };
+      return {
+        status: 'unknown',
+        avgFillPrice: null,
+        detail: (err as Error).message,
+      };
     }
   }
 

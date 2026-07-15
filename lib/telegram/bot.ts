@@ -58,6 +58,13 @@ export interface SendMessageOptions {
   disable_web_page_preview?: boolean;
 }
 
+export interface TelegramDeliveryResult {
+  chatId: string;
+  ok: boolean;
+  status: number | null;
+  error?: string;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -68,6 +75,21 @@ function botToken(): string | null {
 
 function chatId(): string | null {
   return env.TELEGRAM_CHAT_ID ?? null;
+}
+
+/** Every commentary recipient: the operator chat plus TELEGRAM_VIEWER_CHAT_IDS
+ *  (comma-separated read-only chats), deduped. Operator commands and approval
+ *  prompts must keep using sendMessage (operator chat only) — the viewer list
+ *  receives BROADCASTS only. */
+function broadcastChatIds(): string[] {
+  const ids = new Set<string>();
+  const op = chatId();
+  if (op) ids.add(op.trim());
+  for (const raw of (env.TELEGRAM_VIEWER_CHAT_IDS ?? '').split(',')) {
+    const id = raw.trim();
+    if (id) ids.add(id);
+  }
+  return [...ids];
 }
 
 /** Base URL for this bot's Telegram API methods. */
@@ -86,21 +108,70 @@ export function isTelegramConfigured(): boolean {
   return !!botToken() && !!chatId();
 }
 
+async function sendToChat(
+  targetChatId: string | number | null,
+  text: string,
+  options?: SendMessageOptions
+): Promise<TelegramDeliveryResult> {
+  const target = String(targetChatId ?? '');
+  const url = apiUrl('sendMessage');
+  if (!url || !target) {
+    return { chatId: target, ok: false, status: null, error: 'not configured' };
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: target, text, ...options }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = (await res.json().catch(() => null)) as {
+      ok?: boolean;
+      description?: string;
+    } | null;
+    const ok = res.ok && body?.ok === true;
+    return {
+      chatId: target,
+      ok,
+      status: res.status,
+      ...(ok ? {} : { error: body?.description ?? `Telegram HTTP ${res.status}` }),
+    };
+  } catch (err) {
+    return {
+      chatId: target,
+      ok: false,
+      status: null,
+      error: (err as Error).message,
+    };
+  }
+}
+
+export async function sendMessageAsync(text: string, options?: SendMessageOptions): Promise<TelegramDeliveryResult> {
+  const result = await sendToChat(chatId(), text, options);
+  if (!result.ok) console.warn(`${TAG} sendMessage failed: ${result.error}`);
+  return result;
+}
+
 /**
  * Send a text message to the configured operator chat.
  * Fire-and-forget — never throws, never blocks the caller.
  */
 export function sendMessage(text: string, options?: SendMessageOptions): void {
-  const url = apiUrl('sendMessage');
-  if (!url) return;
-  fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId(), text, ...options }),
-    signal: AbortSignal.timeout(10_000),
-  }).catch((err) => {
-    console.warn(`${TAG} sendMessage failed: ${(err as Error).message}`);
-  });
+  void sendMessageAsync(text, options);
+}
+
+/**
+ * Send a text message to EVERY commentary recipient — the operator chat plus
+ * any TELEGRAM_VIEWER_CHAT_IDS. Resolves with one verified delivery result per
+ * recipient. Use for commentary/read-only broadcasts ONLY; actionable
+ * operator messages stay on sendMessage.
+ */
+export async function broadcastMessage(text: string, options?: SendMessageOptions): Promise<TelegramDeliveryResult[]> {
+  const results = await Promise.all(broadcastChatIds().map((id) => sendToChat(id, text, options)));
+  for (const result of results) {
+    if (!result.ok) console.warn(`${TAG} broadcast delivery failed: ${result.error}`);
+  }
+  return results;
 }
 
 /**
@@ -108,15 +179,8 @@ export function sendMessage(text: string, options?: SendMessageOptions): void {
  * sent a command via the webhook). Fire-and-forget.
  */
 export function sendMessageTo(targetChatId: string | number, text: string, options?: SendMessageOptions): void {
-  const url = apiUrl('sendMessage');
-  if (!url) return;
-  fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: targetChatId, text, ...options }),
-    signal: AbortSignal.timeout(10_000),
-  }).catch((err) => {
-    console.warn(`${TAG} sendMessageTo failed: ${(err as Error).message}`);
+  void sendToChat(targetChatId, text, options).then((result) => {
+    if (!result.ok) console.warn(`${TAG} sendMessageTo failed: ${result.error}`);
   });
 }
 
@@ -186,7 +250,10 @@ export async function getWebhookInfo(): Promise<Record<string, unknown> | null> 
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(10_000),
     });
-    const data = (await res.json()) as { ok: boolean; result?: Record<string, unknown> };
+    const data = (await res.json()) as {
+      ok: boolean;
+      result?: Record<string, unknown>;
+    };
     return data.ok ? (data.result ?? null) : null;
   } catch {
     return null;
@@ -199,6 +266,10 @@ export async function getWebhookInfo(): Promise<Record<string, unknown> | null> 
  */
 export function verifyWebhookSecret(requestSecret: string | null): boolean {
   const expected = env.TELEGRAM_WEBHOOK_SECRET;
-  if (!expected) return true; // no secret configured — allow all (dev mode)
+  if (!expected) {
+    // Commands can approve orders and change trading mode. A production
+    // webhook without its shared secret must fail closed.
+    return env.NODE_ENV !== 'production' && !process.env.RAILWAY_ENVIRONMENT_NAME;
+  }
   return requestSecret === expected;
 }

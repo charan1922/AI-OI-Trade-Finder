@@ -10,7 +10,7 @@
 import { todayIST } from '@/lib/dhan/market-feed';
 import { hasMimo } from '@/lib/env';
 import { recordPromptVersion } from '@/lib/prompts/store';
-import { sendMessage, isTelegramConfigured } from '@/lib/telegram';
+import { isTelegramConfigured, sendCommentaryToTelegram } from '@/lib/telegram';
 import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { COMMENTARY_SYSTEM, generateCommentary } from './generate';
@@ -25,7 +25,11 @@ export interface RunCommentaryOutcome {
 
 export async function runAndStoreCommentary(result: SuggestResponse): Promise<RunCommentaryOutcome> {
   if (!hasMimo()) return { generated: false, reason: 'MiMo not configured' };
-  if ((result.scanned ?? 0) <= 0) return { generated: false, reason: 'no scan this pass (out of window per config)' };
+  if ((result.scanned ?? 0) <= 0)
+    return {
+      generated: false,
+      reason: 'no scan this pass (out of window per config)',
+    };
 
   // Carry forward TODAY's earlier reads so this is the next turn of a running
   // conversation (oldest first). New day → empty → a fresh conversation.
@@ -50,19 +54,21 @@ export async function runAndStoreCommentary(result: SuggestResponse): Promise<Ru
     promptKey: 'trade-commentary',
     promptVersion,
   });
-  // Push the commentary to Telegram so the operator gets it in real-time.
-  // Telegram limit is 4096 chars; commentary is ~220 words max so it fits.
-  // Plain text (no parse_mode) — the commentary uses ### headings, • bullets,
-  // and inline * or _ that Telegram's Markdown parser doesn't handle cleanly.
+  // Push the commentary to Telegram so the operator gets it in real-time —
+  // rendered as Telegram-native HTML (headings→bold etc., see
+  // lib/telegram/commentary.ts) so the phone reads as cleanly as the
+  // /trade-commentary page, with near-duplicate 5-min repeats muted
+  // (actionable TRADE NOW / EXIT NOW reads always go through).
   if (isTelegramConfigured() && c.text) {
+    const previousText = priorToday[0]?.text ?? null;
     try {
       const settings = await getAutoTradeSettings();
       if (settings.telegramAlerts) {
-        sendMessage(`📊 Trade Commentary\n\n${c.text}`);
+        await sendCommentaryToTelegram(c.text, previousText);
       }
-    } catch {
-      // Fail-open: send if settings can't be loaded
-      sendMessage(`📊 Trade Commentary\n\n${c.text}`);
+    } catch (err) {
+      // Settings are an operator control. A lookup failure must not bypass it.
+      console.warn(`[Commentary] Telegram settings/delivery failed: ${(err as Error).message}`);
     }
   }
 

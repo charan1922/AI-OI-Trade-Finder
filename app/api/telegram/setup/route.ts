@@ -12,8 +12,11 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { setWebhook, deleteWebhook, getWebhookInfo, isTelegramConfigured } from '@/lib/telegram/bot';
 import { env } from '@/lib/env';
+import { adminOnly } from '@/lib/auth/server';
 
-export async function GET(): Promise<NextResponse> {
+export async function GET(req: NextRequest): Promise<NextResponse> {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   if (!isTelegramConfigured()) {
     return NextResponse.json({
       configured: false,
@@ -29,19 +32,27 @@ export async function GET(): Promise<NextResponse> {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   if (!isTelegramConfigured()) {
-    return NextResponse.json({
-      success: false,
-      error: 'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set.',
-    }, { status: 400 });
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set.',
+      },
+      { status: 400 }
+    );
   }
 
   const secret = env.TELEGRAM_WEBHOOK_SECRET;
   if (!secret) {
-    return NextResponse.json({
-      success: false,
-      error: 'TELEGRAM_WEBHOOK_SECRET must be set for secure webhook registration.',
-    }, { status: 400 });
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'TELEGRAM_WEBHOOK_SECRET must be set for secure webhook registration.',
+      },
+      { status: 400 }
+    );
   }
 
   let body: { action?: string; url?: string };
@@ -68,10 +79,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const ok = await setWebhook(webhookUrl, secret);
   if (!ok) {
-    return NextResponse.json({
-      success: false,
-      error: 'Telegram setWebhook failed. Check bot token and logs.',
-    }, { status: 500 });
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Telegram setWebhook failed. Check bot token and logs.',
+      },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json({

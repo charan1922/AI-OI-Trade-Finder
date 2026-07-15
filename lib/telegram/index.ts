@@ -5,6 +5,8 @@
 export {
   isTelegramConfigured,
   sendMessage,
+  sendMessageAsync,
+  broadcastMessage,
   sendMessageTo,
   setWebhook,
   deleteWebhook,
@@ -12,11 +14,14 @@ export {
   verifyWebhookSecret,
 } from './bot';
 
+export { sendCommentaryToTelegram, markdownToTelegramHtml } from './commentary';
+
 export type {
   TelegramUpdate,
   TelegramMessage,
   TelegramCallbackQuery,
   SendMessageOptions,
+  TelegramDeliveryResult,
 } from './bot';
 
 export { handleTelegramMessage } from './handlers';

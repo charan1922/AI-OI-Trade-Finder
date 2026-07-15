@@ -81,7 +81,14 @@ function scanAtTick(tick: number): SuggestResponse {
     sector: string;
     direction: 'bullish' | 'bearish';
     orBreakout: boolean;
-    bars: { bucketTs: number; open: number; high: number; low: number; close: number; volume: number }[];
+    bars: {
+      bucketTs: number;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+    }[];
     or: { openRangeHigh: number | null; openRangeLow: number | null };
     setupLevel: string;
     extended: boolean;
@@ -104,7 +111,12 @@ function scanAtTick(tick: number): SuggestResponse {
     const series = (day.oiSeries.get(s) ?? []).filter((p) => p.bucketTs <= tick);
     const snap = series[series.length - 1];
     const sector = day.sectorBySymbol.get(s);
-    if (snap && snap.ltp > 0 && sector) sectorTiles.push({ sector, pct: snap.changePctOpen ?? 0, turnover: snap.futTurnover > 0 ? snap.futTurnover : 0 });
+    if (snap && snap.ltp > 0 && sector)
+      sectorTiles.push({
+        sector,
+        pct: snap.changePctOpen ?? 0,
+        turnover: snap.futTurnover > 0 ? snap.futTurnover : 0,
+      });
   }
   const sectorAgg = new Map(aggregateSectors(sectorTiles).map((a) => [a.sector, a]));
 
@@ -123,10 +135,20 @@ function scanAtTick(tick: number): SuggestResponse {
     const urgency = computeOiUrgency(series);
     const base = day.baselines.get(s);
     const rfIn = buildLiveRFactorInput(
-      { symbol: s, ltp: snap.ltp, changePctOpen: snap.changePctOpen, bid: null, ask: null, futOi: snap.futOi > 0 ? snap.futOi : null, turnover: snap.futTurnover > 0 ? snap.futTurnover : null, dayHigh: sc.dayHigh, dayLow: sc.dayLow },
+      {
+        symbol: s,
+        ltp: snap.ltp,
+        changePctOpen: snap.changePctOpen,
+        bid: null,
+        ask: null,
+        futOi: snap.futOi > 0 ? snap.futOi : null,
+        turnover: snap.futTurnover > 0 ? snap.futTurnover : null,
+        dayHigh: sc.dayHigh,
+        dayLow: sc.dayLow,
+      },
       base,
       sc,
-      new Date(tick * 1000),
+      new Date(tick * 1000)
     );
     const r = rfIn ? computeRFactor(rfIn) : null;
     const row: LiveUrgencyRow = {
@@ -149,7 +171,14 @@ function scanAtTick(tick: number): SuggestResponse {
       rFactorBias: r?.bias ?? null,
       rFactorConfidence: r?.confidence ?? null,
       rFactorAfterEntry: r?.afterEntryWindow ?? null,
-      rFactors: r?.factors.map((f) => ({ label: f.label, score: f.score, vote: f.vote, available: f.available, detail: f.detail })) ?? null,
+      rFactors:
+        r?.factors.map((f) => ({
+          label: f.label,
+          score: f.score,
+          vote: f.vote,
+          available: f.available,
+          detail: f.detail,
+        })) ?? null,
     };
 
     // Engine gate sequence, production thresholds.
@@ -173,7 +202,9 @@ function scanAtTick(tick: number): SuggestResponse {
     const direction: 'bullish' | 'bearish' = row.rFactorBias === 'buy' ? 'bullish' : 'bearish';
     const orBreakout =
       sc.openRangeComplete &&
-      (direction === 'bullish' ? sc.openRangeHigh != null && snap.ltp > sc.openRangeHigh : sc.openRangeLow != null && snap.ltp < sc.openRangeLow);
+      (direction === 'bullish'
+        ? sc.openRangeHigh != null && snap.ltp > sc.openRangeHigh
+        : sc.openRangeLow != null && snap.ltp < sc.openRangeLow);
     const futOiOk = (row.oiLevel ?? 0) >= cfg.MIN_OI_LEVEL;
     const nseRows = (day.nseOiByBucket.get(s) ?? []).filter((b) => b.bucketTs <= tick && b.nseOiPct != null);
     const nseOiPct = nseRows.length > 0 ? nseRows[nseRows.length - 1].nseOiPct : null;
@@ -186,11 +217,15 @@ function scanAtTick(tick: number): SuggestResponse {
       breakoutOk = qualifiesByBreakout(
         {
           orBreakout,
-          supertrendAligned: st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down',
+          supertrendAligned:
+            st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down',
           vwapAligned: vw == null ? null : direction === 'bullish' ? snap.ltp > vw : snap.ltp < vw,
           rFactor: row.rFactor,
         },
-        { minRFactor: cfg.BREAKOUT_BYPASS_MIN_RFACTOR, requireTrendAlign: cfg.BREAKOUT_BYPASS_REQUIRE_TREND },
+        {
+          minRFactor: cfg.BREAKOUT_BYPASS_MIN_RFACTOR,
+          requireTrendAlign: cfg.BREAKOUT_BYPASS_REQUIRE_TREND,
+        }
       );
     }
     if (!futOiOk && !nseOiOk && !breakoutOk) {
@@ -257,11 +292,15 @@ function scanAtTick(tick: number): SuggestResponse {
     const ok = qualifiesExtendedTrend(
       {
         orBreakout: sv.orBreakout,
-        supertrendAligned: st == null ? null : sv.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down',
+        supertrendAligned:
+          st == null ? null : sv.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down',
         vwapAligned: vw == null ? null : sv.direction === 'bullish' ? ltp > vw : ltp < vw,
         rFactor: sv.row.rFactor,
       },
-      { minRFactor: cfg.EXTENDED_BYPASS_MIN_RFACTOR, requireSupertrend: cfg.EXTENDED_BYPASS_REQUIRE_SUPERTREND },
+      {
+        minRFactor: cfg.EXTENDED_BYPASS_MIN_RFACTOR,
+        requireSupertrend: cfg.EXTENDED_BYPASS_REQUIRE_SUPERTREND,
+      }
     );
     if (!ok) bump('extendedMover');
     return ok;
@@ -280,21 +319,22 @@ function scanAtTick(tick: number): SuggestResponse {
         : null;
     const sa = sv.sector ? (sectorAgg.get(sv.sector) ?? null) : null;
     const sectorAligned =
-      sa == null || Math.abs(sa.weightedPct) < 0.1 ? null : sv.direction === 'bullish' ? sa.weightedPct > 0 : sa.weightedPct < 0;
-    const bctx = deriveBreakoutContext(
-      sv.bars,
-      {
-        openRangeHigh: sv.or.openRangeHigh,
-        openRangeLow: sv.or.openRangeLow,
-        openRangeComplete: sv.bars.length > 0 && deriveSessionContext(sv.bars).openRangeComplete,
-        priorDayHigh: base?.priorDayHigh ?? null,
-        priorDayLow: base?.priorDayLow ?? null,
-        high5d: base?.high5d ?? null,
-        low5d: base?.low5d ?? null,
-        high20d: base?.high20d ?? null,
-        low20d: base?.low20d ?? null,
-      },
-    );
+      sa == null || Math.abs(sa.weightedPct) < 0.1
+        ? null
+        : sv.direction === 'bullish'
+          ? sa.weightedPct > 0
+          : sa.weightedPct < 0;
+    const bctx = deriveBreakoutContext(sv.bars, {
+      openRangeHigh: sv.or.openRangeHigh,
+      openRangeLow: sv.or.openRangeLow,
+      openRangeComplete: sv.bars.length > 0 && deriveSessionContext(sv.bars).openRangeComplete,
+      priorDayHigh: base?.priorDayHigh ?? null,
+      priorDayLow: base?.priorDayLow ?? null,
+      high5d: base?.high5d ?? null,
+      low5d: base?.low5d ?? null,
+      high20d: base?.high20d ?? null,
+      low20d: base?.low20d ?? null,
+    });
     const tfBreakout = evaluateBreakout(bctx, sv.row.ltp, sv.row.rFactor, sv.row.changePctOpen);
     return {
       rank: i + 1,
@@ -320,7 +360,8 @@ function scanAtTick(tick: number): SuggestResponse {
         vwapAligned: vw == null ? null : sv.direction === 'bullish' ? (sv.row.ltp ?? 0) > vw : (sv.row.ltp ?? 0) < vw,
         supertrend: st?.direction ?? null,
         supertrendLine: st?.line ?? null,
-        supertrendAligned: st == null ? null : sv.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down',
+        supertrendAligned:
+          st == null ? null : sv.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down',
         atr: a,
         atrPct: a != null && (sv.row.ltp ?? 0) > 0 ? (a / (sv.row.ltp ?? 1)) * 100 : null,
         eqTurnoverRatio: null, // per-tick equity turnover wasn't recorded — honest null
@@ -331,15 +372,16 @@ function scanAtTick(tick: number): SuggestResponse {
         sectorPct: sa?.weightedPct ?? null,
         sectorAdvanceRatio: sa ? sa.advancers / Math.max(1, sa.advancers + sa.decliners) : null,
         sectorAligned,
-        gexRegime: null, // GEX not computed in replay (no live Dhan option chain)
-        gexValue: null,
-        gexWall: null,
       },
       reasons: [
         `R-Factor ${sv.row.rFactor?.toFixed(2)} (${sv.direction}, confidence ${(((sv.row.rFactorConfidence ?? 0) as number) * 100).toFixed(0)}%)`,
         `futures OI ${sv.row.oiLevel?.toFixed(2)}× 20-day avg${sv.row.oiUrgency != null ? `, urgency ${sv.row.oiUrgency.toFixed(1)}/10` : ''}`,
-        sv.orBreakout ? 'trading beyond the opening range (breakout confirmed)' : 'inside opening range — breakout not yet confirmed',
-        ...(tfBreakout != null && tfBreakout.grade !== 'none' ? [`TF breakout check (${tfBreakout.grade}): ${tfBreakout.detail}`] : []),
+        sv.orBreakout
+          ? 'trading beyond the opening range (breakout confirmed)'
+          : 'inside opening range — breakout not yet confirmed',
+        ...(tfBreakout != null && tfBreakout.grade !== 'none'
+          ? [`TF breakout check (${tfBreakout.grade}): ${tfBreakout.detail}`]
+          : []),
       ],
     };
   });
@@ -349,7 +391,12 @@ function scanAtTick(tick: number): SuggestResponse {
   const activeWindow = tick >= istEpoch('09:40') && tick <= istEpoch('11:00');
   return {
     success: true,
-    window: { active: activeWindow, opensAt: cfg.WINDOW_LABEL.opensAt, closesAt: cfg.WINDOW_LABEL.closesAt, nowIST },
+    window: {
+      active: activeWindow,
+      opensAt: cfg.WINDOW_LABEL.opensAt,
+      closesAt: cfg.WINDOW_LABEL.closesAt,
+      nowIST,
+    },
     marketOpen: true,
     date: DATE,
     scanned,
@@ -364,7 +411,8 @@ function scanAtTick(tick: number): SuggestResponse {
 function groundingSuspects(text: string, scan: SuggestResponse, priorTexts: string[]): number[] {
   const allowed: number[] = [];
   for (const m of JSON.stringify(scan).matchAll(/-?\d+(?:\.\d+)?/g)) allowed.push(Math.abs(Number(m[0])));
-  for (const t of priorTexts) for (const m of t.matchAll(/\d[\d,]*(?:\.\d+)?/g)) allowed.push(Number(m[0].replace(/,/g, '')));
+  for (const t of priorTexts)
+    for (const m of t.matchAll(/\d[\d,]*(?:\.\d+)?/g)) allowed.push(Number(m[0].replace(/,/g, '')));
   const cleaned = text.replace(/\d{4}-\d{2}-\d{2}/g, ' ').replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, ' ');
   const out = new Set<number>();
   for (const m of cleaned.matchAll(/(₹\s*)?\d[\d,]*(?:\.\d+)?/g)) {
@@ -381,7 +429,15 @@ interface ReadRecord {
   timeIST: string;
   windowActive: boolean;
   scanned: number;
-  picks: { symbol: string; direction: string; entrySpot: number; slSpot: number | null; targetSpot: number | null; score: number; tfGrade: string | null }[];
+  picks: {
+    symbol: string;
+    direction: string;
+    entrySpot: number;
+    slSpot: number | null;
+    targetSpot: number | null;
+    score: number;
+    tfGrade: string | null;
+  }[];
   text: string;
   latencyMs: number;
   promptTokens: number | null;
@@ -398,17 +454,38 @@ const priorTexts: string[] = [];
 const contextSymbols = new Set<string>();
 /** Mirrors the engine's `tracked` feed: first-suggestion plan levels per name,
  *  refreshed each tick with the live recorded price. */
-const trackedBook = new Map<string, { side: 'CE' | 'PE'; direction: 'bullish' | 'bearish'; entrySpot: number; slSpot: number | null; targetSpot: number | null; suggestedAt: string }>();
+const trackedBook = new Map<
+  string,
+  {
+    side: 'CE' | 'PE';
+    direction: 'bullish' | 'bearish';
+    entrySpot: number;
+    slSpot: number | null;
+    targetSpot: number | null;
+    suggestedAt: string;
+  }
+>();
 /** Names an earlier read actually called TRADE NOW — the only legal targets
  *  for HOLD / MOVE SL / EXIT NOW (contract-checks phantom-position rule). */
 const openPositions = new Set<string>();
-let mimo: ((r: SuggestResponse, p: string[]) => Promise<{ text: string; promptTokens: number | null; completionTokens: number | null }>) | null = null;
+let mimo:
+  | ((
+      r: SuggestResponse,
+      p: string[]
+    ) => Promise<{
+      text: string;
+      promptTokens: number | null;
+      completionTokens: number | null;
+    }>)
+  | null = null;
 if (!DRY) {
   const { generateCommentary } = await import('../lib/ai-commentary/generate');
   mimo = (r, p) => generateCommentary(r, p);
 }
 
-console.log(`Replay ${DATE} · ${ticks.length} ticks (${START}→${END}, every ${CADENCE_MIN}m) · ${DRY ? 'DRY (no MiMo)' : 'REAL MiMo'} · label=${LABEL}`);
+console.log(
+  `Replay ${DATE} · ${ticks.length} ticks (${START}→${END}, every ${CADENCE_MIN}m) · ${DRY ? 'DRY (no MiMo)' : 'REAL MiMo'} · label=${LABEL}`
+);
 for (const tick of ticks) {
   if (LIMIT > 0 && reads.length >= LIMIT) break;
   const scan = scanAtTick(tick);
@@ -453,14 +530,24 @@ for (const tick of ticks) {
     latencyMs = Date.now() - t0;
   }
   const pickSyms = new Set(scan.suggestions.map((s) => s.symbol));
-  const contract = text ? checkContract(text, pickSyms, contextSymbols, allSymbols, openPositions) : { fails: [], warns: [], sections: [] };
+  const contract = text
+    ? checkContract(text, pickSyms, contextSymbols, allSymbols, openPositions)
+    : { fails: [], warns: [], sections: [] };
   const suspects = text ? groundingSuspects(text, scan, priorTexts) : [];
   reads.push({
     tick,
     timeIST: fmtIST(tick),
     windowActive: scan.window.active,
     scanned: scan.scanned,
-    picks: scan.suggestions.map((s) => ({ symbol: s.symbol, direction: s.direction, entrySpot: s.plan.entrySpot, slSpot: s.plan.slSpot, targetSpot: s.plan.targetSpot, score: s.score, tfGrade: s.tfBreakout?.grade ?? null })),
+    picks: scan.suggestions.map((s) => ({
+      symbol: s.symbol,
+      direction: s.direction,
+      entrySpot: s.plan.entrySpot,
+      slSpot: s.plan.slSpot,
+      targetSpot: s.plan.targetSpot,
+      score: s.score,
+      tfGrade: s.tfBreakout?.grade ?? null,
+    })),
     text,
     latencyMs,
     promptTokens,
@@ -468,7 +555,13 @@ for (const tick of ticks) {
     fails: contract.fails,
     warns: contract.warns,
     suspects,
-    verdicts: contract.sections.filter((s) => s.ticker != null).map((s) => ({ ticker: s.ticker as string, verdict: s.verdict, slLevel: s.slLevel })),
+    verdicts: contract.sections
+      .filter((s) => s.ticker != null)
+      .map((s) => ({
+        ticker: s.ticker as string,
+        verdict: s.verdict,
+        slLevel: s.slLevel,
+      })),
   });
   if (text) priorTexts.push(text);
   for (const v of reads[reads.length - 1].verdicts) {
@@ -476,7 +569,7 @@ for (const tick of ticks) {
     else if (v.verdict === 'EXIT NOW') openPositions.delete(v.ticker); // exit is final — later HOLD/EXIT on it = phantom
   }
   console.log(
-    `  ${fmtIST(tick)} — scanned ${scan.scanned}, picks ${scan.suggestions.length}${text ? ` · ${contract.fails.length ? `✗ ${contract.fails.length} fail` : '✓ structure'} · ${(latencyMs / 1000).toFixed(0)}s` : ''}`,
+    `  ${fmtIST(tick)} — scanned ${scan.scanned}, picks ${scan.suggestions.length}${text ? ` · ${contract.fails.length ? `✗ ${contract.fails.length} fail` : '✓ structure'} · ${(latencyMs / 1000).toFixed(0)}s` : ''}`
   );
 }
 
@@ -510,7 +603,13 @@ let skippedInvalidEntries = 0;
       const list = events.get(v.ticker) ?? [];
       if (v.verdict === 'TRADE NOW') {
         const pick = r.picks.find((p) => p.symbol === v.ticker);
-        if (pick) list.push({ tick: r.tick, type: 'enter', dir: pick.direction as 'bullish' | 'bearish', entryRef: { sl: pick.slSpot, target: pick.targetSpot } });
+        if (pick)
+          list.push({
+            tick: r.tick,
+            type: 'enter',
+            dir: pick.direction as 'bullish' | 'bearish',
+            entryRef: { sl: pick.slSpot, target: pick.targetSpot },
+          });
       } else if (v.verdict === 'MOVE SL') list.push({ tick: r.tick, type: 'moveSl', sl: v.slLevel });
       else if (v.verdict === 'EXIT NOW') list.push({ tick: r.tick, type: 'exit' });
       events.set(v.ticker, list);
@@ -519,7 +618,13 @@ let skippedInvalidEntries = 0;
   const squareOff = istEpoch('15:25');
   for (const [ticker, list] of events) {
     const bars = (day.eqBars.get(ticker) ?? []).filter((b) => b.close > 0);
-    let open: { dir: 'bullish' | 'bearish'; entryPx: number; entryTick: number; sl: number | null; target: number | null } | null = null;
+    let open: {
+      dir: 'bullish' | 'bearish';
+      entryPx: number;
+      entryTick: number;
+      sl: number | null;
+      target: number | null;
+    } | null = null;
     let cursor = 0; // next bar index to check — NEVER re-walks, starts AFTER the entry bar
     const closeAt = (px: number, ts: number, reason: string) => {
       if (!open) return;
@@ -547,9 +652,12 @@ let skippedInvalidEntries = 0;
         const b = bars[cursor];
         cursor++;
         if (open.dir === 'bullish' && open.sl != null && b.low <= open.sl) closeAt(open.sl, b.bucketTs, 'stop-hit');
-        else if (open.dir === 'bearish' && open.sl != null && b.high >= open.sl) closeAt(open.sl, b.bucketTs, 'stop-hit');
-        else if (open.dir === 'bullish' && open.target != null && b.high >= open.target) closeAt(open.target, b.bucketTs, 'target-hit');
-        else if (open.dir === 'bearish' && open.target != null && b.low <= open.target) closeAt(open.target, b.bucketTs, 'target-hit');
+        else if (open.dir === 'bearish' && open.sl != null && b.high >= open.sl)
+          closeAt(open.sl, b.bucketTs, 'stop-hit');
+        else if (open.dir === 'bullish' && open.target != null && b.high >= open.target)
+          closeAt(open.target, b.bucketTs, 'target-hit');
+        else if (open.dir === 'bearish' && open.target != null && b.low <= open.target)
+          closeAt(open.target, b.bucketTs, 'target-hit');
       }
     };
     for (const ev of list.sort((a, b) => a.tick - b.tick)) {
@@ -566,7 +674,13 @@ let skippedInvalidEntries = 0;
           if (invalid) {
             skippedInvalidEntries++;
           } else {
-            open = { dir, entryPx: bar.close, entryTick: bar.bucketTs, sl, target: ev.entryRef?.target ?? null };
+            open = {
+              dir,
+              entryPx: bar.close,
+              entryTick: bar.bucketTs,
+              sl,
+              target: ev.entryRef?.target ?? null,
+            };
             cursor = idx + 1; // stop/target checks begin on the NEXT bar
           }
         }
@@ -606,8 +720,12 @@ const metrics = {
   totalR,
   skippedInvalidEntries,
   orphanSquareOffs: orphans,
-  avgWords: readsWithText.length ? Math.round(readsWithText.reduce((s, r) => s + r.text.split(/\s+/).length, 0) / readsWithText.length) : 0,
-  avgLatencySec: readsWithText.length ? Math.round(readsWithText.reduce((s, r) => s + r.latencyMs, 0) / readsWithText.length / 1000) : 0,
+  avgWords: readsWithText.length
+    ? Math.round(readsWithText.reduce((s, r) => s + r.text.split(/\s+/).length, 0) / readsWithText.length)
+    : 0,
+  avgLatencySec: readsWithText.length
+    ? Math.round(readsWithText.reduce((s, r) => s + r.latencyMs, 0) / readsWithText.length / 1000)
+    : 0,
 };
 
 const outDir = 'data/replay-commentary';
@@ -619,7 +737,14 @@ const payload = {
   label: LABEL,
   createdAt: new Date().toISOString(),
   dry: DRY,
-  config: { cadenceMin: CADENCE_MIN, start: START, end: END, breakoutBypass: true, excludeExtended: true, maxPicks: cfg.MAX_PICKS },
+  config: {
+    cadenceMin: CADENCE_MIN,
+    start: START,
+    end: END,
+    breakoutBypass: true,
+    excludeExtended: true,
+    maxPicks: cfg.MAX_PICKS,
+  },
   metrics,
   trades,
   reads,
@@ -628,7 +753,10 @@ writeFileSync(`${outDir}/${runName}.json`, JSON.stringify(payload, null, 1));
 
 console.log(`\n═══ ${runName} ═══`);
 console.log(JSON.stringify(metrics, null, 1));
-for (const t of trades) console.log(`  ${t.ticker} ${t.direction} ${t.entryTime}@${t.entryPx} → ${t.exitTime}@${t.exitPx} (${t.exitReason}) ${t.points >= 0 ? '+' : ''}${t.points} pts${t.rMultiple != null ? ` (${t.rMultiple}R)` : ''}`);
+for (const t of trades)
+  console.log(
+    `  ${t.ticker} ${t.direction} ${t.entryTime}@${t.entryPx} → ${t.exitTime}@${t.exitPx} (${t.exitReason}) ${t.points >= 0 ? '+' : ''}${t.points} pts${t.rMultiple != null ? ` (${t.rMultiple}R)` : ''}`
+  );
 console.log(`Saved ${outDir}/${runName}.json — view at /replay-commentary`);
 
 if (!DRY) {
@@ -637,7 +765,7 @@ if (!DRY) {
   if (!existsSync(logFile)) {
     appendFileSync(
       logFile,
-      `# Commentary replay experiment log\n\nOne row per replay run (scripts/replay-commentary.ts) — the autoresearch-style ledger.\nRun with a --label per experiment; view any run at /replay-commentary.\n\n| when (UTC) | run | reads | struct fails | ungrounded | TRADE NOWs | trades (wins) | outcome | orphans | avg words |\n|---|---|---|---|---|---|---|---|---|---|\n`,
+      `# Commentary replay experiment log\n\nOne row per replay run (scripts/replay-commentary.ts) — the autoresearch-style ledger.\nRun with a --label per experiment; view any run at /replay-commentary.\n\n| when (UTC) | run | reads | struct fails | ungrounded | TRADE NOWs | trades (wins) | outcome | orphans | avg words |\n|---|---|---|---|---|---|---|---|---|---|\n`
     );
   }
   appendFileSync(logFile, logLine);

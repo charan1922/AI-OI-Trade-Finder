@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 export const dynamic = 'force-dynamic';
 
 import { TF_VALIDATE_WRITE_ACTIONS } from '@/lib/auth/rbac';
-import { isReadOnlyRequest, readOnlyForbidden } from '@/lib/auth/server';
+import { adminOnly, isReadOnlyRequest, readOnlyForbidden } from '@/lib/auth/server';
 import { getDailyContext, getTradeDetail, runFullBacktest, simulateTrade } from '@/lib/backtest/backtest-evaluator';
 import { downloadAllTFData, downloadSymbols, loadAllTFTrades, TF_TRADES } from '@/lib/backtest/data-downloader';
 import { getBhavcopyDateMap, getRowCount, getTradeContract } from '@/lib/backtest/backtest-store';
@@ -17,6 +17,8 @@ import type { FixAction, LegCoverage } from '@/app/data-downloader/_lib/types';
  * Body: { action: 'download' | 'status' | 'backtest' }
  */
 export async function POST(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
     const body = await req.json().catch(() => ({}));
     const action = body.action ?? 'status';
@@ -140,7 +142,7 @@ export async function POST(req: Request) {
           short: string,
           label: string,
           present: number,
-          fixedBy: FixAction,
+          fixedBy: FixAction
         ): LegCoverage => ({
           key,
           short,
@@ -206,7 +208,13 @@ export async function POST(req: Request) {
       return NextResponse.json({
         success: true,
         trades,
-        summary: { totalTrades: trades.length, readyCount, partialCount, missingCount, dateRange: allTF.dateRange },
+        summary: {
+          totalTrades: trades.length,
+          readyCount,
+          partialCount,
+          missingCount,
+          dateRange: allTF.dateRange,
+        },
       });
     }
 
@@ -238,13 +246,22 @@ export async function POST(req: Request) {
       }
       const missing = allTF.symbols.filter((s) => !downloadedSymbols.has(s));
       if (missing.length === 0) {
-        return NextResponse.json({ success: true, message: 'All symbols already downloaded', totalRows: 0 });
+        return NextResponse.json({
+          success: true,
+          message: 'All symbols already downloaded',
+          totalRows: 0,
+        });
       }
 
       // Build options list from trades
       const optionsList = allTF.trades
         .filter((t) => t.strike > 0 && missing.includes(t.symbol))
-        .map((t) => ({ symbol: t.symbol, optionType: t.optionType, strike: t.strike, spotPrice: t.spotPrice }));
+        .map((t) => ({
+          symbol: t.symbol,
+          optionType: t.optionType,
+          strike: t.strike,
+          spotPrice: t.spotPrice,
+        }));
       // Dedupe — one option per symbol
       const optionsMap = new Map<string, (typeof optionsList)[0]>();
       for (const o of optionsList) {
@@ -260,9 +277,14 @@ export async function POST(req: Request) {
         (msg) => {
           logs.push(msg);
           console.log(`[TF Download] ${msg}`);
-        },
+        }
       );
-      return NextResponse.json({ success: true, downloaded: missing.length, ...result, logs });
+      return NextResponse.json({
+        success: true,
+        downloaded: missing.length,
+        ...result,
+        logs,
+      });
     }
 
     if (action === 'trade-detail') {
@@ -318,21 +340,25 @@ export async function POST(req: Request) {
         allTF.trades.slice(0, 100).map(async (t) => {
           const count = await getRowCount('backtest_options', t.symbol);
           return { ...t, hasData: count > 0 };
-        }),
+        })
       );
-      return NextResponse.json({ success: true, trades: tradesWithStatus, total: allTF.trades.length });
+      return NextResponse.json({
+        success: true,
+        trades: tradesWithStatus,
+        total: allTF.trades.length,
+      });
     }
 
     if (action === 'debug') {
       const { queryRows: qr } = await import('@/lib/backtest/backtest-store');
       const eqDates = await qr(
-        "SELECT DISTINCT symbol, date FROM backtest_equity WHERE symbol='NATIONALUM' ORDER BY date DESC LIMIT 5",
+        "SELECT DISTINCT symbol, date FROM backtest_equity WHERE symbol='NATIONALUM' ORDER BY date DESC LIMIT 5"
       );
       const optDates = await qr(
-        "SELECT DISTINCT symbol, option_type, date FROM backtest_options WHERE symbol='NATIONALUM' ORDER BY date DESC LIMIT 5",
+        "SELECT DISTINCT symbol, option_type, date FROM backtest_options WHERE symbol='NATIONALUM' ORDER BY date DESC LIMIT 5"
       );
       const sample = await qr(
-        "SELECT symbol, date, timestamp, close FROM backtest_equity WHERE symbol='NATIONALUM' ORDER BY timestamp DESC LIMIT 3",
+        "SELECT symbol, date, timestamp, close FROM backtest_equity WHERE symbol='NATIONALUM' ORDER BY timestamp DESC LIMIT 3"
       );
       return NextResponse.json({ success: true, eqDates, optDates, sample });
     }
@@ -349,7 +375,9 @@ export async function POST(req: Request) {
  *
  * Returns current status of downloaded data.
  */
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
     const equityRows = await getRowCount('backtest_equity');
     const futuresRows = await getRowCount('backtest_futures');

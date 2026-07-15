@@ -17,9 +17,9 @@
  *    crowded earlier, NOT when to enter. Entry still needs the price gates.
  *
  * Derived-table convention (see oi-intraday.ts): raw CREATE TABLE IF NOT EXISTS
- * via Prisma, mirrored by RankSnapshot in schema.prisma. Retention: today only,
- * pruned by the poller (pruneToDate) — the last session survives the weekend
- * until the next open's first cycle, exactly like fyers_candles.
+ * via Prisma, mirrored by RankSnapshot in schema.prisma. The newest 20 recorded
+ * sessions are retained so replay candidate membership is point-in-time rather
+ * than reconstructed from an end-of-day survivor set.
  */
 
 import { prisma } from '@/lib/db';
@@ -51,11 +51,19 @@ export async function ensureRankSnapshotTable(): Promise<void> {
       symbol     TEXT    NOT NULL,
       rank       INTEGER NOT NULL,
       value      REAL,
+      fullUniverse INTEGER,
       capturedAt TEXT    NOT NULL,
       PRIMARY KEY (date, bucketTs, feed, symbol)
     )
   `);
-  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_rank_snapshots_date_feed ON rank_snapshots (date, feed, bucketTs)`);
+  const columns = new Set(
+    (await prisma.$queryRawUnsafe<{ name: string }[]>(`PRAGMA table_info(rank_snapshots)`)).map((column) => column.name)
+  );
+  if (!columns.has('fullUniverse'))
+    await prisma.$executeRawUnsafe(`ALTER TABLE rank_snapshots ADD COLUMN fullUniverse INTEGER`);
+  await prisma.$executeRawUnsafe(
+    `CREATE INDEX IF NOT EXISTS idx_rank_snapshots_date_feed ON rank_snapshots (date, feed, bucketTs)`
+  );
   tableReady = true;
 }
 
@@ -68,11 +76,11 @@ export function rankBucketFor(nowMs: number): number {
  *  this module stays in lib (no lib→app import). Returns the allowed symbol set. */
 async function tradeableFnoSet(): Promise<Set<string>> {
   const fno = await prisma.$queryRawUnsafe<{ symbol: string; tradeBand: string; isIndex: number }[]>(
-    `SELECT symbol, tradeBand, isIndex FROM fno_stocks`,
+    `SELECT symbol, tradeBand, isIndex FROM fno_stocks`
   );
   const liveFut = await prisma.$queryRawUnsafe<{ underlying: string | null }[]>(
     `SELECT DISTINCT underlying FROM master_contracts
-       WHERE instrument = 'FUTSTK' AND segment = 'NSE_FNO' AND expiryDate >= date('now')`,
+       WHERE instrument = 'FUTSTK' AND segment = 'NSE_FNO' AND expiryDate >= date('now')`
   );
   const hasFut = new Set(liveFut.map((r) => r.underlying).filter((u): u is string => !!u));
   const ok = new Set<string>();
@@ -110,7 +118,7 @@ async function rankedFeed(feed: RankFeed): Promise<{ symbol: string; value: numb
   }
 }
 
-const COLS = 7;
+const COLS = 8;
 const BATCH_ROWS = 100; // 7 × 100 = 700 params, under SQLite's 999 limit
 
 /**
@@ -119,14 +127,23 @@ const BATCH_ROWS = 100; // 7 × 100 = 700 params, under SQLite's 999 limit
  * same bucket. Never throws — a feed hiccup must not break the poller cycle.
  * Returns rows attempted.
  */
-export async function recordRankSnapshot(date: string, nowMs: number = Date.now()): Promise<number> {
+export async function recordRankSnapshot(
+  date: string,
+  nowMs: number = Date.now(),
+  fullUniverse: boolean | null = null
+): Promise<number> {
   try {
     await ensureRankSnapshotTable();
     const tradeable = await tradeableFnoSet();
     const bucketTs = rankBucketFor(nowMs);
     const capturedAt = new Date(nowMs).toISOString();
 
-    const rows: { feed: RankFeed; symbol: string; rank: number; value: number }[] = [];
+    const rows: {
+      feed: RankFeed;
+      symbol: string;
+      rank: number;
+      value: number;
+    }[] = [];
     for (const feed of RANK_FEEDS) {
       // Rank within the tradeable universe, then keep only the top N — the
       // front of the race is the part worth tracking.
@@ -139,11 +156,21 @@ export async function recordRankSnapshot(date: string, nowMs: number = Date.now(
       const chunk = rows.slice(i, i + BATCH_ROWS);
       const placeholders = chunk.map(() => `(${Array(COLS).fill('?').join(',')})`).join(',');
       const params: unknown[] = [];
-      for (const r of chunk) params.push(date, bucketTs, r.feed, r.symbol, r.rank, r.value, capturedAt);
+      for (const r of chunk)
+        params.push(
+          date,
+          bucketTs,
+          r.feed,
+          r.symbol,
+          r.rank,
+          r.value,
+          fullUniverse == null ? null : fullUniverse ? 1 : 0,
+          capturedAt
+        );
       await prisma.$executeRawUnsafe(
-        `INSERT OR IGNORE INTO rank_snapshots (date, bucketTs, feed, symbol, rank, value, capturedAt)
+        `INSERT OR IGNORE INTO rank_snapshots (date, bucketTs, feed, symbol, rank, value, fullUniverse, capturedAt)
          VALUES ${placeholders}`,
-        ...params,
+        ...params
       );
     }
     return rows.length;
@@ -192,12 +219,20 @@ export interface RaceResult {
  */
 export async function getRaceSinceOpen(date: string, feed: RankFeed, limit = 20, maxRank = 20): Promise<RaceResult> {
   await ensureRankSnapshotTable();
-  const empty: RaceResult = { feed, date, openTs: null, latestTs: null, bucketTimes: [], runners: [], newEntrants: [] };
+  const empty: RaceResult = {
+    feed,
+    date,
+    openTs: null,
+    latestTs: null,
+    bucketTimes: [],
+    runners: [],
+    newEntrants: [],
+  };
 
   const bucketRows = await prisma.$queryRawUnsafe<{ bucketTs: number; c: number }[]>(
     `SELECT bucketTs, COUNT(*) AS c FROM rank_snapshots WHERE date = ? AND feed = ? GROUP BY bucketTs ORDER BY bucketTs ASC`,
     date,
-    feed,
+    feed
   );
   if (bucketRows.length === 0) return empty;
   const MIN_HEALTHY = 0.6;
@@ -217,7 +252,7 @@ export async function getRaceSinceOpen(date: string, feed: RankFeed, limit = 20,
     `SELECT symbol, rank, value, bucketTs FROM rank_snapshots WHERE date = ? AND feed = ? AND bucketTs IN (${placeholders})`,
     date,
     feed,
-    ...buckets,
+    ...buckets
   );
 
   const trackBy = new Map<string, (number | null)[]>();
@@ -243,10 +278,27 @@ export async function getRaceSinceOpen(date: string, feed: RankFeed, limit = 20,
     const rankOpen = track[0];
     const valueNow = valueNowBy.get(symbol) ?? 0;
     if (rankOpen == null) {
-      newEntrants.push({ symbol, rankNow, rankOpen: null, deltaSinceOpen: null, valueNow, isNew: true, track });
+      newEntrants.push({
+        symbol,
+        rankNow,
+        rankOpen: null,
+        deltaSinceOpen: null,
+        valueNow,
+        isNew: true,
+        track,
+      });
     } else {
       const delta = rankOpen - rankNow; // + = climbed toward #1
-      if (delta > 0) runners.push({ symbol, rankNow, rankOpen, deltaSinceOpen: delta, valueNow, isNew: false, track });
+      if (delta > 0)
+        runners.push({
+          symbol,
+          rankNow,
+          rankOpen,
+          deltaSinceOpen: delta,
+          valueNow,
+          isNew: false,
+          track,
+        });
     }
   }
   runners.sort((a, b) => (b.deltaSinceOpen ?? 0) - (a.deltaSinceOpen ?? 0) || a.rankNow - b.rankNow);
@@ -267,13 +319,20 @@ export async function getRaceSinceOpen(date: string, feed: RankFeed, limit = 20,
 export async function getLatestRankDate(): Promise<string | null> {
   await ensureRankSnapshotTable();
   const rows = await prisma.$queryRawUnsafe<{ date: string }[]>(
-    `SELECT date FROM rank_snapshots ORDER BY date DESC LIMIT 1`,
+    `SELECT date FROM rank_snapshots ORDER BY date DESC LIMIT 1`
   );
   return rows[0]?.date ?? null;
 }
 
-/** Retention: drop snapshots for any date other than `today` (poller-driven). */
-export async function pruneRankSnapshots(today: string): Promise<number> {
+export const RANK_SNAPSHOT_RETENTION_SESSIONS = 20;
+
+/** Retention: keep the newest N recorded sessions (poller-driven). */
+export async function pruneRankSnapshots(): Promise<number> {
   await ensureRankSnapshotTable();
-  return prisma.$executeRawUnsafe(`DELETE FROM rank_snapshots WHERE date != ?`, today);
+  return prisma.$executeRawUnsafe(
+    `DELETE FROM rank_snapshots WHERE date NOT IN (
+       SELECT DISTINCT date FROM rank_snapshots ORDER BY date DESC
+       LIMIT ${RANK_SNAPSHOT_RETENTION_SESSIONS}
+     )`
+  );
 }

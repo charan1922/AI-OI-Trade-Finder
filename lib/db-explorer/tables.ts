@@ -33,35 +33,112 @@ export const DENYLISTED_TABLES: ReadonlySet<string> = new Set([
 /** Human labels + one-line descriptions for known tables. Unknown/new tables
  *  fall back to a prettified name and an empty description. */
 export const TABLE_META: Record<string, { label: string; description: string }> = {
-  master_contracts: { label: 'Master Contracts', description: 'Dhan instrument mappings (symbol → securityId), synced from the daily master CSV.' },
-  bhavcopy_days: { label: 'Bhavcopy (Daily)', description: 'NSE daily equity + F&O data, one row per stock per trading day.' },
-  bhavcopy_fut_expiry: { label: 'Bhavcopy Futures (per expiry)', description: 'Per-expiry futures volume/OI split behind each bhavcopy day.' },
-  bhavcopy_option_expiry: { label: 'Bhavcopy Options (per expiry)', description: 'Per-expiry options volume/OI split behind each bhavcopy day.' },
-  bhavcopy_option_strike: { label: 'Bhavcopy Options (per strike)', description: 'Per-strike CE/PE option data from the bhavcopy F&O file.' },
-  fno_expiry_calendar: { label: 'F&O Expiry Calendar', description: 'Published expiry dates for the F&O universe.' },
-  fno_stocks: { label: 'F&O Stocks', description: 'NSE F&O universe with lot sizes, sector, and trade band.' },
-  trade_band_ranges: { label: 'Trade Band Ranges', description: 'Lot-size ranges defining the core / extended / avoid trade bands.' },
-  band_overrides: { label: 'Band Overrides', description: 'Manual, hand-curated trade-band overrides for specific symbols.' },
-  trade_contracts: { label: 'Trade Contracts', description: 'Dhan contract IDs preserved per backtest trade.' },
-  tf_snapshots: { label: 'TradeFinder Snapshots', description: 'Captured TradeFinder R-Factor values per date/symbol (ground truth).' },
-  oi_intraday: { label: 'OI Intraday', description: 'Intraday futures-OI snapshots powering the Live Urgency time-series.' },
-  feature_toggles: { label: 'Feature Toggles', description: 'App-wide feature flags flipped from the /config page.' },
-  fyers_candles: { label: 'Fyers Candles', description: 'Fyers live 5-min equity + futures candles (today only).' },
-  trade_suggestions: { label: 'Trade Suggestions', description: 'Persisted /trade-suggest calls with same-day outcomes.' },
-  prompt_versions: { label: 'Prompt Versions', description: 'AI prompt version history (read-only audit).' },
-  trade_commentary: { label: 'Trade Commentary', description: 'AI-generated end-of-day trade commentary rows.' },
-  live_urgency_eod: { label: 'Live Urgency (EOD)', description: 'Permanent post-market copy of the Live Urgency board.' },
-  market_holidays: { label: 'Market Holidays', description: 'NSE trading-holiday calendar.' },
-  backtest_equity: { label: 'Backtest Equity', description: '5-min equity candles downloaded for backtesting.' },
-  backtest_futures: { label: 'Backtest Futures', description: '5-min futures candles (+ OI) downloaded for backtesting.' },
-  backtest_options: { label: 'Backtest Options', description: '5-min option candles downloaded for backtesting.' },
+  master_contracts: {
+    label: 'Master Contracts',
+    description: 'Dhan instrument mappings (symbol → securityId), synced from the daily master CSV.',
+  },
+  bhavcopy_days: {
+    label: 'Bhavcopy (Daily)',
+    description: 'NSE daily equity + F&O data, one row per stock per trading day.',
+  },
+  bhavcopy_fut_expiry: {
+    label: 'Bhavcopy Futures (per expiry)',
+    description: 'Per-expiry futures volume/OI split behind each bhavcopy day.',
+  },
+  bhavcopy_option_expiry: {
+    label: 'Bhavcopy Options (per expiry)',
+    description: 'Per-expiry options volume/OI split behind each bhavcopy day.',
+  },
+  bhavcopy_option_strike: {
+    label: 'Bhavcopy Options (per strike)',
+    description: 'Per-strike CE/PE option data from the bhavcopy F&O file.',
+  },
+  fno_expiry_calendar: {
+    label: 'F&O Expiry Calendar',
+    description: 'Published expiry dates for the F&O universe.',
+  },
+  fno_stocks: {
+    label: 'F&O Stocks',
+    description: 'NSE F&O universe with lot sizes, sector, and trade band.',
+  },
+  trade_band_ranges: {
+    label: 'Trade Band Ranges',
+    description: 'Lot-size ranges defining the core / extended / avoid trade bands.',
+  },
+  band_overrides: {
+    label: 'Band Overrides',
+    description: 'Manual, hand-curated trade-band overrides for specific symbols.',
+  },
+  trade_contracts: {
+    label: 'Trade Contracts',
+    description: 'Dhan contract IDs preserved per backtest trade.',
+  },
+  tf_snapshots: {
+    label: 'TradeFinder Snapshots',
+    description: 'Captured TradeFinder R-Factor values per date/symbol (ground truth).',
+  },
+  oi_intraday: {
+    label: 'OI Intraday',
+    description: 'Intraday futures-OI snapshots powering the Live Urgency time-series.',
+  },
+  feature_toggles: {
+    label: 'Feature Toggles',
+    description: 'App-wide feature flags flipped from the /config page.',
+  },
+  fyers_candles: {
+    label: 'Fyers Candles',
+    description: 'Fyers live 5-min equity + futures candles (newest 20 recorded sessions).',
+  },
+  trade_suggestions: {
+    label: 'Trade Suggestions',
+    description: 'Persisted /trade-suggest calls with same-day outcomes.',
+  },
+  prompt_versions: {
+    label: 'Prompt Versions',
+    description: 'AI prompt version history (read-only audit).',
+  },
+  trade_commentary: {
+    label: 'Trade Commentary',
+    description: 'AI-generated end-of-day trade commentary rows.',
+  },
+  live_urgency_eod: {
+    label: 'Live Urgency (EOD)',
+    description: 'Permanent post-market copy of the Live Urgency board.',
+  },
+  market_holidays: {
+    label: 'Market Holidays',
+    description: 'NSE trading-holiday calendar.',
+  },
+  backtest_equity: {
+    label: 'Backtest Equity',
+    description: '5-min equity candles downloaded for backtesting.',
+  },
+  backtest_futures: {
+    label: 'Backtest Futures',
+    description: '5-min futures candles (+ OI) downloaded for backtesting.',
+  },
+  backtest_options: {
+    label: 'Backtest Options',
+    description: '5-min option candles downloaded for backtesting.',
+  },
 };
 
 /** Valid SQLite identifier — first line of defence before a name is quoted. */
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-export type ColumnInfo = { name: string; type: string; pk: boolean; notnull: boolean };
-export type TableInfo = { name: string; label: string; description: string; rowCount: number; columnCount: number };
+export type ColumnInfo = {
+  name: string;
+  type: string;
+  pk: boolean;
+  notnull: boolean;
+};
+export type TableInfo = {
+  name: string;
+  label: string;
+  description: string;
+  rowCount: number;
+  columnCount: number;
+};
 
 function prettify(name: string): string {
   return name
@@ -81,7 +158,7 @@ async function browsableTableNames(): Promise<string[]> {
        WHERE type = 'table'
          AND name NOT LIKE 'sqlite_%'
          AND name NOT LIKE '_prisma%'
-       ORDER BY name ASC`,
+       ORDER BY name ASC`
   );
   return rows.map((r) => r.name).filter((n) => IDENT_RE.test(n) && !DENYLISTED_TABLES.has(n));
 }
@@ -99,9 +176,9 @@ export async function assertBrowsableTable(table: string): Promise<string> {
 
 /** Column metadata for a validated table (via PRAGMA table_info). */
 export async function getColumns(validTable: string): Promise<ColumnInfo[]> {
-  const rows = await prisma.$queryRawUnsafe<
-    { name: string; type: string; notnull: number; pk: number }[]
-  >(`PRAGMA table_info("${validTable}")`);
+  const rows = await prisma.$queryRawUnsafe<{ name: string; type: string; notnull: number; pk: number }[]>(
+    `PRAGMA table_info("${validTable}")`
+  );
   return rows.map((r) => ({
     name: r.name,
     type: r.type || '',
@@ -115,9 +192,7 @@ export async function listBrowsableTables(): Promise<TableInfo[]> {
   const names = await browsableTableNames();
   const out: TableInfo[] = [];
   for (const name of names) {
-    const countRows = await prisma.$queryRawUnsafe<{ c: bigint | number }[]>(
-      `SELECT COUNT(*) AS c FROM "${name}"`,
-    );
+    const countRows = await prisma.$queryRawUnsafe<{ c: bigint | number }[]>(`SELECT COUNT(*) AS c FROM "${name}"`);
     const cols = await prisma.$queryRawUnsafe<unknown[]>(`PRAGMA table_info("${name}")`);
     const { label, description } = metaFor(name);
     out.push({

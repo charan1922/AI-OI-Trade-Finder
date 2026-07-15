@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { setAutoTradeSetting } from '@/lib/auto-trade/settings';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -11,8 +12,13 @@ export const runtime = 'nodejs';
  * unclassified mutating APIs (lib/auth/rbac.ts).
  */
 export async function POST(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
-    const body = (await req.json().catch(() => ({}))) as { key?: string; value?: string };
+    const body = (await req.json().catch(() => ({}))) as {
+      key?: string;
+      value?: string;
+    };
     if (!body.key || body.value === undefined) {
       return NextResponse.json({ success: false, error: 'body must be { key, value }' }, { status: 400 });
     }

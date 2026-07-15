@@ -29,6 +29,7 @@ const envSchema = z.object({
   // every page and read API, but all state-changing actions 403.
   APP_PASSWORD: z.string().optional(),
   APP_READONLY_PASSWORD: z.string().optional(),
+  GOOGLE_VIEWER_EMAILS: z.string().optional(),
   // Auth.js (NextAuth v5) Google sign-in — the "Continue with Google" button on
   // /login. AUTH_GOOGLE_ID/SECRET are read by the Google provider via Auth.js
   // env convention; AUTH_SECRET signs the session JWTs (generate with
@@ -63,6 +64,10 @@ const envSchema = z.object({
   // in the X-Telegram-Bot-Api-Secret-Token header for webhook verification.
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_CHAT_ID: z.string().optional(),
+  // Additional read-only recipients for commentary broadcasts (comma-separated
+  // numeric chat ids). They receive commentary only — operator commands and
+  // approval prompts still go exclusively to TELEGRAM_CHAT_ID.
+  TELEGRAM_VIEWER_CHAT_IDS: z.string().optional(),
   TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
 });
 

@@ -2,9 +2,10 @@ import { NextResponse } from 'next/server';
 import { approveTrade, rejectTrade } from '@/lib/auto-trade/approval';
 import { runAutoTradePass } from '@/lib/auto-trade/engine';
 import { exitTrade } from '@/lib/auto-trade/execution';
-import { getTrade, insertDecision, updateTrade } from '@/lib/auto-trade/store';
+import { getTrade, insertDecision } from '@/lib/auto-trade/store';
 import { todayIST } from '@/lib/dhan/market-feed';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,8 +23,13 @@ export const runtime = 'nodejs';
  * Admin-only via the proxy's default-deny on unclassified mutating APIs.
  */
 export async function POST(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
-    const body = (await req.json().catch(() => ({}))) as { action?: string; tradeId?: number };
+    const body = (await req.json().catch(() => ({}))) as {
+      action?: string;
+      tradeId?: number;
+    };
     const action = String(body.action ?? '');
 
     if (action === 'approve' || action === 'reject') {
@@ -32,7 +38,11 @@ export async function POST(req: Request) {
         return NextResponse.json({ success: false, error: 'tradeId required' }, { status: 400 });
       }
       const outcome = action === 'approve' ? await approveTrade(tradeId) : await rejectTrade(tradeId);
-      return NextResponse.json({ success: outcome.ok, message: outcome.message });
+      return NextResponse.json({
+        success: outcome.ok,
+        message: outcome.message,
+        state: outcome.state ?? null,
+      });
     }
 
     if (action === 'exit') {
@@ -50,45 +60,33 @@ export async function POST(req: Request) {
         promptTokens: null,
         completionTokens: null,
       });
-      return NextResponse.json({ success: outcome.ok, message: outcome.message });
+      return NextResponse.json({
+        success: outcome.ok,
+        message: outcome.message,
+        state: outcome.state ?? null,
+      });
     }
 
     if (action === 'void') {
-      // Clear a stuck 'open' trade that never confirmed a broker fill (a
-      // never-opened phantom). SAFE because there is no real position: we mark
-      // it failed WITHOUT placing any broker order. Refused for a trade that
-      // actually filled — that must be closed via 'exit' so the sell is real.
-      const tradeId = Number(body.tradeId);
-      const trade = Number.isFinite(tradeId) ? await getTrade(tradeId) : null;
-      if (!trade) return NextResponse.json({ success: false, error: 'unknown tradeId' }, { status: 400 });
-      if (trade.status !== 'open') {
-        return NextResponse.json({ success: false, error: `trade ${tradeId} is ${trade.status}, not open` }, { status: 400 });
-      }
-      if (trade.entryFillPremium != null) {
-        return NextResponse.json(
-          { success: false, error: 'trade has a confirmed fill — use Exit (real sell), not void' },
-          { status: 400 },
-        );
-      }
-      await updateTrade(tradeId, { status: 'failed', exitReason: 'voided by operator: entry never confirmed (no broker fill)' });
-      await insertDecision({
-        date: todayIST(),
-        pass: 'system',
-        provider: null,
-        model: null,
-        summary: `Operator voided unfilled trade ${trade.symbol} ${trade.strike}${trade.optionType} (no real position)`,
-        toolTrace: [],
-        promptTokens: null,
-        completionTokens: null,
-      });
-      return NextResponse.json({ success: true, message: `voided unfilled trade ${tradeId}` });
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Void is disabled: a missing local fill is not proof that the broker has no position. Check the broker and reconciliation audit before any manual correction.',
+        },
+        { status: 409 }
+      );
     }
 
     if (action === 'run-pass') {
       const url = new URL(req.url);
       const scan = await runTradeSuggest(url.origin);
       const outcome = await runAutoTradePass(scan);
-      return NextResponse.json({ success: true, ...outcome, scanned: scan.scanned });
+      return NextResponse.json({
+        success: true,
+        ...outcome,
+        scanned: scan.scanned,
+      });
     }
 
     return NextResponse.json({ success: false, error: `unknown action: ${action}` }, { status: 400 });

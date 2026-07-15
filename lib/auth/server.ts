@@ -16,7 +16,8 @@ import { NextResponse } from 'next/server';
 import { ROLE_HEADER, type Role } from './rbac';
 
 export function roleFromRequest(req: Request): Role {
-  return req.headers.get(ROLE_HEADER) === 'viewer' ? 'viewer' : 'admin';
+  if (!process.env.APP_PASSWORD) return 'admin';
+  return req.headers.get(ROLE_HEADER) === 'admin' ? 'admin' : 'viewer';
 }
 
 export function isReadOnlyRequest(req: Request): boolean {
@@ -31,6 +32,13 @@ export function readOnlyForbidden(action?: string): NextResponse {
       error: `Read-only access — ${action ? `'${action}'` : 'this action'} needs the operator (admin) login.`,
       role: 'viewer',
     },
-    { status: 403 },
+    { status: 403 }
   );
+}
+
+/** Defence in depth for sensitive route handlers. Proxy remains the first
+ * layer, but close-to-data checks prevent an accidental policy regression. */
+export function adminOnly(req: Request): NextResponse | null {
+  if (!process.env.APP_PASSWORD) return null;
+  return req.headers.get(ROLE_HEADER) === 'admin' ? null : readOnlyForbidden('this endpoint');
 }

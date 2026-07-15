@@ -14,11 +14,12 @@ export const runtime = 'nodejs';
  * any-time access point for the R-Factor, a chart, or an AI agent / loop engine.
  *
  * Served from the `fyers_candles` store, which the autonomous Fyers poller
- * fills full-day every 5 minutes (today only — the store clears at day change,
- * so there is no past-date access). FUT rows carry live open interest per
- * bucket. A symbol not yet tracked is enrolled into the download universe here
- * and its full-day series appears within one 5-min cycle. Never fabricates
- * bars — an empty series means we genuinely have none (yet).
+ * fills full-day every 5 minutes. The API intentionally returns only today's
+ * session even though the store retains the newest 20 recorded sessions for
+ * replay. FUT rows carry live open interest per bucket. A symbol not yet
+ * tracked is enrolled into the download universe here and its full-day series
+ * appears within one 5-min cycle. Never fabricates bars — an empty series
+ * means we genuinely have none (yet).
  */
 export async function GET(req: Request) {
   try {

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { CategorySection } from './_components/category-section';
 import { ClimbersSection } from './_components/climbers-section';
 import { HowToRead } from './_components/how-to-read';
+import { NiftyMarketContext } from './_components/nifty-market-context';
 
 // Live depth split by category, mirroring the /nse/movers panels. Each section
 // loads independently — its own F&O-gated mover list + its own live-quote poll —
@@ -37,7 +38,7 @@ export default function LiveUrgencyPage() {
     const timers = WARM_FEEDS.map((f, i) =>
       setTimeout(() => {
         void fetch(`/api/nse/pulse/${f}`).catch(() => {});
-      }, i * 400),
+      }, i * 400)
     );
     return () => timers.forEach(clearTimeout);
   }, []);
@@ -50,7 +51,7 @@ export default function LiveUrgencyPage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-7xl space-y-2 p-3">
+    <div className="mx-auto flex max-w-7xl flex-col gap-2 p-3">
       {/* Header */}
       <div className="flex flex-wrap items-center gap-2">
         <Gauge className="h-4 w-4 text-primary" />
@@ -87,37 +88,12 @@ export default function LiveUrgencyPage() {
         </div>
       </div>
 
-      {/* What the signals mean — plain English, compact single strip */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-[10px] leading-snug text-muted-foreground">
-        <span className="font-bold uppercase tracking-wide text-foreground">How to read</span>
-        <span>
-          <b className="text-foreground">Setup</b> = the verdict (strongest first)
-        </span>
-        <span>
-          <b className="text-foreground">R-Factor</b> = big-money activity today 1–8 (<i>where</i> money is — not an
-          enter-now signal)
-        </span>
-        <span>
-          <b className="text-foreground">Since 9:45</b> = what the move gave after the entry window opened (~0 = spent
-          at the open)
-        </span>
-        <span>
-          <b className="text-foreground">Spread</b> = cost to trade (tight = cheap)
-        </span>
-        <span>
-          <b className="text-foreground">Bid/Ask</b> = who&apos;s pushing (buyers vs sellers)
-        </span>
-        <span>
-          <b className="text-foreground">OI level</b> = conviction (high = big players in)
-        </span>
-        <span>
-          <b className="text-foreground">Turnover</b> = is it real? (high = real money)
-        </span>
-        <span className="text-muted-foreground/70">· each category is F&amp;O-only; a name can appear in more than one</span>
-      </div>
+      <div className="grid items-start gap-2 xl:grid-cols-[minmax(20rem,0.8fr)_minmax(0,2fr)]">
+        <NiftyMarketContext refreshSignal={refreshNonce} />
 
-      {/* Running race — rank-momentum across the feeds, above the static tables */}
-      <ClimbersSection refreshSignal={refreshNonce} />
+        {/* Running race - rank-momentum across the feeds, above the static tables */}
+        <ClimbersSection refreshSignal={refreshNonce} />
+      </div>
 
       {/* Category sections — each loads independently, like the /nse/movers panels */}
       <CategorySection
@@ -168,9 +144,9 @@ export default function LiveUrgencyPage() {
 
       <p className="text-[10px] text-muted-foreground">
         Live depth from Dhan, mover lists from NSE&apos;s public feeds — the same lists as{' '}
-        <span className="font-mono">/nse/movers</span>, gated to F&amp;O names with a live future (no &lsquo;avoid&rsquo;
-        lot-size band). Each section refreshes its list every 60s and re-polls live quotes every ~5s; quote requests are
-        rate-limited to stay within Dhan&apos;s 1 req/sec.
+        <span className="font-mono">/nse/movers</span>, gated to F&amp;O names with a live future (no
+        &lsquo;avoid&rsquo; lot-size band). Each section refreshes its list every 60s and re-polls live quotes every
+        ~5s; quote requests are rate-limited to stay within Dhan&apos;s 1 req/sec.
       </p>
     </div>
   );

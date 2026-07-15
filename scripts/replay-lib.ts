@@ -12,11 +12,11 @@
  * then scores each first sighting bar-by-bar to the close (SL/target
  * first-touch; both in one bar counts as SL — conservative).
  *
- * Universe = symbols in oi_intraday for the date (what /live actually
- * tracked), baselines = bhavcopy STRICTLY BEFORE the date. Known fidelity
- * gaps vs live, stated not hidden: bid/ask weren't recorded (the R-Factor
- * spread factor reports unavailable; live had it), and option premiums
- * weren't recorded (the affordability gate is skipped).
+ * Universe = the point-in-time NSE candidate slices when rank snapshots exist
+ * (otherwise the recorded oi_intraday universe), baselines = bhavcopy STRICTLY
+ * BEFORE the date. Known fidelity gap vs live, stated not hidden: option
+ * premiums were not recorded, so the affordability gate is skipped. The exact
+ * recorded spread percentage reconstructs the R-Factor liquidity input.
  *
  * CLIs on top of this library:
  *   npx tsx scripts/replay-window.ts [date]      — named-variant grid
@@ -48,19 +48,25 @@ import {
   MIN_CONFIDENCE,
   MIN_NSE_OI_PCT,
   MIN_OI_LEVEL,
+  MIN_OPT_PREMIUM_CR,
+  MIN_OPT_SHARE,
   MIN_RFACTOR,
   MIN_TURNOVER_SCORE,
+  MOMENTUM_MIN_CHANGE_PCT,
   SL_ATR_MULT,
   TARGET_RR,
   USE_BREAKOUT_BYPASS,
   USE_EXTENDED_TREND_BYPASS,
+  USE_MOMENTUM_BREAKOUT,
   WEIGHTS,
 } from '../lib/trade-suggest/config';
 import { qualifiesByBreakout } from '../lib/trade-suggest/breakout-bypass';
 import { qualifiesExtendedTrend } from '../lib/trade-suggest/extended-bypass';
+import { qualifiesMomentumBreakout } from '../lib/trade-suggest/momentum-breakout';
 import { buildSpotPlan, computeCompositeScore, type ScoreWeights } from '../lib/trade-suggest/scoring';
 
 const db = new Database('./data/project-r.db', { readonly: true });
+const REPLAY_DAILY_TRADE_CAP = 2;
 
 // ─── Experiment configuration (what the loop is allowed to mutate) ──────────
 export interface Variant {
@@ -88,6 +94,12 @@ export interface Variant {
   breakoutMinRFactor: number;
   /** Require trend agreement (Supertrend/VWAP) for the bypass. */
   breakoutRequireTrend: boolean;
+  /** Momentum-breakout path (momentum-breakout.ts): confirmed OR breakout +
+   *  BOTH Supertrend and VWAP agreeing + move ≥ momentumMinChangePct clears the
+   *  R-Factor, confidence, OI and quiet-setup gates — the short-covering class
+   *  every accumulation factor rejects by design (ADANIGREEN 2026-07-14). */
+  momentumBreakout: boolean;
+  momentumMinChangePct: number;
   /** When non-null, the options-led OI path (nseOiPct ≥ minNseOiPct) ALSO
    *  requires the combined-OI slope over the trailing ~30 min to be ≥ this
    *  (pct-points; lib/signals/combined-oi-slope.ts) — "the build must be
@@ -117,6 +129,8 @@ export const SHIPPED_VARIANT: Variant = {
   breakoutBypass: USE_BREAKOUT_BYPASS,
   breakoutMinRFactor: BREAKOUT_BYPASS_MIN_RFACTOR,
   breakoutRequireTrend: BREAKOUT_BYPASS_REQUIRE_TREND,
+  momentumBreakout: USE_MOMENTUM_BREAKOUT,
+  momentumMinChangePct: MOMENTUM_MIN_CHANGE_PCT,
   minNseOiSlope: null,
   requireSectorAlign: false,
 };
@@ -144,11 +158,19 @@ export interface DayData {
   nseOiByBucket: Map<string, { bucketTs: number; nseOiPct: number | null }[]>;
   sectorBySymbol: Map<string, string>;
   baselines: Map<string, BaselinePlus>;
+  candidateSymbolsByTick: Map<number, Set<string>> | null;
+  coverage: {
+    rankSnapshots: boolean;
+    scanModeRecorded: boolean;
+    optionsLedFields: boolean;
+  };
 }
 
 /** All sessions with recorded intraday OI (each is a usable benchmark day). */
 export function listRecordedDates(): string[] {
-  return (db.prepare(`SELECT DISTINCT date FROM oi_intraday ORDER BY date ASC`).all() as { date: string }[]).map((r) => r.date);
+  return (db.prepare(`SELECT DISTINCT date FROM oi_intraday ORDER BY date ASC`).all() as { date: string }[]).map(
+    (r) => r.date
+  );
 }
 
 const avg = (values: number[]): number | null => {
@@ -166,9 +188,23 @@ const extremeOf = (values: number[], n: number, mode: 'max' | 'min'): number | n
 
 /** Load one recorded session; null when nothing was recorded for the date. */
 export function loadDay(date: string): DayData | null {
-  const symbols = (db.prepare(`SELECT DISTINCT symbol FROM oi_intraday WHERE date=?`).all(date) as { symbol: string }[]).map(
-    (r) => r.symbol,
+  const oiColumns = new Set(
+    (db.prepare(`PRAGMA table_info(oi_intraday)`).all() as { name: string }[]).map((column) => column.name)
   );
+  const hasOptionsLedColumns = oiColumns.has('optShare') && oiColumns.has('premValueCr');
+  const hasOptionsLedFields =
+    hasOptionsLedColumns &&
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM oi_intraday
+           WHERE date=? AND optShare IS NOT NULL AND premValueCr IS NOT NULL`
+        )
+        .get(date) as { c: number }
+    ).c > 0;
+  const symbols = (
+    db.prepare(`SELECT DISTINCT symbol FROM oi_intraday WHERE date=?`).all(date) as { symbol: string }[]
+  ).map((r) => r.symbol);
   if (symbols.length === 0) return null;
   // DATA-COVERAGE GUARD: the replay needs 5-min candles (opening range, ATR,
   // SL, outcome scoring). The Fyers recorder only started 2026-07-03; earlier
@@ -176,10 +212,17 @@ export function loadDay(date: string): DayData | null {
   // zero picks as an artifact, which poisons the experiment metric (found
   // 2026-07-04: the loop "improved" by loosening gates against 8 empty days).
   // A day without candle coverage is not a benchmark day.
-  const eqBarCount = (db.prepare(`SELECT COUNT(*) AS c FROM fyers_candles WHERE date=? AND instrument='EQ'`).get(date) as { c: number }).c;
+  const eqBarCount = (
+    db.prepare(`SELECT COUNT(*) AS c FROM fyers_candles WHERE date=? AND instrument='EQ'`).get(date) as { c: number }
+  ).c;
   if (eqBarCount === 0) return null;
   const sectorBySymbol = new Map(
-    (db.prepare(`SELECT symbol, sector FROM fno_stocks`).all() as { symbol: string; sector: string }[]).map((r) => [r.symbol, r.sector]),
+    (
+      db.prepare(`SELECT symbol, sector FROM fno_stocks`).all() as {
+        symbol: string;
+        sector: string;
+      }[]
+    ).map((r) => [r.symbol, r.sector])
   );
   const oiSeries = new Map<string, OiPoint[]>();
   const eqBars = new Map<string, Bar[]>();
@@ -189,24 +232,28 @@ export function loadDay(date: string): DayData | null {
       s,
       db
         .prepare(
-          `SELECT bucketTs, ltp, futOi, oiLevel, futTurnover, changePctOpen, spreadPct, imbalance
-           FROM oi_intraday WHERE symbol=? AND date=? ORDER BY bucketTs ASC`,
+          `SELECT bucketTs, ltp, futOi, oiLevel, futTurnover, changePctOpen, spreadPct, imbalance,
+                  ${oiColumns.has('optShare') ? 'optShare' : 'NULL'} AS optShare,
+                  ${oiColumns.has('premValueCr') ? 'premValueCr' : 'NULL'} AS premValueCr
+           FROM oi_intraday WHERE symbol=? AND date=? ORDER BY bucketTs ASC`
         )
-        .all(s, date) as OiPoint[],
+        .all(s, date) as OiPoint[]
     );
     eqBars.set(
       s,
       db
         .prepare(
-          `SELECT bucketTs, open, high, low, close, volume FROM fyers_candles WHERE symbol=? AND date=? AND instrument='EQ' ORDER BY bucketTs ASC`,
+          `SELECT bucketTs, open, high, low, close, volume FROM fyers_candles WHERE symbol=? AND date=? AND instrument='EQ' ORDER BY bucketTs ASC`
         )
-        .all(s, date) as Bar[],
+        .all(s, date) as Bar[]
     );
     nseOiByBucket.set(
       s,
       db
-        .prepare(`SELECT bucketTs, nseOiPct FROM fyers_candles WHERE symbol=? AND date=? AND instrument='FUT' ORDER BY bucketTs ASC`)
-        .all(s, date) as { bucketTs: number; nseOiPct: number | null }[],
+        .prepare(
+          `SELECT bucketTs, nseOiPct FROM fyers_candles WHERE symbol=? AND date=? AND instrument='FUT' ORDER BY bucketTs ASC`
+        )
+        .all(s, date) as { bucketTs: number; nseOiPct: number | null }[]
     );
   }
 
@@ -217,7 +264,7 @@ export function loadDay(date: string): DayData | null {
     const rs = db
       .prepare(
         `SELECT futOi, optOi, futTurnover, futVolume, eqTurnover, eqHigh, eqLow, eqClose
-         FROM bhavcopy_days WHERE symbol=? AND date<? ORDER BY date DESC LIMIT 25`,
+         FROM bhavcopy_days WHERE symbol=? AND date<? ORDER BY date DESC LIMIT 25`
       )
       .all(s, date) as Record<string, number | null>[];
     if (rs.length === 0) continue;
@@ -236,12 +283,28 @@ export function loadDay(date: string): DayData | null {
           const h = Number(r.eqHigh ?? 0);
           const l = Number(r.eqLow ?? 0);
           return c > 0 && h >= l && h > 0 ? (h - l) / c : 0;
-        }),
+        })
       ),
-      high5d: extremeOf(rs.map((r) => Number(r.eqHigh ?? 0)), 5, 'max'),
-      low5d: extremeOf(rs.map((r) => Number(r.eqLow ?? 0)), 5, 'min'),
-      high20d: extremeOf(rs.map((r) => Number(r.eqHigh ?? 0)), 20, 'max'),
-      low20d: extremeOf(rs.map((r) => Number(r.eqLow ?? 0)), 20, 'min'),
+      high5d: extremeOf(
+        rs.map((r) => Number(r.eqHigh ?? 0)),
+        5,
+        'max'
+      ),
+      low5d: extremeOf(
+        rs.map((r) => Number(r.eqLow ?? 0)),
+        5,
+        'min'
+      ),
+      high20d: extremeOf(
+        rs.map((r) => Number(r.eqHigh ?? 0)),
+        20,
+        'max'
+      ),
+      low20d: extremeOf(
+        rs.map((r) => Number(r.eqLow ?? 0)),
+        20,
+        'min'
+      ),
       eqTurnover20dAvg: avg(rs.map((r) => Number(r.eqTurnover ?? 0))),
       combinedOiPrev: pos(Number(prev.futOi ?? 0) + Number(prev.optOi ?? 0)),
       combinedOi20dAvg: avg(rs.map((r) => Number(r.futOi ?? 0) + Number(r.optOi ?? 0))),
@@ -253,7 +316,83 @@ export function loadDay(date: string): DayData | null {
   for (let m = 9 * 60 + 40; m <= 11 * 60; m += 5) {
     ticks.push(tickEpoch(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`));
   }
-  return { date, symbols, ticks, oiSeries, eqBars, nseOiByBucket, sectorBySymbol, baselines };
+  const rankTableExists =
+    (
+      db.prepare(`SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='rank_snapshots'`).get() as {
+        c: number;
+      }
+    ).c > 0;
+  let candidateSymbolsByTick: Map<number, Set<string>> | null = null;
+  let scanModeRecorded = false;
+  if (rankTableExists) {
+    const rankColumns = new Set(
+      (
+        db.prepare(`PRAGMA table_info(rank_snapshots)`).all() as {
+          name: string;
+        }[]
+      ).map((column) => column.name)
+    );
+    const rankRows = db
+      .prepare(
+        `SELECT bucketTs, feed, symbol, rank,
+                ${rankColumns.has('fullUniverse') ? 'fullUniverse' : 'NULL'} AS fullUniverse
+         FROM rank_snapshots
+         WHERE date=? ORDER BY feed, bucketTs, rank`
+      )
+      .all(date) as {
+      bucketTs: number;
+      feed: string;
+      symbol: string;
+      rank: number;
+      fullUniverse: number | null;
+    }[];
+    if (rankRows.length > 0) {
+      scanModeRecorded = rankRows.some((row) => row.fullUniverse != null);
+      const byFeedBucket = new Map<string, Map<number, { symbol: string; rank: number }[]>>();
+      for (const row of rankRows) {
+        const buckets = byFeedBucket.get(row.feed) ?? new Map();
+        const bucket = buckets.get(Number(row.bucketTs)) ?? [];
+        bucket.push({ symbol: row.symbol, rank: Number(row.rank) });
+        buckets.set(Number(row.bucketTs), bucket);
+        byFeedBucket.set(row.feed, buckets);
+      }
+      candidateSymbolsByTick = new Map();
+      for (const tick of ticks) {
+        const mode = [...rankRows]
+          .filter((row) => row.bucketTs <= tick && row.fullUniverse != null)
+          .sort((a, b) => b.bucketTs - a.bucketTs)[0]?.fullUniverse;
+        if (mode === 1) {
+          candidateSymbolsByTick.set(tick, new Set(symbols));
+          continue;
+        }
+        const members = new Set<string>();
+        for (const [feed, buckets] of byFeedBucket) {
+          const latest = [...buckets.keys()].filter((bucket) => bucket <= tick).sort((a, b) => b - a)[0];
+          if (latest == null) continue;
+          for (const row of buckets.get(latest) ?? []) {
+            if (feed !== 'oi' || row.rank <= 24) members.add(row.symbol);
+          }
+        }
+        candidateSymbolsByTick.set(tick, members);
+      }
+    }
+  }
+  return {
+    date,
+    symbols,
+    ticks,
+    oiSeries,
+    eqBars,
+    nseOiByBucket,
+    sectorBySymbol,
+    baselines,
+    candidateSymbolsByTick,
+    coverage: {
+      rankSnapshots: candidateSymbolsByTick != null,
+      scanModeRecorded,
+      optionsLedFields: hasOptionsLedFields,
+    },
+  };
 }
 
 // ─── Replay one variant over one day ─────────────────────────────────────────
@@ -301,7 +440,10 @@ export interface ReplayPick {
   reasons: string[];
 }
 
-export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPick[]; gateCounts: Record<string, number> } {
+export function replayVariant(
+  day: DayData,
+  variant: Variant
+): { picks: ReplayPick[]; gateCounts: Record<string, number> } {
   const firstSeen = new Map<string, ReplayPick>();
   const gateCounts: Record<string, number> = {};
   const bump = (k: string) => {
@@ -310,6 +452,9 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
 
   for (const tick of day.ticks) {
     const tickBucket = bucketOf(tick);
+    const candidateSymbols = day.candidateSymbolsByTick
+      ? [...(day.candidateSymbolsByTick.get(tick) ?? new Set<string>())]
+      : day.symbols;
     interface Surv {
       row: LiveUrgencyRow;
       sector: string;
@@ -328,23 +473,34 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
     // Sector strength as-of this tick (turnover-weighted move + breadth, the
     // heatmap's aggregation) — for the requireSectorAlign gate + pick evidence.
     const sectorTiles: { sector: string; pct: number; turnover: number }[] = [];
-    for (const s of day.symbols) {
+    for (const s of candidateSymbols) {
       const series = (day.oiSeries.get(s) ?? []).filter((p) => p.bucketTs <= tick);
       const snap = series[series.length - 1];
       const sector = day.sectorBySymbol.get(s);
       if (snap && snap.ltp > 0 && sector) {
-        sectorTiles.push({ sector, pct: snap.changePctOpen ?? 0, turnover: snap.futTurnover > 0 ? snap.futTurnover : 0 });
+        sectorTiles.push({
+          sector,
+          pct: snap.changePctOpen ?? 0,
+          turnover: snap.futTurnover > 0 ? snap.futTurnover : 0,
+        });
       }
     }
     const sectorAgg = new Map<string, SectorAggregate>(aggregateSectors(sectorTiles).map((a) => [a.sector, a]));
-    const alignmentOf = (sector: string, direction: 'bullish' | 'bearish'): { sa: SectorAggregate | null; aligned: boolean | null } => {
+    const alignmentOf = (
+      sector: string,
+      direction: 'bullish' | 'bearish'
+    ): { sa: SectorAggregate | null; aligned: boolean | null } => {
       const sa = sectorAgg.get(sector) ?? null;
       const aligned =
-        sa == null || Math.abs(sa.weightedPct) < 0.1 ? null : direction === 'bullish' ? sa.weightedPct > 0 : sa.weightedPct < 0;
+        sa == null || Math.abs(sa.weightedPct) < 0.1
+          ? null
+          : direction === 'bullish'
+            ? sa.weightedPct > 0
+            : sa.weightedPct < 0;
       return { sa, aligned };
     };
 
-    for (const s of day.symbols) {
+    for (const s of candidateSymbols) {
       const series = (day.oiSeries.get(s) ?? []).filter((p) => p.bucketTs <= tick);
       const snap = series[series.length - 1];
       if (!snap || snap.ltp <= 0) {
@@ -369,6 +525,7 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
           changePctOpen: snap.changePctOpen,
           bid: null, // not recorded — the spread factor reports unavailable (live had it)
           ask: null,
+          spreadPct: snap.spreadPct,
           futOi: snap.futOi > 0 ? snap.futOi : null,
           turnover: snap.futTurnover > 0 ? snap.futTurnover : null,
           dayHigh: sc.dayHigh,
@@ -376,7 +533,7 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
         },
         base,
         sc,
-        new Date(tick * 1000),
+        new Date(tick * 1000)
       );
       const r = rfIn ? computeRFactor(rfIn, { weights: variant.rfWeights }) : null;
       const row: LiveUrgencyRow = {
@@ -399,7 +556,14 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
         rFactorBias: r?.bias ?? null,
         rFactorConfidence: r?.confidence ?? null,
         rFactorAfterEntry: r?.afterEntryWindow ?? null,
-        rFactors: r?.factors.map((f) => ({ label: f.label, score: f.score, vote: f.vote, available: f.available, detail: f.detail })) ?? null,
+        rFactors:
+          r?.factors.map((f) => ({
+            label: f.label,
+            score: f.score,
+            vote: f.vote,
+            available: f.available,
+            detail: f.detail,
+          })) ?? null,
       };
 
       // ── The engine's gate sequence, verbatim order (thresholds from variant) ──
@@ -412,25 +576,56 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
         bump('neutralBias');
         continue;
       }
-      if ((row.rFactor ?? 0) < variant.minRFactor) {
-        bump('weakRFactor');
-        continue;
-      }
-      if ((row.rFactorConfidence ?? 0) < variant.minConfidence) {
-        bump('lowConfidence');
-        continue;
-      }
-      // direction + breakout are computed BEFORE the OI gate so the breakout
-      // bypass can use them (they're used again below for the pick, unchanged).
+      // direction + breakout + trend indicators are computed BEFORE the R/
+      // confidence gates so the momentum-breakout path (and the OI-gate breakout
+      // bypass) can use them — mirrors the live engine's order exactly.
       const direction = row.rFactorBias === 'buy' ? 'bullish' : 'bearish';
       const orBreakout =
         sc.openRangeComplete &&
-        (direction === 'bullish' ? sc.openRangeHigh != null && snap.ltp > sc.openRangeHigh : sc.openRangeLow != null && snap.ltp < sc.openRangeLow);
+        (direction === 'bullish'
+          ? sc.openRangeHigh != null && snap.ltp > sc.openRangeHigh
+          : sc.openRangeLow != null && snap.ltp < sc.openRangeLow);
+      const st = supertrend(bars);
+      const vw = sessionVwap(bars);
+      const supertrendAligned =
+        st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
+      const vwapAligned = vw == null ? null : direction === 'bullish' ? snap.ltp > vw : snap.ltp < vw;
 
+      // Momentum-breakout path (variant experiment; see momentum-breakout.ts):
+      // clears the R-Factor, confidence, OI and quiet-setup gates on a confirmed
+      // OR breakout + BOTH trend indicators agreeing + a real move behind it.
+      const momentumOk =
+        variant.momentumBreakout &&
+        qualifiesMomentumBreakout(
+          {
+            orBreakout,
+            supertrendAligned,
+            vwapAligned,
+            changePctOpen: snap.changePctOpen,
+            direction,
+          },
+          { minChangePct: variant.momentumMinChangePct }
+        );
+      if (momentumOk) bump('momentumAdmitted');
+
+      if (!momentumOk && (row.rFactor ?? 0) < variant.minRFactor) {
+        bump('weakRFactor');
+        continue;
+      }
+      if (!momentumOk && (row.rFactorConfidence ?? 0) < variant.minConfidence) {
+        bump('lowConfidence');
+        continue;
+      }
       const futOiOk = (row.oiLevel ?? 0) >= variant.minOiLevel;
       const nseRows = (day.nseOiByBucket.get(s) ?? []).filter((b) => b.bucketTs <= tick && b.nseOiPct != null);
       const nseOiPct = nseRows.length > 0 ? nseRows[nseRows.length - 1].nseOiPct : null;
-      let nseOiOk = nseOiPct != null && nseOiPct >= variant.minNseOiPct;
+      let nseOiOk =
+        nseOiPct != null &&
+        nseOiPct >= variant.minNseOiPct &&
+        snap.optShare != null &&
+        snap.optShare >= MIN_OPT_SHARE &&
+        snap.premValueCr != null &&
+        snap.premValueCr >= MIN_OPT_PREMIUM_CR;
       // Slope refinement of the options-led path: the combined-OI build must
       // still be moving over the trailing ~30 min, not just a stale level.
       if (nseOiOk && variant.minNseOiSlope != null) {
@@ -442,16 +637,15 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
       // evidence is absent AND the variant enables it.
       let breakoutOk = false;
       if (variant.breakoutBypass && !futOiOk && !nseOiOk && orBreakout) {
-        const vw = sessionVwap(bars);
-        const st = supertrend(bars);
-        const vwapAligned = vw == null ? null : direction === 'bullish' ? snap.ltp > vw : snap.ltp < vw;
-        const supertrendAligned = st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
         breakoutOk = qualifiesByBreakout(
           { orBreakout, supertrendAligned, vwapAligned, rFactor: row.rFactor },
-          { minRFactor: variant.breakoutMinRFactor, requireTrendAlign: variant.breakoutRequireTrend },
+          {
+            minRFactor: variant.breakoutMinRFactor,
+            requireTrendAlign: variant.breakoutRequireTrend,
+          }
         );
       }
-      if (!futOiOk && !nseOiOk && !breakoutOk) {
+      if (!futOiOk && !nseOiOk && !breakoutOk && !momentumOk) {
         bump('lowOiLevel');
         continue;
       }
@@ -465,12 +659,23 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
         bump('directionDisagree');
         continue;
       }
+      // Supertrend/VWAP alignment hard gates — the live engine enforces these
+      // (added from the July 10–13 benchmark: 0/3 wins misaligned); mirrored
+      // here for fidelity. null = not yet computable = gate skipped, as live.
+      if (supertrendAligned === false) {
+        bump('supertrendDisagree');
+        continue;
+      }
+      if (vwapAligned === false) {
+        bump('vwapDisagree');
+        continue;
+      }
       // Sector-alignment gate (variant experiment; flat/unknown sectors pass).
       if (variant.requireSectorAlign && alignmentOf(day.sectorBySymbol.get(s) ?? '', direction).aligned === false) {
         bump('sectorMisaligned');
         continue;
       }
-      if (verdict.level === 'quiet') {
+      if (verdict.level === 'quiet' && !momentumOk) {
         bump('quietSetup');
         continue;
       }
@@ -508,7 +713,7 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
           extended: sv.extended,
         },
         variant.weights,
-        variant.extendedMult,
+        variant.extendedMult
       );
     }
     survivors.sort((a, b) => b.score - a.score);
@@ -526,23 +731,33 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
           const vw = sessionVwap(sv.bars);
           const st = supertrend(sv.bars);
           const vwapAligned = vw == null ? null : sv.direction === 'bullish' ? ltp > vw : ltp < vw;
-          const supertrendAligned = st == null ? null : sv.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
+          const supertrendAligned =
+            st == null ? null : sv.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
           return qualifiesExtendedTrend(
-            { orBreakout: sv.orBreakout, supertrendAligned, vwapAligned, rFactor: sv.row.rFactor },
+            {
+              orBreakout: sv.orBreakout,
+              supertrendAligned,
+              vwapAligned,
+              rFactor: sv.row.rFactor,
+            },
             {
               minRFactor: variant.extendedBypassMinRFactor ?? EXTENDED_BYPASS_MIN_RFACTOR,
               requireSupertrend: variant.extendedBypassRequireSupertrend ?? EXTENDED_BYPASS_REQUIRE_SUPERTREND,
-            },
+            }
           );
         })
       : survivors;
     for (const sv of eligible.slice(0, MAX_PICKS)) {
+      if (firstSeen.size >= REPLAY_DAILY_TRADE_CAP) break;
       const side: 'CE' | 'PE' = sv.direction === 'bullish' ? 'CE' : 'PE';
       const key = `${sv.row.symbol}:${side}`;
       if (firstSeen.has(key)) continue;
       const entry = sv.row.ltp ?? 0;
       const a14 = atr(sv.bars);
-      const plan = buildSpotPlan(side, entry, sv.bars, sv.or, tickBucket, { atr: a14, atrMult: variant.atrMult });
+      const plan = buildSpotPlan(side, entry, sv.bars, sv.or, tickBucket, {
+        atr: a14,
+        atrMult: variant.atrMult,
+      });
       const vw = sessionVwap(sv.bars);
       const st = supertrend(sv.bars);
       const base = day.baselines.get(sv.row.symbol);
@@ -550,7 +765,9 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
       // Session fraction elapsed at the tick (IST): minutes since 09:15 ÷ 375.
       const istMin = ((((tick + 19800) % 86400) + 86400) % 86400) / 60;
       const frac = Math.min(1, Math.max(0.02, (istMin - (9 * 60 + 15)) / 375));
-      const nseRows = (day.nseOiByBucket.get(sv.row.symbol) ?? []).filter((b) => b.bucketTs <= tick && b.nseOiPct != null);
+      const nseRows = (day.nseOiByBucket.get(sv.row.symbol) ?? []).filter(
+        (b) => b.bucketTs <= tick && b.nseOiPct != null
+      );
       const nsePct = nseRows.length > 0 ? nseRows[nseRows.length - 1].nseOiPct : null;
       const nseSlope = combinedOiSlope(nseRows, tick);
       const { sa: pickSa, aligned: pickSectorAligned } = alignmentOf(sv.sector, sv.direction);
@@ -558,7 +775,9 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
       const asOfMin = Math.round(istMin);
       const asOfIST = `${String(Math.floor(asOfMin / 60)).padStart(2, '0')}:${String(asOfMin % 60).padStart(2, '0')}`;
       const eqTurnoverRatio =
-        base?.eqTurnover20dAvg != null && eqTurnNow > 0 ? Math.round((eqTurnNow / (base.eqTurnover20dAvg * frac)) * 100) / 100 : null;
+        base?.eqTurnover20dAvg != null && eqTurnNow > 0
+          ? Math.round((eqTurnNow / (base.eqTurnover20dAvg * frac)) * 100) / 100
+          : null;
       const combinedOiLevel =
         base?.combinedOiPrev != null && base.combinedOi20dAvg != null && nsePct != null
           ? Math.round(((base.combinedOiPrev * (1 + nsePct / 100)) / base.combinedOi20dAvg) * 1000) / 1000
@@ -574,20 +793,30 @@ export function replayVariant(day: DayData, variant: Variant): { picks: ReplayPi
         nsePct != null
           ? `NSE combined OI ${nsePct >= 0 ? '+' : ''}${nsePct.toFixed(1)}% (fut+opt)`
           : 'NSE combined OI not recorded at this tick',
-        ...(nseSlope != null ? [`combined-OI slope ${nseSlope >= 0 ? '+' : ''}${nseSlope.toFixed(1)} pts / ~30 min`] : []),
-        ...(combinedOiLevel != null ? [`combined fut+opt OI ≈${combinedOiLevel.toFixed(2)}× 20-day avg (derived)`] : []),
+        ...(nseSlope != null
+          ? [`combined-OI slope ${nseSlope >= 0 ? '+' : ''}${nseSlope.toFixed(1)} pts / ~30 min`]
+          : []),
+        ...(combinedOiLevel != null
+          ? [`combined fut+opt OI ≈${combinedOiLevel.toFixed(2)}× 20-day avg (derived)`]
+          : []),
         `change from open ${r.changePctOpen != null ? `${r.changePctOpen >= 0 ? '+' : ''}${r.changePctOpen.toFixed(2)}%` : 'n/a'}`,
-        sv.orBreakout ? 'trading beyond the opening range (breakout confirmed)' : 'inside the opening range (no breakout yet)',
+        sv.orBreakout
+          ? 'trading beyond the opening range (breakout confirmed)'
+          : 'inside the opening range (no breakout yet)',
         st != null
           ? `Supertrend(10,3) ${st.direction}${supertrendAligned ? ' — agrees' : ' — DISAGREES with the trade'}`
           : 'Supertrend unavailable',
-        vw != null ? `${vwapAligned ? 'favorable' : 'wrong'} side of session VWAP ${vw.toFixed(2)}` : 'VWAP unavailable',
+        vw != null
+          ? `${vwapAligned ? 'favorable' : 'wrong'} side of session VWAP ${vw.toFixed(2)}`
+          : 'VWAP unavailable',
         ...(pickSa != null && pickSectorAligned != null
           ? [
               `sector ${sv.sector} ${pickSectorPct! >= 0 ? '+' : ''}${pickSectorPct!.toFixed(2)}% (turnover-weighted, ${pickSa.advancers}↑/${pickSa.decliners}↓) — ${pickSectorAligned ? 'agrees' : 'FIGHTING the sector'}`,
             ]
           : []),
-        ...(eqTurnoverRatio != null ? [`equity turnover ≈${eqTurnoverRatio.toFixed(1)}× time-adjusted 20-day pace`] : []),
+        ...(eqTurnoverRatio != null
+          ? [`equity turnover ≈${eqTurnoverRatio.toFixed(1)}× time-adjusted 20-day pace`]
+          : []),
         `spread ${r.spreadPct != null ? `${r.spreadPct.toFixed(3)}%` : 'n/a'}`,
       ];
       firstSeen.set(key, {
@@ -675,7 +904,9 @@ export interface DayResult {
 }
 export function evaluateDay(day: DayData, variant: Variant): DayResult {
   const { picks } = replayVariant(day, variant);
-  const outs = picks.map((p) => ({ p, o: scorePick(day, p) })).filter((x): x is { p: ReplayPick; o: Outcome } => x.o !== null);
+  const outs = picks
+    .map((p) => ({ p, o: scorePick(day, p) }))
+    .filter((x): x is { p: ReplayPick; o: Outcome } => x.o !== null);
   return {
     date: day.date,
     picks: outs,

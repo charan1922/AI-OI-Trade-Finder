@@ -171,6 +171,8 @@ model OiIntraday {
   changePctOpen Float?
   spreadPct     Float?
   imbalance     Float?
+  optShare      Float?
+  premValueCr   Float?
 
   @@id([symbol, date, bucketTs])
   @@index([date, symbol])
@@ -368,14 +370,18 @@ model AutoOrder {
   mode          String
   side          String
   qtyUnits      Int
+  correlationId String?
   brokerOrderId String?
   status        String
   avgFillPrice  Float?
   error         String?
+  reconcileAttempts Int @default(0)
+  lastReconciledAt String?
   createdAt     String
   updatedAt     String
 
   @@index([tradeId])
+  @@unique([broker, correlationId])
   @@map("auto_orders")
 }
 
@@ -438,7 +444,7 @@ model LiveUrgencyEod {
 
 /// Rank tracker — per-5-min leaderboard rank of each F&O name in each NSE pulse
 /// feed (the "running race"). Runtime-created in lib/signals/rank-tracker.ts;
-/// mirrored here so `db push` on a fresh volume keeps it. Retention: today only.
+/// mirrored here so `db push` on a fresh volume keeps it. Retention: 20 sessions.
 model RankSnapshot {
   date       String
   bucketTs   Int
@@ -446,10 +452,21 @@ model RankSnapshot {
   symbol     String
   rank       Int
   value      Float?
+  fullUniverse Int?
   capturedAt String
 
   @@id([date, bucketTs, feed, symbol])
   @@index([date, feed, bucketTs])
   @@map("rank_snapshots")
+}
+
+/// Cross-process singleton lease used during rolling deploy overlap.
+model RuntimeLease {
+  name      String @id
+  owner     String
+  expiresAt Int
+  updatedAt String
+
+  @@map("runtime_leases")
 }
 

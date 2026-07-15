@@ -9,8 +9,9 @@
  * Storage follows the repo's derived-table convention (intraday-candles.ts /
  * oi-intraday.ts): raw CREATE TABLE IF NOT EXISTS so it works without a
  * migration, mirrored by the FyersCandle model in schema.prisma so `db push`
- * keeps it. Only TODAY's rows are retained — pruneToDate() runs each cycle,
- * so the previous session clears itself on the first poll of a new day.
+ * keeps it. The newest FYERS_CANDLE_RETENTION_SESSIONS sessions are retained —
+ * pruneCandleHistory() runs each cycle; today serves /live, the trailing sessions
+ * feed the replay benchmark (scripts/replay-lib.ts).
  *
  * Candle upserts deliberately use ON CONFLICT DO UPDATE that leaves `oi`
  * untouched (a plain INSERT OR REPLACE would zero previously-attached OI on
@@ -71,7 +72,7 @@ export async function ensureFyersCandlesTable(): Promise<void> {
     }
   }
   await prisma.$executeRawUnsafe(
-    `CREATE INDEX IF NOT EXISTS idx_fyers_candles_date ON fyers_candles (date, symbol, instrument)`,
+    `CREATE INDEX IF NOT EXISTS idx_fyers_candles_date ON fyers_candles (date, symbol, instrument)`
   );
   tableReady = true;
 }
@@ -91,7 +92,7 @@ export async function upsertCandles(
   instrument: FyersInstrument,
   date: string,
   bars: FyersBar[],
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<number> {
   const usable = bars.filter((b) => b.open > 0);
   if (usable.length === 0) return 0;
@@ -117,7 +118,7 @@ export async function upsertCandles(
          close = excluded.close,
          volume = excluded.volume,
          updatedAt = excluded.updatedAt`,
-      ...params,
+      ...params
     );
   }
   return usable.length;
@@ -150,7 +151,7 @@ export async function attachFutDepth(
   date: string,
   bucketTs: number,
   d: FutDepthFields,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<void> {
   await ensureFyersCandlesTable();
   await prisma.$executeRawUnsafe(
@@ -181,14 +182,32 @@ export async function attachFutDepth(
     d.sellQty,
     d.futLtp,
     d.nseOiPct,
-    new Date(nowMs).toISOString(),
+    new Date(nowMs).toISOString()
   );
 }
 
-/** Retention: keep only `today` — one DELETE handles both cleanup and day rollover. */
-export async function pruneToDate(today: string): Promise<number> {
+/**
+ * Sessions of 5-min candles retained. The local 2026-07-15 measurement was
+ * ~4.8 MB/session including indexes at 166 symbols (~96 MB for 20 sessions).
+ * This must be rechecked against production volume headroom after rollout. Today's
+ * rows serve /live; the trailing sessions are the RAW MATERIAL of the replay
+ * benchmark (scripts/replay-lib.ts) — a day without candles cannot be
+ * replayed, and bhavcopy can't substitute (EOD only, no intraday shape).
+ * Today-only retention made every past session unreplayable (2026-07-15:
+ * exactly one replayable day existed, so no gate change could be validated).
+ */
+export const FYERS_CANDLE_RETENTION_SESSIONS = 20;
+
+/** Retention: keep the newest N recorded sessions (today included once its
+ *  rows land) — one DELETE handles both cleanup and day rollover. All readers
+ *  filter by date, so multi-day retention never leaks into today's views. */
+export async function pruneCandleHistory(): Promise<number> {
   await ensureFyersCandlesTable();
-  return prisma.$executeRawUnsafe(`DELETE FROM fyers_candles WHERE date != ?`, today);
+  return prisma.$executeRawUnsafe(
+    `DELETE FROM fyers_candles WHERE date NOT IN (
+       SELECT DISTINCT date FROM fyers_candles ORDER BY date DESC LIMIT ${FYERS_CANDLE_RETENTION_SESSIONS}
+     )`
+  );
 }
 
 const toNum = (v: unknown): number => Number(v ?? 0);
@@ -201,7 +220,7 @@ export interface StoredFyersBar extends FyersBar {
 export async function getFyersCandles(
   symbol: string,
   date: string,
-  instrument: FyersInstrument = 'EQ',
+  instrument: FyersInstrument = 'EQ'
 ): Promise<StoredFyersBar[]> {
   await ensureFyersCandlesTable();
   const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
@@ -209,7 +228,7 @@ export async function getFyersCandles(
        FROM fyers_candles WHERE symbol = ? AND instrument = ? AND date = ? ORDER BY bucketTs ASC`,
     symbol,
     instrument,
-    date,
+    date
   );
   return rows.map((r) => ({
     bucketTs: toNum(r.bucketTs),
@@ -225,15 +244,21 @@ export async function getFyersCandles(
 /** One symbol's per-5-min NSE combined OI %-change series for `date` (FUT
  *  rows' nseOiPct, attached each poller cycle), ascending — the input to
  *  lib/signals/combined-oi-slope.ts. Rows with no attach yet carry null. */
-export async function getNseOiSeries(symbol: string, date: string): Promise<{ bucketTs: number; nseOiPct: number | null }[]> {
+export async function getNseOiSeries(
+  symbol: string,
+  date: string
+): Promise<{ bucketTs: number; nseOiPct: number | null }[]> {
   await ensureFyersCandlesTable();
   const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
     `SELECT bucketTs, nseOiPct FROM fyers_candles
       WHERE symbol = ? AND instrument = 'FUT' AND date = ? ORDER BY bucketTs ASC`,
     symbol,
-    date,
+    date
   );
-  return rows.map((r) => ({ bucketTs: toNum(r.bucketTs), nseOiPct: r.nseOiPct == null ? null : Number(r.nseOiPct) }));
+  return rows.map((r) => ({
+    bucketTs: toNum(r.bucketTs),
+    nseOiPct: r.nseOiPct == null ? null : Number(r.nseOiPct),
+  }));
 }
 
 /** Latest NSE combined-OI reading for one symbol (see getNseOiLatestForSymbols). */
@@ -260,7 +285,7 @@ export async function getNseOiLatestForSymbols(symbols: string[], date: string):
       WHERE instrument = 'FUT' AND date = ? AND nseOiPct IS NOT NULL AND symbol IN (${placeholders})
       ORDER BY symbol, bucketTs ASC`,
     date,
-    ...symbols,
+    ...symbols
   );
   const bySymbol = new Map<string, { bucketTs: number; nseOiPct: number }[]>();
   for (const r of rows) {
@@ -271,7 +296,10 @@ export async function getNseOiLatestForSymbols(symbols: string[], date: string):
   }
   for (const [symbol, series] of bySymbol) {
     const latest = series[series.length - 1];
-    out.set(symbol, { nseOiPct: latest.nseOiPct, slope30m: combinedOiSlope(series, latest.bucketTs) });
+    out.set(symbol, {
+      nseOiPct: latest.nseOiPct,
+      slope30m: combinedOiSlope(series, latest.bucketTs),
+    });
   }
   return out;
 }
@@ -308,7 +336,7 @@ export async function getFyersCoverage(date: string): Promise<FyersCoverageRow[]
        FROM fyers_candles WHERE date = ?
       GROUP BY symbol, instrument
       ORDER BY symbol ASC, instrument ASC`,
-    date,
+    date
   );
   // Latest depth snapshot per FUT symbol (the newest bucket that has OI).
   const depthRows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
@@ -319,7 +347,7 @@ export async function getFyersCoverage(date: string): Promise<FyersCoverageRow[]
           SELECT MAX(b.bucketTs) FROM fyers_candles b
            WHERE b.date = f.date AND b.symbol = f.symbol AND b.instrument = 'FUT' AND b.oi > 0
         )`,
-    date,
+    date
   );
   const depthBySymbol = new Map(depthRows.map((r) => [String(r.symbol), r]));
 
@@ -328,7 +356,7 @@ export async function getFyersCoverage(date: string): Promise<FyersCoverageRow[]
     `SELECT symbol, SUM(close * volume) AS eqTurnover, SUM(volume) AS eqDayVolume
        FROM fyers_candles WHERE date = ? AND instrument = 'EQ' AND volume > 0
       GROUP BY symbol`,
-    date,
+    date
   );
   const eqBySymbol = new Map(eqTurnoverRows.map((r) => [String(r.symbol), r]));
 
@@ -360,7 +388,7 @@ export async function getRecordedSymbols(date: string): Promise<string[]> {
   await ensureFyersCandlesTable();
   const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
     `SELECT DISTINCT symbol FROM fyers_candles WHERE date = ? ORDER BY symbol ASC`,
-    date,
+    date
   );
   return rows.map((r) => String(r.symbol ?? '')).filter(Boolean);
 }

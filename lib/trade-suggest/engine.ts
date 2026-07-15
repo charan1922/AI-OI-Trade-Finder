@@ -22,21 +22,19 @@
  */
 
 import { setupScore } from '@/app/live/_lib/setup-score';
-import type { LiveQuoteResponse, LiveUrgencyRow, SectorLeadersResponse } from '@/app/live/_lib/types';
+import type { LiveQuoteResponse, LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { bestBidAsk, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
-import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
+import { getNseOiRowMap } from '@/lib/nse/combined-oi';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
 import { detectRegime } from '@/lib/signals/regime-detector';
-import { computeGex } from '@/lib/signals/gex';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   BREAKOUT_BYPASS_MIN_RFACTOR,
   BREAKOUT_BYPASS_REQUIRE_TREND,
-  CANDIDATE_SOURCES,
   CAPITAL_BUDGET,
   EXCLUDE_EXTENDED,
   EXTENDED_BYPASS_MIN_RFACTOR,
@@ -49,25 +47,34 @@ import {
   MIN_DTE,
   MIN_NSE_OI_PCT,
   MIN_OI_LEVEL,
+  MIN_OPT_PREMIUM_CR,
+  MIN_OPT_SHARE,
   MIN_RFACTOR,
   MIN_TURNOVER_SCORE,
+  MOMENTUM_MIN_CHANGE_PCT,
   PICK_OVERSAMPLE,
   PREMIUM_SL_PCT,
-  SCAN_FULL_UNIVERSE,
   SCAN_OUTSIDE_WINDOW,
   SL_ATR_MULT,
   TF_LOT_TARGET_RUPEES,
   USE_BREAKOUT_BYPASS,
   USE_EXTENDED_TREND_BYPASS,
+  USE_MOMENTUM_BREAKOUT,
   USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
-  WINDOW_LABEL,
   WINDOW_START_MIN,
 } from '@/lib/trade-suggest/config';
 import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
+import {
+  discoverCandidateSnapshot,
+  internalAuthHeaders,
+  internalOrigin,
+  type CandidateSnapshot,
+} from '@/lib/trade-suggest/candidates';
 import { qualifiesByBreakout } from '@/lib/trade-suggest/breakout-bypass';
 import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
+import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
 import { buildSpotPlan, computeCompositeScore } from '@/lib/trade-suggest/scoring';
 import { getSuggestions, upsertSuggestions } from '@/lib/trade-suggest/store';
 import type {
@@ -90,11 +97,17 @@ function istNow(): { minuteOfDay: number; label: string } {
   };
 }
 
-function windowState(): SuggestWindow {
+/** "HH:MM IST" for an IST minute-of-day — dynamic window labels. */
+function istLabel(minute: number): string {
+  return `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')} IST`;
+}
+
+function windowState(startMin = WINDOW_START_MIN, endMin = WINDOW_END_MIN): SuggestWindow {
   const { minuteOfDay, label } = istNow();
   return {
-    active: isMarketHours() && minuteOfDay >= WINDOW_START_MIN && minuteOfDay <= WINDOW_END_MIN,
-    ...WINDOW_LABEL,
+    active: isMarketHours() && minuteOfDay >= startMin && minuteOfDay <= endMin,
+    opensAt: istLabel(startMin),
+    closesAt: istLabel(endMin),
     nowIST: label,
   };
 }
@@ -109,9 +122,8 @@ function windowState(): SuggestWindow {
  * uses THIS for its internal fetches, ignoring the caller's request origin, so no
  * caller (HTTP route or poller) can accidentally pass the unreachable public URL.
  */
-export function internalOrigin(): string {
-  return `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
-}
+// Loopback/auth candidate discovery lives in candidates.ts so the poller and
+// scanner consume one frozen snapshot instead of refetching after the Fyers batch.
 
 /**
  * Auth header for the internal same-origin fetches below. On the deployed server
@@ -120,60 +132,29 @@ export function internalOrigin(): string {
  * `/api/live/*` calls 401 and the scan fails. Sends the same password the gate
  * checks. Empty locally (no APP_PASSWORD → gate is off), so dev is unaffected.
  */
-function internalAuthHeaders(): Record<string, string> {
-  const pw = process.env.APP_PASSWORD;
-  return pw ? { Authorization: `Basic ${Buffer.from(`x:${pw}`).toString('base64')}` } : {};
-}
-
-async function fetchCandidates(
-  origin: string,
-  fullUniverse: boolean,
-): Promise<{ sectorBySymbol: Map<string, string>; oiSpurtSymbols: Set<string> }> {
-  const sectorBySymbol = new Map<string, string>();
-  const oiSpurtSymbols = new Set<string>();
-  for (const source of CANDIDATE_SOURCES) {
-    try {
-      const res = await fetch(`${origin}/api/live/nse-watchlist?source=${source}`, {
-        cache: 'no-store',
-        headers: internalAuthHeaders(),
-      });
-      const j = (await res.json()) as SectorLeadersResponse;
-      for (const p of j.picks ?? []) {
-        if (!p.symbol) continue;
-        if (!sectorBySymbol.has(p.symbol)) sectorBySymbol.set(p.symbol, p.sector ?? '');
-        if (source === 'nse-oi') oiSpurtSymbols.add(p.symbol); // big-player activity marker
-      }
-    } catch (err) {
-      console.warn(`${TAG} watchlist source ${source} failed: ${(err as Error).message}`);
-    }
-  }
-  // SCAN_FULL_UNIVERSE: merge the whole tradeable F&O universe (same list the
-  // Fyers recorder tracks — fno_stocks, non-index, non-'avoid') so a name with
-  // real OI/turnover evidence isn't invisible just because it missed the
-  // movers lists. Gates unchanged; the quote stays one batched call (≤200).
-  if (fullUniverse) {
-    try {
-      const rows = await prisma.$queryRawUnsafe<{ symbol: string; sector: string | null }[]>(
-        `SELECT symbol, sector FROM fno_stocks WHERE isIndex = 0 AND tradeBand != 'avoid'`,
-      );
-      for (const r of rows) {
-        if (r.symbol && !sectorBySymbol.has(r.symbol)) sectorBySymbol.set(r.symbol, r.sector ?? '');
-      }
-    } catch (err) {
-      console.warn(`${TAG} full-universe merge failed (movers-only pool this pass): ${(err as Error).message}`);
-    }
-  }
-  return { sectorBySymbol, oiSpurtSymbols };
-}
 
 /** 20-day bhavcopy baselines for the DISPLAY factors (EQ turnover, combined
  *  fut+opt OI) — loaded only for the shortlist, one query. Mirrors the
  *  rfactor-baselines convention: newest-first, ≤20 positive values, ≥5 min.
  *  Also used by the assistant's symbol-snapshot tool. */
-export async function loadFactorBaselines(
-  symbols: string[],
-): Promise<Map<string, { eqTurnover20dAvg: number | null; combinedOiPrev: number | null; combinedOi20dAvg: number | null }>> {
-  const out = new Map<string, { eqTurnover20dAvg: number | null; combinedOiPrev: number | null; combinedOi20dAvg: number | null }>();
+export async function loadFactorBaselines(symbols: string[]): Promise<
+  Map<
+    string,
+    {
+      eqTurnover20dAvg: number | null;
+      combinedOiPrev: number | null;
+      combinedOi20dAvg: number | null;
+    }
+  >
+> {
+  const out = new Map<
+    string,
+    {
+      eqTurnover20dAvg: number | null;
+      combinedOiPrev: number | null;
+      combinedOi20dAvg: number | null;
+    }
+  >();
   if (symbols.length === 0) return out;
   const avg = (values: number[]): number | null => {
     const xs = values.filter((v) => v > 0).slice(0, 20);
@@ -181,11 +162,18 @@ export async function loadFactorBaselines(
   };
   try {
     const placeholders = symbols.map(() => '?').join(',');
-    const rows = await prisma.$queryRawUnsafe<{ symbol: string; eqTurnover: number | null; futOi: number | null; optOi: number | null }[]>(
+    const rows = await prisma.$queryRawUnsafe<
+      {
+        symbol: string;
+        eqTurnover: number | null;
+        futOi: number | null;
+        optOi: number | null;
+      }[]
+    >(
       `SELECT symbol, eqTurnover, futOi, optOi FROM bhavcopy_days
         WHERE symbol IN (${placeholders}) AND date < ? ORDER BY symbol, date DESC`,
       ...symbols,
-      todayIST(),
+      todayIST()
     );
     const bySymbol = new Map<string, typeof rows>();
     for (const r of rows) {
@@ -225,7 +213,13 @@ async function fetchQuotes(origin: string, symbols: string[]): Promise<LiveQuote
 async function resolveAtmOption(symbol: string, spot: number, side: 'CE' | 'PE'): Promise<OptionPlan | null> {
   const minExpiry = new Date(Date.now() + MIN_DTE * 24 * 60 * 60 * 1000).toISOString();
   const rows = await prisma.$queryRawUnsafe<
-    { securityId: string; symbol: string; lotSize: number; strikePrice: number; expiryDate: string | Date }[]
+    {
+      securityId: string;
+      symbol: string;
+      lotSize: number;
+      strikePrice: number;
+      expiryDate: string | Date;
+    }[]
   >(
     `SELECT securityId, symbol, lotSize, CAST(strikePrice AS REAL) AS strikePrice, expiryDate
        FROM master_contracts
@@ -240,7 +234,7 @@ async function resolveAtmOption(symbol: string, spot: number, side: 'CE' | 'PE')
     side,
     symbol,
     minExpiry,
-    spot,
+    spot
   );
   const row = rows[0];
   if (!row) return null;
@@ -250,7 +244,9 @@ async function resolveAtmOption(symbol: string, spot: number, side: 'CE' | 'PE')
   return {
     optionType: side,
     strike: row.strikePrice,
-    expiryDate: Number.isNaN(expiry.getTime()) ? String(row.expiryDate).slice(0, 10) : expiry.toISOString().slice(0, 10),
+    expiryDate: Number.isNaN(expiry.getTime())
+      ? String(row.expiryDate).slice(0, 10)
+      : expiry.toISOString().slice(0, 10),
     lotSize: Number(row.lotSize),
     optSecurityId: row.securityId,
     optSymbol: row.symbol,
@@ -279,7 +275,8 @@ async function attachPremiums(options: OptionPlan[]): Promise<void> {
       const oi = oq.oi ?? null;
       const warnings: string[] = [];
       if (book == null) warnings.push('no option order book');
-      else if (book.spreadPct > MAX_OPT_SPREAD_PCT) warnings.push(`option spread ${book.spreadPct.toFixed(1)}% of premium — slippage risk`);
+      else if (book.spreadPct > MAX_OPT_SPREAD_PCT)
+        warnings.push(`option spread ${book.spreadPct.toFixed(1)}% of premium — slippage risk`);
       if (!volume) warnings.push('no traded volume yet in this contract');
       const premium: OptionPremium = {
         ltp,
@@ -291,9 +288,10 @@ async function attachPremiums(options: OptionPlan[]): Promise<void> {
         perLotCost: Math.round(ltp * o.lotSize * 100) / 100,
         // Stop premium = the TIGHTER of the 40% backstop and the ₹ per-lot cap,
         // so a lot can't lose more than MAX_LOSS_PER_LOT_RUPEES (higher premium = smaller loss).
-        slPremium: Math.round(
-          Math.max(0, Math.max(ltp * (1 - PREMIUM_SL_PCT / 100), ltp - MAX_LOSS_PER_LOT_RUPEES / o.lotSize)) * 100,
-        ) / 100,
+        slPremium:
+          Math.round(
+            Math.max(0, Math.max(ltp * (1 - PREMIUM_SL_PCT / 100), ltp - MAX_LOSS_PER_LOT_RUPEES / o.lotSize)) * 100
+          ) / 100,
         targetPremium: Math.round((ltp + TF_LOT_TARGET_RUPEES / o.lotSize) * 100) / 100,
         liquidityWarning: warnings.length > 0 ? warnings.join('; ') : null,
       };
@@ -308,12 +306,25 @@ async function attachPremiums(options: OptionPlan[]): Promise<void> {
 // (Composite score + spot-plan math live in scoring.ts, shared with the
 //  offline replay harness — scripts/replay-window.ts.)
 
-export async function runTradeSuggest(_origin: string, opts: { force?: boolean } = {}): Promise<SuggestResponse> {
+export async function runTradeSuggest(
+  _origin: string,
+  opts: { force?: boolean; candidateSnapshot?: CandidateSnapshot } = {}
+): Promise<SuggestResponse> {
   // Internal fetches always go to loopback (the container can't reach its own
   // public URL) — the caller's origin is accepted for signature compat but ignored.
   const origin = internalOrigin();
   const date = todayIST();
-  const window = windowState();
+  // Scanner window bounds: runtime-tunable from /config (minutes-of-day IST),
+  // defaults = the strategy's proven 09:40–11:00.
+  let [windowStartMin, windowEndMin] = await Promise.all([
+    getNumberSetting('WINDOW_START_MIN', WINDOW_START_MIN),
+    getNumberSetting('WINDOW_END_MIN', WINDOW_END_MIN),
+  ]);
+  if (windowStartMin >= windowEndMin) {
+    windowStartMin = WINDOW_START_MIN;
+    windowEndMin = WINDOW_END_MIN;
+  }
+  const window = windowState(windowStartMin, windowEndMin);
   const base: SuggestResponse = {
     success: true,
     window,
@@ -331,12 +342,12 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
   const scanOutsideWindow = await getToggle('SCAN_OUTSIDE_WINDOW', SCAN_OUTSIDE_WINDOW);
   if (!window.active && !opts.force && !(scanOutsideWindow && base.marketOpen)) {
     base.note = base.marketOpen
-      ? `Outside the suggestion window (${WINDOW_LABEL.opensAt}–${WINDOW_LABEL.closesAt}).`
+      ? `Outside the suggestion window (${window.opensAt}–${window.closesAt}).`
       : 'Market is closed.';
     return base;
   }
   if (!window.active && base.marketOpen) {
-    base.note = `Out-of-window scan (${scanOutsideWindow ? 'SCAN_OUTSIDE_WINDOW is ON' : 'forced'}) — entries outside ${WINDOW_LABEL.opensAt}–${WINDOW_LABEL.closesAt} are unproven for this strategy.`;
+    base.note = `Out-of-window scan (${scanOutsideWindow ? 'SCAN_OUTSIDE_WINDOW is ON' : 'forced'}) — entries outside ${window.opensAt}–${window.closesAt} are unproven for this strategy.`;
   }
   if (!base.marketOpen) {
     base.note = 'Market is closed — live quotes unavailable, no suggestions possible.';
@@ -345,11 +356,11 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
 
   // Runtime feature toggles (flipped from /config; config.ts values are the
   // defaults/fallback). Resolved once here, not per-candidate.
-  const scanFullUniverse = await getToggle('SCAN_FULL_UNIVERSE', SCAN_FULL_UNIVERSE);
   const useBreakoutBypass = await getToggle('USE_BREAKOUT_BYPASS', USE_BREAKOUT_BYPASS);
   const excludeExtended = await getToggle('EXCLUDE_EXTENDED', EXCLUDE_EXTENDED);
   const useExtendedTrendBypass = await getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS);
   const useTfBreakoutGate = await getToggle('USE_TF_BREAKOUT_GATE', USE_TF_BREAKOUT_GATE);
+  const useMomentumBreakout = await getToggle('USE_MOMENTUM_BREAKOUT', USE_MOMENTUM_BREAKOUT);
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
   // Capital budget = the auto-trade page's editable maxCapitalRupees (one source
   // of truth). A pick whose single lot costs more than this is skipped, so the
@@ -360,7 +371,9 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
 
   // 1. Candidates from the live NSE feeds (F&O-gated, sector attached),
   //    widened to the full tracked universe when SCAN_FULL_UNIVERSE is on
-  const { sectorBySymbol, oiSpurtSymbols } = await fetchCandidates(origin, scanFullUniverse);
+  const candidateSnapshot = opts.candidateSnapshot ?? (await discoverCandidateSnapshot());
+  const sectorBySymbol = new Map(candidateSnapshot.sectorEntries);
+  const oiSpurtSymbols = new Set(candidateSnapshot.oiSpurtSymbols);
   // Names suggested EARLIER today stay in the quote batch even after they drop
   // off the movers lists / below the gates: an open position needs its live
   // price all day so the commentary can call HOLD / EXIT with real numbers
@@ -385,9 +398,11 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     return base;
   }
 
-  // NSE combined (futures + options) OI map — one shared-cache call; the
-  // alternate OI-evidence path for options-led builds.
-  const nseOiMap = await getNseCombinedOiPctMap();
+  // NSE oi-spurts rows — one shared-cache call; the alternate OI-evidence path
+  // for options-led builds. Full rows (not just the %-change) so the gate can
+  // check the build is GENUINELY options-led (optShare) and the options
+  // tradeable (premValue), not just infer it from combined-OI %-change.
+  const nseOiRowMap = await getNseOiRowMap();
 
   // Position-management feed: every earlier-today call with its live price,
   // regardless of whether the name still clears any gate this scan.
@@ -416,7 +431,12 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     else tiltDown++;
     const sector = sectorBySymbol.get(row.symbol) ?? '';
     if (sector) {
-      const f = flowBySector.get(sector) ?? { names: 0, chgSum: 0, chgN: 0, oiSpurts: 0 };
+      const f = flowBySector.get(sector) ?? {
+        names: 0,
+        chgSum: 0,
+        chgN: 0,
+        oiSpurts: 0,
+      };
       f.names++;
       if (chg != null) {
         f.chgSum += chg;
@@ -455,8 +475,8 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
           pct: r.changePctOpen ?? 0,
           turnover: r.turnover ?? 0,
         }))
-        .filter((t) => t.sector),
-    ).map((a) => [a.sector, a]),
+        .filter((t) => t.sector)
+    ).map((a) => [a.sector, a])
   );
 
   // 3. Detect market regime (once per scan, using first available symbol as
@@ -481,33 +501,6 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
   }
   const dynamicMinConfidence = MIN_CONFIDENCE * regimeMultiplier;
 
-  // 3b. Compute NIFTY GEX (market-wide dealer hedging pressure).
-  //     Display evidence only — not a gate until replay-validated.
-  let gexResult: import('@/lib/signals/gex').GexResult | null = null;
-  try {
-    const { fetchOptionChainGreeks } = await import('@/lib/dhan/market-feed');
-    // Nearest weekly expiry (Dhan needs YYYY-MM-DD; derive from master_contracts)
-    const niftyExpiry = (await prisma.$queryRawUnsafe<{ expiryDate: string }[]>(
-      `SELECT MIN(expiryDate) as expiryDate FROM master_contracts
-       WHERE underlying = 'NIFTY' AND instrument = 'OPTFUT' AND expiryDate >= ?`,
-      date,
-    ))[0]?.expiryDate ?? '';
-    if (niftyExpiry) {
-      const greeksRows = await fetchOptionChainGreeks(13, niftyExpiry.slice(0, 10));
-      if (greeksRows.length > 0) {
-        // Use NIFTY spot from quotes (first NIFTY row or fallback to median of scanned)
-        const niftyRow = quotes.rows.find((r) => r.symbol === 'NIFTY' || r.symbol === 'NIFTY 50');
-        const niftySpot = niftyRow?.ltp ?? (quotes.rows.length > 0 ? quotes.rows[0].ltp ?? 0 : 0);
-        if (niftySpot > 0) {
-          gexResult = computeGex(greeksRows, niftySpot);
-          console.log(`${TAG} GEX: ${gexResult.label}`);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn(`${TAG} GEX computation failed (non-fatal): ${(err as Error).message}`);
-  }
-
   // Gate + enrich
   const gated: Record<string, number> = {
     noPrice: 0,
@@ -520,6 +513,7 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     directionDisagree: 0,
     quietSetup: 0,
   };
+
   interface Enriched {
     row: LiveUrgencyRow;
     sector: string;
@@ -533,6 +527,10 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     /** True when an extended name was re-admitted by the trend-aligned bypass. */
     extendedBypassed?: boolean;
     nseOiPct: number | null;
+    /** Options share of fut+opt value (NSE oi-spurts) — how options-led the build is. */
+    optShare: number | null;
+    /** True when admitted via the momentum-breakout path (accumulation gates bypassed). */
+    momentumPath: boolean;
     score: number;
   }
   const survivors: Enriched[] = [];
@@ -552,17 +550,12 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
       gated.neutralBias++;
       continue;
     }
-    if ((row.rFactor ?? 0) < MIN_RFACTOR) {
-      gated.weakRFactor++;
-      continue;
-    }
-    if ((row.rFactorConfidence ?? 0) < dynamicMinConfidence) {
-      gated.lowConfidence++;
-      continue;
-    }
-    // Direction + candles + breakout are computed here (before the OI gate) so
-    // the breakout bypass below can use them; they're reused unchanged for the
-    // pick's plan.
+    // Direction + candles + breakout + trend indicators are computed BEFORE the
+    // R-Factor/confidence gates so the momentum-breakout path (and the OI-gate
+    // breakout bypass below) can use them; the same values feed the Supertrend/
+    // VWAP hard gates and the pick's plan — one computation, no duplicates.
+    // (Costs a candle read for names the R gate would have dropped — local
+    // SQLite, same order the replay harness already uses.)
     const direction = row.rFactorBias === 'buy' ? 'bullish' : 'bearish';
     const bars = await getFyersCandles(row.symbol, date, 'EQ');
     const sc = deriveSessionContext(bars);
@@ -571,6 +564,39 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
       (direction === 'bullish'
         ? sc.openRangeHigh != null && ltp > sc.openRangeHigh
         : sc.openRangeLow != null && ltp < sc.openRangeLow);
+    const st = supertrend(bars);
+    const vw = sessionVwap(bars);
+    const supertrendAligned =
+      st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
+    const vwapAligned = vw == null ? null : direction === 'bullish' ? ltp > vw : ltp < vw;
+
+    // Momentum-breakout path (USE_MOMENTUM_BREAKOUT, off by default): a
+    // confirmed OR breakout with BOTH trend indicators agreeing and a real move
+    // behind it clears the R-Factor, confidence, OI and quiet-setup gates — the
+    // short-covering class every accumulation factor rejects by design
+    // (ADANIGREEN 2026-07-14; see momentum-breakout.ts). All other gates apply.
+    const momentumOk =
+      useMomentumBreakout &&
+      qualifiesMomentumBreakout(
+        {
+          orBreakout,
+          supertrendAligned,
+          vwapAligned,
+          changePctOpen: row.changePctOpen,
+          direction,
+        },
+        { minChangePct: MOMENTUM_MIN_CHANGE_PCT }
+      );
+    if (momentumOk) gated.momentumAdmitted = (gated.momentumAdmitted ?? 0) + 1;
+
+    if (!momentumOk && (row.rFactor ?? 0) < MIN_RFACTOR) {
+      gated.weakRFactor++;
+      continue;
+    }
+    if (!momentumOk && (row.rFactorConfidence ?? 0) < dynamicMinConfidence) {
+      gated.lowConfidence++;
+      continue;
+    }
 
     // OI evidence, three paths: sustained futures positioning (level vs 20-day
     // avg) OR an options-led build futures-only OI misses (NSE combined OI
@@ -578,20 +604,31 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     // is on, a confirmed trend-aligned breakout with no OI yet (the price leads
     // its OI — ADANIENSOL/NAUKRI; see breakout-bypass.ts).
     const futOiOk = (row.oiLevel ?? 0) >= MIN_OI_LEVEL;
-    const nseOiPct = nseOiMap.get(row.symbol) ?? null;
-    const nseOiOk = nseOiPct != null && nseOiPct >= MIN_NSE_OI_PCT;
+    const oiRow = nseOiRowMap.get(row.symbol) ?? null;
+    const nseOiPct = oiRow?.changeInOiPct ?? null;
+    const optShare = oiRow?.optShare ?? null;
+    const premValueCr = oiRow?.premValueCr ?? null;
+    // Options-led path: the combined-OI build must be real (%-change), actually
+    // options-led (optShare above the single-stock norm) AND tradeable (premium
+    // pool above the thin-liquidity floor) — see MIN_OPT_SHARE / MIN_OPT_PREMIUM_CR.
+    const nseOiOk =
+      nseOiPct != null &&
+      nseOiPct >= MIN_NSE_OI_PCT &&
+      optShare != null &&
+      optShare >= MIN_OPT_SHARE &&
+      premValueCr != null &&
+      premValueCr >= MIN_OPT_PREMIUM_CR;
     let breakoutOk = false;
     if (useBreakoutBypass && !futOiOk && !nseOiOk && orBreakout) {
-      const vw = sessionVwap(bars);
-      const st = supertrend(bars);
-      const vwapAligned = vw == null ? null : direction === 'bullish' ? ltp > vw : ltp < vw;
-      const supertrendAligned = st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
       breakoutOk = qualifiesByBreakout(
         { orBreakout, supertrendAligned, vwapAligned, rFactor: row.rFactor },
-        { minRFactor: BREAKOUT_BYPASS_MIN_RFACTOR, requireTrendAlign: BREAKOUT_BYPASS_REQUIRE_TREND },
+        {
+          minRFactor: BREAKOUT_BYPASS_MIN_RFACTOR,
+          requireTrendAlign: BREAKOUT_BYPASS_REQUIRE_TREND,
+        }
       );
     }
-    if (!futOiOk && !nseOiOk && !breakoutOk) {
+    if (!futOiOk && !nseOiOk && !breakoutOk && !momentumOk) {
       gated.lowOiLevel++;
       continue;
     }
@@ -613,27 +650,20 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     }
 
     // Supertrend(10,3) alignment gate — replay benchmark (July 10-13) showed
-    // 0/3 wins for Supertrend-misaligned picks. Enforce as a hard gate.
-    const earlySt = supertrend(bars);
-    if (earlySt != null) {
-      const stAligned = direction === 'bullish' ? earlySt.direction === 'up' : earlySt.direction === 'down';
-      if (!stAligned) {
-        gated.supertrendDisagree = (gated.supertrendDisagree ?? 0) + 1;
-        continue;
-      }
+    // 0/3 wins for Supertrend-misaligned picks. Enforce as a hard gate
+    // (computed once above; null = not yet computable = gate skipped).
+    if (supertrendAligned === false) {
+      gated.supertrendDisagree = (gated.supertrendDisagree ?? 0) + 1;
+      continue;
     }
 
     // Session VWAP alignment gate — price must be on the correct side of VWAP.
-    const earlyVw = sessionVwap(bars);
-    if (earlyVw != null) {
-      const vwAligned = direction === 'bullish' ? ltp > earlyVw : ltp < earlyVw;
-      if (!vwAligned) {
-        gated.vwapDisagree = (gated.vwapDisagree ?? 0) + 1;
-        continue;
-      }
+    if (vwapAligned === false) {
+      gated.vwapDisagree = (gated.vwapDisagree ?? 0) + 1;
+      continue;
     }
 
-    if (verdict.level === 'quiet') {
+    if (verdict.level === 'quiet' && !momentumOk) {
       gated.quietSetup++;
       continue;
     }
@@ -664,6 +694,8 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
       setupReasons: verdict.reasons,
       extended: verdict.extended,
       nseOiPct,
+      optShare,
+      momentumPath: momentumOk,
       score: 0,
     });
   }
@@ -714,11 +746,20 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
         const vw = sessionVwap(s.bars);
         const st = supertrend(s.bars);
         const vwapAligned = vw == null ? null : s.direction === 'bullish' ? ltp > vw : ltp < vw;
-        const supertrendAligned = st == null ? null : s.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
+        const supertrendAligned =
+          st == null ? null : s.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
         if (
           qualifiesExtendedTrend(
-            { orBreakout: s.orBreakout, supertrendAligned, vwapAligned, rFactor: s.row.rFactor },
-            { minRFactor: EXTENDED_BYPASS_MIN_RFACTOR, requireSupertrend: EXTENDED_BYPASS_REQUIRE_SUPERTREND },
+            {
+              orBreakout: s.orBreakout,
+              supertrendAligned,
+              vwapAligned,
+              rFactor: s.row.rFactor,
+            },
+            {
+              minRFactor: EXTENDED_BYPASS_MIN_RFACTOR,
+              requireSupertrend: EXTENDED_BYPASS_REQUIRE_SUPERTREND,
+            }
           )
         ) {
           s.extendedBypassed = true;
@@ -750,7 +791,7 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     if (option?.premium && option.premium.perLotCost > capitalBudget) {
       skippedUnaffordable++;
       console.log(
-        `${TAG} ${r.symbol} skipped: one lot costs ₹${Math.round(option.premium.perLotCost).toLocaleString('en-IN')} > ₹${capitalBudget.toLocaleString('en-IN')} budget`,
+        `${TAG} ${r.symbol} skipped: one lot costs ₹${Math.round(option.premium.perLotCost).toLocaleString('en-IN')} > ₹${capitalBudget.toLocaleString('en-IN')} budget`
       );
       continue;
     }
@@ -767,7 +808,9 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
     const fb = factorBaselines.get(r.symbol);
     const eqTurnNow = s.bars.reduce((acc, b) => acc + b.close * b.volume, 0);
     const eqTurnoverRatio =
-      fb?.eqTurnover20dAvg != null && eqTurnNow > 0 ? Math.round((eqTurnNow / (fb.eqTurnover20dAvg * sessionFrac)) * 100) / 100 : null;
+      fb?.eqTurnover20dAvg != null && eqTurnNow > 0
+        ? Math.round((eqTurnNow / (fb.eqTurnover20dAvg * sessionFrac)) * 100) / 100
+        : null;
     const combinedOiLevel =
       fb?.combinedOiPrev != null && fb.combinedOi20dAvg != null && s.nseOiPct != null
         ? Math.round(((fb.combinedOiPrev * (1 + s.nseOiPct / 100)) / fb.combinedOi20dAvg) * 1000) / 1000
@@ -808,9 +851,6 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
       sectorPct,
       sectorAdvanceRatio: sa?.advanceRatio == null ? null : Math.round(sa.advanceRatio * 100) / 100,
       sectorAligned,
-      gexRegime: gexResult?.regime ?? null,
-      gexValue: gexResult?.netGex ?? null,
-      gexWall: gexResult?.gammaWall ?? null,
     };
 
     const reasons = [
@@ -821,10 +861,17 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
               : `⚠ already moved ${(r.changePctOpen ?? 0) >= 0 ? '+' : ''}${(r.changePctOpen ?? 0).toFixed(1)}% from open — late to chase, score penalized`,
           ]
         : []),
+      ...(s.momentumPath
+        ? [
+            '⚡ MOMENTUM-BREAKOUT path: no accumulation evidence (low R-Factor / no OI build) — entered on confirmed OR breakout + Supertrend + VWAP + move ≥1.5%. Short-covering profile; expect speed, respect the stop.',
+          ]
+        : []),
       `R-Factor ${r.rFactor?.toFixed(2)} (${s.direction}, confidence ${((r.rFactorConfidence ?? 0) * 100).toFixed(0)}%)`,
       `futures OI ${r.oiLevel?.toFixed(2)}× 20-day avg${r.oiUrgency != null && r.oiUrgency > 0 ? `, urgency ${r.oiUrgency.toFixed(1)}/10` : ''}`,
       ...(s.nseOiPct != null && s.nseOiPct >= MIN_NSE_OI_PCT
-        ? [`NSE combined OI ${s.nseOiPct >= 0 ? '+' : ''}${s.nseOiPct.toFixed(1)}% (futures+options${(r.oiLevel ?? 0) < MIN_OI_LEVEL ? ' — options-led build' : ''})`]
+        ? [
+            `NSE combined OI ${s.nseOiPct >= 0 ? '+' : ''}${s.nseOiPct.toFixed(1)}% (futures+options${(r.oiLevel ?? 0) < MIN_OI_LEVEL ? ' — options-led build' : ''}${s.optShare != null ? `, opt-share ${(s.optShare * 100).toFixed(0)}%` : ''})`,
+          ]
         : []),
       ...(combinedOiLevel != null && combinedOiLevel >= 1.1
         ? [`combined fut+opt OI ≈${combinedOiLevel.toFixed(2)}× 20-day avg (derived from bhavcopy + NSE live %)`]
@@ -834,7 +881,9 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
         : combinedOiSlope30m != null && combinedOiSlope30m <= -1
           ? [`⚠ combined OI ${combinedOiSlope30m.toFixed(1)} pts in the last ~30 min — the build is unwinding`]
           : []),
-      s.orBreakout ? 'trading beyond the opening range (breakout confirmed)' : 'inside opening range — breakout not yet confirmed',
+      s.orBreakout
+        ? 'trading beyond the opening range (breakout confirmed)'
+        : 'inside opening range — breakout not yet confirmed',
       ...(r.breakout != null && r.breakout.grade !== 'none'
         ? [
             r.breakout.grade === 'fakeout-risk'
@@ -849,9 +898,15 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
               : `⚠ Supertrend(10,3) disagrees (${st.direction === 'up' ? 'uptrend' : 'downtrend'} on the 5-min) — misaligned picks went 0/3 on the replay benchmark`,
           ]
         : []),
-      ...(vw != null ? [`${side === 'CE' ? (ltp > vw ? 'above' : '⚠ below') : ltp < vw ? 'below' : '⚠ above'} session VWAP ${vw.toFixed(2)}`] : []),
+      ...(vw != null
+        ? [
+            `${side === 'CE' ? (ltp > vw ? 'above' : '⚠ below') : ltp < vw ? 'below' : '⚠ above'} session VWAP ${vw.toFixed(2)}`,
+          ]
+        : []),
       ...(eqTurnoverRatio != null && eqTurnoverRatio >= 3
-        ? [`equity turnover ≈${eqTurnoverRatio.toFixed(1)}× its time-adjusted 20-day pace (mornings naturally over-read ~2×)`]
+        ? [
+            `equity turnover ≈${eqTurnoverRatio.toFixed(1)}× its time-adjusted 20-day pace (mornings naturally over-read ~2×)`,
+          ]
         : []),
       ...(factors.onOiSpurtList ? ["on NSE's OI build-up list (big-player positioning)"] : []),
       ...(sa != null && sectorAligned != null
@@ -861,16 +916,10 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
               : `⚠ fighting its sector: ${s.sector} ${sectorPct! >= 0 ? '+' : ''}${sectorPct!.toFixed(2)}% (turnover-weighted), ${sa.advancers}↑/${sa.decliners}↓`,
           ]
         : []),
-      ...(breadth.get(`${s.sector}:${s.direction}`) ?? 1) > 1
+      ...((breadth.get(`${s.sector}:${s.direction}`) ?? 1) > 1
         ? [`sector confirmation: ${breadth.get(`${s.sector}:${s.direction}`)} ${s.sector} names moving ${s.direction}`]
-        : [],
+        : []),
       ...s.setupReasons,
-      // GEX display evidence (market-level, not per-stock)
-      ...(gexResult?.regime === 'positive'
-        ? [`NIFTY GEX positive (₹${Math.abs(gexResult.netGex).toFixed(0)}/1%) — dealers buying dips, expect range-bound action${gexResult.gammaWall != null ? ` near gamma wall ${gexResult.gammaWall}` : ''}`]
-        : gexResult?.regime === 'negative'
-          ? [`⚠ NIFTY GEX negative (₹${Math.abs(gexResult.netGex).toFixed(0)}/1%) — dealers chasing momentum, expect trending/volatile moves`]
-          : []),
     ];
 
     picks.push({
@@ -900,15 +949,6 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
   if (skippedUnaffordable > 0) gated.unaffordableLot = skippedUnaffordable;
   base.gated = gated;
   base.suggestions = picks;
-  if (gexResult) {
-    base.gex = {
-      regime: gexResult.regime,
-      netGex: gexResult.netGex,
-      gammaWall: gexResult.gammaWall,
-      label: gexResult.label,
-    };
-  }
-
   // 7. Persist (first sighting keeps its original spot/time; repeats bump timesSeen)
   try {
     await upsertSuggestions(date, picks);
@@ -918,7 +958,7 @@ export async function runTradeSuggest(_origin: string, opts: { force?: boolean }
   }
 
   console.log(
-    `${TAG} scanned ${base.scanned}, survivors ${survivors.length}, picks ${picks.length}: ${picks.map((p) => `${p.symbol} ${p.option?.strike ?? '?'}${p.option?.optionType ?? ''}`).join(', ') || '—'}`,
+    `${TAG} scanned ${base.scanned}, survivors ${survivors.length}, picks ${picks.length}: ${picks.map((p) => `${p.symbol} ${p.option?.strike ?? '?'}${p.option?.optionType ?? ''}`).join(', ') || '—'}`
   );
   return base;
 }

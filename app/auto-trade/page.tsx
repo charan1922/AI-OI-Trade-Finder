@@ -20,6 +20,10 @@ interface Settings {
   maxCapitalRupees: number;
   dailyLossHaltRupees: number;
   approvalTtlMin: number;
+  /** Entry window + forced square-off, IST minutes from midnight (clamped server-side). */
+  entryStartMin: number;
+  entryEndMin: number;
+  squareOffMin: number;
 }
 interface TradeRow {
   id: number;
@@ -53,6 +57,7 @@ interface OrderRow {
   side: string;
   status: string;
   brokerOrderId: string | null;
+  correlationId: string | null;
   avgFillPrice: number | null;
   error: string | null;
   createdAt: string;
@@ -73,7 +78,12 @@ interface ApiResponse {
   settings?: Settings;
   liveEnvEnabled?: boolean;
   entryWindow?: { opensAt: string; closesAt: string; active: boolean };
-  today?: { entriesUsed: number; openLots: number; deployedRupees: number; realizedPnlRupees: number };
+  today?: {
+    entriesUsed: number;
+    openLots: number;
+    deployedRupees: number;
+    realizedPnlRupees: number;
+  };
   trades?: TradeRow[];
   pending?: TradeRow[];
   decisions?: DecisionRow[];
@@ -85,7 +95,11 @@ function fmtTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime())
     ? iso
-    : d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+    : d.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Asia/Kolkata',
+      });
 }
 
 const MODE_DESCRIPTIONS: Record<Settings['mode'], string> = {
@@ -112,7 +126,7 @@ function SelectorRow<T extends string>({
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="w-24 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className="w-24 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">{label}</span>
       <div className="flex flex-wrap gap-1">
         {options.map((o) => (
           <button
@@ -176,7 +190,10 @@ function CapField({
     else setDraft(String(value)); // out-of-range / unchanged → snap back
   };
   return (
-    <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`${label}: ${min.toLocaleString('en-IN')}–${max.toLocaleString('en-IN')}`}>
+    <label
+      className="flex items-center gap-1 text-[11px] text-muted-foreground"
+      title={`${label}: ${min.toLocaleString('en-IN')}–${max.toLocaleString('en-IN')}`}
+    >
       <span>{label}</span>
       {unit && <span>{unit}</span>}
       <input
@@ -192,7 +209,60 @@ function CapField({
         onKeyDown={(e) => {
           if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
         }}
-        className="w-20 rounded border border-border bg-background px-1.5 py-0.5 text-right tabular-nums text-foreground focus:border-primary focus:outline-none disabled:opacity-50"
+        className="w-20 rounded border border-border bg-background px-1.5 py-0.5 text-right text-foreground tabular-nums focus:border-primary focus:outline-none disabled:opacity-50"
+      />
+    </label>
+  );
+}
+
+/** IST clock setting as "HH:MM" — stored/served as minutes-from-midnight; the
+ *  settings API accepts the HH:MM form directly (parsed + clamped server-side). */
+function TimeField({
+  label,
+  value,
+  minLabel,
+  maxLabel,
+  busy,
+  onCommit,
+}: {
+  label: string;
+  /** Minutes from midnight IST (server value). */
+  value: number;
+  minLabel: string;
+  maxLabel: string;
+  busy: boolean;
+  onCommit: (hhmm: string) => void;
+}) {
+  const toHHMM = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const [draft, setDraft] = useState(toHHMM(value));
+  const [synced, setSynced] = useState(value);
+  if (synced !== value) {
+    setSynced(value);
+    setDraft(toHHMM(value));
+  }
+  const commit = () => {
+    const m = draft.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (m && toHHMM(value) !== draft.trim()) onCommit(draft.trim());
+    else setDraft(toHHMM(value)); // malformed / unchanged → snap back (server clamps range)
+  };
+  return (
+    <label
+      className="flex items-center gap-1 text-[11px] text-muted-foreground"
+      title={`${label}: ${minLabel}–${maxLabel} IST`}
+    >
+      <span>{label}</span>
+      <input
+        type="text"
+        inputMode="numeric"
+        placeholder="HH:MM"
+        value={draft}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+        className="w-16 rounded border border-border bg-background px-1.5 py-0.5 text-right text-foreground tabular-nums focus:border-primary focus:outline-none disabled:opacity-50"
       />
     </label>
   );
@@ -202,9 +272,16 @@ function Cap({ label, used, max, unit = '' }: { label: string; used: number; max
   const danger = used >= max;
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className={`text-sm font-bold tabular-nums ${danger ? 'text-red-600 dark:text-red-400' : 'text-foreground'}`}>
-        {unit}{used.toLocaleString('en-IN')} <span className="font-normal text-muted-foreground">/ {unit}{max.toLocaleString('en-IN')}</span>
+      <div className="text-[10px] tracking-wide text-muted-foreground uppercase">{label}</div>
+      <div
+        className={`text-sm font-bold tabular-nums ${danger ? 'text-red-600 dark:text-red-400' : 'text-foreground'}`}
+      >
+        {unit}
+        {used.toLocaleString('en-IN')}{' '}
+        <span className="font-normal text-muted-foreground">
+          / {unit}
+          {max.toLocaleString('en-IN')}
+        </span>
       </div>
     </div>
   );
@@ -214,15 +291,27 @@ function StatusBadge({ status }: { status: string }) {
   const cls =
     status === 'open'
       ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
-      : status === 'closed'
-        ? 'bg-slate-100 text-slate-700 dark:bg-slate-500/15 dark:text-slate-300'
-        : status === 'pending_approval'
-          ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
-          : 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300';
-  return <span className={`rounded px-1.5 py-px text-[10px] font-bold uppercase ${cls}`}>{status.replace('_', ' ')}</span>;
+      : status === 'placing'
+        ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
+        : status === 'closed'
+          ? 'bg-slate-100 text-slate-700 dark:bg-slate-500/15 dark:text-slate-300'
+          : status === 'pending_approval'
+            ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
+            : 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300';
+  return (
+    <span className={`rounded px-1.5 py-px text-[10px] font-bold uppercase ${cls}`}>{status.replace('_', ' ')}</span>
+  );
 }
 
-function TradeCard({ trade, onAction, busy }: { trade: TradeRow; onAction: (action: string, id: number) => void; busy: boolean }) {
+function TradeCard({
+  trade,
+  onAction,
+  busy,
+}: {
+  trade: TradeRow;
+  onAction: (action: string, id: number) => void;
+  busy: boolean;
+}) {
   const pnl = trade.realizedPnlRupees;
   return (
     <div className="rounded-md border border-border bg-card p-3">
@@ -232,30 +321,64 @@ function TradeCard({ trade, onAction, busy }: { trade: TradeRow; onAction: (acti
           {trade.strike} {trade.optionType} · exp {trade.expiryDate} · {trade.lots} lot × {trade.lotSize}
         </span>
         <StatusBadge status={trade.status} />
-        <span className="rounded border border-border px-1.5 py-px text-[10px] uppercase text-muted-foreground">
+        <span className="rounded border border-border px-1.5 py-px text-[10px] text-muted-foreground uppercase">
           {trade.broker} · {trade.mode}
         </span>
         {pnl != null && (
-          <span className={`ml-auto text-sm font-bold tabular-nums ${pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+          <span
+            className={`ml-auto text-sm font-bold tabular-nums ${pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
+          >
             {pnl >= 0 ? '+' : ''}₹{pnl.toLocaleString('en-IN')}
           </span>
         )}
       </div>
       <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-        <span>spot: entry <b className="text-foreground">{trade.entrySpot}</b> · SL <b className="text-red-600 dark:text-red-400">{trade.slSpot ?? '—'}</b> · target <b className="text-emerald-600 dark:text-emerald-400">{trade.targetSpot ?? '—'}</b></span>
-        <span>premium: in ₹{trade.entryFillPremium ?? trade.entryPremium}{trade.exitFillPremium != null ? ` · out ₹${trade.exitFillPremium}` : ` · stop ₹${trade.slPremium} · target ₹${trade.targetPremium}`}</span>
+        <span>
+          spot: entry <b className="text-foreground">{trade.entrySpot}</b> · SL{' '}
+          <b className="text-red-600 dark:text-red-400">{trade.slSpot ?? '—'}</b> · target{' '}
+          <b className="text-emerald-600 dark:text-emerald-400">{trade.targetSpot ?? '—'}</b>
+        </span>
+        <span>
+          premium: in ₹{trade.entryFillPremium ?? trade.entryPremium}
+          {trade.exitFillPremium != null
+            ? ` · out ₹${trade.exitFillPremium}`
+            : ` · stop ₹${trade.slPremium} · target ₹${trade.targetPremium}`}
+        </span>
       </div>
       <div className="mt-1.5 text-xs text-foreground/90">{trade.aiReasonEntry}</div>
       {trade.exitReason && <div className="mt-0.5 text-[11px] text-muted-foreground">exit: {trade.exitReason}</div>}
+      {trade.status === 'placing' && (
+        <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 p-2 text-[11px] text-amber-700 dark:text-amber-300">
+          Broker acknowledgement or fill is unresolved. Do not retry, void, or place a manual opposite order; verify the
+          correlation ID in the order log and broker before intervening.
+        </div>
+      )}
       {trade.orders && trade.orders.length > 0 && (
         <div className="mt-2 rounded border border-border/60 bg-muted/40 p-2 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
-          <div className="mb-0.5 font-sans font-semibold uppercase tracking-wide text-[9px] text-muted-foreground/80">Order log</div>
+          <div className="mb-0.5 font-sans text-[9px] font-semibold tracking-wide text-muted-foreground/80 uppercase">
+            Order log
+          </div>
           {trade.orders.map((o) => (
             <div key={o.id} className="flex flex-wrap gap-x-2">
               <span className="text-foreground/80">{fmtTime(o.createdAt)}</span>
-              <span className={o.side === 'BUY' ? 'text-sky-600 dark:text-sky-400' : 'text-amber-600 dark:text-amber-400'}>{o.side}</span>
-              <span className={o.status === 'filled' ? 'text-emerald-600 dark:text-emerald-400' : o.status === 'rejected' || o.status === 'cancelled' ? 'text-red-600 dark:text-red-400' : ''}>{o.status}</span>
+              <span
+                className={o.side === 'BUY' ? 'text-sky-600 dark:text-sky-400' : 'text-amber-600 dark:text-amber-400'}
+              >
+                {o.side}
+              </span>
+              <span
+                className={
+                  o.status === 'filled'
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : o.status === 'rejected' || o.status === 'cancelled'
+                      ? 'text-red-600 dark:text-red-400'
+                      : ''
+                }
+              >
+                {o.status}
+              </span>
               {o.brokerOrderId && <span>#{o.brokerOrderId}</span>}
+              {o.correlationId && <span>corr:{o.correlationId}</span>}
               {o.avgFillPrice != null && <span>@₹{o.avgFillPrice}</span>}
               {o.error && <span className="w-full text-red-600 dark:text-red-400">↳ {o.error}</span>}
             </div>
@@ -291,17 +414,6 @@ function TradeCard({ trade, onAction, busy }: { trade: TradeRow; onAction: (acti
             className="rounded border border-red-500/60 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-500/10 disabled:opacity-50 dark:text-red-400"
           >
             Exit now at market
-          </button>
-        )}
-        {trade.status === 'open' && trade.entryFillPremium == null && (
-          <button
-            type="button"
-            disabled={busy}
-            title="This entry never confirmed a broker fill — there is no real position. Void clears it without placing any order."
-            onClick={() => onAction('void', trade.id)}
-            className="rounded border border-amber-500/60 px-3 py-1 text-xs font-semibold text-amber-600 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-400"
-          >
-            Void — no fill confirmed
           </button>
         )}
       </div>
@@ -358,14 +470,13 @@ export default function AutoTradePage() {
         setBusy(false);
       }
     },
-    [load],
+    [load]
   );
 
   const doAction = useCallback(
     async (action: string, tradeId?: number) => {
       if (action === 'exit' && !window.confirm('Exit this position at market now?')) return;
       if (action === 'approve' && !window.confirm('Approve and place a REAL order at the broker?')) return;
-      if (action === 'void' && !window.confirm('Void this unfilled trade? No broker order is placed — it just clears a row that never confirmed a fill.')) return;
       setBusy(true);
       setNotice(null);
       try {
@@ -374,20 +485,27 @@ export default function AutoTradePage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action, tradeId }),
         });
-        const out = (await res.json()) as { success: boolean; message?: string; error?: string; aiSummary?: string };
+        const out = (await res.json()) as {
+          success: boolean;
+          message?: string;
+          error?: string;
+          aiSummary?: string;
+        };
         setNotice(out.message ?? out.aiSummary ?? out.error ?? (out.success ? 'done' : 'failed'));
         await load();
       } finally {
         setBusy(false);
       }
     },
-    [load],
+    [load]
   );
 
   const s = data?.settings;
   const today = data?.today;
-  const openTrades = (data?.trades ?? []).filter((t) => t.status === 'open');
-  const doneTrades = (data?.trades ?? []).filter((t) => t.status !== 'open' && t.status !== 'pending_approval');
+  const openTrades = (data?.trades ?? []).filter((t) => t.status === 'open' || t.status === 'placing');
+  const doneTrades = (data?.trades ?? []).filter(
+    (t) => t.status !== 'open' && t.status !== 'placing' && t.status !== 'pending_approval'
+  );
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4">
@@ -397,7 +515,11 @@ export default function AutoTradePage() {
         <span className="text-xs text-muted-foreground">
           AI executes the scanner&apos;s picks — gates in code, audit below.
           {data?.entryWindow && (
-            <> Entry window {data.entryWindow.opensAt}–{data.entryWindow.closesAt}{data.entryWindow.active ? ' · ACTIVE' : ''}</>
+            <>
+              {' '}
+              Entry window {data.entryWindow.opensAt}–{data.entryWindow.closesAt}
+              {data.entryWindow.active ? ' · ACTIVE' : ''}
+            </>
           )}
         </span>
         <button
@@ -415,9 +537,7 @@ export default function AutoTradePage() {
           {data.error}
         </div>
       )}
-      {notice && (
-        <div className="rounded-md border border-border bg-muted/50 p-2 text-xs">{notice}</div>
-      )}
+      {notice && <div className="rounded-md border border-border bg-muted/50 p-2 text-xs">{notice}</div>}
 
       {s && (
         <div className="space-y-3 rounded-lg border border-border bg-card p-4">
@@ -485,16 +605,79 @@ export default function AutoTradePage() {
             </button>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Caps</span>
-            <CapField label="Trades/day" value={s.maxTradesPerDay} min={1} max={4} step={1} busy={busy} onCommit={(v) => void setSetting('maxTradesPerDay', v)} />
-            <CapField label="Max lots" value={s.maxOpenLots} min={1} max={4} step={1} busy={busy} onCommit={(v) => void setSetting('maxOpenLots', v)} />
-            <CapField label="Budget" unit="₹" value={s.maxCapitalRupees} min={10_000} max={200_000} step={5_000} busy={busy} onCommit={(v) => void setSetting('maxCapitalRupees', v)} />
-            <CapField label="Loss halt" unit="₹" value={s.dailyLossHaltRupees} min={500} max={20_000} step={500} busy={busy} onCommit={(v) => void setSetting('dailyLossHaltRupees', v)} />
+            <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Caps</span>
+            <CapField
+              label="Trades/day"
+              value={s.maxTradesPerDay}
+              min={1}
+              max={4}
+              step={1}
+              busy={busy}
+              onCommit={(v) => void setSetting('maxTradesPerDay', v)}
+            />
+            <CapField
+              label="Max lots"
+              value={s.maxOpenLots}
+              min={1}
+              max={4}
+              step={1}
+              busy={busy}
+              onCommit={(v) => void setSetting('maxOpenLots', v)}
+            />
+            <CapField
+              label="Budget"
+              unit="₹"
+              value={s.maxCapitalRupees}
+              min={10_000}
+              max={200_000}
+              step={5_000}
+              busy={busy}
+              onCommit={(v) => void setSetting('maxCapitalRupees', v)}
+            />
+            <CapField
+              label="Loss halt"
+              unit="₹"
+              value={s.dailyLossHaltRupees}
+              min={500}
+              max={20_000}
+              step={500}
+              busy={busy}
+              onCommit={(v) => void setSetting('dailyLossHaltRupees', v)}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3">
+            <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Clock</span>
+            <TimeField
+              label="Entries open"
+              value={s.entryStartMin}
+              minLabel="09:30"
+              maxLabel="12:00"
+              busy={busy}
+              onCommit={(v) => void setSetting('entryStartMin', v)}
+            />
+            <TimeField
+              label="Entries close"
+              value={s.entryEndMin}
+              minLabel="10:00"
+              maxLabel="14:30"
+              busy={busy}
+              onCommit={(v) => void setSetting('entryEndMin', v)}
+            />
+            <TimeField
+              label="Square-off"
+              value={s.squareOffMin}
+              minLabel="14:00"
+              maxLabel="15:20"
+              busy={busy}
+              onCommit={(v) => void setSetting('squareOffMin', v)}
+            />
           </div>
           <p className="text-[11px] text-muted-foreground">
             Set <b>Budget</b> to your account balance — the scanner only picks 1-lot contracts that fit it, and the
-            auto-trader caps deployed premium here. Always <b>1 lot per trade</b>; <b>Max lots</b> is how many can be open
-            at once. E.g. ₹30k budget + 1 lot = one affordable lot at a time; ₹60k + 2 = up to two.
+            auto-trader caps deployed premium here. Always <b>1 lot per trade</b>; <b>Max lots</b> is how many can be
+            open at once. E.g. ₹30k budget + 1 lot = one affordable lot at a time; ₹60k + 2 = up to two. <b>Clock</b>:
+            new entries are only placed between <b>Entries open</b> and <b>Entries close</b>; everything still open is
+            force-exited at <b>Square-off</b> (enforced in code — brokers penalty-square intraday ~15:26, we act first).
           </p>
         </div>
       )}
@@ -505,8 +688,10 @@ export default function AutoTradePage() {
           <Cap label="Open lots" used={today.openLots} max={s.maxOpenLots} />
           <Cap label="Deployed" used={today.deployedRupees} max={s.maxCapitalRupees} unit="₹" />
           <div className="rounded-md border border-border bg-card px-3 py-2">
-            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Realized P&L</div>
-            <div className={`text-sm font-bold tabular-nums ${today.realizedPnlRupees >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+            <div className="text-[10px] tracking-wide text-muted-foreground uppercase">Realized P&L</div>
+            <div
+              className={`text-sm font-bold tabular-nums ${today.realizedPnlRupees >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
+            >
               {today.realizedPnlRupees >= 0 ? '+' : ''}₹{today.realizedPnlRupees.toLocaleString('en-IN')}
             </div>
           </div>
@@ -524,7 +709,7 @@ export default function AutoTradePage() {
 
       {openTrades.length > 0 && (
         <section className="space-y-2">
-          <h2 className="text-sm font-bold">Open positions</h2>
+          <h2 className="text-sm font-bold">Open positions and unresolved submissions</h2>
           {openTrades.map((t) => (
             <TradeCard key={t.id} trade={t} onAction={(a, id) => void doAction(a, id)} busy={busy} />
           ))}
@@ -547,12 +732,17 @@ export default function AutoTradePage() {
         )}
         {data?.decisions?.map((d) => (
           <div key={d.id} className="rounded-md border border-border bg-card p-2.5">
-            <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2 text-[10px] tracking-wide text-muted-foreground uppercase">
               <span>{fmtTime(d.at)}</span>
               <span className="rounded border border-border px-1 py-px font-bold">{d.pass}</span>
-              {d.provider && <span>{d.provider}{d.model ? ` · ${d.model}` : ''}</span>}
+              {d.provider && (
+                <span>
+                  {d.provider}
+                  {d.model ? ` · ${d.model}` : ''}
+                </span>
+              )}
             </div>
-            <div className="mt-1 whitespace-pre-wrap text-xs text-foreground/90">{d.summary}</div>
+            <div className="mt-1 text-xs whitespace-pre-wrap text-foreground/90">{d.summary}</div>
           </div>
         ))}
       </section>

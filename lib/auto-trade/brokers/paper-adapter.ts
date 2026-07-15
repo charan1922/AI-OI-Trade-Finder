@@ -8,7 +8,14 @@
  */
 
 import { fetchOptionQuote } from '../quotes';
-import type { BrokerAdapter, BrokerFunds, OrderState, OrderTicket, PlacedOrder } from './adapter';
+import {
+  BrokerSubmissionError,
+  type BrokerAdapter,
+  type BrokerFunds,
+  type OrderState,
+  type OrderTicket,
+  type PlacedOrder,
+} from './adapter';
 
 export class PaperAdapter implements BrokerAdapter {
   readonly id = 'paper' as const;
@@ -20,15 +27,25 @@ export class PaperAdapter implements BrokerAdapter {
   async placeMarketOrder(ticket: OrderTicket): Promise<PlacedOrder> {
     const quote = await fetchOptionQuote(ticket.optSecurityId);
     if (!quote) {
-      throw new Error(`paper: no live quote for ${ticket.symbol} ${ticket.strike}${ticket.optionType} — order not filled`);
+      throw new BrokerSubmissionError(
+        `paper: no live quote for ${ticket.symbol} ${ticket.strike}${ticket.optionType} — order not filled`,
+        false
+      );
     }
     const fill = ticket.side === 'BUY' ? (quote.ask ?? quote.ltp) : (quote.bid ?? quote.ltp);
-    return { brokerOrderId: `paper-${ticket.idemKey}`, immediateFillPrice: fill };
+    return {
+      brokerOrderId: `paper-${ticket.idemKey}`,
+      immediateFillPrice: fill,
+    };
   }
 
   async getOrderState(): Promise<OrderState> {
     // Paper orders fill synchronously in placeMarketOrder; nothing is pending.
-    return { status: 'filled', avgFillPrice: null, detail: 'paper orders fill at placement' };
+    return {
+      status: 'filled',
+      avgFillPrice: null,
+      detail: 'paper orders fill at placement',
+    };
   }
 
   async cancelOrder(): Promise<void> {

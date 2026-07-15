@@ -34,7 +34,7 @@ export const MIN_SESSION_FRACTION = 0.02;
 /** Fraction of the trading session elapsed at `now`, in [0,1] (IST). */
 export function sessionFractionElapsed(now: Date): number {
   const istSec = now.getTime() / 1000 + 5.5 * 3600;
-  const minuteOfDay = Math.floor(((istSec % 86400) + 86400) % 86400 / 60);
+  const minuteOfDay = Math.floor((((istSec % 86400) + 86400) % 86400) / 60);
   return Math.max(0, Math.min(1, (minuteOfDay - SESSION_START_MIN) / SESSION_MINUTES));
 }
 
@@ -45,6 +45,9 @@ export interface LiveQuoteFacts {
   changePctOpen: number | null;
   bid: number | null;
   ask: number | null;
+  /** Optional exact spread percentage for replay rows that recorded the
+   * spread but not the individual book prices. Live requests use bid/ask. */
+  spreadPct?: number | null;
   futOi: number | null;
   /** Live futures turnover ≈ VWAP × volume, in ₹. */
   turnover: number | null;
@@ -62,7 +65,7 @@ export function buildLiveRFactorInput(
   q: LiveQuoteFacts,
   baseline: RFactorBaseline | undefined,
   morning: SessionContext | null,
-  now: Date,
+  now: Date
 ): RFactorInput | null {
   if (q.ltp == null || !(q.ltp > 0)) return null;
 
@@ -85,6 +88,22 @@ export function buildLiveRFactorInput(
   const breakoutHigh = useORB ? (morning?.openRangeHigh ?? undefined) : (baseline?.priorDayHigh ?? undefined);
   const breakoutLow = useORB ? (morning?.openRangeLow ?? undefined) : (baseline?.priorDayLow ?? undefined);
 
+  // The spread factor depends only on (ask-bid)/mid. Historical snapshots
+  // retained that exact percentage before they retained individual book
+  // prices, so a unit-mid pair reconstructs the factor without inventing a
+  // price. Live rows continue to use their actual bid/ask.
+  const replaySpread =
+    (q.bid == null || q.ask == null) &&
+    q.spreadPct != null &&
+    Number.isFinite(q.spreadPct) &&
+    q.spreadPct >= 0 &&
+    q.spreadPct < 200
+      ? {
+          bid: 1 - q.spreadPct / 200,
+          ask: 1 + q.spreadPct / 200,
+        }
+      : null;
+
   return {
     symbol: q.symbol,
     ltp: q.ltp,
@@ -95,8 +114,8 @@ export function buildLiveRFactorInput(
     // Only pass turnover when we have a time-comparable baseline for it.
     turnover: turnover20dAvgAdj != null ? (q.turnover ?? undefined) : undefined,
     turnover20dAvg: turnover20dAvgAdj,
-    bid: q.bid ?? undefined,
-    ask: q.ask ?? undefined,
+    bid: q.bid ?? replaySpread?.bid,
+    ask: q.ask ?? replaySpread?.ask,
     breakoutHigh,
     breakoutLow,
     dayHigh: q.dayHigh ?? undefined,

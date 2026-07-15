@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { assertBrowsableTable, getColumns, TABLE_META } from '@/lib/db-explorer/tables';
+import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +35,8 @@ function jsonSafe(v: unknown): unknown {
  *   filters   JSON object { column: substring } for per-column search
  */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ table: string }> }) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
   try {
     const { table: rawTable } = await params;
     const table = await assertBrowsableTable(rawTable); // throws → sensitive/unknown table
@@ -79,7 +82,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ tabl
     // --- total (with filters) ---
     const countRows = await prisma.$queryRawUnsafe<{ c: bigint | number }[]>(
       `SELECT COUNT(*) AS c FROM "${table}" ${where}`,
-      ...values,
+      ...values
     );
     const total = Number(countRows[0]?.c ?? 0);
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -93,7 +96,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ tabl
       `SELECT * FROM "${table}" ${where} ${orderBy} LIMIT ? OFFSET ?`,
       ...values,
       pageSize,
-      offset,
+      offset
     );
 
     const data = rows.map((row) => {
@@ -102,7 +105,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ tabl
       return clean;
     });
 
-    const meta = TABLE_META[table] ?? { label: prettify(table), description: '' };
+    const meta = TABLE_META[table] ?? {
+      label: prettify(table),
+      description: '',
+    };
 
     return NextResponse.json({
       success: true,

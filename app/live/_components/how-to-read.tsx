@@ -34,18 +34,29 @@ export function HowToRead() {
         <div className="space-y-5 px-4 pb-8 text-xs leading-relaxed text-muted-foreground">
           {/* The 10-second version */}
           <section className="rounded-lg border border-border bg-card p-3">
-            <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-foreground">The 10-second version</h3>
+            <h3 className="mb-1.5 text-[11px] font-bold tracking-wide text-foreground uppercase">
+              The 10-second version
+            </h3>
             <p>
               Each row is one F&amp;O stock. Read it left to right: <b>Setup</b> is the one-word verdict and{' '}
-              <b>R-Factor</b> is the single interest score — those two are your quick read. The other columns are the raw
-              ingredients behind them, so you can check <i>why</i> before you trust it. Every number is live and real;
-              anything we don&apos;t have shows &quot;—&quot; (never a made-up value).
+              <b>R-Factor</b> is the single interest score — those two are your quick read. The other columns are the
+              raw ingredients behind them, so you can check <i>why</i> before you trust it. Every number is live and
+              real; anything we don&apos;t have shows &quot;—&quot; (never a made-up value).
             </p>
           </section>
 
           {/* Columns — in the order they appear in the table */}
           <section>
-            <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wide text-foreground">What each column means</h3>
+            <h3 className="mb-2 text-[11px] font-bold tracking-wide text-foreground uppercase">
+              What each column means
+            </h3>
+            <p className="mb-2.5 rounded-md border border-border bg-muted/40 p-2 text-[11px]">
+              Columns are prefixed by <b>source</b>, so you always know what you&apos;re reading:{' '}
+              <b className="text-foreground">NSE …</b> = the exact value straight from NSE&apos;s oi-spurts feed
+              (matches nseindia.com), shown verbatim; <b className="text-foreground">App …</b> = a number{' '}
+              <i>we compute</i> from the live market (our scores, ratios and rates). Bare columns (<b>Symbol</b>,{' '}
+              <b>LTP</b>, <b>Chg%</b>) are raw price/identity.
+            </p>
             <dl className="space-y-2.5">
               <Def term="R-Factor">
                 One score for <b>how much big money participated in the stock today</b>, on a <b>1–8</b> scale (higher =
@@ -71,8 +82,9 @@ export function HowToRead() {
                 09:45.
               </Def>
               <Def term="Setup">
-                The <b>combined verdict</b> so you don&apos;t have to weigh every column yourself — Strong / Watch / Quiet
-                / Illiquid, with a ↑/↓ for direction (full rules below). This is the default sort: strongest at the top.
+                The <b>combined verdict</b> so you don&apos;t have to weigh every column yourself — Strong / Watch /
+                Quiet / Illiquid, with a ↑/↓ for direction (full rules below). This is the default sort: strongest at
+                the top.
               </Def>
               <Def term="Breakout">
                 The <b>TradeFinder 3-check breakout verdict</b> (full logic below):{' '}
@@ -97,16 +109,17 @@ export function HowToRead() {
                 read — not a calm-vs-urgent signal.
               </Def>
               <Def term="Bid/Ask">
-                Of the orders <b>currently resting</b> in the book, the share sitting on the <b>buy</b> side — who&apos;s
-                pushing right now.{' '}
+                Of the orders <b>currently resting</b> in the book, the share sitting on the <b>buy</b> side —
+                who&apos;s pushing right now.{' '}
                 <span className="text-emerald-600 dark:text-emerald-400">&gt;55% buyers pushing</span> ·{' '}
-                <span className="text-red-600 dark:text-red-400">&lt;45% sellers pushing</span> · ~50% balanced. It&apos;s
-                the closest thing to live &quot;urgency,&quot; but only the <b>visible</b> book — it can flip in seconds.
+                <span className="text-red-600 dark:text-red-400">&lt;45% sellers pushing</span> · ~50% balanced.
+                It&apos;s the closest thing to live &quot;urgency,&quot; but only the <b>visible</b> book — it can flip
+                in seconds.
               </Def>
               <Def term="Fut OI / OI Lvl">
                 Two different things. <b>Fut OI</b> is the raw open interest in the future — a big stock always shows a
-                huge number, so on its own it means nothing. <b>OI Lvl</b> is today&apos;s OI ÷ its <b>own 20-day
-                average</b> — <b>this</b> is the conviction read:{' '}
+                huge number, so on its own it means nothing. <b>OI Lvl</b> is today&apos;s OI ÷ its{' '}
+                <b>own 20-day average</b> — <b>this</b> is the conviction read:{' '}
                 <span className="text-emerald-600 dark:text-emerald-400">≥1.25× = unusually heavy positioning</span> ·{' '}
                 <span>~1.0× = a normal day</span>. A giant Fut OI at ~1.0× is just big and ordinary.
               </Def>
@@ -114,15 +127,24 @@ export function HowToRead() {
                 How <b>fast fresh positions are piling on this session</b> (OI % change since today&apos;s first
                 snapshot), colored by how urgent that build is (its speed + acceleration). OI Lvl tells you positioning
                 is heavy; OI Build tells you it&apos;s happening <b>right now</b>.{' '}
-                <span className="text-emerald-600 dark:text-emerald-400">Bright green = igniting</span>. A name can build
-                fast before its 20-day OI Lvl catches up. Shows &quot;—&quot; until a few minutes of data have piled up.
+                <span className="text-emerald-600 dark:text-emerald-400">Bright green = igniting</span>. A name can
+                build fast before its 20-day OI Lvl catches up. Shows &quot;—&quot; until a few minutes of data have
+                piled up.
               </Def>
-              <Def term="NSE OI%">
+              <Def term="NSE %Chng in OI">
                 NSE&apos;s own <b>combined OI change — futures AND options together</b> — vs yesterday&apos;s close (the
-                oi-spurts feed; the F&amp;O OI Build-up list above is ranked by exactly this number). Options often build
-                before futures, so this catches positioning the futures-only columns miss. <b>▲</b> = still building in
-                the last ~30 minutes (hover for the rate); no ▲ = built earlier, stalled since. &quot;—&quot; = the name
-                isn&apos;t in NSE&apos;s feed right now.
+                oi-spurts feed&apos;s <code>avgInOI</code>; the F&amp;O OI Build-up list above is ranked by exactly this
+                number). Shown <b>exactly as NSE reports it</b> (2 decimals), so it matches nseindia.com to the digit.
+                Options often build before futures, so this catches positioning the futures-only columns miss.
+                &quot;—&quot; = the name isn&apos;t in NSE&apos;s feed right now.
+              </Def>
+              <Def term="App OIΔ30m">
+                <b>Our</b> build <b>rate</b> for that NSE combined OI — how much it moved over the last ~30 minutes,
+                from our own recorded 5-min history.{' '}
+                <span className="text-emerald-600 dark:text-emerald-400">▲ = still building NOW</span> ·{' '}
+                <span className="text-red-600 dark:text-red-400">▼ = unwinding</span> · flat = built earlier and
+                stalled. This is the &quot;is it happening right now?&quot; read that the raw NSE % (which only tells
+                you the cumulative change) can&apos;t give on its own.
               </Def>
               <Def term="Opt% (options share)">
                 Of all the money traded in this stock&apos;s F&amp;O today, how much sat in <b>options premium</b> vs
@@ -135,23 +157,23 @@ export function HowToRead() {
                 it&apos;s the one worth trusting late in the session.
               </Def>
               <Def term="Opt Prem / Fut Val / Opt Val / Tot Val">
-                The raw money behind that split, straight from NSE&apos;s oi-spurts feed, in ₹ Crore.{' '}
-                <b>Opt Prem</b> = options <b>premium</b> traded (the real cash in the options we&apos;d buy — the best
-                single liquidity read for us); <b>Fut Val</b> = futures traded value; <b>Opt Val</b> = options{' '}
-                <b>notional</b> (full contract value, not premium); <b>Tot Val</b> = Fut + Opt-premium. All are{' '}
+                The raw money behind that split, straight from NSE&apos;s oi-spurts feed, in ₹ Crore. <b>Opt Prem</b> =
+                options <b>premium</b> traded (the real cash in the options we&apos;d buy — the best single liquidity
+                read for us); <b>Fut Val</b> = futures traded value; <b>Opt Val</b> = options <b>notional</b> (full
+                contract value, not premium); <b>Tot Val</b> = Fut + Opt-premium. All are{' '}
                 <b>cumulative since yesterday&apos;s close</b>, so they climb all day — read them for <i>scale</i>, not
                 timing.
               </Def>
               <Def term="Comb OI / Prev OI">
-                <b>Combined futures + options open interest</b> in contracts — today (<b>Comb OI</b>) vs yesterday
-                (<b>Prev OI</b>). NSE OI% is the % change between these two; showing the absolute numbers tells you the{' '}
+                <b>Combined futures + options open interest</b> in contracts — today (<b>Comb OI</b>) vs yesterday (
+                <b>Prev OI</b>). NSE OI% is the % change between these two; showing the absolute numbers tells you the{' '}
                 <b>scale</b> a given % move represents (a +5% build on a huge base ≠ +5% on a tiny one).
               </Def>
               <Def term="Turn Lvl">
                 Futures turnover ÷ its <b>20-day average, adjusted for the time of day</b> — is real money flowing at an
                 unusual pace <b>right now</b>?{' '}
-                <span className="text-emerald-600 dark:text-emerald-400">≥2× = heavy participation</span>. Unlike the raw
-                Turnover next to it (which only ever grows through the day), this <b>decays if the flow dies</b> — a
+                <span className="text-emerald-600 dark:text-emerald-400">≥2× = heavy participation</span>. Unlike the
+                raw Turnover next to it (which only ever grows through the day), this <b>decays if the flow dies</b> — a
                 morning-only burst fades back toward 1× by afternoon.
               </Def>
               <Def term="Turnover">
@@ -163,14 +185,14 @@ export function HowToRead() {
 
           {/* Running race */}
           <section className="rounded-lg border border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-500/30 dark:bg-emerald-500/5">
-            <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+            <h3 className="mb-1.5 text-[11px] font-bold tracking-wide text-emerald-700 uppercase dark:text-emerald-300">
               The &quot;Running race&quot; panel
             </h3>
             <p className="mb-2">
-              The tables below are a <b>snapshot of now</b>. The race shows <b>movement</b>: who is <b>climbing the
-              leaderboard</b> fastest over the last 30–60 min. A name going <b>#25 → #6 in OI build-up</b> is getting
-              crowded into <i>right now</i> — the money is arriving, and spotting it mid-climb puts you ahead of the
-              pack, before it tops the board and everyone sees it.
+              The tables below are a <b>snapshot of now</b>. The race shows <b>movement</b>: who is{' '}
+              <b>climbing the leaderboard</b> fastest over the last 30–60 min. A name going{' '}
+              <b>#25 → #6 in OI build-up</b> is getting crowded into <i>right now</i> — the money is arriving, and
+              spotting it mid-climb puts you ahead of the pack, before it tops the board and everyone sees it.
             </p>
             <ul className="list-disc space-y-1 pl-4">
               <li>
@@ -189,7 +211,7 @@ export function HowToRead() {
 
           {/* Recipe */}
           <section>
-            <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wide text-foreground">
+            <h3 className="mb-2 text-[11px] font-bold tracking-wide text-foreground uppercase">
               How to combine them (3 gates)
             </h3>
             <p className="mb-2">
@@ -202,8 +224,8 @@ export function HowToRead() {
                 edge.
               </li>
               <li>
-                <b>Which way, and is anyone pressing? → Chg% + Bid/Ask.</b> Price up + buyers pushing = demand confirmed;
-                price down + sellers pushing = supply. Mixed → the move may be fading, so wait.
+                <b>Which way, and is anyone pressing? → Chg% + Bid/Ask.</b> Price up + buyers pushing = demand
+                confirmed; price down + sellers pushing = supply. Mixed → the move may be fading, so wait.
               </li>
               <li>
                 <b>Real conviction or just noise? → OI Lvl / OI Build + Turnover.</b> OI Lvl ≥1.25× (heavy positioning)
@@ -212,14 +234,14 @@ export function HowToRead() {
               </li>
             </ol>
             <p className="mt-2">
-              A <b>live setup</b> = tight spread + price and book pointing the same way + OI Lvl ≥1.25× (or a fast build)
-              + heavy turnover. Any one failing is a reason to pass.
+              A <b>live setup</b> = tight spread + price and book pointing the same way + OI Lvl ≥1.25× (or a fast
+              build) + heavy turnover. Any one failing is a reason to pass.
             </p>
           </section>
 
           {/* The trade decision — the scanner's own rules, for humans */}
           <section className="rounded-lg border border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-500/30 dark:bg-emerald-500/5">
-            <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+            <h3 className="mb-1.5 text-[11px] font-bold tracking-wide text-emerald-700 uppercase dark:text-emerald-300">
               When to actually pull the trigger (the checklist)
             </h3>
             <p className="mb-2">
@@ -228,16 +250,17 @@ export function HowToRead() {
             </p>
             <ol className="list-decimal space-y-1.5 pl-4">
               <li>
-                <b>Time: 09:45–11:00 IST only.</b> Before 09:45 is opening-auction noise; after 11:00 fresh entries
-                have the worst odds and square-off risk grows.
+                <b>Time: 09:45–11:00 IST only.</b> Before 09:45 is opening-auction noise; after 11:00 fresh entries have
+                the worst odds and square-off risk grows.
               </li>
               <li>
                 <b>Where: a top R-Factor name with a clear ▲/▼.</b> Big money must already be in it — never trade a
                 quiet stock because the chart &quot;looks good&quot;.
               </li>
               <li>
-                <b>Confirmation: the Breakout badge</b> — <span className="text-emerald-600 dark:text-emerald-400">Breakout</span>{' '}
-                or <span className="text-emerald-600 dark:text-emerald-400">Strong BO</span> in your direction, never{' '}
+                <b>Confirmation: the Breakout badge</b> —{' '}
+                <span className="text-emerald-600 dark:text-emerald-400">Breakout</span> or{' '}
+                <span className="text-emerald-600 dark:text-emerald-400">Strong BO</span> in your direction, never{' '}
                 <span className="text-orange-600 dark:text-orange-400">Fakeout?</span>. Price must be <i>doing</i> the
                 thing, not about to.
               </li>
@@ -248,25 +271,25 @@ export function HowToRead() {
                 for a pullback that holds.
               </li>
               <li>
-                <b>Still alive: OI Build / NSE OI% ▲ / Turn Lvl ≥1.5×</b> — positions and money still coming in{' '}
-                <i>now</i>, not just this morning.
+                <b>Still alive: App OI Build / App OIΔ30m ▲ / App Turn Lvl ≥1.5×</b> — positions and money still coming
+                in <i>now</i>, not just this morning.
               </li>
               <li>
-                <b>Risk before entry: know your exit.</b> Stop at the invalidation level (morning low / OR low for
-                longs — if it breaks, the setup failed), never more than you&apos;re prepared to lose on one trade, and
+                <b>Risk before entry: know your exit.</b> Stop at the invalidation level (morning low / OR low for longs
+                — if it breaks, the setup failed), never more than you&apos;re prepared to lose on one trade, and
                 everything closes by <b>15:12</b>. No stop = no trade.
               </li>
             </ol>
             <p className="mt-2">
               Most days <b>zero to two</b> names pass all six. Passing on everything is a valid — often the best —
-              outcome; the checklist exists to keep you out of the KALYANKJIL-type trap (huge R-Factor, gap at the
-              open, dead sideways after).
+              outcome; the checklist exists to keep you out of the KALYANKJIL-type trap (huge R-Factor, gap at the open,
+              dead sideways after).
             </p>
           </section>
 
           {/* TF breakout legend */}
           <section>
-            <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wide text-foreground">
+            <h3 className="mb-2 text-[11px] font-bold tracking-wide text-foreground uppercase">
               The Breakout flag (TradeFinder 3 checks)
             </h3>
             <p className="mb-2">
@@ -292,8 +315,8 @@ export function HowToRead() {
             </ol>
             <ul className="mt-2 space-y-1.5">
               <li className="flex items-center gap-2">
-                <Dot cls="bg-emerald-500" /> <b className="text-foreground">Strong BO</b> — morning test held + ≥2 levels
-                cleared + R-Factor efficient. The full TF profile.
+                <Dot cls="bg-emerald-500" /> <b className="text-foreground">Strong BO</b> — morning test held + ≥2
+                levels cleared + R-Factor efficient. The full TF profile.
               </li>
               <li className="flex items-center gap-2">
                 <Dot cls="bg-emerald-500/50" /> <b className="text-foreground">Breakout</b> — morning test held + ≥1
@@ -316,7 +339,7 @@ export function HowToRead() {
 
           {/* Setup legend */}
           <section>
-            <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wide text-foreground">The Setup flag</h3>
+            <h3 className="mb-2 text-[11px] font-bold tracking-wide text-foreground uppercase">The Setup flag</h3>
             <ul className="space-y-1.5">
               <li className="flex items-center gap-2">
                 <Dot cls="bg-emerald-500" /> <b className="text-foreground">Strong</b> — cheap to trade, price and book
@@ -349,22 +372,22 @@ export function HowToRead() {
 
           {/* Beginner gotcha */}
           <section className="rounded-lg border border-border bg-card p-3">
-            <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-foreground">
+            <h3 className="mb-1.5 text-[11px] font-bold tracking-wide text-foreground uppercase">
               &quot;It moved a lot &amp; has big OI, but says Quiet?&quot;
             </h3>
             <p>
               Two traps to avoid: (1) a big <b>Fut OI</b> number is just the stock&apos;s size — what matters is{' '}
               <b>OI Lvl</b> (vs its average); a huge Fut OI at ~1.0× is normal, not a signal. (2) A move that{' '}
-              <b>already happened</b> (the <span className="text-orange-600 dark:text-orange-400">moved</span> tag) means
-              you&apos;re <b>late</b> — the book has usually flipped against it. &quot;Quiet&quot; there is the tool{' '}
-              <b>protecting you from chasing</b>, the #1 beginner mistake. Wait for a fresh setup (Watch → Strong) or a
-              pullback.
+              <b>already happened</b> (the <span className="text-orange-600 dark:text-orange-400">moved</span> tag)
+              means you&apos;re <b>late</b> — the book has usually flipped against it. &quot;Quiet&quot; there is the
+              tool <b>protecting you from chasing</b>, the #1 beginner mistake. Wait for a fresh setup (Watch → Strong)
+              or a pullback.
             </p>
           </section>
 
           {/* Caveats */}
           <section className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-500/30 dark:bg-amber-500/5">
-            <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+            <h3 className="mb-1.5 text-[11px] font-bold tracking-wide text-amber-700 uppercase dark:text-amber-300">
               Keep in mind
             </h3>
             <ul className="list-disc space-y-1 pl-4 text-amber-800/90 dark:text-amber-200/80">

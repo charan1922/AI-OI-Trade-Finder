@@ -41,13 +41,29 @@ export interface LiveUrgencyRow {
    *  session elapsed — is real money flowing at an unusual pace RIGHT NOW (a
    *  level that decays if the flow dies, unlike raw cumulative turnover). */
   turnoverLvl?: number | null;
-  /** NSE's combined (futures+options) OI %-change vs the previous EOD — the
-   *  oi-spurts feed value, recorded per 5-min bar by the Fyers poller. Null for
-   *  names not in that feed / off-hours (fyers_candles keeps today only). */
+  /** NSE's combined (futures+options) OI %-change vs the previous EOD, as
+   *  RECORDED per 5-min bar by the Fyers poller (DB). Lags the live feed by up
+   *  to one poll — kept only to derive `nseOiSlope30m`, NOT displayed as the NSE
+   *  %Chng column (that uses the live-feed `nseChgOiPct` below so it matches NSE
+   *  exactly). Null for names not in the feed / off-hours. */
   nseOiPct?: number | null;
-  /** Trailing ~30-min build of nseOiPct in pct-points — the combined-OI rate. */
+  /** Trailing ~30-min build of nseOiPct in pct-points — OUR derived combined-OI
+   *  rate ("still building now" vs "stalled"). Shown in the App block. */
   nseOiSlope30m?: number | null;
-  // ── Extra oi-spurts columns (live-feed join, F&O OI Build-up view) ──────────
+  // ── NSE oi-spurts feed columns (LIVE-feed join, shown verbatim as NSE reports) ─
+  // These are the exact per-underlying values from NSE's
+  // live-analysis-oi-spurts-underlyings feed — the same numbers /nse/movers and
+  // NSE's own F&O OI Build-up table show. Sourced live (getNseOiRowMap), so they
+  // match NSE, not our recorded snapshot. Money values normalized to ₹ Cr.
+  /** NSE `avgInOI` — combined fut+opt OI %-change vs yesterday's close. THE value
+   *  NSE ranks its list by; shown exactly (2 dp). */
+  nseChgOiPct?: number | null;
+  /** NSE `changeInOI` — absolute change in combined OI (contracts). */
+  nseChangeInOi?: number | null;
+  /** NSE `volume` — traded volume today (contracts). */
+  nseVolume?: number | null;
+  /** NSE `underlyingValue` — the underlying's spot value. */
+  nseUnderlyingValue?: number | null;
   // Snapshot from NSE's oi-spurts feed (cumulative since prev EOD). Money in ₹ Cr.
   /** Options premium traded value today (₹ Cr) — the money in the options pool. */
   nsePremValueCr?: number | null;

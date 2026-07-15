@@ -6,13 +6,7 @@
  * file is the enforcement — a failed gate is final for the attempt.
  */
 
-import {
-  ENTRY_END_MIN,
-  ENTRY_START_MIN,
-  ENTRY_WINDOW_LABEL,
-  MAX_ENTRY_SLIPPAGE_PCT,
-  MAX_SPREAD_PCT,
-} from '../config';
+import { ENTRY_END_MIN, ENTRY_START_MIN, istMinuteLabel, MAX_ENTRY_SLIPPAGE_PCT, MAX_SPREAD_PCT } from '../config';
 import type { AutoTradeSettings, GateVerdict } from '../types';
 
 export interface EntryGateInput {
@@ -21,6 +15,8 @@ export interface EntryGateInput {
   liveEnvEnabled: boolean;
   marketOpen: boolean;
   minuteIST: number;
+  /** Code-enforced no-new-entry cutoff shared with commentary. */
+  entryCutoffMin?: number;
   /** Entries that already consumed a daily slot (pending + open + closed). */
   entriesToday: number;
   openLots: number;
@@ -46,15 +42,47 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
   const reasons: string[] = [];
   const s = x.settings;
 
+  // Corrupt numbers must fail CLOSED: every JS comparison against NaN is
+  // false, so a NaN minuteIST would silently pass the time window and a NaN
+  // pnl would pass the loss halt. Reject the attempt outright.
+  const numerics: [string, number][] = [
+    ['minuteIST', x.minuteIST],
+    ['entriesToday', x.entriesToday],
+    ['openLots', x.openLots],
+    ['deployedRupees', x.deployedRupees],
+    ['dailyRealizedPnl', x.dailyRealizedPnl],
+    ['lots', x.lots],
+    ['settings.maxTradesPerDay', s.maxTradesPerDay],
+    ['settings.maxOpenLots', s.maxOpenLots],
+    ['settings.maxCapitalRupees', s.maxCapitalRupees],
+    ['settings.dailyLossHaltRupees', s.dailyLossHaltRupees],
+    ['settings.squareOffMin', s.squareOffMin],
+    ['settings.entryStartMin', s.entryStartMin ?? ENTRY_START_MIN],
+    ['settings.entryEndMin', s.entryEndMin ?? ENTRY_END_MIN],
+  ];
+  const corrupt = numerics.filter(([, value]) => !Number.isFinite(value)).map(([name]) => name);
+  if (x.entryCutoffMin != null && Number.isNaN(x.entryCutoffMin)) corrupt.push('entryCutoffMin');
+  if (corrupt.length > 0) {
+    return { allow: false, reasons: [`corrupt numeric input(s): ${corrupt.join(', ')} — failing closed`] };
+  }
+
   if (s.mode === 'off') reasons.push('auto-trade mode is OFF');
   if (s.killSwitch) reasons.push('kill switch is ON — no new orders');
   if (s.mode === 'live' && !x.liveEnvEnabled) {
     reasons.push('live mode selected but AUTO_TRADE_LIVE_ENABLED is not set in env (two-key rule)');
   }
   if (!x.marketOpen) reasons.push('market is closed');
-  if (x.minuteIST < ENTRY_START_MIN || x.minuteIST > ENTRY_END_MIN) {
-    reasons.push(`outside the entry window ${ENTRY_WINDOW_LABEL.opensAt}–${ENTRY_WINDOW_LABEL.closesAt}`);
+  // Window bounds come from settings (clamped in settings.ts); ?? keeps older
+  // test fixtures without the fields on the long-standing defaults.
+  const entryStart = s.entryStartMin ?? ENTRY_START_MIN;
+  const entryEnd = s.entryEndMin ?? ENTRY_END_MIN;
+  const cutoff = x.entryCutoffMin ?? Number.POSITIVE_INFINITY;
+  const hardEnd = Math.min(entryEnd, cutoff - 1, s.squareOffMin - 1);
+  if (x.minuteIST < entryStart || x.minuteIST > hardEnd) {
+    reasons.push(`outside the effective entry window ${istMinuteLabel(entryStart)}–${istMinuteLabel(hardEnd)}`);
   }
+  if (x.minuteIST >= cutoff) reasons.push(`past the hard fresh-entry cutoff ${istMinuteLabel(cutoff)}`);
+  if (x.minuteIST >= s.squareOffMin) reasons.push(`at/after forced square-off ${istMinuteLabel(s.squareOffMin)}`);
   if (x.entriesToday >= s.maxTradesPerDay) {
     reasons.push(`daily trade cap reached (${x.entriesToday}/${s.maxTradesPerDay})`);
   }
@@ -65,25 +93,41 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
   if (x.dailyRealizedPnl <= -s.dailyLossHaltRupees) {
     reasons.push(`daily loss halt: realized ₹${x.dailyRealizedPnl} ≤ -₹${s.dailyLossHaltRupees}`);
   }
+  // Real orders (approval/live) must verify the balance; a funds-API failure
+  // fails CLOSED. Paper never trips this — the executor computes its funds as
+  // budget-minus-deployed, so paper always arrives with a number.
+  const funds =
+    x.brokerFundsAvailable != null && Number.isFinite(x.brokerFundsAvailable) ? x.brokerFundsAvailable : null;
+  if (s.mode !== 'paper' && funds == null) {
+    reasons.push('broker funds unavailable — cannot verify balance for a real order');
+  }
   if (x.perLotCost == null || x.perLotCost <= 0) {
     reasons.push('no live option premium — cannot size the position');
   } else {
     const cost = x.perLotCost * x.lots;
     if (x.deployedRupees + cost > s.maxCapitalRupees) {
       reasons.push(
-        `capital cap: ₹${Math.round(x.deployedRupees + cost).toLocaleString('en-IN')} would exceed ₹${s.maxCapitalRupees.toLocaleString('en-IN')}`,
+        `capital cap: ₹${Math.round(x.deployedRupees + cost).toLocaleString('en-IN')} would exceed ₹${s.maxCapitalRupees.toLocaleString('en-IN')}`
       );
     }
-    if (x.brokerFundsAvailable != null && x.brokerFundsAvailable < cost) {
+    if (funds != null && funds < cost) {
       reasons.push(
-        `broker funds: ₹${Math.round(x.brokerFundsAvailable).toLocaleString('en-IN')} available < ₹${Math.round(cost).toLocaleString('en-IN')} needed`,
+        `broker funds: ₹${Math.round(funds).toLocaleString('en-IN')} available < ₹${Math.round(cost).toLocaleString('en-IN')} needed`
       );
     }
   }
-  if (x.slippagePct != null && Math.abs(x.slippagePct) > MAX_ENTRY_SLIPPAGE_PCT) {
-    reasons.push(`premium moved ${x.slippagePct.toFixed(1)}% since the scan quote (> ${MAX_ENTRY_SLIPPAGE_PCT}% slippage guard)`);
+  if (x.slippagePct == null || !Number.isFinite(x.slippagePct)) {
+    // No scan-quote comparison available (scanner premium missing) — the AI
+    // would be entering on numbers nobody verified. Fail closed.
+    reasons.push('premium slippage vs the scan quote cannot be verified — failing closed');
+  } else if (Math.abs(x.slippagePct) > MAX_ENTRY_SLIPPAGE_PCT) {
+    reasons.push(
+      `premium moved ${x.slippagePct.toFixed(1)}% since the scan quote (> ${MAX_ENTRY_SLIPPAGE_PCT}% slippage guard)`
+    );
   }
-  if (x.spreadPct != null && x.spreadPct > MAX_SPREAD_PCT) {
+  if (x.spreadPct == null || !Number.isFinite(x.spreadPct) || x.spreadPct < 0) {
+    reasons.push('option spread unavailable — liquidity cannot be verified');
+  } else if (x.spreadPct > MAX_SPREAD_PCT) {
     reasons.push(`option spread ${x.spreadPct.toFixed(1)}% exceeds max ${MAX_SPREAD_PCT}% — too illiquid`);
   }
   if (!x.hasSlSpot) reasons.push('scanner plan has no spot stop-loss — unmanaged entries are not allowed');
@@ -96,17 +140,23 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
 export function checkStopMove(
   direction: 'bullish' | 'bearish',
   currentSlSpot: number | null,
-  newSlSpot: number,
+  newSlSpot: number
 ): GateVerdict {
   if (!Number.isFinite(newSlSpot) || newSlSpot <= 0) {
     return { allow: false, reasons: ['newSlSpot must be a positive number'] };
   }
   if (currentSlSpot != null) {
     if (direction === 'bullish' && newSlSpot <= currentSlSpot) {
-      return { allow: false, reasons: [`bullish stop may only move UP (current ${currentSlSpot}, got ${newSlSpot})`] };
+      return {
+        allow: false,
+        reasons: [`bullish stop may only move UP (current ${currentSlSpot}, got ${newSlSpot})`],
+      };
     }
     if (direction === 'bearish' && newSlSpot >= currentSlSpot) {
-      return { allow: false, reasons: [`bearish stop may only move DOWN (current ${currentSlSpot}, got ${newSlSpot})`] };
+      return {
+        allow: false,
+        reasons: [`bearish stop may only move DOWN (current ${currentSlSpot}, got ${newSlSpot})`],
+      };
     }
   }
   return { allow: true, reasons: [] };

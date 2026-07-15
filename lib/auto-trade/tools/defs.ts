@@ -29,9 +29,9 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
   {
     name: 'get_account_state',
     description:
-      'Current caps and exposure: mode, kill switch, entries used today vs max, open lots vs max, premium ' +
-      '₹ deployed vs budget, realized P&L today vs the daily loss halt, entry-window state, pending ' +
-      'approvals, broker funds. ALWAYS call this first each pass.',
+      'Refresh the account state already preloaded in the first message: mode, kill switch, entries used ' +
+      'today vs max, open lots vs max, deployed premium vs budget, realized P&L vs loss halt, entry ' +
+      'window, pending approvals, and broker funds. Call only when a later refresh is needed.',
     parameters: NO_ARGS,
   },
   {
@@ -42,7 +42,12 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
       'in current prices.',
     parameters: {
       type: 'object',
-      properties: { symbol: { type: 'string', description: 'NSE underlying, e.g. "RELIANCE".' } },
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'NSE underlying, e.g. "RELIANCE".',
+        },
+      },
       required: ['symbol'],
       additionalProperties: false,
     },
@@ -56,7 +61,12 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
       'with different wording.',
     parameters: {
       type: 'object',
-      properties: { symbol: { type: 'string', description: 'Symbol of a pick from get_scan_picks.' } },
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'Symbol of a pick from get_scan_picks.',
+        },
+      },
       required: ['symbol'],
       additionalProperties: false,
     },
@@ -70,8 +80,14 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
     parameters: {
       type: 'object',
       properties: {
-        symbol: { type: 'string', description: 'Symbol of an eligible pick from get_scan_picks.' },
-        reason: { type: 'string', description: 'One sentence: why this entry, now.' },
+        symbol: {
+          type: 'string',
+          description: 'Symbol of an eligible pick from get_scan_picks.',
+        },
+        reason: {
+          type: 'string',
+          description: 'One sentence: why this entry, now.',
+        },
       },
       required: ['symbol', 'reason'],
       additionalProperties: false,
@@ -80,8 +96,8 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
   {
     name: 'get_open_positions',
     description:
-      'Every open auto-trade position with live premium, latest spot, points from entry, and the current ' +
-      'stop/target levels (spot plan + premium backstops). Manage these BEFORE considering any new entry.',
+      'Refresh the open positions already preloaded in the first message, including live premium, latest ' +
+      'spot, points from entry, and stop/target levels. Use only when a later refresh is decision-relevant.',
     parameters: NO_ARGS,
   },
   {
@@ -94,7 +110,10 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
       properties: {
         tradeId: { type: 'number', description: 'id from get_open_positions.' },
         newSlSpot: { type: 'number', description: 'New spot stop level.' },
-        reason: { type: 'string', description: 'One sentence: why the stop moves.' },
+        reason: {
+          type: 'string',
+          description: 'One sentence: why the stop moves.',
+        },
       },
       required: ['tradeId', 'newSlSpot', 'reason'],
       additionalProperties: false,
@@ -124,7 +143,9 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
       'the bar, holding through noise). Keeps the decision record complete.',
     parameters: {
       type: 'object',
-      properties: { note: { type: 'string', description: 'One or two sentences.' } },
+      properties: {
+        note: { type: 'string', description: 'One or two sentences.' },
+      },
       required: ['note'],
       additionalProperties: false,
     },

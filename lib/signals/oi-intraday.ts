@@ -46,9 +46,17 @@ export async function ensureOiIntradayTable(): Promise<void> {
       changePctOpen REAL,
       spreadPct     REAL,
       imbalance     REAL,
+      optShare      REAL,
+      premValueCr   REAL,
       PRIMARY KEY (symbol, date, bucketTs)
     )
   `);
+  const existing = new Set(
+    (await prisma.$queryRawUnsafe<{ name: string }[]>(`PRAGMA table_info(oi_intraday)`)).map((column) => column.name)
+  );
+  if (!existing.has('optShare')) await prisma.$executeRawUnsafe(`ALTER TABLE oi_intraday ADD COLUMN optShare REAL`);
+  if (!existing.has('premValueCr'))
+    await prisma.$executeRawUnsafe(`ALTER TABLE oi_intraday ADD COLUMN premValueCr REAL`);
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_oi_intraday_date ON oi_intraday (date, symbol)`);
   tableReady = true;
 }
@@ -69,6 +77,8 @@ export interface OiSnapshotInput {
   changePctOpen: number | null;
   spreadPct: number | null;
   imbalance: number | null;
+  optShare: number | null;
+  premValueCr: number | null;
 }
 
 /** A stored point read back for urgency computation, ascending by time. */
@@ -81,9 +91,11 @@ export interface OiPoint {
   changePctOpen: number | null;
   spreadPct: number | null;
   imbalance: number | null;
+  optShare: number | null;
+  premValueCr: number | null;
 }
 
-const COLS = 12; // columns per inserted row (keep batches under SQLite's 999-var limit)
+const COLS = 14; // columns per inserted row (keep batches under SQLite's 999-var limit)
 const BATCH_ROWS = 60;
 
 /**
@@ -95,7 +107,7 @@ const BATCH_ROWS = 60;
 export async function recordIntradayOi(
   date: string,
   snapshots: OiSnapshotInput[],
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<number> {
   const usable = snapshots.filter((s) => (s.futOi ?? 0) > 0);
   if (usable.length === 0) return 0;
@@ -122,13 +134,15 @@ export async function recordIntradayOi(
         s.changePctOpen,
         s.spreadPct,
         s.imbalance,
+        s.optShare,
+        s.premValueCr
       );
     }
     await prisma.$executeRawUnsafe(
       `INSERT OR IGNORE INTO oi_intraday
-         (symbol, date, bucketTs, capturedAt, ltp, futOi, futOiAvg20d, oiLevel, futTurnover, changePctOpen, spreadPct, imbalance)
+         (symbol, date, bucketTs, capturedAt, ltp, futOi, futOiAvg20d, oiLevel, futTurnover, changePctOpen, spreadPct, imbalance, optShare, premValueCr)
        VALUES ${placeholders}`,
-      ...params,
+      ...params
     );
   }
   return usable.length;
@@ -148,10 +162,10 @@ export async function getLatestSnapshotDate(): Promise<string | null> {
 export async function getIntradaySeries(symbol: string, date: string): Promise<OiPoint[]> {
   await ensureOiIntradayTable();
   const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
-    `SELECT bucketTs, ltp, futOi, oiLevel, futTurnover, changePctOpen, spreadPct, imbalance
+    `SELECT bucketTs, ltp, futOi, oiLevel, futTurnover, changePctOpen, spreadPct, imbalance, optShare, premValueCr
        FROM oi_intraday WHERE symbol = ? AND date = ? ORDER BY bucketTs ASC`,
     symbol,
-    date,
+    date
   );
   return rows.map(rowToPoint);
 }
@@ -163,10 +177,10 @@ export async function getIntradaySeriesForSymbols(date: string, symbols: string[
   await ensureOiIntradayTable();
   const placeholders = symbols.map(() => '?').join(',');
   const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
-    `SELECT symbol, bucketTs, ltp, futOi, oiLevel, futTurnover, changePctOpen, spreadPct, imbalance
+    `SELECT symbol, bucketTs, ltp, futOi, oiLevel, futTurnover, changePctOpen, spreadPct, imbalance, optShare, premValueCr
        FROM oi_intraday WHERE date = ? AND symbol IN (${placeholders}) ORDER BY symbol, bucketTs ASC`,
     date,
-    ...symbols,
+    ...symbols
   );
   for (const r of rows) {
     const sym = String(r.symbol);
@@ -187,6 +201,8 @@ function rowToPoint(r: Record<string, unknown>): OiPoint {
     changePctOpen: toNumOrNull(r.changePctOpen),
     spreadPct: toNumOrNull(r.spreadPct),
     imbalance: toNumOrNull(r.imbalance),
+    optShare: toNumOrNull(r.optShare),
+    premValueCr: toNumOrNull(r.premValueCr),
   };
 }
 
@@ -235,7 +251,10 @@ export function computeOiUrgency(series: OiPoint[]): OiUrgency {
     points: pts.length,
   };
   if (pts.length < MIN_URGENCY_POINTS) {
-    return { ...blank, reason: `only ${pts.length} intraday OI points (need ${MIN_URGENCY_POINTS}+)` };
+    return {
+      ...blank,
+      reason: `only ${pts.length} intraday OI points (need ${MIN_URGENCY_POINTS}+)`,
+    };
   }
 
   const n = pts.length;
@@ -247,7 +266,7 @@ export function computeOiUrgency(series: OiPoint[]): OiUrgency {
   // ‰ of day-open OI per minute between two points, clamped.
   const velAt = (i: number): number => {
     const dtMin = Math.max((pts[i].bucketTs - pts[i - 1].bucketTs) / 60, 1);
-    return clamp((((pts[i].futOi - pts[i - 1].futOi) / dtMin) / ref) * 1000, -5, 5);
+    return clamp(((pts[i].futOi - pts[i - 1].futOi) / dtMin / ref) * 1000, -5, 5);
   };
   const oiVelocity = velAt(n - 1);
   const oiVelocityPrev = velAt(n - 2);
@@ -257,10 +276,19 @@ export function computeOiUrgency(series: OiPoint[]): OiUrgency {
   const urgencyScore = clamp(
     2.0 * Math.max(oiVelocity, 0) + 1.5 * Math.max(oiAccel, 0) + 0.5 * clamp(sessionOiChangePct, 0, 6),
     0,
-    10,
+    10
   );
 
-  return { ok: true, dayOpenOi, latestOi, sessionOiChangePct, oiVelocity, oiAccel, urgencyScore, points: n };
+  return {
+    ok: true,
+    dayOpenOi,
+    latestOi,
+    sessionOiChangePct,
+    oiVelocity,
+    oiAccel,
+    urgencyScore,
+    points: n,
+  };
 }
 
 /** 09:45 IST as minute-of-day — when the trading rules allow entries. */

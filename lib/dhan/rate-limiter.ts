@@ -4,11 +4,13 @@
  * Singleton queue that ALL Dhan API calls must go through.
  * Enforces rate limits globally — not per-module.
  *
- * Official Dhan rate limits:
- *   Data APIs (/charts/*):     10 req/sec → 100ms min gap
- *   Quote APIs (/marketfeed/*, /optionchain): 1 req/sec → 1000ms min gap
- *   Order APIs:                25 req/sec
+ * Dhan's documented v2 account limits (checked 2026-07-15):
+ *   Data APIs (/charts/*):     5 req/sec
+ *   Quote APIs (/marketfeed/*): 1 req/sec
+ *   Order APIs:                10 req/sec plus minute/hour/day caps
  *   Non-Trading APIs:          20 req/sec
+ * Option-chain endpoints have their own per-unique-request rule and use the
+ * separate gate in market-feed.ts; this module currently serves chart data.
  *
  * Implementation: Sequential queue with per-category delay.
  * Built-in retry with exponential backoff on 429.
@@ -21,9 +23,9 @@ const DHAN_API = 'https://api.dhan.co';
 
 // Rate limits per category (ms between calls)
 const RATE_LIMITS: Record<string, number> = {
-  data: 110, // Charts: 10/sec → 100ms + 10ms buffer
+  data: 210, // Charts: 5/sec → 200ms + 10ms buffer
   quote: 1100, // Marketfeed/optionchain: 1/sec + 100ms buffer
-  order: 50, // Orders: 25/sec
+  order: 110, // Orders: 10/sec + 10ms buffer (minute/day caps still apply)
   default: 200,
 };
 

@@ -47,7 +47,15 @@ function RankSparkline({ track, climbed }: { track: (number | null)[]; climbed: 
 
   return (
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="shrink-0" aria-hidden>
-      <path d={d} fill="none" stroke={stroke} strokeWidth={1.25} strokeLinejoin="round" strokeLinecap="round" opacity={0.85} />
+      <path
+        d={d}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={1.25}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        opacity={0.85}
+      />
       <circle cx={x(last.i)} cy={y(last.r)} r={1.8} fill={stroke} />
     </svg>
   );
@@ -58,22 +66,28 @@ function RunnerRow({ c, feed }: { c: RaceRunner; feed: RankFeed }) {
   return (
     <div
       onClick={() =>
-        window.open(`https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(c.symbol)}&interval=5`, '_blank', 'noopener,noreferrer')
+        window.open(
+          `https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(c.symbol)}&interval=5`,
+          '_blank',
+          'noopener,noreferrer'
+        )
       }
       title={`${c.symbol} — now #${c.rankNow}, from #${c.rankOpen} at open (climbed ${c.deltaSinceOpen}) · ${fmtValue(feed, c.valueNow)}. Open chart.`}
-      className="flex cursor-pointer items-center gap-1.5 rounded border border-border bg-muted/30 px-1.5 py-0.5 hover:bg-muted/60"
+      className="flex cursor-pointer items-center gap-1 rounded border border-border bg-muted/30 px-1 py-px hover:bg-muted/60"
     >
       {/* Headline = current rank (always within the top 20). */}
-      <span className="w-7 shrink-0 text-center text-[12px] font-bold tabular-nums text-foreground">#{c.rankNow}</span>
+      <span className="w-7 shrink-0 text-center text-[12px] font-bold text-foreground tabular-nums">#{c.rankNow}</span>
       <span className="w-14 truncate text-[10.5px] font-medium text-foreground">{c.symbol}</span>
       {/* Climb since open — secondary. */}
-      <span className={`flex shrink-0 items-center gap-0.5 text-[9.5px] tabular-nums ${climbed ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+      <span
+        className={`flex shrink-0 items-center gap-0.5 text-[9.5px] tabular-nums ${climbed ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
+      >
         {climbed ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />}
         {Math.abs(c.deltaSinceOpen ?? 0)}
       </span>
       <span className="text-[9px] text-muted-foreground">from #{c.rankOpen}</span>
       <RankSparkline track={c.track} climbed={climbed} />
-      <span className="ml-auto text-[9.5px] tabular-nums text-muted-foreground">{fmtValue(feed, c.valueNow)}</span>
+      <span className="ml-auto text-[9.5px] text-muted-foreground tabular-nums">{fmtValue(feed, c.valueNow)}</span>
     </div>
   );
 }
@@ -97,9 +111,9 @@ export function ClimbersSection({ refreshSignal }: { refreshSignal: number }) {
 
   return (
     <section className="rounded-lg border border-border bg-card">
-      <header className="flex flex-wrap items-center gap-2 border-b border-border px-2.5 py-1.5">
+      <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1">
         <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />
-        <h2 className="text-[12px] font-semibold uppercase tracking-wide text-foreground">Running race</h2>
+        <h2 className="text-[12px] font-semibold tracking-wide text-foreground uppercase">Running race</h2>
         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
           into the top 20 · since open{checks > 0 ? ` · ${checks} checks` : ''}
         </span>
@@ -119,7 +133,7 @@ export function ClimbersSection({ refreshSignal }: { refreshSignal: number }) {
         </div>
       </header>
 
-      <div className="px-2.5 py-2">
+      <div className="px-2 py-1">
         {error ? (
           <p className="py-2 text-center text-[11px] text-red-600 dark:text-red-400">{error}</p>
         ) : loading && !data ? (
@@ -136,7 +150,7 @@ export function ClimbersSection({ refreshSignal }: { refreshSignal: number }) {
             No one&apos;s climbed this board since the open — the leaderboard has held its shape.
           </p>
         ) : (
-          <div className="space-y-2">
+          <div className="flex flex-col gap-1.5">
             {runners.length > 0 && (
               <div className="grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3">
                 {runners.map((c) => (
@@ -146,15 +160,19 @@ export function ClimbersSection({ refreshSignal }: { refreshSignal: number }) {
             )}
             {newEntrants.length > 0 && (
               <div>
-                <p className="mb-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+                <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
                   <Sparkles className="h-3 w-3 text-amber-500" /> New since open (weren&apos;t on the board at 9:15)
                 </p>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-1">
                   {newEntrants.map((c) => (
                     <span
                       key={c.symbol}
                       onClick={() =>
-                        window.open(`https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(c.symbol)}&interval=5`, '_blank', 'noopener,noreferrer')
+                        window.open(
+                          `https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(c.symbol)}&interval=5`,
+                          '_blank',
+                          'noopener,noreferrer'
+                        )
                       }
                       title={`${c.symbol} — new at #${c.rankNow} · ${fmtValue(feed, c.valueNow)}. Open chart.`}
                       className="inline-flex cursor-pointer items-center gap-1 rounded border border-amber-300/50 bg-amber-50 px-1.5 py-0.5 text-[10px] dark:bg-amber-500/10"
