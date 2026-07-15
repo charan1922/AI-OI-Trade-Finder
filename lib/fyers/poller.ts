@@ -749,6 +749,13 @@ function scheduleNextTick(): void {
 
 /** Idempotent — the instrumentation.ts entry point. Safe under HMR re-evaluation. */
 export function startFyersPoller(): void {
+  // Dev kill switch: local + prod pollers share one Fyers account and their
+  // aligned 5-min bursts collide on the same rate limit. With the poller off,
+  // dev still works — candles come from db:pull-prod, tokens mint lazily.
+  if (process.env.FYERS_POLLER_DISABLED === 'true') {
+    console.log(`${TAG} DISABLED via FYERS_POLLER_DISABLED — no Fyers downloads from this machine`);
+    return;
+  }
   const state = getState();
   if (state.started) return;
   state.started = true;

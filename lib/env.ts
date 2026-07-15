@@ -54,6 +54,11 @@ const envSchema = z.object({
   // can select mode 'live', but real autonomous orders stay blocked until this
   // is ALSO 'true' — a deliberate two-key safety on real money.
   AUTO_TRADE_LIVE_ENABLED: z.string().optional(),
+  // Set 'true' on a DEV machine to stop the local Fyers poller entirely.
+  // Local + prod pollers share one Fyers account: their 5-min bursts collide
+  // and eat prod's rate limit ("request limit reached" on the background
+  // tail). Prod (Railway) must never set this.
+  FYERS_POLLER_DISABLED: z.string().optional(),
   // Optional webhook for auto-trade alerts (lib/auto-trade/alerts.ts).
   // Telegram example: https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>
   AUTO_TRADE_ALERT_WEBHOOK: z.string().optional(),
