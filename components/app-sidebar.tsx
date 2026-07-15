@@ -19,7 +19,6 @@ import {
   FlaskConical,
   Gauge,
   Grid3x3,
-  History,
   LayoutGrid,
   type LucideIcon,
   NotebookText,
@@ -56,6 +55,8 @@ interface NavGroup {
   label: string;
   icon: LucideIcon;
   children: NavItem[];
+  /** Start collapsed (still auto-opens when a child route is active). */
+  defaultCollapsed?: boolean;
 }
 
 const NAV_GROUPS: NavGroup[] = [
@@ -72,34 +73,40 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    label: 'Assistant',
+    icon: Bot,
+    children: [
+      { title: 'Trade Suggest', href: '/trade-suggest', icon: Target },
+      { title: 'Trade Commentary', href: '/trade-commentary', icon: Sparkles },
+      { title: 'Auto Trade', href: '/auto-trade', icon: Zap },
+      { title: 'Trade Assistant', href: '/trade-assistant', icon: Bot },
+    ],
+  },
+  {
+    label: 'End of Day',
+    icon: CalendarClock,
+    defaultCollapsed: true,
+    children: [
+      { title: 'EOD Auto Trade', href: '/auto-trade/history', icon: Zap },
+      { title: 'EOD Trade Log', href: '/trade-suggest/history', icon: NotebookText },
+      { title: 'EOD Live Urgency', href: '/live/history', icon: Gauge },
+      { title: 'EOD Movers', href: '/nse/movers-history', icon: Flame },
+    ],
+  },
+  {
     label: 'Simulation',
     icon: FlaskConical,
+    defaultCollapsed: true,
     children: [
       { title: 'Trade Viewer', href: '/trade-viewer', icon: Eye },
       { title: 'Data Downloader', href: '/data-downloader', icon: Download },
     ],
   },
   {
-    label: 'Assistant',
-    icon: Bot,
-    children: [
-      { title: 'Trade Assistant', href: '/trade-assistant', icon: Bot },
-      { title: 'Trade Suggest', href: '/trade-suggest', icon: Target },
-      { title: 'Trade Commentary', href: '/trade-commentary', icon: Sparkles },
-      { title: 'Auto Trade', href: '/auto-trade', icon: Zap },
-      {
-        title: 'Trade Log',
-        href: '/trade-suggest/history',
-        icon: NotebookText,
-      },
-    ],
-  },
-  {
     label: 'Reference',
     icon: BookOpen,
+    defaultCollapsed: true,
     children: [
-      { title: 'EOD Movers', href: '/nse/movers-history', icon: History },
-      { title: 'EOD Live Urgency', href: '/live/history', icon: CalendarClock },
       { title: 'Market Holidays', href: '/holidays', icon: CalendarDays },
       { title: 'F&O Lot Sizes', href: '/fno-lots', icon: Table2 },
       { title: 'Database', href: '/db-explorer', icon: Database },
@@ -109,10 +116,12 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
-/** One collapsible nav group — expanded by default; an active child keeps it open. */
+/** One collapsible nav group. Expanded by default; a defaultCollapsed group
+ *  starts (and stays) collapsed until the user clicks it — even when one of its
+ *  pages is active. Normal groups auto-open when a child route is active. */
 function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: string }) {
-  const [open, setOpen] = useState(true);
   const isChildActive = group.children.some((c) => pathname.startsWith(c.href));
+  const [open, setOpen] = useState(!group.defaultCollapsed);
 
   return (
     <SidebarGroup>
@@ -135,7 +144,7 @@ function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: strin
         </button>
       </SidebarGroupLabel>
 
-      {(open || isChildActive) && (
+      {(open || (isChildActive && !group.defaultCollapsed)) && (
         <SidebarMenu className="mt-1">
           {group.children.map((item) => {
             const active = pathname.startsWith(item.href);

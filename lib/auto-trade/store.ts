@@ -286,6 +286,16 @@ export async function getTradesByDate(date: string): Promise<AutoTrade[]> {
   return rows.map(rowToTrade);
 }
 
+/** Distinct dates that have at least one auto-trade, newest first — the date
+ *  dropdown for the EOD history page. Read-only. */
+export async function getAutoTradeDates(): Promise<string[]> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(
+    `SELECT DISTINCT date FROM auto_trades ORDER BY date DESC`
+  )) as { date: string }[];
+  return rows.map((r) => r.date);
+}
+
 export async function getOpenTrades(): Promise<AutoTrade[]> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(

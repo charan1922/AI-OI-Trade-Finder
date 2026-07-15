@@ -7,7 +7,8 @@
  * trades. Bottom: the append-only decision audit.
  */
 
-import { AlertTriangle, Loader2, Play, RefreshCw, ShieldAlert, Zap } from 'lucide-react';
+import { AlertTriangle, LineChart, Loader2, Play, RefreshCw, ShieldAlert, Zap } from 'lucide-react';
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 interface Settings {
@@ -522,10 +523,18 @@ export default function AutoTradePage() {
             </>
           )}
         </span>
+        <Link
+          href="/auto-trade/history"
+          className="ml-auto inline-flex items-center gap-1.5 rounded border border-border px-2 py-1.5 text-xs hover:bg-muted"
+          title="Multi-day performance history"
+        >
+          <LineChart className="size-4" />
+          History
+        </Link>
         <button
           type="button"
           onClick={() => void load()}
-          className="ml-auto rounded border border-border p-1.5 hover:bg-muted"
+          className="rounded border border-border p-1.5 hover:bg-muted"
           title="Refresh"
         >
           {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}

@@ -33,6 +33,7 @@ import { getTrackedUniverse, peekUniverse, resolveFutSymbol, toEqSymbol } from '
 import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 import { pruneRankSnapshots, recordRankSnapshot } from '@/lib/signals/rank-tracker';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
+import { reviewToday } from '@/lib/trade-suggest/review';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
@@ -111,6 +112,8 @@ interface PollerState {
   holidayCache: { date: string; holiday: boolean } | null;
   /** Last date the once-a-day EOD bhavcopy sync ran (autonomous capture). */
   lastBhavcopyDate: string | null;
+  /** Last date the once-a-day trade-suggest scorecard (review.ts) ran. */
+  lastScorecardDate: string | null;
   /** Guards against a slow autonomous capture overlapping the next one — so the
    *  scan's Dhan/NSE calls can never be issued concurrently (rate-limit safety). */
   captureRunning: boolean;
@@ -139,6 +142,7 @@ function getState(): PollerState {
     nextTickAt: null,
     holidayCache: null,
     lastBhavcopyDate: null,
+    lastScorecardDate: null,
     captureRunning: false,
     captureSkips: 0,
     lastCapture: null,
@@ -212,6 +216,10 @@ export async function runFyersCycle(
     // holidays since it backfills the last completed session. The Fyers candle
     // cycle itself stays skipped.
     if (process.env.RAILWAY_ENVIRONMENT_NAME) void runEodCapture(state);
+    // Same-evening scorecard: grade today's /trade-suggest picks against the
+    // recorded candles once, after close. Reads local candles only — no API,
+    // no AI, no cost — and never runs during market hours.
+    if (process.env.RAILWAY_ENVIRONMENT_NAME) void runEodScorecard(state);
     // Pre-open token warm-up (08:40–09:15 IST ticks): both broker tokens exist
     // BEFORE 09:00 without any page being opened. Fire-and-forget; window/day
     // gating lives inside. Note: a PAUSED poller skips this branch entirely —
@@ -661,6 +669,29 @@ async function runEodCapture(state: PollerState): Promise<void> {
     console.warn(`${TAG} EOD bhavcopy sync failed: ${(err as Error).message}`);
   } finally {
     state.captureRunning = false;
+  }
+}
+
+/**
+ * Same-evening trade-suggest scorecard (Railway-only). After market close, grade
+ * the day's /trade-suggest picks against the recorded 5-min candles (review.ts).
+ * Reads local fyers_candles only — no broker/AI call, no cost — and runs ONCE per
+ * calendar day (marker), gated to after 16:00 IST so the closing bar is in. With
+ * the 20-session candle retention this no longer has to beat same-day pruning,
+ * but running it the same evening keeps /trade-suggest/history accurate that night.
+ * Best-effort; never throws to the poller. Idempotent — a re-run just re-grades.
+ */
+async function runEodScorecard(state: PollerState): Promise<void> {
+  const istNow = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
+  if (istNow.getHours() < 16) return; // after the 15:30 close, closing bar recorded
+  const istToday = `${istNow.getFullYear()}-${String(istNow.getMonth() + 1).padStart(2, '0')}-${String(istNow.getDate()).padStart(2, '0')}`;
+  if (state.lastScorecardDate === istToday) return; // already graded once today
+  try {
+    const { reviewed, skipped } = await reviewToday();
+    state.lastScorecardDate = istToday;
+    console.log(`${TAG} EOD scorecard ran (${reviewed} graded, ${skipped} skipped)`);
+  } catch (err) {
+    console.warn(`${TAG} EOD scorecard failed: ${(err as Error).message}`);
   }
 }
 
