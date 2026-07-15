@@ -35,6 +35,19 @@ const REMINDERS: Reminder[] = [
       'Ask Claude: "run the breakout-gate replay across recorded days". If it still cuts junk without cutting winners → flip ON "TF breakout gate" on /config (one click, instantly reversible).',
   },
   {
+    title: 'Add a "weak futures OI" filter? (the HYUNDAI lesson)',
+    when: 'Around 21 Jul 2026 — same replay session as the breakout gate above',
+    added: '2026-07-15',
+    what: [
+      'On 15 Jul the HYUNDAI trade lost ₹1,911. Its scan record shows futures OI was only 0.77× the 20-day average — the LOWEST reading of all 54 picks ever recorded. The pick was carried by options OI alone; the futures crowd was not participating.',
+      'The breakout gate would NOT have caught it (HYUNDAI had a confirmed breakout), so this is a separate signal.',
+      'A replay tested "skip picks with futures OI below 0.85× the 20-day average": it removes HYUNDAI and keeps every big winner across all graded days (only DLF, a mild +1% mover, is sacrificed). 15 Jul would have been +₹10,492 instead of +₹8,581.',
+      'BUT: only 5 of 9 recorded days have graded outcomes, and just 2 graded picks ever fell below 0.85 — picking the threshold because it fits one bad trade is the classic overfit trap. Wait for more evidence (the nightly scorecard is collecting it automatically).',
+    ],
+    action:
+      'Ask Claude: "test the futures-OI floor (0.85×) across recorded days, together with the breakout-gate replay". If it still cuts junk without cutting winners → build it as a default-OFF toggle on /config.',
+  },
+  {
     title: 'Momentum-breakout switch is still OFF',
     when: 'After several recorded sessions (needs multi-day replay proof)',
     added: '2026-07-15',
