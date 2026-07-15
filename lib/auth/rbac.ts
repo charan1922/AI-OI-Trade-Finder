@@ -126,6 +126,7 @@ export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set([
   '/trade-viewer',
   '/replay-commentary',
   '/trade-assistant',
+  '/reminders',
 ]);
 
 /** True when `pathname` is an admin-only page or lives under one. */

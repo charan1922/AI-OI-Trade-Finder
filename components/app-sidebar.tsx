@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import {
   Activity,
+  AlarmClock,
   Banknote,
   Bot,
   BookOpen,
@@ -107,6 +108,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: BookOpen,
     defaultCollapsed: true,
     children: [
+      { title: 'Reminders', href: '/reminders', icon: AlarmClock },
       { title: 'Market Holidays', href: '/holidays', icon: CalendarDays },
       { title: 'F&O Lot Sizes', href: '/fno-lots', icon: Table2 },
       { title: 'Database', href: '/db-explorer', icon: Database },
