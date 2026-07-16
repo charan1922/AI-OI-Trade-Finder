@@ -350,6 +350,12 @@ model AutoTrade {
   aiReasonEntry     String
   aiReasonExit      String?
   realizedPnlRupees Float?
+  // Would-have figures for failed entries, backfilled from real candles —
+  // display-only, never counted in realized P&L or exposure.
+  shadowEntryPremium Float?
+  shadowExitPremium  Float?
+  shadowExitReason   String?
+  shadowPnlRupees    Float?
   proposedAt        String
   openedAt          String?
   closedAt          String?

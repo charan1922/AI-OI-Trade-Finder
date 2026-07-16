@@ -50,6 +50,12 @@ interface TradeRow {
   aiReasonEntry: string;
   aiReasonExit: string | null;
   realizedPnlRupees: number | null;
+  /** Would-have figures for failed entries (backfilled from real candles) —
+   *  hypothetical, shown separately, never part of realized P&L. */
+  shadowEntryPremium: number | null;
+  shadowExitPremium: number | null;
+  shadowExitReason: string | null;
+  shadowPnlRupees: number | null;
   proposedAt: string;
   orders?: OrderRow[];
 }
@@ -348,6 +354,22 @@ function TradeCard({
       </div>
       <div className="mt-1.5 text-xs text-foreground/90">{trade.aiReasonEntry}</div>
       {trade.exitReason && <div className="mt-0.5 text-[11px] text-muted-foreground">exit: {trade.exitReason}</div>}
+      {trade.status === 'failed' && trade.shadowPnlRupees != null && (
+        <div className="mt-2 rounded border border-dashed border-border bg-muted/40 p-2 text-[11px]">
+          <span className="mr-2 rounded bg-slate-200 px-1.5 py-px text-[9px] font-bold tracking-wide uppercase dark:bg-slate-600/40">
+            Would-have (paper)
+          </span>
+          entry ₹{trade.shadowEntryPremium} → exit ₹{trade.shadowExitPremium} ·{' '}
+          <b
+            className={`tabular-nums ${trade.shadowPnlRupees >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
+          >
+            {trade.shadowPnlRupees >= 0 ? '+' : ''}₹{trade.shadowPnlRupees.toLocaleString('en-IN')}
+          </b>{' '}
+          <span className="text-muted-foreground">
+            — {trade.shadowExitReason}. Hypothetical (replayed from real candles); not in realized P&L.
+          </span>
+        </div>
+      )}
       {trade.status === 'placing' && (
         <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 p-2 text-[11px] text-amber-700 dark:text-amber-300">
           Broker acknowledgement or fill is unresolved. Do not retry, void, or place a manual opposite order; verify the

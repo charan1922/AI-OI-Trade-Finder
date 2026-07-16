@@ -80,6 +80,13 @@ export interface AutoTrade {
   entryFillPremium: number | null;
   exitFillPremium: number | null;
   exitReason: string | null;
+  /** Would-have figures for FAILED entries, backfilled from real recorded
+   *  candles (replaying the guard's SL/target/square-off). Display-only:
+   *  never counted in realized P&L, exposure, or the daily-loss halt. */
+  shadowEntryPremium: number | null;
+  shadowExitPremium: number | null;
+  shadowExitReason: string | null;
+  shadowPnlRupees: number | null;
   aiReasonEntry: string;
   aiReasonExit: string | null;
   /** (exitFill − entryFill) × lotSize × lots, set at close when both known. */

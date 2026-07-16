@@ -52,6 +52,14 @@ async function ensureTables(): Promise<void> {
     )
   `);
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_auto_trades_date ON auto_trades(date)`);
+  // Would-have (shadow) figures for failed entries — backfilled from real
+  // candles, display-only (see types.ts AutoTrade).
+  const tradeColumns = (await prisma.$queryRawUnsafe(`PRAGMA table_info(auto_trades)`)) as { name: string }[];
+  const existingTradeColumns = new Set(tradeColumns.map((c) => c.name));
+  for (const col of ['shadowEntryPremium REAL', 'shadowExitPremium REAL', 'shadowExitReason TEXT', 'shadowPnlRupees REAL']) {
+    if (!existingTradeColumns.has(col.split(' ')[0]))
+      await prisma.$executeRawUnsafe(`ALTER TABLE auto_trades ADD COLUMN ${col}`);
+  }
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS auto_orders (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -265,6 +273,10 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     entryFillPremium: r.entryFillPremium == null ? null : Number(r.entryFillPremium),
     exitFillPremium: r.exitFillPremium == null ? null : Number(r.exitFillPremium),
     realizedPnlRupees: r.realizedPnlRupees == null ? null : Number(r.realizedPnlRupees),
+    shadowEntryPremium: r.shadowEntryPremium == null ? null : Number(r.shadowEntryPremium),
+    shadowExitPremium: r.shadowExitPremium == null ? null : Number(r.shadowExitPremium),
+    shadowExitReason: r.shadowExitReason == null ? null : String(r.shadowExitReason),
+    shadowPnlRupees: r.shadowPnlRupees == null ? null : Number(r.shadowPnlRupees),
   };
 }
 
