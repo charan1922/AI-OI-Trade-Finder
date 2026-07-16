@@ -255,6 +255,11 @@ export async function placeEntryOrder(
   } catch (err) {
     const message = (err as Error).message;
     const ambiguous = !(err instanceof BrokerSubmissionError) || err.ambiguous;
+    // ALWAYS surface placement failures in the server log — the DB error
+    // column alone proved invisible in ops (2026-07-16 SRF incident).
+    console.error(
+      `${TAG} ENTRY placement failed for ${trade.symbol} (trade ${trade.id}, corr ${ticket.correlationId}, ambiguous=${ambiguous}): ${message}`
+    );
     let recovered: RecoveredOrder | null = null;
     try {
       recovered = await recoverByCorrelation(adapter, ticket.correlationId);
@@ -373,6 +378,9 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
   } catch (err) {
     const message = (err as Error).message;
     const ambiguous = !(err instanceof BrokerSubmissionError) || err.ambiguous;
+    console.error(
+      `${TAG} EXIT placement failed for ${trade.symbol} (trade ${trade.id}, corr ${ticket.correlationId}, ambiguous=${ambiguous}): ${message}`
+    );
     let recovered: RecoveredOrder | null = null;
     try {
       recovered = await recoverByCorrelation(adapter, ticket.correlationId);
@@ -494,10 +502,47 @@ async function reconcileUnresolvedOrdersInner(): Promise<string[]> {
       continue;
     }
 
-    await markOrderReconciled(order.id, state ? null : 'broker order not found by id or correlation yet');
+    // Preserve the ORIGINAL failure text: markOrderReconciled COALESCEs its
+    // note over `error`, and the first reconcile pass used to overwrite the
+    // broker's actual rejection reason within seconds (2026-07-16 SRF).
+    const notFoundNote = order.error ? null : 'broker order not found by id or correlation yet';
+    await markOrderReconciled(order.id, state ? null : notFoundNote);
     if (!state || state.status === 'pending' || state.status === 'unknown') {
       const ageMs = Date.now() - new Date(order.createdAt).getTime();
       const nextAttempt = order.reconcileAttempts + 1;
+
+      // Terminal give-up: the order book read SUCCEEDED, the broker never
+      // issued an id, and the correlation tag matches nothing. After enough
+      // clean misses the order provably never reached the venue — stop
+      // reserving a daily slot + capital for a ghost. (Any order that DID
+      // reach Fyers/Dhan appears in the day's book immediately, even pending.)
+      if (
+        state == null &&
+        order.brokerOrderId == null &&
+        order.correlationId != null && // a tag lookup really ran and missed
+        nextAttempt >= 5 &&
+        ageMs >= 5 * 60_000
+      ) {
+        const giveUp = `${order.error ? `${order.error}; ` : ''}never appeared in the broker order book after ${nextAttempt} checks — placement assumed failed`;
+        await updateOrder(order.id, { status: 'rejected', error: giveUp });
+        console.error(`${TAG} ${trade.symbol} ${order.side} order ${order.id}: ${giveUp}`);
+        if (order.side === 'BUY' && trade.status === 'placing') {
+          await updateTrade(trade.id, {
+            status: 'failed',
+            exitReason: 'entry never reached the broker — placement failed (see order log)',
+          });
+          alerts.manualReconciliation(
+            trade.symbol,
+            'BUY',
+            order.correlationId ?? String(order.id),
+            'Entry never reached the broker; the daily slot and capital were released. Verify once at the broker that no stray order exists.'
+          );
+        }
+        // SELL: the order row is now terminal-rejected, so claimExitOrder
+        // allows the guard/AI to place a FRESH exit attempt next pass.
+        notes.push(`${trade.symbol} ${order.side}: ${giveUp}`);
+        continue;
+      }
       const partialUnits = state ? partialFillUnits(state) : 0;
       if (partialUnits > 0) {
         notes.push(

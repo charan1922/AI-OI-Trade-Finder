@@ -14,7 +14,7 @@ try {
 }
 
 import { prisma } from '../lib/db';
-import { toFyersOptionSymbol } from '../lib/auto-trade/brokers/fyers-adapter';
+import { safeJson, toFyersOptionSymbol } from '../lib/auto-trade/brokers/fyers-adapter';
 import { checkEntryGates, checkStopMove } from '../lib/auto-trade/risk/gates';
 import { DEFAULT_SETTINGS } from '../lib/auto-trade/config';
 import { getAutoTradeSettings, setAutoTradeSetting } from '../lib/auto-trade/settings';
@@ -163,6 +163,12 @@ async function main(): Promise<void> {
     correlationId.length === 20 && /^[A-Za-z0-9]+$/.test(correlationId),
     correlationId
   );
+  // Placement logging must never crash the order flow (2026-07-16 SRF
+  // incident): safeJson survives circular SDK error objects.
+  const circular: Record<string, unknown> = { s: 'error', message: 'x' };
+  circular.self = circular;
+  check('fyers error: safeJson survives circular error objects', safeJson(circular).length > 0);
+  check('fyers error: safeJson truncates', safeJson({ m: 'y'.repeat(500) }).length <= 300);
   const fyersBar = (bucketTs: number, open = 100) => ({
     bucketTs,
     open,

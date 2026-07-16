@@ -579,7 +579,7 @@ async function runAutonomousCapture(
         // process owns the pass, its quote lane must remain uncontested.
         allowDisplayRefresh = outcome.ran;
         console.log(
-          `${TAG} latency: tick→auto-pass ${decisionReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (scan→decision ${decisionReadyMs - scanReadyMs}ms; ${outcome.reason})`
+          `${TAG} latency: tick→auto-pass ${decisionReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (scan→decision ${decisionReadyMs - scanReadyMs}ms; ${outcome.reason ?? (outcome.ran ? 'pass ran — action taken' : 'pass skipped')})`
         );
         // A non-running outcome means another in-process/distributed pass owns
         // this cycle. Do not start a second standalone model call alongside it.

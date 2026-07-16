@@ -60,13 +60,26 @@ async function getFyers(): Promise<fyersModel> {
   if (!g.__fyersTradeModel) {
     g.__fyersTradeModel = new fyersModel({
       path: path.join(process.cwd(), 'data'),
-      enableLogging: false,
+      // Order-flow calls are rare (a handful per day) and the SDK's own logger
+      // records every error WITH the API response body + request inputs —
+      // exactly the evidence the 2026-07-16 SRF incident destroyed. Keep ON.
+      enableLogging: true,
     });
   }
   const fyers = g.__fyersTradeModel;
   fyers.setAppId(fyersAppId());
   fyers.setAccessToken(await getFyersAccessToken());
   return fyers;
+}
+
+/** JSON.stringify that can never throw (SDK errors can hold circular
+ *  request/socket references) — logging must not break an order flow. */
+export function safeJson(value: unknown, max = 300): string {
+  try {
+    return JSON.stringify(value)?.slice(0, max) ?? String(value);
+  } catch {
+    return String(value).slice(0, max);
+  }
 }
 
 /** "NSE:RELIANCE25AUG3000CE" — strike printed as-is (fractional strikes keep
@@ -127,17 +140,29 @@ export class FyersAdapter implements BrokerAdapter {
     try {
       res = await serial(() => fyers.place_order(req));
     } catch (err) {
-      // SDK rejects with { s:'error', code, message } via its errorHandler.
+      // The SDK's errorHandler wraps EVERYTHING — real API rejections AND
+      // network failures (ENOTFOUND/ECONNRESET/timeouts) — into the same
+      // { s:'error', code, message } shape (verified in
+      // node_modules/fyers-api-v3/errorHandler/errorHandler.js). The shapes
+      // are indistinguishable, so a thrown error must stay AMBIGUOUS: the
+      // order may have reached the venue. Reconciliation settles the truth
+      // from the order book (and gives up after repeated clean misses).
       const e = (err ?? {}) as Record<string, unknown>;
+      console.error(
+        `${TAG} place_order failed (ambiguous) for ${req.symbol} qty ${req.qty} tag ${ticket.correlationId}: ${safeJson(e)}`
+      );
       throw new BrokerSubmissionError(`${TAG} place_order failed: ${String(e.message ?? e)}`, true);
     }
     const orderId = String(res?.id ?? '');
     if (res?.s !== 'ok' || !orderId) {
-      throw new BrokerSubmissionError(
-        `${TAG} place_order rejected: ${String(res?.message ?? JSON.stringify(res ?? {}).slice(0, 200))}`,
-        false
+      // The SDK RESOLVED with an error body — Fyers answered and refused
+      // (funds/validation): a definite rejection, the order does not exist.
+      console.error(
+        `${TAG} place_order rejected for ${req.symbol} qty ${req.qty} tag ${ticket.correlationId}: ${safeJson(res)}`
       );
+      throw new BrokerSubmissionError(`${TAG} place_order rejected: ${String(res?.message ?? safeJson(res, 200))}`, false);
     }
+    console.log(`${TAG} order placed: ${req.symbol} qty ${req.qty} id ${orderId} tag ${ticket.correlationId}`);
     return { brokerOrderId: orderId };
   }
 
@@ -205,7 +230,9 @@ export class FyersAdapter implements BrokerAdapter {
     const res = await serial(() => fyers.get_orders());
     if (!res || res.s !== 'ok') throw new Error(`${TAG} orderbook unavailable during tag recovery`);
     const book = Array.isArray(res.orderBook) ? (res.orderBook as Record<string, unknown>[]) : [];
-    const row = book.find((o) => String(o.orderTag ?? '') === correlationId);
+    // Fyers may return the tag with a source prefix (e.g. "1:R<hash>") — match
+    // by containment; the 20-char hash makes a false positive implausible.
+    const row = book.find((o) => String(o.orderTag ?? '').includes(correlationId));
     if (!row) return null;
     const brokerOrderId = String(row.id ?? '');
     if (!brokerOrderId) return null;
