@@ -24,6 +24,12 @@ interface Trade {
   exitReason: string | null;
   realizedPnlRupees: number | null;
   openedAt: string | null;
+  /** Would-have figures for failed entries (backfilled from real candles) —
+   *  hypothetical, shown in muted italics, never in the day's real P&L. */
+  shadowEntryPremium: number | null;
+  shadowExitPremium: number | null;
+  shadowExitReason: string | null;
+  shadowPnlRupees: number | null;
 }
 interface Summary {
   trades: number;
@@ -206,13 +212,46 @@ export default function AutoTradeHistoryPage() {
                     {r.mode !== 'paper' && <span className="ml-1 text-[10px] uppercase text-amber-600">{r.mode}</span>}
                   </td>
                   <td className="p-2 text-xs text-muted-foreground">{r.direction}</td>
-                  <td className="p-2 text-right tabular-nums">{r.entryFillPremium != null ? `₹${r.entryFillPremium}` : '—'}</td>
-                  <td className="p-2 text-right tabular-nums">{r.exitFillPremium != null ? `₹${r.exitFillPremium}` : '—'}</td>
-                  <td className={`p-2 text-right font-semibold tabular-nums ${pnlClass(r.realizedPnlRupees)}`}>
-                    {r.realizedPnlRupees != null ? inr(r.realizedPnlRupees) : '—'}
+                  <td className="p-2 text-right tabular-nums">
+                    {r.entryFillPremium != null ? (
+                      `₹${r.entryFillPremium}`
+                    ) : r.shadowEntryPremium != null ? (
+                      <span className="text-muted-foreground italic" title="Would-have (paper) — hypothetical, replayed from real candles">
+                        ₹{r.shadowEntryPremium}*
+                      </span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="p-2 text-right tabular-nums">
+                    {r.exitFillPremium != null ? (
+                      `₹${r.exitFillPremium}`
+                    ) : r.shadowExitPremium != null ? (
+                      <span className="text-muted-foreground italic" title="Would-have (paper) — hypothetical, replayed from real candles">
+                        ₹{r.shadowExitPremium}*
+                      </span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className={`p-2 text-right font-semibold tabular-nums ${pnlClass(r.realizedPnlRupees ?? r.shadowPnlRupees)}`}>
+                    {r.realizedPnlRupees != null ? (
+                      inr(r.realizedPnlRupees)
+                    ) : r.shadowPnlRupees != null ? (
+                      <span className="italic" title="Would-have (paper) — not counted in the day's P&L">
+                        {inr(r.shadowPnlRupees)}*
+                      </span>
+                    ) : (
+                      '—'
+                    )}
                   </td>
                   <td className="p-2 text-xs text-muted-foreground">{r.status}</td>
-                  <td className="p-2 text-xs text-muted-foreground">{r.exitReason ?? '—'}</td>
+                  <td className="p-2 text-xs text-muted-foreground">
+                    {r.exitReason ?? '—'}
+                    {r.realizedPnlRupees == null && r.shadowExitReason && (
+                      <span className="mt-0.5 block text-[10px] italic opacity-80">would-have: {r.shadowExitReason}</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -230,7 +269,11 @@ export default function AutoTradeHistoryPage() {
         Each row is one executed auto-trade for the selected day. Entry/Exit are the actual fill premiums (never
         fabricated — &ldquo;—&rdquo; until the broker confirms); P&amp;L = (exit − entry) × lot size × lots, booked at
         close. Paper and live trades share this log; live rows are tagged. For today&apos;s open positions and the live
-        console, see <span className="font-mono">Auto Trade</span>.
+        console, see <span className="font-mono">Auto Trade</span>.{' '}
+        <span className="italic">
+          Values marked <span className="font-semibold">*</span> are would-have (paper) figures for entries that failed
+          to reach the broker — replayed from real candles and NOT counted in the day&apos;s P&amp;L.
+        </span>
       </p>
     </div>
   );
