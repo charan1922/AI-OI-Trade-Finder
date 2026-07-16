@@ -7,7 +7,7 @@
  * trades. Bottom: the append-only decision audit.
  */
 
-import { AlertTriangle, LineChart, Loader2, Play, RefreshCw, ShieldAlert, Zap } from 'lucide-react';
+import { AlertTriangle, LineChart, Loader2, Play, RefreshCw, ShieldAlert, ShieldCheck, Zap } from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -478,6 +478,13 @@ export default function AutoTradePage() {
     async (action: string, tradeId?: number) => {
       if (action === 'exit' && !window.confirm('Exit this position at market now?')) return;
       if (action === 'approve' && !window.confirm('Approve and place a REAL order at the broker?')) return;
+      if (
+        action === 'order-smoke' &&
+        !window.confirm(
+          'Broker order test: places ONE unfillable ₹1 limit order at Fyers and cancels it immediately. ₹0 cost, no position. Run it?'
+        )
+      )
+        return;
       setBusy(true);
       setNotice(null);
       try {
@@ -611,6 +618,15 @@ export default function AutoTradePage() {
               className="inline-flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50"
             >
               <Play className="size-3.5" /> Run a pass now
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void doAction('order-smoke')}
+              title="Places ONE unfillable ₹1 limit order at Fyers and cancels it immediately — proves the broker accepts our orders. ₹0 cost, no position, market hours only."
+              className="inline-flex items-center gap-1.5 rounded border border-emerald-500/60 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-500/10 disabled:opacity-50 dark:text-emerald-400"
+            >
+              <ShieldCheck className="size-3.5" /> Test broker order (₹0)
             </button>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3">

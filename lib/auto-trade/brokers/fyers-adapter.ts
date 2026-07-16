@@ -91,6 +91,88 @@ export function toFyersOptionSymbol(t: Pick<OrderTicket, 'symbol' | 'optionType'
   return `NSE:${t.symbol}${yy}${MONTH_CODES[exp.getMonth()]}${t.strike}${t.optionType}`;
 }
 
+export interface OrderSmokeResult {
+  ok: boolean;
+  steps: string[];
+}
+
+/**
+ * ₹0 order-pipeline smoke test: place ONE deliberately unfillable LIMIT BUY
+ * (₹1 on an option trading far higher), confirm it appears in the order book,
+ * cancel it immediately. Proves the venue ACCEPTS our orders (app activation /
+ * permission, symbology, tag) with no fill risk — an accepted-then-cancelled
+ * order carries no charges. Built after the 2026-07-16 SRF code -50 incident
+ * ("Algo orders are not allowed from this app").
+ */
+export async function runOrderPipelineSmoke(contract: {
+  symbol: string;
+  optionType: 'CE' | 'PE';
+  strike: number;
+  expiryDate: string;
+  lotSize: number;
+}): Promise<OrderSmokeResult> {
+  const steps: string[] = [];
+  const symbol = toFyersOptionSymbol(contract);
+  const fyers = await getFyers();
+
+  const quote = (await serial(() => fyers.getQuotes([symbol]))) as Record<string, unknown>;
+  const first = (quote?.d as Record<string, unknown>[] | undefined)?.[0];
+  const ltp = Number((first?.v as Record<string, unknown> | undefined)?.lp);
+  steps.push(`quote ${symbol}: LTP ₹${Number.isFinite(ltp) ? ltp : '—'}`);
+  if (!Number.isFinite(ltp) || ltp < 10) {
+    steps.push('ABORT: LTP unavailable or under ₹10 — a ₹1 limit would not be safely unfillable');
+    return { ok: false, steps };
+  }
+
+  const tag = `RSMOKE${Date.now().toString(36).toUpperCase()}`;
+  let placed: Record<string, unknown>;
+  try {
+    placed = (await serial(() =>
+      fyers.place_order({
+        symbol,
+        qty: contract.lotSize,
+        type: 1, // LIMIT — deliberately unfillable at ₹1
+        side: 1,
+        productType: 'INTRADAY',
+        limitPrice: 1,
+        stopPrice: 0,
+        validity: 'DAY',
+        disclosedQty: 0,
+        offlineOrder: false,
+        orderTag: tag,
+      })
+    )) as Record<string, unknown>;
+  } catch (err) {
+    steps.push(`PLACE REFUSED — broker's exact answer: ${safeJson(err, 500)}`);
+    return { ok: false, steps };
+  }
+  const orderId = String(placed?.id ?? '');
+  if (placed?.s !== 'ok' || !orderId) {
+    steps.push(`PLACE REJECTED — broker's exact answer: ${safeJson(placed, 500)}`);
+    return { ok: false, steps };
+  }
+  steps.push(`order ACCEPTED: id ${orderId} (limit ₹1, tag ${tag})`);
+
+  await sleep(1500);
+  try {
+    const book = (await serial(() => fyers.get_orders())) as Record<string, unknown>;
+    const rows = Array.isArray(book?.orderBook) ? (book.orderBook as Record<string, unknown>[]) : [];
+    const mine = rows.find((o) => String(o.id) === orderId);
+    steps.push(mine ? `visible in order book (status code ${String(mine.status)})` : 'NOT visible in order book yet');
+  } catch (err) {
+    steps.push(`order-book check failed: ${safeJson(err, 200)}`);
+  }
+
+  try {
+    await serial(() => fyers.cancel_order({ id: orderId }));
+    steps.push('cancelled cleanly — ₹0 spent, nothing left behind');
+  } catch (err) {
+    steps.push(`CANCEL FAILED — cancel order ${orderId} MANUALLY at the broker NOW: ${safeJson(err, 300)}`);
+    return { ok: false, steps };
+  }
+  return { ok: true, steps };
+}
+
 export class FyersAdapter implements BrokerAdapter {
   readonly id = 'fyers' as const;
 

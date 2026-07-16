@@ -1,24 +1,28 @@
 import { NextResponse } from 'next/server';
 import { approveTrade, rejectTrade } from '@/lib/auto-trade/approval';
+import { runOrderPipelineSmoke } from '@/lib/auto-trade/brokers/fyers-adapter';
 import { runAutoTradePass } from '@/lib/auto-trade/engine';
 import { exitTrade } from '@/lib/auto-trade/execution';
 import { getTrade, insertDecision } from '@/lib/auto-trade/store';
+import { adminOnly } from '@/lib/auth/server';
+import { prisma } from '@/lib/db';
 import { todayIST } from '@/lib/dhan/market-feed';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
-import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /**
  * POST /api/auto-trade/action — operator actions from the /auto-trade console.
- * body { action: 'approve' | 'reject' | 'exit' | 'run-pass', tradeId? }
+ * body { action: 'approve' | 'reject' | 'exit' | 'run-pass' | 'order-smoke', tradeId?, symbol? }
  *
  *  approve / reject — decide a pending approval (approve re-runs every gate
  *                     against a fresh quote before touching the broker)
  *  exit             — manually close one open position at market
  *  run-pass         — run a full engine pass NOW (fresh scan + guard + AI);
  *                     the main use is paper-mode testing off the poller
+ *  order-smoke      — ₹0 broker test: unfillable ₹1 limit → order book →
+ *                     cancel; proves the venue accepts our orders
  *
  * Admin-only via the proxy's default-deny on unclassified mutating APIs.
  */
@@ -29,6 +33,7 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => ({}))) as {
       action?: string;
       tradeId?: number;
+      symbol?: string;
     };
     const action = String(body.action ?? '');
 
@@ -86,6 +91,61 @@ export async function POST(req: Request) {
         success: true,
         ...outcome,
         scanned: scan.scanned,
+      });
+    }
+
+    if (action === 'order-smoke') {
+      // ₹0 broker order-pipeline test (place unfillable ₹1 limit → cancel).
+      // Contract resolved from real data so this never rots: nearest expiry
+      // from the calendar, the most liquid CE for that expiry from bhavcopy,
+      // lot size from master contracts. Body may override { symbol }.
+      const underlying = String(body.symbol ?? 'SRF').toUpperCase();
+      const today = todayIST();
+      const [expiryRow] = (await prisma.$queryRawUnsafe(
+        `SELECT expiryDate FROM fno_expiry_calendar WHERE expiryDate >= ? ORDER BY expiryDate LIMIT 1`,
+        today
+      )) as { expiryDate: string }[];
+      const [strikeRow] = (await prisma.$queryRawUnsafe(
+        `SELECT strike FROM bhavcopy_option_strike
+          WHERE symbol = ? AND expiry = ? AND optionType = 'CE' AND close >= 15
+          ORDER BY oi DESC, date DESC LIMIT 1`,
+        underlying,
+        expiryRow?.expiryDate ?? ''
+      )) as { strike: number }[];
+      // FUTSTK rows key on `underlying` (their symbol is "SRF-Jul2026-FUT").
+      const [lotRow] = (await prisma.$queryRawUnsafe(
+        `SELECT lotSize FROM master_contracts WHERE underlying = ? AND instrument = 'FUTSTK' AND lotSize > 0 LIMIT 1`,
+        underlying
+      )) as { lotSize: number }[];
+      if (!expiryRow || !strikeRow || !lotRow) {
+        return NextResponse.json(
+          { success: false, error: `cannot resolve a test contract for ${underlying} (expiry/strike/lot missing)` },
+          { status: 400 }
+        );
+      }
+      const contract = {
+        symbol: underlying,
+        optionType: 'CE' as const,
+        strike: Number(strikeRow.strike),
+        expiryDate: expiryRow.expiryDate,
+        lotSize: Number(lotRow.lotSize),
+      };
+      const result = await runOrderPipelineSmoke(contract);
+      await insertDecision({
+        date: today,
+        pass: 'system',
+        provider: null,
+        model: null,
+        summary: `Operator order-pipeline smoke test (${underlying} ${contract.strike}CE ${contract.expiryDate}): ${result.ok ? 'PASS' : 'FAIL'} — ${result.steps.join(' · ')}`,
+        toolTrace: [],
+        promptTokens: null,
+        completionTokens: null,
+      });
+      return NextResponse.json({
+        success: result.ok,
+        message: result.steps.join('\n'),
+        steps: result.steps,
+        contract,
       });
     }
 
