@@ -7,7 +7,7 @@
  * config change — NOT live app state. To add/close one, edit this file.
  */
 
-import { AlarmClock, CalendarDays, CheckCircle2 } from 'lucide-react';
+import { AlarmClock, CalendarDays, CheckCircle2, PlayCircle } from 'lucide-react';
 
 interface Reminder {
   title: string;
@@ -94,6 +94,33 @@ export default function RemindersPage() {
           Decisions parked for later — switches waiting for proof, one-time checks. Static list (edit
           <span className="mx-1 font-mono">app/reminders/page.tsx</span>to add or close one).
         </span>
+      </div>
+
+      {/* Playbook callout — the recipe the two filter reminders below both point to. */}
+      <div className="rounded-lg border border-sky-500/40 bg-sky-500/5 p-4">
+        <div className="flex items-center gap-2">
+          <PlayCircle className="size-4 shrink-0 text-sky-600 dark:text-sky-400" />
+          <h2 className="text-sm font-bold">What “improve” looks like on 21 Jul</h2>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          It is <span className="font-semibold">one session</span>, not a rebuild. When the date comes, ask Claude:
+        </p>
+        <p className="mt-2 rounded-md bg-background/60 px-3 py-2 font-mono text-xs text-foreground">
+          “run the breakout-gate and futures-OI floor replay across all recorded days”
+        </p>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+          <li>
+            If a filter cuts the junk <span className="font-semibold">without</span> cutting winners across MANY days →
+            flip it ON (one click on <span className="font-mono">/config</span>, instantly reversible).
+          </li>
+          <li>If it also kills winners → leave it OFF. We learned that cheaply, on paper, with zero money at risk.</li>
+        </ul>
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          Why wait, not tune now? One bad day is not proof. The “obvious” 15-Jul fix (skip extended-from-open picks) was
+          replayed and it would have <span className="font-semibold">deleted</span> the day’s biggest winner (PATANJALI
+          +₹6,504). Rules tuned to yesterday quietly kill tomorrow’s winner — so we decide on a multi-day sample, the way
+          the nightly scorecard is already gathering it.
+        </p>
       </div>
 
       {REMINDERS.map((r) => (
