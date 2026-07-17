@@ -5,7 +5,13 @@
 # CI/CD model: ONLY a push to `prod` builds/deploys.
 #   • push to `prod` → tag `:latest` — the DEPLOY image the box auto-pulls.
 #   • push to `main` → NOTHING (main is for integration; it never deploys).
-# So merging to prod is the single deploy signal; main stays quiet.
+#
+# Speed/cost: buildx layer caching via the GitHub Actions cache (type=gha).
+# GitHub runners start empty every run — without this cache every build redoes
+# pnpm install + next build (~6 min) and re-pushes the ~1 GB node_modules layer.
+# With it, unchanged layers (deps especially) are restored and the push skips
+# blobs the registry already has, so a typical source-only change builds in
+# ~2 min and pushes only the small changed layers.
 #
 # No secrets to configure: the built-in GITHUB_TOKEN can push to ghcr.io.
 # The image carries NO secrets or DB (see .dockerignore) — those are supplied
@@ -24,19 +30,27 @@ jobs:
       contents: read
       packages: write # allows pushing to ghcr.io
     steps:
-      - uses: actions/checkout@v4
+      # Action majors pinned to the Node 24 runtimes (Node 20 is deprecated on
+      # GitHub runners; older majors emit the "Node 20 is being deprecated"
+      # warning on every run).
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
           # Image name must be lowercase for ghcr — the repo owner + a fixed name.
           tags: ghcr.io/${{ github.repository_owner }}/project-r-simulator:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
