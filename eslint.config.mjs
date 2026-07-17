@@ -19,6 +19,12 @@ const eslintConfig = defineConfig([
     // them because they're outside tsconfig's include — only ESLint crawls cwd.
     "**/.venv/**",
     "**/__pycache__/**",
+    // Box scripts (deploy/box/**) are NOT app source: they are plain CommonJS
+    // run by `node` INSIDE the prod container / by cron on the AWS box, against
+    // the container's own node_modules (see docs/aws-deployment/). They must use
+    // require() and have no bundler/tsconfig — linting them with the Next+TS
+    // rules is a category error.
+    "deploy/box/**",
   ]),
 ]);
 
