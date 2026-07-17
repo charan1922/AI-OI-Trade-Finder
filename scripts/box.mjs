@@ -21,8 +21,13 @@
 // SAFETY: `box:stop` is a BLUNT operator lever — it does NOT check for an open
 // position (that guard lives on the box's own scheduled shutdown, which refuses
 // to power off mid-trade). Only run box:stop when you know you're flat, or pass
-// --force to acknowledge. The box also auto-stops itself in the evening once the
-// scheduler is wired, so you rarely need this.
+// --force to acknowledge.
+//
+// Automatic power on/off also exists (see docs/aws-deployment/07): EventBridge
+// starts the box 08:15 IST on weekdays, and /opt/projectr/autostop.sh stops it
+// after 16:30 / at weekends — but ONLY while the AUTO_SHUTDOWN toggle (/config)
+// is ON and no trade is open. That toggle is OFF by default, so until it is
+// flipped these scripts are the only thing that changes the box's power state.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

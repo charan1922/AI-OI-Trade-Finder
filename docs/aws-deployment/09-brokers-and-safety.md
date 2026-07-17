@@ -53,7 +53,7 @@ app now."
 - ✅ Headless jobs: poller, capture, guard, token warm-up, EOD bhavcopy + scorecard
 - ✅ Logs: file tee → `/logs`
 - ✅ Data pull: `db:pull-prod` over HTTPS
-- ✅ Power control: `box:*` scripts; `AUTO_SHUTDOWN` design for cost saving
+- ✅ Power control: `box:*` scripts; automatic 08:15 start (EventBridge) + guarded 16:30/weekend stop, behind the `AUTO_SHUTDOWN` toggle (OFF by default)
 - ✅ Live-order safety: two-key rule, type-200 app, deterministic guard, kill switch
 - ❌ Railway: fully decommissioned — nothing points at it
 
