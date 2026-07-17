@@ -1,15 +1,21 @@
 # Builds the Docker image on GitHub's machines (free) and pushes it to the
-# GitHub Container Registry (ghcr.io) on every push to main. The AWS VM then
-# only PULLS this image — it never has to build (so a tiny 1 GB box is enough).
+# GitHub Container Registry (ghcr.io). The AWS box then only PULLS this image —
+# it never builds (so a tiny 2 GB box is enough).
+#
+# CI/CD model (matches the deploy flow: develop → main → prod):
+#   • push to `prod` → tag `:latest`  — the DEPLOY image the box auto-pulls.
+#   • push to `main` → tag `:main`    — an integration image; the box ignores it.
+# So a merge/push to prod is the single deploy signal; main stays testable
+# without touching production.
 #
 # No secrets to configure: the built-in GITHUB_TOKEN can push to ghcr.io.
 # The image carries NO secrets or DB (see .dockerignore) — those are supplied
-# at runtime on the VM via --env-file and a mounted volume.
+# at runtime on the box via --env-file and a mounted volume.
 name: build-image
 
 on:
   push:
-    branches: [main]
+    branches: [main, prod]
   workflow_dispatch: {} # lets you trigger a build by hand from the Actions tab
 
 jobs:
@@ -28,10 +34,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # prod → :latest (deploy) · main → :main (integration). One tag per push,
+      # decided by the branch, so the box's :latest only ever moves on a prod push.
+      - name: Choose image tag from branch
+        id: tag
+        run: |
+          if [ "${{ github.ref_name }}" = "prod" ]; then
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=main" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           # Image name must be lowercase for ghcr — the repo owner + a fixed name.
-          tags: ghcr.io/${{ github.repository_owner }}/project-r-simulator:latest
+          tags: ghcr.io/${{ github.repository_owner }}/project-r-simulator:${{ steps.tag.outputs.tag }}
