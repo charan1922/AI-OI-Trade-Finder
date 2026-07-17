@@ -186,13 +186,13 @@ export function AppSidebar() {
       <SidebarHeader className="border-b border-sidebar-border">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton asChild size="lg" tooltip="Project-R">
+            <SidebarMenuButton asChild size="lg" tooltip="AI OI Trade Finder">
               <Link href="/">
                 <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
                   <FlaskConical className="size-4" />
                 </div>
                 <div className="grid flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
-                  <span className="truncate text-sm font-semibold tracking-tight">Project-R</span>
+                  <span className="truncate text-sm font-semibold tracking-tight">AI OI Trade Finder</span>
                   <span className="truncate text-xs text-sidebar-foreground/60">DeepQuant</span>
                 </div>
               </Link>

@@ -35,10 +35,10 @@ const errorResponse = (description: string) => ({
 const spec = {
   openapi: '3.1.0',
   info: {
-    title: 'Project-R Simulator API',
+    title: 'AI OI Trade Finder API',
     version: '0.0.1',
     description:
-      'Internal HTTP API for the Project-R market simulator: replay engine, backtesting, NSE bhavcopy sync, live urgency, sector heatmap, and the AI trade assistant. All routes are `force-dynamic`. Most return `{ success, data }` on success and `{ success: false, error }` on failure.',
+      'Internal HTTP API for AI OI Trade Finder: replay engine, backtesting, NSE bhavcopy sync, live urgency, sector heatmap, and the AI trade assistant. All routes are `force-dynamic`. Most return `{ success, data }` on success and `{ success: false, error }` on failure.',
   },
   servers: [{ url: '/', description: 'This server' }],
   tags: [

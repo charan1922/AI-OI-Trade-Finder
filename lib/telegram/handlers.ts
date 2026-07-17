@@ -411,7 +411,7 @@ export async function handleTelegramMessage(text: string, chatId: number): Promi
 /* ------------------------------------------------------------------ */
 
 function helpText(): string {
-  const lines = [`🤖 *Project-R Auto-Trade Bot*\n`, `Available commands:\n`];
+  const lines = [`🤖 *AI OI Trade Finder — Auto-Trade Bot*\n`, `Available commands:\n`];
   for (const [cmd, { description }] of commands) {
     lines.push(`${cmd} — ${description}`);
   }

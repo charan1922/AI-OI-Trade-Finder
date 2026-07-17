@@ -87,7 +87,7 @@ export default function LoginPage() {
         <div className="flex items-center gap-3">
           <LogoMark />
           <div>
-            <p className="text-sm font-semibold tracking-tight text-slate-900">Project&#8209;R</p>
+            <p className="text-sm font-semibold tracking-tight text-slate-900">AI OI Trade Finder</p>
             <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-slate-400">DeepQuant</p>
           </div>
         </div>
@@ -128,7 +128,7 @@ export default function LoginPage() {
           {/* Compact brand for mobile */}
           <div className="mb-8 flex flex-col items-center text-center lg:hidden">
             <LogoMark />
-            <p className="mt-4 text-base font-semibold tracking-tight text-slate-900">Project&#8209;R</p>
+            <p className="mt-4 text-base font-semibold tracking-tight text-slate-900">AI OI Trade Finder</p>
             <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-400">DeepQuant</p>
           </div>
 

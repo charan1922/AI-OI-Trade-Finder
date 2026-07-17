@@ -1,8 +1,14 @@
+import type { Metadata } from "next"
 import { Geist_Mono, Inter } from "next/font/google"
 import { cookies, headers } from "next/headers"
 import { ThemeProvider } from "next-themes"
 
 import "./globals.css"
+
+export const metadata: Metadata = {
+  title: "AI OI Trade Finder",
+  description: "Realtime F&O options analytics, live dashboards, and AI-driven trade execution.",
+}
 import { auth } from "@/auth"
 import { LayoutShell } from "@/components/layout-shell"
 import { RoleProvider, type RoleInfo } from "@/components/role-provider"

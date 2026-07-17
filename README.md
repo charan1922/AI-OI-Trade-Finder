@@ -1,10 +1,7 @@
-# Project-R Simulator
+# AI OI Trade Finder
 
-[![app](https://img.shields.io/website?url=https%3A%2F%2Fproject-r-simulator-production.up.railway.app%2Fapi%2Fhealth&label=app&up_message=live&down_message=down)](https://project-r-simulator-production.up.railway.app)
-[![deployed on Railway](https://img.shields.io/badge/deployed_on-Railway-8b5cf6?logo=railway&logoColor=white)](https://railway.app)
-[![healthcheck](https://img.shields.io/badge/healthcheck-%2Fapi%2Fhealth-brightgreen)](https://project-r-simulator-production.up.railway.app/api/health)
-[![market-hours autoscale](https://github.com/charan1922/Project-R-simulator/actions/workflows/market-hours.yml/badge.svg)](https://github.com/charan1922/Project-R-simulator/actions/workflows/market-hours.yml)
-
+[![app](https://img.shields.io/website?url=https%3A%2F%2Fcharan-projectr.duckdns.org%2Fapi%2Fhealth&label=app&up_message=live&down_message=down)](https://charan-projectr.duckdns.org)
+[![build image](https://github.com/charan1922/Project-R-simulator/actions/workflows/build-image.yml/badge.svg)](https://github.com/charan1922/Project-R-simulator/actions/workflows/build-image.yml)
 [![last commit](https://img.shields.io/github/last-commit/charan1922/Project-R-simulator/main)](https://github.com/charan1922/Project-R-simulator/commits/main)
 [![release](https://img.shields.io/github/v/tag/charan1922/Project-R-simulator?label=release&sort=semver)](https://github.com/charan1922/Project-R-simulator/tags)
 
@@ -15,21 +12,29 @@
 [![Tailwind 4](https://img.shields.io/badge/Tailwind-4-06b6d4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 
 Live F&O market-intelligence + options-trade assistant for the Indian market
-(NSE), plus TradeFinder trade downloading and an AI trade coach. Data is
-recorded continuously from Fyers (5-min candles + OI) and NSE (EOD bhavcopy),
-scored by the R-Factor / OI-urgency engine, and surfaced as ranked near-ATM
-option suggestions.
+(NSE), with AI trade commentary and autonomous trade execution. Data is recorded
+continuously from Fyers (5-min candles + OI) and NSE (EOD bhavcopy), scored by the
+R-Factor / OI-urgency engine, and surfaced as ranked near-ATM option suggestions —
+which an AI layer then narrates and can execute under hard, code-enforced risk limits.
+
+> **Naming:** the app is branded **AI OI Trade Finder**. Some internal identifiers
+> keep the original codename (`project-r-simulator` package/image name, the `projectr`
+> Docker container) — these are infrastructure names kept stable so the deploy
+> pipeline doesn't break, and are not user-facing.
 
 | Area                | Routes                                                                                   | What it does                                                                                                                                                                                                                                                         |
 | ------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Live market**     | `/live`, `/nse/movers`, `/nse/heatmap`, `/heatmap`, `/fyers`                             | Live Urgency board (F&O movers with live depth by category), NSE movers & sector heatmaps, and the Fyers 5-min recorder status.                                                                                                                                      |
-| **Assistant**       | `/trade-suggest`, `/trade-suggest/history`, `/trade-assistant`                           | Daily ranked near-ATM option picks (R-Factor + OI-urgency + opening-range breakout, live-quoted); the **Trade Log** (daywise picks + same-day scorecards); and an **AI chatbot** (Azure OpenAI Responses API + function calling, grounded on real pipeline numbers). |
-| **Data / backtest** | `/data-downloader`, `/trade-viewer`                                                      | Download real 5-min equity + futures + **option** data per TradeFinder trade (expired options via Dhan `/v2/charts/rollingoption`); inspect coverage and the "why this trade" read.                                                                                  |
-| **Reference**       | `/nse/movers-history`, `/live/history`, `/holidays`, `/fno-lots`, `/api-docs`, `/config` | EOD movers & urgency history, market holidays, F&O lot sizes, OpenAPI docs, and runtime feature-toggle config.                                                                                                                                                       |
+| **Live market**     | `/live`, `/nse/movers`, `/nse/heatmap`, `/heatmap`, `/fyers`, `/dhan`                     | Live Urgency board (F&O movers with live depth by category), NSE movers & sector heatmaps, and the Fyers/Dhan recorder + token status.                                                                                                                               |
+| **Assistant**       | `/trade-suggest`, `/trade-commentary`, `/auto-trade`, `/trade-assistant`                 | Daily ranked near-ATM option picks; the AI **trade commentary** (decisive plain-English reads); the **auto-trade** console (AI proposes, code disposes — off/paper/approval/live); and an AI **chatbot** grounded on real pipeline numbers.                          |
+| **Data / backtest** | `/data-downloader`, `/trade-viewer`, `/auto-trade/history`                                | Download real 5-min equity + futures + **option** data per TradeFinder trade; inspect coverage, the "why this trade" read, and auto-trade history + would-have P&L.                                                                                                  |
+| **Ops / reference** | `/logs`, `/config`, `/prompts`, `/api-docs`, `/holidays`, `/fno-lots`                     | Live server console, runtime feature-toggle config, prompt version history, OpenAPI docs, market holidays, F&O lot sizes.                                                                                                                                            |
 
 ## Stack
 
-Next.js 16 (App Router, Turbopack) · React 19 · TypeScript · Prisma + SQLite (`better-sqlite3`) · Tailwind v4 + shadcn/ui. Deployed on Railway (Docker + persistent volume) — see [DEPLOY.md](DEPLOY.md).
+Next.js 16 (App Router, Turbopack) · React 19 · TypeScript · Prisma + SQLite
+(`better-sqlite3`) · Tailwind v4 + shadcn/ui · Auth.js (Google sign-in). Runs in
+production on a **self-hosted AWS EC2 box** (Docker + Caddy HTTPS) — see
+[docs/aws-deployment/](docs/aws-deployment/README.md).
 
 ## Structure
 
@@ -37,80 +42,82 @@ Next.js 16 (App Router, Turbopack) · React 19 · TypeScript · Prisma + SQLite 
 app/
   live/               Live Urgency board (+ live/history)
   nse/                movers · heatmap · movers-history
-  fyers/              Fyers 5-min recorder status
+  fyers/  dhan/       broker recorder + token status panels
   trade-suggest/      daily option picks + history (Trade Log)
-  trade-assistant/    AI chat UI — page + _components + _hooks/use-chat
-  data-downloader/    download UI (_components, _hooks, _lib)
-  trade-viewer/       inspect downloaded TF trades
-  api/                live/* · nse/* · trade-suggest · fyers/* · bhavcopy · health · heatmap · ai-assistant · …
-proxy.ts              one-password gate (HTTP Basic Auth; active when APP_PASSWORD set)
-instrumentation.ts    boots the Fyers poller on server start
+  trade-commentary/   AI trade commentary reads
+  auto-trade/         autonomous execution console (+ history)
+  trade-assistant/    AI chat UI
+  logs/               live server console (raw logs, survives redeploys)
+  api/                live/* · nse/* · trade-suggest · fyers/* · dhan/* · auto-trade/* · bhavcopy · health · …
+proxy.ts              auth gate (Google + break-glass password + Basic for self-calls)
+instrumentation.ts    boots the Fyers poller + guard loop + file-log on server start
 lib/
   trade-suggest/      scan engine, scoring, config, store
   r-factor/           R-Factor / OI-urgency scoring
+  auto-trade/         AI execution layer — modes, gates, brokers, position guard
+  ai-commentary/      the trade-commentary generator + execution-truth
   fyers/              5-min candle + OI recorder (poller, client, candle-store)
-  signals/            indicators (Supertrend, VWAP, ATR), oi-intraday
-  backtest/           data-downloader (incl. rollingoption), evaluator, backtest-store
-  ai-assistant/       azure-client · tools · trade-data (grounding) · assistant (Responses loop)
   dhan/               auth (TOTP) · rate-limiter · market-feed
-  nse/                movers feeds · combined-oi
-  historify/          master-contracts (symbol -> securityId) · bhavcopy-service
-  config/             feature-toggles (runtime switches, /config)
-  db.ts env.ts utils.ts logger.ts
+  signals/  nse/  backtest/  config/  auth/  telegram/
+  db.ts env.ts utils.ts logger.ts ops/file-log.ts
 prisma/               schema + config (SQLite at data/project-r.db)
-data/                 project-r.db, .dhan-token / .fyers-token caches (gitignored)
-Dockerfile · railway.json · DEPLOY.md   Railway deployment (Docker + volume + healthcheck)
-.github/workflows/keep-awake.yml        market-hours keep-alive (see DEPLOY.md)
+Dockerfile            single-stage image (built by CI → ghcr.io)
+.github/workflows/    build-image.yml (push to prod → build + push :latest)
+docs/aws-deployment/  how production runs on AWS (the operator runbook)
 ```
 
-## Prerequisites
-
-- `.env.local` with Dhan credentials (TOTP auto-token):
-  ```
-  DHAN_CLIENT_ID=...
-  DHAN_PIN=...
-  DHAN_TOTP_SECRET=...
-  # or static fallback:
-  DHAN_ACCESS_TOKEN=...
-  ```
-- `data/project-r.db` — must have `master_contracts` synced (copied over with the project). Required so symbol -> securityId resolution works before any download.
-- **Optional** — for the `/trade-assistant` chatbot, add Azure OpenAI to `.env.local` (the page degrades gracefully if absent):
-  ```
-  AZURE_OPENAI_API_KEY=...
-  AZURE_OPENAI_INSTANCE_NAME=...        # https://<instance>.openai.azure.com
-  AZURE_OPENAI_CHAT_DEPLOYMENT=...      # a Responses-API-capable deployment
-  AZURE_OPENAI_API_VERSION=2025-03-01-preview   # optional override
-  ```
-
-## Commands
+## Local development
 
 ```bash
 pnpm install
-pnpm db:generate     # regenerate the Prisma client
 pnpm dev             # http://localhost:5001
-pnpm build           # production build
+pnpm lint            # ESLint
 pnpm typecheck       # tsc --noEmit
-pnpm format          # prettier (imported code may differ from your style — run once to align)
+pnpm format          # Prettier
+pnpm db:generate     # regenerate the Prisma client
 ```
 
-## Deployment
+Pull production data into your local DB (over HTTPS — no SSH):
 
-Runs as a single always-on **Railway** service (Next.js UI + API + SQLite + the
-Fyers poller) with a persistent volume at `/app/data`. Every push to the **`prod`**
-branch auto-deploys; Railway verifies **`/api/health`** returns 200 before
-switching traffic (healthcheck in `railway.json`). The whole app is behind a
-**one-password gate** (`proxy.ts`, active when `APP_PASSWORD` is set). Full runbook
-— volume, env vars, port pinning, DB migration, market-hours sleep, rollback — in
-**[DEPLOY.md](DEPLOY.md)**.
+```bash
+pnpm db:pull-prod        # curated subset (fast)
+pnpm db:pull-prod:full   # full clone
+```
 
-Release flow: work on `main`; ship with `git checkout prod && git merge --ff-only main && git push origin prod`; tag with `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z`.
+The laptop stays in a safe config (poller disabled, not autonomous, old broker app)
+so local runs never place a live order — see
+[docs/aws-deployment/05-settings-and-secrets.md](docs/aws-deployment/05-settings-and-secrets.md).
+
+### Prerequisites (`.env.local`)
+
+- Broker credentials (Fyers + Dhan, TOTP auto-token) and `APP_PASSWORD` for the gate.
+- `data/project-r.db` with `master_contracts` synced (or run `pnpm db:pull-prod`).
+- Optional: Azure OpenAI / MiMo keys for the AI features (pages degrade gracefully if absent).
+
+## Production & deployment
+
+Runs on a self-hosted **AWS EC2** box behind Caddy (HTTPS via DuckDNS + Let's
+Encrypt). CI/CD: a push to the **`prod`** branch triggers GitHub Actions to build the
+Docker image and push it to ghcr.io; a cron on the box pulls `:latest` and restarts
+itself (never mid-trade). Everything trading-critical runs headlessly with no page
+open.
+
+The full runbook — the box, Elastic IP, HTTPS, CI/CD, the autonomous jobs, power
+control, and safety — is in **[docs/aws-deployment/](docs/aws-deployment/README.md)**.
+
+```bash
+pnpm box:status     # is the box up? (needs AWS CLI configured)
+pnpm box:start      # power the box on
+pnpm box:stop       # power it off
+```
+
+> The legacy Railway deploy is fully decommissioned. `DEPLOY.md` is kept only as
+> historical reference for that setup; AWS is the source of truth.
 
 ## Notes
 
-- **Broker separation**: the autonomous 5-min equity/futures candle recorder uses **Fyers**, not Dhan. Dhan supplies live market/option quotes and broker order state. Calls stay behind their shared account-level gates; do not bypass them.
-- **Dhan limits**: the chart downloader is capped below Dhan's documented Data API ceiling (5/s), market quotes are batched and serialized below 1/s, and option-chain requests follow their separate per-unique-request rule. Recheck Dhan's current v2 documentation before changing these gates.
-- **Expired options**: `lib/backtest/data-downloader.ts` falls back from `/charts/intraday` to `/charts/rollingoption` (underlying + ATM-relative strike + relative monthly expiry) and filters to the exact traded strike.
+- **Broker separation**: the autonomous 5-min equity/futures candle recorder uses **Fyers**; Dhan supplies live market/option quotes and broker order state. Calls stay behind their shared account-level gates; do not bypass them.
+- **Dhan limits**: the chart downloader is capped below Dhan's Data API ceiling, market quotes are batched and serialized below 1/s, and option-chain requests follow their separate per-unique-request rule. Recheck Dhan's current v2 docs before changing these gates.
 - **Native modules** (`better-sqlite3`, `@prisma/client`, `fyers-api-v3`) are kept external via `serverExternalPackages` in `next.config.ts`.
-- Several tables (`backtest_equity/futures/options`, `bhavcopy_*_expiry`, `market_holidays`, `feature_toggles`, `oi_intraday`, …) are created via raw SQL on first use — not in the Prisma schema. So on the deployed image `prisma db push` runs **only on a fresh DB**; an existing DB boots straight through (otherwise db push would drop those tables). View them with any SQLite browser (not Prisma Studio).
-- **Per-contract option OI**: bhavcopy is stored per expiry-month (`bhavcopy_option_expiry`) alongside the summed total, plus an authoritative NSE expiry calendar (`fno_expiry_calendar`). So the option `oi_level` follows the _traded_ contract and is clipped to its expiry cycle — it isn't distorted when a monthly expiry rolls strikes off (e.g. TradeFinder trading next-month in expiry week). Both tables are raw-SQL, backfilled on bhavcopy sync.
-- **Trade Assistant** (`/trade-assistant`): Azure OpenAI **Responses API** with **function calling**. Its tools (`list_trades`, `get_trade_context` in `lib/ai-assistant/`) return only real pipeline data via `getDailyContext`, so the model cannot invent numbers; each answer shows a "Data sources" trace of the tools it called. The deployment is a reasoning model — the tool-calling loop echoes the model's full output (reasoning + calls) back, which Azure requires.
+- Several tables (`backtest_*`, `bhavcopy_*_expiry`, `market_holidays`, `feature_toggles`, `oi_intraday`, `auto_trades`, `trade_commentary`, …) are created via raw SQL on first use — not in the Prisma schema. On the deployed image `prisma db push` runs **only on a fresh DB**; an existing DB boots straight through (otherwise db push would drop those tables). **Never run `db push --accept-data-loss` against prod.**
+- **Auto-trade safety**: the AI proposes, code disposes — trade windows, max trades/day, capital cap, daily-loss halt, and forced square-off are enforced in `lib/auto-trade/risk/`, not in prompts. Live orders need a two-key rule (env flag + `live` mode). See [CLAUDE.md](CLAUDE.md).
