@@ -52,6 +52,9 @@ data/project-r.db-shm
 # commentary replay-bench run artifacts (regenerable via scripts/replay-commentary.ts)
 data/replay-commentary/
 
+# server console logs (teed by lib/ops/file-log.ts; runtime artifact, kept 7 days)
+data/logs/
+
 # pulled prod secrets — never commit
 prod.env
 *.env.raw
