@@ -222,58 +222,8 @@ function CapField({
   );
 }
 
-/** IST clock setting as "HH:MM" — stored/served as minutes-from-midnight; the
- *  settings API accepts the HH:MM form directly (parsed + clamped server-side). */
-function TimeField({
-  label,
-  value,
-  minLabel,
-  maxLabel,
-  busy,
-  onCommit,
-}: {
-  label: string;
-  /** Minutes from midnight IST (server value). */
-  value: number;
-  minLabel: string;
-  maxLabel: string;
-  busy: boolean;
-  onCommit: (hhmm: string) => void;
-}) {
-  const toHHMM = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-  const [draft, setDraft] = useState(toHHMM(value));
-  const [synced, setSynced] = useState(value);
-  if (synced !== value) {
-    setSynced(value);
-    setDraft(toHHMM(value));
-  }
-  const commit = () => {
-    const m = draft.trim().match(/^(\d{1,2}):(\d{2})$/);
-    if (m && toHHMM(value) !== draft.trim()) onCommit(draft.trim());
-    else setDraft(toHHMM(value)); // malformed / unchanged → snap back (server clamps range)
-  };
-  return (
-    <label
-      className="flex items-center gap-1 text-[11px] text-muted-foreground"
-      title={`${label}: ${minLabel}–${maxLabel} IST`}
-    >
-      <span>{label}</span>
-      <input
-        type="text"
-        inputMode="numeric"
-        placeholder="HH:MM"
-        value={draft}
-        disabled={busy}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-        }}
-        className="w-16 rounded border border-border bg-background px-1.5 py-0.5 text-right text-foreground tabular-nums focus:border-primary focus:outline-none disabled:opacity-50"
-      />
-    </label>
-  );
-}
+/** IST minutes-from-midnight → "HH:MM" (display only — the clock is edited on /config). */
+const toHHMM = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 function Cap({ label, used, max, unit = '' }: { label: string; used: number; max: number; unit?: string }) {
   const danger = used >= max;
@@ -692,39 +642,18 @@ export default function AutoTradePage() {
               onCommit={(v) => void setSetting('dailyLossHaltRupees', v)}
             />
           </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3">
-            <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Clock</span>
-            <TimeField
-              label="Entries open"
-              value={s.entryStartMin}
-              minLabel="09:30"
-              maxLabel="12:00"
-              busy={busy}
-              onCommit={(v) => void setSetting('entryStartMin', v)}
-            />
-            <TimeField
-              label="Entries close"
-              value={s.entryEndMin}
-              minLabel="10:00"
-              maxLabel="14:30"
-              busy={busy}
-              onCommit={(v) => void setSetting('entryEndMin', v)}
-            />
-            <TimeField
-              label="Square-off"
-              value={s.squareOffMin}
-              minLabel="14:00"
-              maxLabel="15:20"
-              busy={busy}
-              onCommit={(v) => void setSetting('squareOffMin', v)}
-            />
-          </div>
           <p className="text-[11px] text-muted-foreground">
             Set <b>Budget</b> to your account balance — the scanner only picks 1-lot contracts that fit it, and the
             auto-trader caps deployed premium here. Always <b>1 lot per trade</b>; <b>Max lots</b> is how many can be
-            open at once. E.g. ₹30k budget + 1 lot = one affordable lot at a time; ₹60k + 2 = up to two. <b>Clock</b>:
-            new entries are only placed between <b>Entries open</b> and <b>Entries close</b>; everything still open is
-            force-exited at <b>Square-off</b> (enforced in code — brokers penalty-square intraday ~15:26, we act first).
+            open at once. E.g. ₹30k budget + 1 lot = one affordable lot at a time; ₹60k + 2 = up to two. Entry window{' '}
+            <b>
+              {toHHMM(s.entryStartMin)}–{toHHMM(s.entryEndMin)}
+            </b>{' '}
+            and square-off <b>{toHHMM(s.squareOffMin)}</b> are edited on{' '}
+            <a href="/config" className="underline underline-offset-2 hover:text-foreground">
+              /config → Entry &amp; Exit Times
+            </a>{' '}
+            (one place for every clock; still enforced in code — brokers penalty-square intraday ~15:26, we act first).
           </p>
         </div>
       )}

@@ -5,6 +5,7 @@ import { Loader2, RotateCcw, Settings2 } from 'lucide-react';
 
 import { ReadOnlyBanner } from '@/components/read-only-banner';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { DEFAULT_SETTINGS as AT_DEFAULTS } from '@/lib/auto-trade/config';
 import { useRole } from '@/lib/auth/use-role';
 import { cn } from '@/lib/utils';
 
@@ -40,9 +41,49 @@ function isClockSetting(n: NumberState): boolean {
 
 const toHHMM = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
+/**
+ * The AUTO-TRADE order clock (entryStartMin/entryEndMin/squareOffMin from
+ * lib/auto-trade/settings.ts) rendered here alongside the scanner window so
+ * every time-of-day setting lives on ONE page (moved off /auto-trade
+ * 2026-07-17 — it duplicated this card visually and confused which clock was
+ * which). Values are stored in auto_trade_settings, NOT feature_toggles:
+ * saves go to POST /api/auto-trade/settings (HH:MM form, parsed server-side).
+ * The pseudo-keys end in _MIN so the shared ClockInput renderer picks them up.
+ */
+const AT_CLOCK_DEFS = [
+  {
+    key: 'AUTO_TRADE_ENTRY_START_MIN',
+    settingKey: 'entryStartMin',
+    label: 'Auto-trade entries open',
+    min: 9 * 60 + 30,
+    max: 12 * 60,
+    description:
+      'When the AUTO-TRADER may start placing real/paper entry orders (default 09:45 — 5 minutes after the scanner window opens, so the first picks have one settled cycle behind them). This is the ORDER clock; the scanner window above only controls suggestions.',
+  },
+  {
+    key: 'AUTO_TRADE_ENTRY_END_MIN',
+    settingKey: 'entryEndMin',
+    label: 'Auto-trade entries close',
+    min: 10 * 60,
+    max: 14 * 60 + 30,
+    description:
+      'Last moment the auto-trader may place a NEW entry order (default 11:00). Exits and stop management continue all day regardless.',
+  },
+  {
+    key: 'AUTO_TRADE_SQUARE_OFF_MIN',
+    settingKey: 'squareOffMin',
+    label: 'Auto-trade square-off',
+    min: 14 * 60,
+    max: 15 * 60 + 20,
+    description:
+      'Everything still open is force-exited at this time (default 15:12), enforced in code — brokers penalty-square intraday positions ~15:26, we act first.',
+  },
+] as const;
+
 export default function ConfigPage() {
   const [toggles, setToggles] = useState<ToggleState[]>([]);
   const [numbers, setNumbers] = useState<NumberState[]>([]);
+  const [atNumbers, setAtNumbers] = useState<NumberState[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +100,28 @@ export default function ConfigPage() {
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
+    // Auto-trade clock (see AT_CLOCK_DEFS). Best-effort: if the feed is
+    // unavailable the rest of the page still works, those rows just don't show.
+    fetch('/api/auto-trade', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => {
+        const s = d?.settings as Record<string, number> | undefined;
+        if (!d?.success || !s) return;
+        setAtNumbers(
+          AT_CLOCK_DEFS.map((def) => ({
+            key: def.key,
+            label: def.label,
+            description: def.description,
+            category: 'Entry & Exit Times',
+            default: AT_DEFAULTS[def.settingKey],
+            min: def.min,
+            max: def.max,
+            value: s[def.settingKey] ?? AT_DEFAULTS[def.settingKey],
+            updatedAt: null,
+          }))
+        );
+      })
+      .catch(() => {});
   }, []);
 
   async function save(key: string, value: boolean | number, revert: () => void) {
@@ -92,18 +155,51 @@ export default function ConfigPage() {
     void save(key, value, () => setToggles(before));
   }
 
+  /** Auto-trade clock rows save to the auto-trade settings store, not the
+   *  feature-toggles table — HH:MM form, exactly what /auto-trade used to send. */
+  async function saveAt(key: string, minutes: number, revert: () => void) {
+    const def = AT_CLOCK_DEFS.find((d) => d.key === key);
+    if (!def) return;
+    setSaving(key);
+    setError(null);
+    try {
+      const res = await fetch('/api/auto-trade/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: def.settingKey, value: toHHMM(minutes) }),
+      });
+      const d = await res.json();
+      if (!d.success) {
+        setError(d.error ?? 'Failed to save');
+        revert();
+      }
+    } catch (e) {
+      setError(String(e));
+      revert();
+    } finally {
+      setSaving(null);
+    }
+  }
+
   function step(key: string, value: number) {
+    if (key.startsWith('AUTO_TRADE_')) {
+      const before = atNumbers;
+      setAtNumbers((prev) => prev.map((n) => (n.key === key ? { ...n, value } : n))); // optimistic
+      void saveAt(key, value, () => setAtNumbers(before));
+      return;
+    }
     const before = numbers;
     setNumbers((prev) => prev.map((n) => (n.key === key ? { ...n, value } : n))); // optimistic
     void save(key, value, () => setNumbers(before));
   }
 
+  const allNumbers = useMemo(() => [...numbers, ...atNumbers], [numbers, atNumbers]);
   const categories = useMemo(
-    () => [...new Set([...toggles.map((t) => t.category), ...numbers.map((n) => n.category)])],
-    [toggles, numbers]
+    () => [...new Set([...toggles.map((t) => t.category), ...allNumbers.map((n) => n.category)])],
+    [toggles, allNumbers]
   );
   const overriddenCount =
-    toggles.filter((t) => t.value !== t.default).length + numbers.filter((n) => n.value !== n.default).length;
+    toggles.filter((t) => t.value !== t.default).length + allNumbers.filter((n) => n.value !== n.default).length;
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -120,7 +216,7 @@ export default function ConfigPage() {
           {!loading && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span className="rounded-md border border-border bg-card px-2 py-1 tabular-nums">
-                {toggles.length + numbers.length} settings
+                {toggles.length + allNumbers.length} settings
               </span>
               <span
                 className={cn(
@@ -150,7 +246,7 @@ export default function ConfigPage() {
           </div>
         )}
 
-        {!loading && toggles.length === 0 && numbers.length === 0 && !error && (
+        {!loading && toggles.length === 0 && allNumbers.length === 0 && !error && (
           <p className="text-sm text-muted-foreground">No settings registered.</p>
         )}
 
@@ -158,7 +254,7 @@ export default function ConfigPage() {
         <div className="grid gap-5 lg:grid-cols-2">
           {categories.map((cat) => {
             const catToggles = toggles.filter((t) => t.category === cat);
-            const catNumbers = numbers.filter((n) => n.category === cat);
+            const catNumbers = allNumbers.filter((n) => n.category === cat);
             const catOverridden =
               catToggles.filter((t) => t.value !== t.default).length +
               catNumbers.filter((n) => n.value !== n.default).length;

@@ -22,6 +22,7 @@ import {
   USE_CHAOTIC_OPEN_GATE,
   USE_EXTENDED_TREND_BYPASS,
   USE_MOMENTUM_BREAKOUT,
+  USE_RANK_CLIMB_GATE,
   USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
   WINDOW_START_MIN,
@@ -94,6 +95,14 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     default: USE_CHAOTIC_OPEN_GATE,
     description:
       'Skips a stock whose FIRST 15 MINUTES were a violent spike compared to its own normal 5-minute movement (more than 5× its settled average bar). Why: a stock that blows all its energy at the open tends to fade right after — both auto-trade losers (HYUNDAI 15-Jul, SRF 16-Jul) opened at 5.5–5.7× and faded within 30 minutes, while the winners (MANKIND, PATANJALI, POLYCAB) opened calmer and trended. The 5× line was calibrated on a full-universe backtest: a tighter 4× would have wrongly blocked genuine trend days (KALYANKJIL, SIEMENS, CGPOWER at ~4.3–4.5×). ON (default, per operator request 17-Jul): violent-open names are skipped; the scan shows how many. OFF: the open character is still stamped on every pick as information. Honest caveat: the evidence is 2 recorded days — the nightly scorecard is accruing proof, and this switch comes OFF if the replay turns against it.',
+  },
+  {
+    key: 'USE_RANK_CLIMB_GATE',
+    label: 'Rank-climb catch path',
+    category: 'Trade Suggest',
+    default: USE_RANK_CLIMB_GATE,
+    description:
+      'OFF (default — ships off for the live-trading debut; turn ON here once live has run clean for a few days): a stock whose combined OI build is small (1–5%, below the usual 5% bar) can still qualify on the options-led path IF it is actively climbing the NSE movers leaderboard (gainers or OI board) over the last ~30 minutes — the ADANIENSOL profile (16-Jul: TF made ₹10.1k, we found 0; it was climbing gainers #15→#7 with options flow qualifying). The options-share and premium-value checks still apply. Evidence is 1 day (winners climbing 5/8 vs losers 1/7) — the replay grid tracks it nightly. ON: enables the catch path. OFF: only the plain 5% rule qualifies, exactly as the proven code.',
   },
   {
     key: 'USE_MOMENTUM_BREAKOUT',

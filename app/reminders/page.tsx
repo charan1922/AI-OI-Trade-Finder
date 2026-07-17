@@ -48,6 +48,20 @@ const REMINDERS: Reminder[] = [
       'Ask Claude: "test the futures-OI floor (0.85×) across recorded days, together with the breakout-gate replay". If it still cuts junk without cutting winners → build it as a default-OFF toggle on /config.',
   },
   {
+    title: 'Catch the ADANIENSOL / ADANIGREEN class (price-led, no OI) — replay experiments running',
+    when: 'After ~5 more trading days (around 24 Jul 2026)',
+    added: '2026-07-17',
+    what: [
+      'TradeFinder made +₹15.9k on ADANIGREEN (14-Jul) and +₹10.2k on ADANIENSOL (16-Jul). Both are the SAME class: price rises while open interest stays flat (short-covering). Our engine rejects them BY DESIGN — every accumulation gate needs OI evidence, and here there is none.',
+      'ADANIENSOL failed ONLY the "NSE combined OI ≥5%" rule (it had 1–2%), even though its OPTIONS flow clearly passed (options-share 10–19%, premium ₹6Cr→₹99Cr). So the money was in options; we just did not count it because futures OI stayed low.',
+      'Two candidate catches were added to the nightly replay grid (scripts/replay-window.ts), EVIDENCE-ONLY — nothing is live: (1) "momentum-breakout 1%" — the existing momentum path but triggering earlier, since the current version only fires ~10:45 near the top; (2) "options-led-relaxed" — let the options flow qualify without the 5% futures-OI rule.',
+      'The winner/loser separator on 16-Jul was "is the stock still CLIMBING the OI/gainers leaderboard right now" (winners climbing 5/8 vs losers 1/7; ADANIENSOL climbed gainers #15→#7). That became the rank-climb CATCH path (USE_RANK_CLIMB_GATE on /config), built 17-Jul but shipped OFF — it debuted the same day as autonomous LIVE trading, and you never launch live with an unproven more-permissive gate on top. Turn it ON from /config once live has run clean for a few days. Backtest when on: 15-Jul picks identical; 16-Jul swaps one slipping loser (PAYTM −3 spots, SL) for one climbing name (KALYANKJIL +10, also SL) — zero new stop-losses, zero winners lost, ΣR unchanged.',
+      'HONEST LIMIT, measured: the climb catch does NOT rescue ADANIENSOL itself — its R-Factor sat at 2.26–2.68 all window vs the 3.6 gate, so it dies BEFORE the OI gate the catch extends. The only built path that clears low-R price-led names is the momentum-breakout path (still OFF, and it fires ~10:45 near the top). Catching this class fully means letting the climb evidence relax the R-Factor gate too — a bigger risk call that needs replay proof first, NOT a quiet default.',
+    ],
+    action:
+      'Ask Claude: "run the replay grid across all recorded days — shipped vs no-rank-climb-catch vs climb-catch>=5 vs momentum-breakout 1% — with per-fire precision". Keep USE_RANK_CLIMB_GATE ON only if it avoids slipping losers / catches climbers across several days; escalate to an R-Factor relaxation experiment only if the evidence stays clean.',
+  },
+  {
     title: 'Chaotic-open gate went live ON — verify it earns its place',
     when: 'After ~4–5 more trading days (around 23 Jul 2026)',
     added: '2026-07-17',

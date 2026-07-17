@@ -69,6 +69,36 @@ const VARIANTS: Variant[] = [
     momentumBreakout: true,
     momentumMinChangePct: 2,
   },
+  // ADANIENSOL/ADANIGREEN class (price-led, OI flat — short-covering). Two
+  // candidate catches added 2026-07-17 after ADANIENSOL 16-Jul (TF +₹10.1k) was
+  // missed. Both are EVIDENCE-ONLY here; accept only after several recorded days.
+  // (a) momentum-EARLY: the built momentum path fires only on Supertrend
+  //     confirmation, which for ADANIENSOL was ~10:45 near the top. A 1% move
+  //     floor triggers earlier (TF entered ~10:00, +1.1% from open) — but a
+  //     lower floor also admits more fakeouts, which is exactly what the grid
+  //     must weigh over days.
+  {
+    ...SHIPPED_VARIANT,
+    name: 'momentum-breakout 1%',
+    momentumBreakout: true,
+    momentumMinChangePct: 1,
+  },
+  // (b) options-premium-led: ADANIENSOL failed ONLY the NSE-combined-OI% leg
+  //     (1–2% vs 5% needed) while its options legs passed (optShare 10–19%,
+  //     premium ₹6→99Cr). Dropping the NSE% floor to ~1 lets the options-led
+  //     path qualify on options flow alone. CAUTION: a one-day check (16-Jul)
+  //     showed this floods ~16 fires at 50% precision — worth tracking across
+  //     days, NOT flipping on.
+  { ...SHIPPED_VARIANT, name: 'options-led-relaxed (nse>=1)', minNseOiPct: 1 },
+  // (c) rank-climb CATCH path — built 2026-07-17, gated OFF in prod by
+  //     USE_RANK_CLIMB_GATE (ships off: the live-trading debut lands the same
+  //     day, so SHIPPED = catch off = the proven gate). These variants force it
+  //     ON to accrue the A/B: NSE ≥5% unchanged, plus 1–5% builds with
+  //     qualifying options legs admit IF climbing the gainers/OI leaderboard ≥N
+  //     spots/~30 min (winners climbing 5/8 vs losers 1/7 on 16-Jul; ADANIENSOL
+  //     gainers #15→#7). ≥5 is the stricter cut in case ≥1 admits junk over days.
+  { ...SHIPPED_VARIANT, name: 'rank-climb catch >=1', rankClimbCatch: true, rankClimbMinSpots: 1 },
+  { ...SHIPPED_VARIANT, name: 'rank-climb catch >=5', rankClimbCatch: true, rankClimbMinSpots: 5 },
   // Candidate feature: require the options-led OI path (NSE combined ≥5%) to be
   // ACTIVELY building — combined-OI slope over the trailing ~30 min (from the
   // per-5-min nseOiPct series) — instead of accepting a stale morning print.

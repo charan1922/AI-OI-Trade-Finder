@@ -25,6 +25,7 @@
 import { prisma } from '@/lib/db';
 import type { ActiveStock, MoverStock, OiStock } from '@/lib/nse/pulse';
 import { getPulseFeed } from '@/lib/nse/pulse-cache';
+import { rankClimb, type RankPoint } from '@/lib/signals/rank-climb';
 
 /** The tracked feeds. Keys are stable (stored in the table + API). */
 export const RANK_FEEDS = ['oi', 'gainers', 'losers', 'active-value', 'active-volume'] as const;
@@ -313,6 +314,55 @@ export async function getRaceSinceOpen(date: string, feed: RankFeed, limit = 20,
     runners: runners.slice(0, limit),
     newEntrants: newEntrants.slice(0, limit),
   };
+}
+
+/** The two boards the rank-climb gate reads — direction-agnostic participation
+ *  boards (the OI build board + the gainers board the evidence came from). */
+const CLIMB_FEEDS: RankFeed[] = ['gainers', 'oi'];
+
+/**
+ * Best ~30-min leaderboard climb per symbol as of `nowMs` — the live input of
+ * the USE_RANK_CLIMB_GATE catch path (lib/trade-suggest/config.ts). For each
+ * name on the gainers/OI boards, `rankClimb` (lib/signals/rank-climb.ts) reads
+ * the trailing snapshots and reports spots climbed (positive = climbing, #15→#7
+ * = +8); the map carries the best of the two boards. Names absent from both
+ * boards (or with too little history for a supportable read) are simply not in
+ * the map — the gate treats that as "no climb evidence", never as a climb.
+ * One indexed query over today's rank_snapshots; best-effort (never throws).
+ */
+export async function getRecentRankClimbs(date: string, nowMs: number = Date.now()): Promise<Map<string, number>> {
+  const best = new Map<string, number>();
+  try {
+    await ensureRankSnapshotTable();
+    const asOfTs = Math.floor(nowMs / 1000);
+    // 45 min of history: enough for a full 30-min baseline plus grid slack.
+    const sinceTs = asOfTs - 45 * 60;
+    const rows = await prisma.$queryRawUnsafe<{ feed: string; symbol: string; bucketTs: number; rank: number }[]>(
+      `SELECT feed, symbol, bucketTs, rank FROM rank_snapshots
+        WHERE date = ? AND feed IN (${CLIMB_FEEDS.map(() => '?').join(',')}) AND bucketTs >= ?
+        ORDER BY symbol, feed, bucketTs ASC`,
+      date,
+      ...CLIMB_FEEDS,
+      sinceTs
+    );
+    const seriesByKey = new Map<string, RankPoint[]>();
+    for (const r of rows) {
+      const key = `${r.symbol} ${r.feed}`;
+      const series = seriesByKey.get(key) ?? [];
+      series.push({ bucketTs: Number(r.bucketTs), rank: Number(r.rank) });
+      seriesByKey.set(key, series);
+    }
+    for (const [key, series] of seriesByKey) {
+      const symbol = key.slice(0, key.indexOf(' '));
+      const climb = rankClimb(series, asOfTs);
+      if (climb == null) continue;
+      const prev = best.get(symbol);
+      if (prev == null || climb > prev) best.set(symbol, climb);
+    }
+  } catch (err) {
+    console.warn('[rank-tracker] getRecentRankClimbs failed:', (err as Error).message);
+  }
+  return best;
 }
 
 /** Latest session date that has any rank snapshot, newest first. */

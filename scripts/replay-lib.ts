@@ -33,6 +33,7 @@ import type { RFactorBaseline } from '../app/api/live/_lib/rfactor-baselines';
 import { computeRFactor, DEFAULT_WEIGHTS as RF_DEFAULT_WEIGHTS, type RFactorWeights } from '../lib/r-factor';
 import { aggregateSectors, type SectorAggregate } from '../lib/sector/aggregate';
 import { combinedOiSlope } from '../lib/signals/combined-oi-slope';
+import { rankClimb, type RankPoint } from '../lib/signals/rank-climb';
 import { atr, sessionVwap, supertrend } from '../lib/signals/indicators';
 import { computeOiUrgency, type OiPoint } from '../lib/signals/oi-intraday';
 import { deriveSessionContext } from '../lib/signals/session-context';
@@ -53,11 +54,14 @@ import {
   MIN_RFACTOR,
   MIN_TURNOVER_SCORE,
   MOMENTUM_MIN_CHANGE_PCT,
+  RANK_CLIMB_MIN_NSE_OI_PCT,
+  RANK_CLIMB_MIN_SPOTS,
   SL_ATR_MULT,
   TARGET_RR,
   USE_BREAKOUT_BYPASS,
   USE_EXTENDED_TREND_BYPASS,
   USE_MOMENTUM_BREAKOUT,
+  USE_RANK_CLIMB_GATE,
   WEIGHTS,
 } from '../lib/trade-suggest/config';
 import { qualifiesByBreakout } from '../lib/trade-suggest/breakout-bypass';
@@ -105,6 +109,17 @@ export interface Variant {
    *  (pct-points; lib/signals/combined-oi-slope.ts) — "the build must be
    *  live, not a stale morning print". Null = off (prod has no slope gate). */
   minNseOiSlope: number | null;
+  /** Rank-climb CATCH path (USE_RANK_CLIMB_GATE, live since 2026-07-17) —
+   *  mirrors engine.ts exactly: the ≥minNseOiPct rule is untouched, and
+   *  ADDITIONALLY a smaller build (≥ rankClimbMinNsePct, < minNseOiPct) with
+   *  qualifying options legs passes IF the name is CLIMBING the gainers/OI
+   *  leaderboard ≥ rankClimbMinSpots over ~30 min (lib/signals/rank-climb.ts).
+   *  Evidence 2026-07-16: winners climbing 5/8 vs losers 1/7; ADANIENSOL
+   *  climbed gainers #15→#7, OI #50→#26. No board history = no climb evidence
+   *  = NOT admitted via this path (admission needs positive evidence). */
+  rankClimbCatch: boolean;
+  rankClimbMinSpots: number;
+  rankClimbMinNsePct: number;
   /** When true, drop candidates fighting their sector's turnover-weighted move
    *  (lib/sector/aggregate.ts; flat sectors <0.1% pass). False in prod —
    *  sector alignment is display evidence until this variant earns its place. */
@@ -132,6 +147,9 @@ export const SHIPPED_VARIANT: Variant = {
   momentumBreakout: USE_MOMENTUM_BREAKOUT,
   momentumMinChangePct: MOMENTUM_MIN_CHANGE_PCT,
   minNseOiSlope: null,
+  rankClimbCatch: USE_RANK_CLIMB_GATE,
+  rankClimbMinSpots: RANK_CLIMB_MIN_SPOTS,
+  rankClimbMinNsePct: RANK_CLIMB_MIN_NSE_OI_PCT,
   requireSectorAlign: false,
 };
 
@@ -159,6 +177,10 @@ export interface DayData {
   sectorBySymbol: Map<string, string>;
   baselines: Map<string, BaselinePlus>;
   candidateSymbolsByTick: Map<number, Set<string>> | null;
+  /** Per-symbol, per-feed ('gainers'/'oi') leaderboard rank series — the
+   *  point-in-time input of the minRankClimb gate. Null when rank_snapshots
+   *  has nothing for the day. */
+  rankHistoryBySymbol: Map<string, Map<string, RankPoint[]>> | null;
   coverage: {
     rankSnapshots: boolean;
     scanModeRecorded: boolean;
@@ -323,6 +345,7 @@ export function loadDay(date: string): DayData | null {
       }
     ).c > 0;
   let candidateSymbolsByTick: Map<number, Set<string>> | null = null;
+  let rankHistoryBySymbol: Map<string, Map<string, RankPoint[]>> | null = null;
   let scanModeRecorded = false;
   if (rankTableExists) {
     const rankColumns = new Set(
@@ -348,6 +371,16 @@ export function loadDay(date: string): DayData | null {
     }[];
     if (rankRows.length > 0) {
       scanModeRecorded = rankRows.some((row) => row.fullUniverse != null);
+      // Rank series per symbol per feed (rows arrive ordered feed, bucketTs,
+      // rank — so each series is already bucketTs-ascending).
+      rankHistoryBySymbol = new Map();
+      for (const row of rankRows) {
+        const feeds = rankHistoryBySymbol.get(row.symbol) ?? new Map<string, RankPoint[]>();
+        const series = feeds.get(row.feed) ?? [];
+        series.push({ bucketTs: Number(row.bucketTs), rank: Number(row.rank) });
+        feeds.set(row.feed, series);
+        rankHistoryBySymbol.set(row.symbol, feeds);
+      }
       const byFeedBucket = new Map<string, Map<number, { symbol: string; rank: number }[]>>();
       for (const row of rankRows) {
         const buckets = byFeedBucket.get(row.feed) ?? new Map();
@@ -387,6 +420,7 @@ export function loadDay(date: string): DayData | null {
     sectorBySymbol,
     baselines,
     candidateSymbolsByTick,
+    rankHistoryBySymbol,
     coverage: {
       rankSnapshots: candidateSymbolsByTick != null,
       scanModeRecorded,
@@ -426,6 +460,9 @@ export interface ReplayPick {
   nseOiPct: number | null;
   /** Combined-OI build rate over the trailing ~30 min (pct-points) as of the tick. */
   nseOiSlope30m: number | null;
+  /** Best ~30-min leaderboard climb (gainers/OI boards; positive = climbing)
+   *  as of the tick — evidence for the minRankClimb experiment. */
+  rankClimb30m: number | null;
   /** Sector turnover-weighted % move as of the tick + whether it agrees with the trade. */
   sectorPct: number | null;
   sectorAligned: boolean | null;
@@ -448,6 +485,18 @@ export function replayVariant(
   const gateCounts: Record<string, number> = {};
   const bump = (k: string) => {
     gateCounts[k] = (gateCounts[k] ?? 0) + 1;
+  };
+  /** Best ~30-min leaderboard climb across the gainers/OI boards as of a tick
+   *  (positive = climbing; null = no supportable read on either board). */
+  const bestRankClimbOf = (symbol: string, asOf: number): number | null => {
+    const feeds = day.rankHistoryBySymbol?.get(symbol);
+    if (!feeds) return null;
+    let best: number | null = null;
+    for (const series of feeds.values()) {
+      const climb = rankClimb(series, asOf);
+      if (climb != null && (best == null || climb > best)) best = climb;
+    }
+    return best;
   };
 
   for (const tick of day.ticks) {
@@ -619,18 +668,35 @@ export function replayVariant(
       const futOiOk = (row.oiLevel ?? 0) >= variant.minOiLevel;
       const nseRows = (day.nseOiByBucket.get(s) ?? []).filter((b) => b.bucketTs <= tick && b.nseOiPct != null);
       const nseOiPct = nseRows.length > 0 ? nseRows[nseRows.length - 1].nseOiPct : null;
-      let nseOiOk =
-        nseOiPct != null &&
-        nseOiPct >= variant.minNseOiPct &&
+      const nseOptionsLegsOk =
         snap.optShare != null &&
         snap.optShare >= MIN_OPT_SHARE &&
         snap.premValueCr != null &&
         snap.premValueCr >= MIN_OPT_PREMIUM_CR;
+      let nseOiOk = nseOiPct != null && nseOiPct >= variant.minNseOiPct && nseOptionsLegsOk;
       // Slope refinement of the options-led path: the combined-OI build must
       // still be moving over the trailing ~30 min, not just a stale level.
       if (nseOiOk && variant.minNseOiSlope != null) {
         const slope = combinedOiSlope(nseRows, tick);
         nseOiOk = slope != null && slope >= variant.minNseOiSlope;
+      }
+      // Rank-climb CATCH path — mirrors the live engine.ts gate exactly: a
+      // smaller build (≥ rankClimbMinNsePct, < minNseOiPct) with qualifying
+      // options legs passes IF the name is climbing the gainers/OI leaderboard.
+      // No board history = no climb evidence = not admitted via this path.
+      if (
+        !nseOiOk &&
+        variant.rankClimbCatch &&
+        nseOiPct != null &&
+        nseOiPct >= variant.rankClimbMinNsePct &&
+        nseOiPct < variant.minNseOiPct &&
+        nseOptionsLegsOk
+      ) {
+        const climb = bestRankClimbOf(s, tick);
+        if (climb != null && climb >= variant.rankClimbMinSpots) {
+          bump('climbAdmitted');
+          nseOiOk = true;
+        }
       }
       // Fourth OI-gate path — a confirmed, trend-aligned, high-R breakout with
       // NO OI evidence still clears (breakout-bypass.ts). Evaluated only when OI
@@ -770,6 +836,7 @@ export function replayVariant(
       );
       const nsePct = nseRows.length > 0 ? nseRows[nseRows.length - 1].nseOiPct : null;
       const nseSlope = combinedOiSlope(nseRows, tick);
+      const pickRankClimb = bestRankClimbOf(sv.row.symbol, tick);
       const { sa: pickSa, aligned: pickSectorAligned } = alignmentOf(sv.sector, sv.direction);
       const pickSectorPct = pickSa == null ? null : Math.round(pickSa.weightedPct * 100) / 100;
       const asOfMin = Math.round(istMin);
@@ -795,6 +862,11 @@ export function replayVariant(
           : 'NSE combined OI not recorded at this tick',
         ...(nseSlope != null
           ? [`combined-OI slope ${nseSlope >= 0 ? '+' : ''}${nseSlope.toFixed(1)} pts / ~30 min`]
+          : []),
+        ...(pickRankClimb != null
+          ? [
+              `leaderboard ${pickRankClimb > 0 ? `climbing +${pickRankClimb}` : pickRankClimb < 0 ? `slipping ${pickRankClimb}` : 'holding ±0'} spots / ~30 min (best of gainers/OI boards)`,
+            ]
           : []),
         ...(combinedOiLevel != null
           ? [`combined fut+opt OI ≈${combinedOiLevel.toFixed(2)}× 20-day avg (derived)`]
@@ -841,6 +913,7 @@ export function replayVariant(
         imbalance: r.imbalance,
         nseOiPct: nsePct,
         nseOiSlope30m: nseSlope,
+        rankClimb30m: pickRankClimb,
         sectorPct: pickSectorPct,
         sectorAligned: pickSectorAligned,
         vwapAligned,

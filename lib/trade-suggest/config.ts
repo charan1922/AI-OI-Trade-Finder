@@ -134,6 +134,36 @@ export const USE_CHAOTIC_OPEN_GATE = true;
  *  don't raise further without new evidence. */
 export const CHAOTIC_OPEN_MAX_RATIO = 5;
 
+/**
+ * EXPERIMENTAL rank-climb CATCH path (lib/signals/rank-climb.ts) on the
+ * options-led OI gate. Today's rule (NSE combined ≥ MIN_NSE_OI_PCT) stays
+ * untouched; ADDITIONALLY a name with NSE combined ≥ RANK_CLIMB_MIN_NSE_OI_PCT
+ * qualifies IF it is actively CLIMBING the movers leaderboard (gainers/OI
+ * boards, best of the two) by ≥ RANK_CLIMB_MIN_SPOTS over the trailing ~30 min.
+ * The optShare / premValue legs still apply on both paths.
+ *
+ * WHY: ADANIENSOL 2026-07-16 (TF +₹10.1k, we found 0) failed ONLY the NSE-5%
+ * leg (1–2%) while its options legs passed — and it was climbing gainers
+ * #15→#7 and the OI board #50→#26. Among the relaxed-path fires that day,
+ * winners were climbing 5/8 vs losers 1/7 — the trajectory, not the level,
+ * separated them. A name with NO board history does NOT qualify via this path
+ * (climbing is the admission evidence; unknowable ≠ climbing).
+ *
+ * Ships OFF (2026-07-17): the user goes to autonomous LIVE real-money trading
+ * the same day this lands, and you never debut live with an unproven, MORE-
+ * permissive gate on top of a first-time change. With this false the scanner is
+ * byte-identical to the proven code. Turn it ON from /config (or flip this back
+ * to true) once live has run clean for a few days — the /reminders entry and the
+ * replay-grid `rank-climb catch` variants track its accruing verdict until then.
+ */
+export const USE_RANK_CLIMB_GATE = false;
+/** Spots climbed (best of gainers/OI boards) over ~30 min to qualify. 1 = any
+ *  real climb — the 16-Jul winner/loser split was climbing-vs-not, not size. */
+export const RANK_CLIMB_MIN_SPOTS = 1;
+/** NSE combined-OI floor for the catch path — low, but not zero: the build must
+ *  at least be net-positive on the day (ADANIENSOL sat at 1–2%). */
+export const RANK_CLIMB_MIN_NSE_OI_PCT = 1;
+
 export const MAX_SPREAD_PCT = 0.3; // execution-cost ceiling (matches setup-score)
 /**
  * Third TF pillar: turnover ≥ 1.2× its (time-adjusted) 20-day average.

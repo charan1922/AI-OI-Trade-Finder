@@ -31,6 +31,7 @@ import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
 import { detectRegime } from '@/lib/signals/regime-detector';
+import { getRecentRankClimbs } from '@/lib/signals/rank-tracker';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   BREAKOUT_BYPASS_MIN_RFACTOR,
@@ -52,12 +53,15 @@ import {
   MIN_TURNOVER_SCORE,
   MOMENTUM_MIN_CHANGE_PCT,
   PICK_OVERSAMPLE,
+  RANK_CLIMB_MIN_NSE_OI_PCT,
+  RANK_CLIMB_MIN_SPOTS,
   SCAN_OUTSIDE_WINDOW,
   SL_ATR_MULT,
   USE_BREAKOUT_BYPASS,
   USE_CHAOTIC_OPEN_GATE,
   USE_EXTENDED_TREND_BYPASS,
   USE_MOMENTUM_BREAKOUT,
+  USE_RANK_CLIMB_GATE,
   USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
   WINDOW_START_MIN,
@@ -308,6 +312,7 @@ export async function runTradeSuggest(
   const useTfBreakoutGate = await getToggle('USE_TF_BREAKOUT_GATE', USE_TF_BREAKOUT_GATE);
   const useMomentumBreakout = await getToggle('USE_MOMENTUM_BREAKOUT', USE_MOMENTUM_BREAKOUT);
   const useChaoticOpenGate = await getToggle('USE_CHAOTIC_OPEN_GATE', USE_CHAOTIC_OPEN_GATE);
+  const useRankClimbGate = await getToggle('USE_RANK_CLIMB_GATE', USE_RANK_CLIMB_GATE);
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
   // Capital budget = the auto-trade page's editable maxCapitalRupees (one source
   // of truth). A pick whose single lot costs more than this is skipped, so the
@@ -350,6 +355,12 @@ export async function runTradeSuggest(
   // check the build is GENUINELY options-led (optShare) and the options
   // tradeable (premValue), not just infer it from combined-OI %-change.
   const nseOiRowMap = await getNseOiRowMap();
+
+  // Rank-climb catch path input (USE_RANK_CLIMB_GATE): best ~30-min leaderboard
+  // climb per symbol (gainers/OI boards) from today's rank_snapshots. One local
+  // query per scan; empty map when the toggle is off or history is thin — a
+  // name absent here simply cannot qualify via the climb path.
+  const rankClimbBySymbol = useRankClimbGate ? await getRecentRankClimbs(date) : new Map<string, number>();
 
   // Position-management feed: every earlier-today call with its live price,
   // regardless of whether the name still clears any gate this scan.
@@ -480,6 +491,10 @@ export async function runTradeSuggest(
     momentumPath: boolean;
     /** Opening 15-min range ÷ settled 5-min ATR (chaotic-open.ts); null = not yet computable. */
     chaosRatio: number | null;
+    /** Best ~30-min leaderboard climb (gainers/OI boards); null = no board history. */
+    rankClimb: number | null;
+    /** True when the OI gate passed via the rank-climb catch path (NSE 1–5% + climbing). */
+    climbPath: boolean;
     score: number;
   }
   const survivors: Enriched[] = [];
@@ -560,13 +575,24 @@ export async function runTradeSuggest(
     // Options-led path: the combined-OI build must be real (%-change), actually
     // options-led (optShare above the single-stock norm) AND tradeable (premium
     // pool above the thin-liquidity floor) — see MIN_OPT_SHARE / MIN_OPT_PREMIUM_CR.
-    const nseOiOk =
+    const nseOptionsLegsOk =
+      optShare != null && optShare >= MIN_OPT_SHARE && premValueCr != null && premValueCr >= MIN_OPT_PREMIUM_CR;
+    // Rank-climb CATCH path (USE_RANK_CLIMB_GATE): today's ≥MIN_NSE_OI_PCT rule
+    // is untouched; ADDITIONALLY a smaller build (≥RANK_CLIMB_MIN_NSE_OI_PCT)
+    // qualifies when the name is actively climbing the gainers/OI leaderboard —
+    // the ADANIENSOL profile (config.ts doc). A name with no board history has
+    // no climb evidence and does NOT qualify via this path.
+    const rankClimbSpots = rankClimbBySymbol.get(row.symbol) ?? null;
+    const climbCatchOk =
+      useRankClimbGate &&
       nseOiPct != null &&
-      nseOiPct >= MIN_NSE_OI_PCT &&
-      optShare != null &&
-      optShare >= MIN_OPT_SHARE &&
-      premValueCr != null &&
-      premValueCr >= MIN_OPT_PREMIUM_CR;
+      nseOiPct >= RANK_CLIMB_MIN_NSE_OI_PCT &&
+      nseOiPct < MIN_NSE_OI_PCT &&
+      nseOptionsLegsOk &&
+      rankClimbSpots != null &&
+      rankClimbSpots >= RANK_CLIMB_MIN_SPOTS;
+    const nseOiOk = (nseOiPct != null && nseOiPct >= MIN_NSE_OI_PCT && nseOptionsLegsOk) || climbCatchOk;
+    if (climbCatchOk) gated.climbAdmitted = (gated.climbAdmitted ?? 0) + 1;
     let breakoutOk = false;
     if (useBreakoutBypass && !futOiOk && !nseOiOk && orBreakout) {
       breakoutOk = qualifiesByBreakout(
@@ -657,6 +683,8 @@ export async function runTradeSuggest(
       optShare,
       momentumPath: momentumOk,
       chaosRatio,
+      rankClimb: rankClimbSpots,
+      climbPath: climbCatchOk,
       score: 0,
     });
   }
@@ -829,11 +857,24 @@ export async function runTradeSuggest(
         : []),
       `R-Factor ${r.rFactor?.toFixed(2)} (${s.direction}, confidence ${((r.rFactorConfidence ?? 0) * 100).toFixed(0)}%)`,
       `futures OI ${r.oiLevel?.toFixed(2)}× 20-day avg${r.oiUrgency != null && r.oiUrgency > 0 ? `, urgency ${r.oiUrgency.toFixed(1)}/10` : ''}`,
-      ...(s.nseOiPct != null && s.nseOiPct >= MIN_NSE_OI_PCT
+      ...(s.nseOiPct != null && (s.nseOiPct >= MIN_NSE_OI_PCT || s.climbPath)
         ? [
             `NSE combined OI ${s.nseOiPct >= 0 ? '+' : ''}${s.nseOiPct.toFixed(1)}% (futures+options${(r.oiLevel ?? 0) < MIN_OI_LEVEL ? ' — options-led build' : ''}${s.optShare != null ? `, opt-share ${(s.optShare * 100).toFixed(0)}%` : ''})`,
           ]
         : []),
+      // Rank-climb catch path (USE_RANK_CLIMB_GATE): flag the admission loudly —
+      // the OI build is BELOW the usual 5% bar and the leaderboard trajectory is
+      // what let it in. Plus the plain climb evidence on every pick that has
+      // board history, so the nightly scorecard accrues per-climb outcomes.
+      ...(s.climbPath
+        ? [
+            `🪜 RANK-CLIMB catch path: combined OI below the ${MIN_NSE_OI_PCT}% norm, but the name is climbing the movers board +${s.rankClimb} spots/~30 min with qualifying options flow (ADANIENSOL profile) — smaller evidence base, respect the stop.`,
+          ]
+        : s.rankClimb != null
+          ? [
+              `leaderboard ${s.rankClimb > 0 ? `climbing +${s.rankClimb}` : s.rankClimb < 0 ? `slipping ${s.rankClimb}` : 'holding ±0'} spots/~30 min (best of gainers/OI boards)`,
+            ]
+          : []),
       ...(combinedOiLevel != null && combinedOiLevel >= 1.1
         ? [`combined fut+opt OI ≈${combinedOiLevel.toFixed(2)}× 20-day avg (derived from bhavcopy + NSE live %)`]
         : []),
