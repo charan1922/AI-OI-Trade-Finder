@@ -8,6 +8,9 @@ export async function register(): Promise<void> {
   // instrumentation is also evaluated for the edge runtime — a static import
   // would drag better-sqlite3/otpauth into that bundle.
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
+  // File tee FIRST so every startup line below also lands in data/logs/.
+  const { startFileLog } = await import('./lib/ops/file-log');
+  startFileLog();
   const { startFyersPoller } = await import('./lib/fyers/poller');
   startFyersPoller();
   const { startGuardLoop } = await import('./lib/auto-trade/guard-loop');

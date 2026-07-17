@@ -80,7 +80,7 @@ const NAV_GROUPS: NavGroup[] = [
       { title: 'Trade Suggest', href: '/trade-suggest', icon: Target },
       { title: 'Trade Commentary', href: '/trade-commentary', icon: Sparkles },
       { title: 'Auto Trade', href: '/auto-trade', icon: Zap },
-      { title: 'Live Monitor', href: '/monitor', icon: ScrollText },
+      { title: 'Server Logs', href: '/logs', icon: ScrollText },
       { title: 'Trade Assistant', href: '/trade-assistant', icon: Bot },
     ],
   },

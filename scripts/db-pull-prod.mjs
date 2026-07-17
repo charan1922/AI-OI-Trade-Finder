@@ -33,7 +33,17 @@ const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 
-// --- Railway target (same IDs as the server:up / server:down package.json scripts) ---
+// --- Prod target -------------------------------------------------------------
+// Since 2026-07-17 prod lives on the self-hosted AWS box (see memory:
+// aws-box-is-prod); Railway is stopped. Default backend is `aws` (ssh to the
+// box, run node INSIDE the app container). Set PULL_BACKEND=railway to use the
+// old transport if Railway is ever revived.
+const BACKEND = process.env.PULL_BACKEND || 'aws';
+const AWS_HOST = process.env.PROD_BOX_HOST || 'ubuntu@3.108.33.64';
+const AWS_KEY =
+  process.env.PROD_BOX_KEY || join(process.env.USERPROFILE || process.env.HOME || '', '.ssh', 'projectr-throwaway.pem');
+
+// --- Railway target (legacy; kept for PULL_BACKEND=railway) ---
 const PROJECT = 'd5d24ef5-cd81-401e-a3d4-b319ef66e4bf';
 const ENVIRONMENT = 'a6fcc8f0-dec3-4b56-abdb-6bcf5e513a54';
 const SERVICE = 'a5ce553b-bbd1-4699-8465-6ff34aeac202';
@@ -78,6 +88,29 @@ function railwaySsh(remoteCmd, { capture = false } = {}) {
     maxBuffer: 1024 * 1024 * 1024, // 1 GB — base64 of the subset can be tens of MB
     encoding: capture ? 'utf8' : undefined,
   });
+}
+
+function awsSsh(remoteCmd, { capture = false } = {}) {
+  // Same idea over plain ssh to the AWS box. The remote pipeline runs on the
+  // box; anything that must run inside the app container is already phrased as
+  // `sudo docker exec …` by the caller. READ-ONLY throughout: the builder
+  // ATTACHes prod read-only and writes only /tmp/subset.db inside the container.
+  const cmd = `ssh -i "${AWS_KEY}" -o StrictHostKeyChecking=accept-new ${AWS_HOST} "${remoteCmd}"`;
+  return execSync(cmd, {
+    stdio: capture ? ['ignore', 'pipe', 'inherit'] : ['ignore', 'inherit', 'inherit'],
+    maxBuffer: 1024 * 1024 * 1024,
+    encoding: capture ? 'utf8' : undefined,
+  });
+}
+
+/** Run the builder JS on prod (stdin-piped into node) and stream files back. */
+function prodRunNode(builderB64) {
+  if (BACKEND === 'railway') return railwaySsh(`echo ${builderB64} | base64 -d | node`);
+  return awsSsh(`echo ${builderB64} | base64 -d | sudo docker exec -i projectr node -`);
+}
+function prodReadSubsetB64() {
+  if (BACKEND === 'railway') return railwaySsh('base64 -w0 /tmp/subset.db', { capture: true });
+  return awsSsh('sudo docker exec projectr base64 -w0 /tmp/subset.db', { capture: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -143,13 +176,14 @@ log(
     : 'building trimmed subset on the server (prod ATTACHed read-only)...'
 );
 const builderB64 = Buffer.from(serverBuilder, 'utf8').toString('base64');
-railwaySsh(`echo ${builderB64} | base64 -d | node`);
+log(`backend: ${BACKEND}${BACKEND === 'aws' ? ` (${AWS_HOST})` : ''}`);
+prodRunNode(builderB64);
 
 // ---------------------------------------------------------------------------
 // 2) Stream the subset down (base64; stderr carries the "Using SSH key" banner).
 // ---------------------------------------------------------------------------
 log('downloading subset...');
-const b64 = railwaySsh('base64 -w0 /tmp/subset.db', { capture: true });
+const b64 = prodReadSubsetB64();
 const buf = Buffer.from(b64.trim(), 'base64');
 if (buf.length < 16 || buf.subarray(0, 15).toString('ascii') !== 'SQLite format 3') {
   throw new Error(`downloaded blob is not a SQLite file (got ${buf.length} bytes). Is the server reachable / built?`);
