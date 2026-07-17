@@ -114,6 +114,26 @@ export const USE_MOMENTUM_BREAKOUT = false;
  *  move behind it is just a poke above the opening range. */
 export const MOMENTUM_MIN_CHANGE_PCT = 1.5;
 
+/**
+ * EXPERIMENTAL chaotic-open gate (lib/trade-suggest/chaotic-open.ts): skip a
+ * candidate whose opening 15-min range exceeded CHAOTIC_OPEN_MAX_RATIO × its
+ * own settled 5-min ATR — the "violent open, spike, fade" profile. Evidence
+ * (N=4, 2026-07-15/16): both auto-trade losers opened at 5.5×/5.7×, both
+ * winners at 2.5×/2.9×; full table + honest over-fitting caveat in the module
+ * doc. Default ON at the user's explicit request (2026-07-17) — the standing
+ * multi-day-replay discipline still applies: the /reminders entry tracks the
+ * accruing evidence, and this switch comes OFF if the replay turns against it.
+ */
+export const USE_CHAOTIC_OPEN_GATE = true;
+/** Skip when opening-range ÷ settled-ATR exceeds this. Calibrated at 5 by the
+ *  2026-07-17 full-universe backtest: 4 would have blocked the trend-day class
+ *  at ~10:30 (KALYANKJIL 4.46, SIEMENS 4.37, CGPOWER 4.29 — the exact winners
+ *  the strategy lives on), while 5 keeps them all AND still blocks both proven
+ *  chaotic-open losers (HYUNDAI 5.48 at its 09:48 entry, SRF 5.74) plus 6
+ *  losing picks with zero winners lost. Margin over HYUNDAI is only 0.48 —
+ *  don't raise further without new evidence. */
+export const CHAOTIC_OPEN_MAX_RATIO = 5;
+
 export const MAX_SPREAD_PCT = 0.3; // execution-cost ceiling (matches setup-score)
 /**
  * Third TF pillar: turnover ≥ 1.2× its (time-adjusted) 20-day average.

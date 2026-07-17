@@ -1,0 +1,128 @@
+/**
+ * Option premium pricing for the scanner — one batched Dhan quote for the
+ * picked contracts, priced with the quant-standard fallback chain:
+ *
+ *   1. last traded price (ltp) when the contract has printed today, UNLESS it
+ *      sits outside the live bid-ask book (a stale print — the book is newer);
+ *   2. bid-ask mid when there is no usable ltp but a live two-sided book
+ *      exists (a resting-order mid is a REAL price, not a fabrication — this
+ *      is what rescues quiet-but-tradeable contracts like ABB 7350CE that
+ *      never printed, which used to come back null);
+ *   3. null when neither exists (off-hours / dead contract) — never invented.
+ *
+ * Every unpriced or mid-priced contract is logged with its reason so a null
+ * premium is diagnosable from the logs instead of DB archaeology
+ * (ABB/PAYTM incident, 2026-07-16).
+ *
+ * Derived plan numbers (per-lot cost, premium SL, premium target) all come
+ * from the same resolved price, so the stop math is never split across two
+ * different price sources.
+ */
+
+import { bestBidAsk, dhanMarketFeed } from '@/lib/dhan/market-feed';
+import {
+  MAX_LOSS_PER_LOT_RUPEES,
+  MAX_OPT_SPREAD_PCT,
+  PREMIUM_SL_PCT,
+  TF_LOT_TARGET_RUPEES,
+} from '@/lib/trade-suggest/config';
+import type { OptionPlan, OptionPremium } from '@/lib/trade-suggest/types';
+
+const TAG = '[TradeSuggest]';
+
+/** Resolved price + where it came from (audit trail for the pick record). */
+export interface ResolvedOptionPrice {
+  price: number;
+  source: 'ltp' | 'mid';
+  /** Set when ltp existed but sat outside the live book (stale print). */
+  staleLtp: boolean;
+}
+
+/**
+ * Pick the honest tradeable price out of a quote: fresh ltp → ltp; stale or
+ * missing ltp with a live book → mid; nothing → null. Pure, unit-testable.
+ */
+export function resolveOptionPrice(
+  ltp: number,
+  book: { bid: number; ask: number; mid: number } | null
+): ResolvedOptionPrice | null {
+  const hasLtp = ltp > 0;
+  // A print outside the current book is older than the resting orders —
+  // trust the book. (Tolerance-free on purpose: options tick inside the book.)
+  const staleLtp = hasLtp && book != null && (ltp < book.bid || ltp > book.ask);
+  if (hasLtp && !staleLtp) return { price: ltp, source: 'ltp', staleLtp: false };
+  if (book != null) return { price: book.mid, source: 'mid', staleLtp };
+  if (hasLtp) return { price: ltp, source: 'ltp', staleLtp: false }; // stale but the only real price we have
+  return null;
+}
+
+/**
+ * One batched Dhan quote for the picked option contracts → live premium,
+ * option-book spread, volume/OI, per-lot cost, premium SL (−PREMIUM_SL_PCT%)
+ * and the ₹TF_LOT_TARGET_RUPEES/lot premium target. Mutates each plan's
+ * `premium`; leaves it null (never fabricated) when no price of any kind
+ * comes back — and says so in the log.
+ */
+export async function attachPremiums(options: OptionPlan[]): Promise<void> {
+  const ids = options.map((o) => Number(o.optSecurityId)).filter((n) => n > 0);
+  if (ids.length === 0) return;
+  const unpriced: string[] = [];
+  let midPriced = 0;
+  try {
+    const q = await dhanMarketFeed('quote', { NSE_FNO: ids });
+    const seg = q.NSE_FNO ?? {};
+    for (const o of options) {
+      const oq = seg[String(o.optSecurityId)];
+      if (!oq) {
+        unpriced.push(`${o.optSymbol ?? o.optSecurityId}: not in quote response`);
+        continue;
+      }
+      const book = bestBidAsk(oq);
+      const resolved = resolveOptionPrice(oq.last_price ?? 0, book);
+      if (resolved == null) {
+        unpriced.push(`${o.optSymbol ?? o.optSecurityId}: no last trade and no order book`);
+        continue;
+      }
+      if (resolved.source === 'mid') midPriced++;
+      const { price } = resolved;
+      const volume = oq.volume ?? null;
+      const oi = oq.oi ?? null;
+      const warnings: string[] = [];
+      if (book == null) warnings.push('no option order book');
+      else if (book.spreadPct > MAX_OPT_SPREAD_PCT)
+        warnings.push(`option spread ${book.spreadPct.toFixed(1)}% of premium — slippage risk`);
+      if (!volume) warnings.push('no traded volume yet in this contract');
+      if (resolved.source === 'mid')
+        warnings.push(
+          resolved.staleLtp
+            ? 'last trade is stale (outside the live book) — priced off the bid-ask mid'
+            : 'no trade printed yet — priced off the bid-ask mid'
+        );
+      const premium: OptionPremium = {
+        ltp: Math.round(price * 100) / 100,
+        priceSource: resolved.source,
+        bid: book?.bid ?? null,
+        ask: book?.ask ?? null,
+        spreadPct: book == null ? null : Math.round(book.spreadPct * 100) / 100,
+        volume,
+        oi,
+        perLotCost: Math.round(price * o.lotSize * 100) / 100,
+        // Stop premium = the TIGHTER of the 40% backstop and the ₹ per-lot cap,
+        // so a lot can't lose more than MAX_LOSS_PER_LOT_RUPEES (higher premium = smaller loss).
+        slPremium:
+          Math.round(
+            Math.max(0, Math.max(price * (1 - PREMIUM_SL_PCT / 100), price - MAX_LOSS_PER_LOT_RUPEES / o.lotSize)) *
+              100
+          ) / 100,
+        targetPremium: Math.round((price + TF_LOT_TARGET_RUPEES / o.lotSize) * 100) / 100,
+        liquidityWarning: warnings.length > 0 ? warnings.join('; ') : null,
+      };
+      o.premium = premium;
+    }
+  } catch (err) {
+    console.warn(`${TAG} option premium quote failed: ${(err as Error).message}`);
+    return;
+  }
+  if (midPriced > 0) console.log(`${TAG} ${midPriced}/${options.length} contract(s) priced off the bid-ask mid`);
+  if (unpriced.length > 0) console.warn(`${TAG} unpriceable contract(s) dropped: ${unpriced.join(' · ')}`);
+}

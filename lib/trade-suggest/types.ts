@@ -8,8 +8,12 @@ export type OptionSide = 'CE' | 'PE';
 
 /** Live quote of the picked option contract (one extra batched Dhan call). */
 export interface OptionPremium {
-  /** Option LTP (₹/share of premium). */
+  /** The resolved premium (₹/share): last traded price, or the bid-ask mid
+   *  when the contract has no usable print (see priceSource). */
   ltp: number;
+  /** Where ltp came from — 'ltp' = a real trade print, 'mid' = bid-ask mid
+   *  (live resting orders; used when no fresh trade exists). */
+  priceSource?: 'ltp' | 'mid';
   bid: number | null;
   ask: number | null;
   /** Bid-ask spread of the OPTION as % of mid — its own execution cost. */

@@ -59,6 +59,7 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
     ['settings.squareOffMin', s.squareOffMin],
     ['settings.entryStartMin', s.entryStartMin ?? ENTRY_START_MIN],
     ['settings.entryEndMin', s.entryEndMin ?? ENTRY_END_MIN],
+    ['settings.maxSpreadPct', s.maxSpreadPct ?? MAX_SPREAD_PCT],
   ];
   const corrupt = numerics.filter(([, value]) => !Number.isFinite(value)).map(([name]) => name);
   if (x.entryCutoffMin != null && Number.isNaN(x.entryCutoffMin)) corrupt.push('entryCutoffMin');
@@ -125,10 +126,11 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
       `premium moved ${x.slippagePct.toFixed(1)}% since the scan quote (> ${MAX_ENTRY_SLIPPAGE_PCT}% slippage guard)`
     );
   }
+  const maxSpread = s.maxSpreadPct ?? MAX_SPREAD_PCT;
   if (x.spreadPct == null || !Number.isFinite(x.spreadPct) || x.spreadPct < 0) {
     reasons.push('option spread unavailable — liquidity cannot be verified');
-  } else if (x.spreadPct > MAX_SPREAD_PCT) {
-    reasons.push(`option spread ${x.spreadPct.toFixed(1)}% exceeds max ${MAX_SPREAD_PCT}% — too illiquid`);
+  } else if (x.spreadPct > maxSpread) {
+    reasons.push(`option spread ${x.spreadPct.toFixed(1)}% exceeds max ${maxSpread}% — too illiquid`);
   }
   if (!x.hasSlSpot) reasons.push('scanner plan has no spot stop-loss — unmanaged entries are not allowed');
 

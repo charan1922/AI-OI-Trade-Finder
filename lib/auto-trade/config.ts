@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS: AutoTradeSettings = {
   maxOpenLots: 2, // user rule: max 2 lots at once
   maxCapitalRupees: 60_000, // user rule: ₹50–60k account — ₹-cap on deployed premium
   dailyLossHaltRupees: 3_000, // 2 × the ₹1.5k/lot max loss — then stop for the day
+  maxSpreadPct: 3, // option bid-ask ceiling — see MAX_SPREAD_PCT below for the evidence
   approvalTtlMin: 15, // a pending approval is stale after 3 poller cycles
   telegramAlerts: true, // send auto-trade alerts + commentary to Telegram
   entryStartMin: 9 * 60 + 45, // user rule: entries 09:45–11:00 IST
@@ -67,11 +68,18 @@ export const SQUARE_OFF_MIN = DEFAULT_SETTINGS.squareOffMin;
  *  from the scanner's quote this cycle (the AI decided on stale numbers). */
 export const MAX_ENTRY_SLIPPAGE_PCT = 4;
 
-/** Reject an entry when the option's bid-ask spread exceeds this %.
- *  Deep OTM illiquid options can have ₹0.10 bid / ₹5.00 ask — instant
- *  ~100% loss on fill. The scanner already flags liquidityWarning but the
- *  gate must enforce it. */
-export const MAX_SPREAD_PCT = 8;
+/** Reject an entry when the option's bid-ask spread exceeds this % (DEFAULT —
+ *  the effective value is settings.maxSpreadPct, tunable on /auto-trade).
+ *  The spread is instant market-order slippage: half is paid at each fill, so
+ *  an 8% ceiling allowed up to ~₹1,600 round-trip bleed on a ₹20k lot — more
+ *  than the ₹1.5k max loss. Evidence for 3 (decision traces, 2026-07-16):
+ *  SIEMENS 3750CE surfaced at 5.5% and 3.0% spread and only the AI's judgment
+ *  refused it — the old 8% code gate would have passed both, violating "the
+ *  AI proposes, code disposes". Every actual entry (HYUNDAI/MANKIND/
+ *  PATANJALI/SRF) fired no liquidity warning (≤2%), so 3 blocks the junk
+ *  without touching a single real trade. Scanner warns at 2 (MAX_OPT_SPREAD_PCT)
+ *  → gate blocks above 3: warn first, then enforce. */
+export const MAX_SPREAD_PCT = DEFAULT_SETTINGS.maxSpreadPct;
 
 /** How long to poll a live broker order for a fill before leaving it to the
  *  next cycle's reconcile step (MARKET orders on liquid near-ATM strikes fill

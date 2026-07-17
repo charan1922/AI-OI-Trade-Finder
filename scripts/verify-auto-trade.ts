@@ -97,7 +97,17 @@ async function main(): Promise<void> {
     !checkEntryGates({ ...base, settings: { ...base.settings, mode: 'live' } }).allow
   );
   check('gates: broker funds short blocked', !checkEntryGates({ ...base, brokerFundsAvailable: 10_000 }).allow);
-  check('gates: wide spread blocked', !checkEntryGates({ ...base, spreadPct: 12 }).allow, 'spread 12% > 8% max');
+  check('gates: wide spread blocked', !checkEntryGates({ ...base, spreadPct: 12 }).allow, 'spread 12% > default max');
+  check(
+    'gates: spread over tightened default blocked',
+    !checkEntryGates({ ...base, spreadPct: 5 }).allow,
+    'spread 5% > default 3% (SIEMENS 2026-07-16 profile — was passed by the old 8% ceiling)'
+  );
+  check(
+    'gates: settings maxSpreadPct override respected',
+    checkEntryGates({ ...base, settings: { ...base.settings, maxSpreadPct: 6 }, spreadPct: 5 }).allow,
+    'spread 5% allowed when the runtime setting is raised to 6%'
+  );
   check(
     'gates: null spread blocked',
     !checkEntryGates({ ...base, spreadPct: null }).allow,

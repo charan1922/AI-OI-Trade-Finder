@@ -48,12 +48,26 @@ const REMINDERS: Reminder[] = [
       'Ask Claude: "test the futures-OI floor (0.85×) across recorded days, together with the breakout-gate replay". If it still cuts junk without cutting winners → build it as a default-OFF toggle on /config.',
   },
   {
+    title: 'Chaotic-open gate went live ON — verify it earns its place',
+    when: 'After ~4–5 more trading days (around 23 Jul 2026)',
+    added: '2026-07-17',
+    what: [
+      'Both auto-trade losers (HYUNDAI 15-Jul −₹1,911, SRF 16-Jul would-be loss) opened VIOLENTLY — their first 15 minutes ranged 5.5–5.7× the stock’s own normal 5-minute bar — then faded within half an hour. The winners (MANKIND, PATANJALI, POLYCAB) opened calmer and trended.',
+      'A new gate ("Skip chaotic opens" on /config) now skips any pick whose opening was more than 5× its settled average bar. It went live ON (operator request, 17-Jul) — unlike the other experimental switches, which wait for proof first.',
+      'The 5× line matters: the first draft used 4×, and the full-universe backtest showed 4× would have wrongly blocked genuine trend-day winners (KALYANKJIL, SIEMENS, CGPOWER all sat at ~4.3–4.5× at 10:30) because most stocks naturally open hot. At 5×: both losers still blocked, all winners kept, 6 losing picks cut, zero winners lost. ADANIENSOL 16-Jul (TF’s +₹10.1k) measured a CALM 2.2–3.1× — this gate never touches that class.',
+      'The honest caveat: the evidence is 2 recorded days. Every pick now carries a "calm open / chaotic open" line, so the nightly scorecard builds the real evidence automatically.',
+    ],
+    action:
+      'Ask Claude: "replay the chaotic-open gate across recorded days". If it kept cutting HYUNDAI/SRF-type losers without cutting winners → keep ON. If it cost a real winner → flip it OFF on /config (one click) and park it back with the other experiments.',
+  },
+  {
     title: 'Momentum-breakout switch is still OFF',
     when: 'After several recorded sessions (needs multi-day replay proof)',
     added: '2026-07-15',
     what: [
       'On 14 Jul, TradeFinder made +₹15,930 on ADANIGREEN — a short-covering breakout our engine skipped BY DESIGN (price up while OI falls scores zero on every accumulation gate).',
       'A 4th entry path was built for exactly that pattern (confirmed opening-range breakout + Supertrend AND VWAP agreeing + a real move behind it). It is OFF (USE_MOMENTUM_BREAKOUT) until replays over several days prove it catches the ADANIGREEN type without letting in fakeouts.',
+      'SECOND confirmed case, 16 Jul: TradeFinder made +₹10,159 on ADANIENSOL. It sat on our gainers board all window (rank 5–15), opened calm (chaotic ratio 2.2–3.1 — clean staircase to +3% by 11:00), broke its opening range ~10:00 with trend agreement — and every OI gate refused it: futures OI 0.96× (needs 1.1×), options share 6.7% (needs 10%), premium pool ₹4.4Cr (needs ₹5Cr). Price led, OI flat — exactly the class this switch exists for. Two textbook cases now; still needs the multi-day replay before flipping ON.',
     ],
     action:
       'Ask Claude: "validate the momentum-breakout path across recorded days". If proven → flip ON "Momentum breakout" on /config.',

@@ -24,7 +24,7 @@
 import { setupScore } from '@/app/live/_lib/setup-score';
 import type { LiveQuoteResponse, LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
-import { bestBidAsk, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
@@ -36,11 +36,10 @@ import {
   BREAKOUT_BYPASS_MIN_RFACTOR,
   BREAKOUT_BYPASS_REQUIRE_TREND,
   CAPITAL_BUDGET,
+  CHAOTIC_OPEN_MAX_RATIO,
   EXCLUDE_EXTENDED,
   EXTENDED_BYPASS_MIN_RFACTOR,
   EXTENDED_BYPASS_REQUIRE_SUPERTREND,
-  MAX_LOSS_PER_LOT_RUPEES,
-  MAX_OPT_SPREAD_PCT,
   MAX_PICKS,
   MAX_SPREAD_PCT,
   MIN_CONFIDENCE,
@@ -53,11 +52,10 @@ import {
   MIN_TURNOVER_SCORE,
   MOMENTUM_MIN_CHANGE_PCT,
   PICK_OVERSAMPLE,
-  PREMIUM_SL_PCT,
   SCAN_OUTSIDE_WINDOW,
   SL_ATR_MULT,
-  TF_LOT_TARGET_RUPEES,
   USE_BREAKOUT_BYPASS,
+  USE_CHAOTIC_OPEN_GATE,
   USE_EXTENDED_TREND_BYPASS,
   USE_MOMENTUM_BREAKOUT,
   USE_TF_BREAKOUT_GATE,
@@ -73,17 +71,13 @@ import {
   type CandidateSnapshot,
 } from '@/lib/trade-suggest/candidates';
 import { qualifiesByBreakout } from '@/lib/trade-suggest/breakout-bypass';
+import { chaoticOpenRatio } from '@/lib/trade-suggest/chaotic-open';
 import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
 import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
+import { attachPremiums } from '@/lib/trade-suggest/premiums';
 import { buildSpotPlan, computeCompositeScore } from '@/lib/trade-suggest/scoring';
 import { getSuggestions, upsertSuggestions } from '@/lib/trade-suggest/store';
-import type {
-  OptionPlan,
-  OptionPremium,
-  SuggestResponse,
-  SuggestWindow,
-  TradeSuggestion,
-} from '@/lib/trade-suggest/types';
+import type { OptionPlan, SuggestResponse, SuggestWindow, TradeSuggestion } from '@/lib/trade-suggest/types';
 
 const TAG = '[TradeSuggest]';
 
@@ -254,54 +248,6 @@ async function resolveAtmOption(symbol: string, spot: number, side: 'CE' | 'PE')
   };
 }
 
-/**
- * One batched Dhan quote for the picked option contracts → live premium,
- * option-book spread, volume/OI, per-lot cost, premium SL (−PREMIUM_SL_PCT%)
- * and the ₹TF_LOT_TARGET_RUPEES/lot premium target. Mutates each plan's
- * `premium`; leaves it null (never fabricated) when no quote comes back.
- */
-async function attachPremiums(options: OptionPlan[]): Promise<void> {
-  const ids = options.map((o) => Number(o.optSecurityId)).filter((n) => n > 0);
-  if (ids.length === 0) return;
-  try {
-    const q = await dhanMarketFeed('quote', { NSE_FNO: ids });
-    const seg = q.NSE_FNO ?? {};
-    for (const o of options) {
-      const oq = seg[String(o.optSecurityId)];
-      const ltp = oq?.last_price ?? 0;
-      if (!oq || ltp <= 0) continue;
-      const book = bestBidAsk(oq);
-      const volume = oq.volume ?? null;
-      const oi = oq.oi ?? null;
-      const warnings: string[] = [];
-      if (book == null) warnings.push('no option order book');
-      else if (book.spreadPct > MAX_OPT_SPREAD_PCT)
-        warnings.push(`option spread ${book.spreadPct.toFixed(1)}% of premium — slippage risk`);
-      if (!volume) warnings.push('no traded volume yet in this contract');
-      const premium: OptionPremium = {
-        ltp,
-        bid: book?.bid ?? null,
-        ask: book?.ask ?? null,
-        spreadPct: book == null ? null : Math.round(book.spreadPct * 100) / 100,
-        volume,
-        oi,
-        perLotCost: Math.round(ltp * o.lotSize * 100) / 100,
-        // Stop premium = the TIGHTER of the 40% backstop and the ₹ per-lot cap,
-        // so a lot can't lose more than MAX_LOSS_PER_LOT_RUPEES (higher premium = smaller loss).
-        slPremium:
-          Math.round(
-            Math.max(0, Math.max(ltp * (1 - PREMIUM_SL_PCT / 100), ltp - MAX_LOSS_PER_LOT_RUPEES / o.lotSize)) * 100
-          ) / 100,
-        targetPremium: Math.round((ltp + TF_LOT_TARGET_RUPEES / o.lotSize) * 100) / 100,
-        liquidityWarning: warnings.length > 0 ? warnings.join('; ') : null,
-      };
-      o.premium = premium;
-    }
-  } catch (err) {
-    console.warn(`${TAG} option premium quote failed: ${(err as Error).message}`);
-  }
-}
-
 // ─── The run ─────────────────────────────────────────────────────────────────
 // (Composite score + spot-plan math live in scoring.ts, shared with the
 //  offline replay harness — scripts/replay-window.ts.)
@@ -361,6 +307,7 @@ export async function runTradeSuggest(
   const useExtendedTrendBypass = await getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS);
   const useTfBreakoutGate = await getToggle('USE_TF_BREAKOUT_GATE', USE_TF_BREAKOUT_GATE);
   const useMomentumBreakout = await getToggle('USE_MOMENTUM_BREAKOUT', USE_MOMENTUM_BREAKOUT);
+  const useChaoticOpenGate = await getToggle('USE_CHAOTIC_OPEN_GATE', USE_CHAOTIC_OPEN_GATE);
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
   // Capital budget = the auto-trade page's editable maxCapitalRupees (one source
   // of truth). A pick whose single lot costs more than this is skipped, so the
@@ -531,6 +478,8 @@ export async function runTradeSuggest(
     optShare: number | null;
     /** True when admitted via the momentum-breakout path (accumulation gates bypassed). */
     momentumPath: boolean;
+    /** Opening 15-min range ÷ settled 5-min ATR (chaotic-open.ts); null = not yet computable. */
+    chaosRatio: number | null;
     score: number;
   }
   const survivors: Enriched[] = [];
@@ -683,6 +632,17 @@ export async function runTradeSuggest(
       }
     }
 
+    // EXPERIMENTAL chaotic-open gate (USE_CHAOTIC_OPEN_GATE): skip a name whose
+    // opening 15 min was a violent spike vs its own settled 5-min ATR — the
+    // HYUNDAI/SRF "blow the energy at the open, then fade" loser profile
+    // (evidence + caveat in chaotic-open.ts). Null ratio (early session, thin
+    // bars) skips the gate, never blocks.
+    const chaosRatio = chaoticOpenRatio(bars);
+    if (useChaoticOpenGate && chaosRatio != null && chaosRatio > CHAOTIC_OPEN_MAX_RATIO) {
+      gated.chaoticOpen = (gated.chaoticOpen ?? 0) + 1;
+      continue;
+    }
+
     survivors.push({
       row,
       sector: sectorBySymbol.get(row.symbol) ?? '',
@@ -696,6 +656,7 @@ export async function runTradeSuggest(
       nseOiPct,
       optShare,
       momentumPath: momentumOk,
+      chaosRatio,
       score: 0,
     });
   }
@@ -884,6 +845,15 @@ export async function runTradeSuggest(
       s.orBreakout
         ? 'trading beyond the opening range (breakout confirmed)'
         : 'inside opening range — breakout not yet confirmed',
+      // Open character (chaotic-open.ts): stamped on every pick so the nightly
+      // scorecard accrues win/loss evidence per opening profile.
+      ...(s.chaosRatio != null
+        ? [
+            s.chaosRatio > CHAOTIC_OPEN_MAX_RATIO
+              ? `⚠ chaotic open: first 15 min ranged ${s.chaosRatio.toFixed(1)}× the stock's settled 5-min ATR (gate threshold ${CHAOTIC_OPEN_MAX_RATIO}×)`
+              : `calm open: first 15 min ranged ${s.chaosRatio.toFixed(1)}× the stock's settled 5-min ATR`,
+          ]
+        : []),
       ...(r.breakout != null && r.breakout.grade !== 'none'
         ? [
             r.breakout.grade === 'fakeout-risk'

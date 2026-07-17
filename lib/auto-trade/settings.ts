@@ -123,6 +123,14 @@ export const SETTING_DEFS: SettingDef[] = [
     description: 'Realized loss on the day at which new entries stop.',
   },
   {
+    key: 'maxSpreadPct',
+    parse: (raw) => intInRange(raw, 1, 8, 'maxSpreadPct'),
+    serialize: String,
+    label: 'Max option spread (%)',
+    description:
+      'Reject an entry when the option’s bid-ask spread exceeds this % of its price. The spread is what a market order loses instantly at fill — 3% caps that bleed at ~₹600 on a ₹20k lot; 8% would allow more than the ₹1.5k max loss. Exits are never blocked by this.',
+  },
+  {
     key: 'approvalTtlMin',
     parse: (raw) => intInRange(raw, 5, 60, 'approvalTtlMin'),
     serialize: String,

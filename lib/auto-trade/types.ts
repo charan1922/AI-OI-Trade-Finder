@@ -34,6 +34,9 @@ export interface AutoTradeSettings {
   maxCapitalRupees: number;
   /** Realized loss on the day at which the module halts new entries (₹). */
   dailyLossHaltRupees: number;
+  /** Reject an entry when the option's bid-ask spread exceeds this % of mid —
+   *  the ceiling on instant market-order slippage (half-spread paid at fill). */
+  maxSpreadPct: number;
   /** Minutes a pending approval stays actionable before it expires. */
   approvalTtlMin: number;
   /** Send auto-trade alerts + commentary to Telegram. Toggle from /telegram command. */

@@ -42,6 +42,18 @@ const PRIORITY_HISTORY_CONCURRENCY = 3;
 const POLLER_LEASE = 'fyers-poller';
 const POLLER_LEASE_TTL_MS = 90_000;
 
+/**
+ * True on the ONE deployed server that owns the autonomous jobs — the
+ * market-hours scan/auto-trade capture, the nightly EOD bhavcopy sync, and the
+ * evening scorecard. Provider-agnostic: set AUTONOMOUS_SERVER=true on the live
+ * host (self-hosted box or any VM). The legacy Railway signal is still honored
+ * so a Railway deploy keeps working through the migration. Dev laptops set
+ * neither, so they never fire autonomous trading (candles/warm-up still run).
+ */
+function isAutonomousServer(): boolean {
+  return process.env.AUTONOMOUS_SERVER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT_NAME);
+}
+
 /** True only when history contains a usable bar at the required bucket. */
 export function hasRequiredEqBar(bars: readonly FyersBar[], requiredBucket: number | null): boolean {
   return bars.some((bar) => bar.open > 0 && (requiredBucket === null || bar.bucketTs >= requiredBucket));
@@ -215,11 +227,11 @@ export async function runFyersCycle(
     // calendar day after ~01:00 IST, NOT a 5-min poll). Runs even on weekends/
     // holidays since it backfills the last completed session. The Fyers candle
     // cycle itself stays skipped.
-    if (process.env.RAILWAY_ENVIRONMENT_NAME) void runEodCapture(state);
+    if (isAutonomousServer()) void runEodCapture(state);
     // Same-evening scorecard: grade today's /trade-suggest picks against the
     // recorded candles once, after close. Reads local candles only — no API,
     // no AI, no cost — and never runs during market hours.
-    if (process.env.RAILWAY_ENVIRONMENT_NAME) void runEodScorecard(state);
+    if (isAutonomousServer()) void runEodScorecard(state);
     // Pre-open token warm-up (08:40–09:15 IST ticks): both broker tokens exist
     // BEFORE 09:00 without any page being opened. Fire-and-forget; window/day
     // gating lives inside. Note: a PAUSED poller skips this branch entirely —
@@ -266,7 +278,7 @@ export async function runFyersCycle(
     // serialize each Dhan endpoint process-wide. The full
     // universe still downloads every cycle (replay benchmark + full-universe
     // scans need it) — nothing is excluded, only reordered.
-    const captureEligible = !opts.dateOverride && attachOi && Boolean(process.env.RAILWAY_ENVIRONMENT_NAME);
+    const captureEligible = !opts.dateOverride && attachOi && isAutonomousServer();
     let candidateSnapshot: CandidateSnapshot | null = null;
     if (captureEligible) {
       try {

@@ -51,3 +51,7 @@ data/project-r.db-shm
 
 # commentary replay-bench run artifacts (regenerable via scripts/replay-commentary.ts)
 data/replay-commentary/
+
+# pulled prod secrets — never commit
+prod.env
+*.env.raw
