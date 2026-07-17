@@ -112,6 +112,14 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     description:
       'A fourth way for a stock to qualify, built for SHORT-COVERING breakouts (price rising while open interest falls — ADANIGREEN 14-Jul was the textbook case: TradeFinder rode it for ₹15.9k while every OI-based rule here rejected it, by design). ON: a stock with NO accumulation evidence (low R-Factor, no OI build, quiet setup) can still be suggested — but ONLY with a confirmed opening-range breakout, BOTH Supertrend AND VWAP agreeing, and at least a 1.5% move from the open in the trade direction. Liquidity, turnover and direction rules still apply. OFF (default): keep it off until the nightly replay benchmark proves it catches these winners without letting fakeouts through across several recorded days — one good day is not proof.',
   },
+  {
+    key: 'AUTO_SHUTDOWN',
+    label: 'Auto power-off (save cost)',
+    category: 'Server',
+    default: false,
+    description:
+      'Master switch for the AWS box powering ITSELF off to save money. OFF (default): the box stays up 24/7 — safest while you are actively testing live, no surprise shutdowns. ON: a scheduler on the box powers it off in the evening (~16:30 IST, well after the 15:12 square-off) and keeps it off all weekend, then AWS wakes it again at 08:15 IST on the next trading day. The shutdown is position-guarded — it will NOT power off while any trade is open/placing, no matter the time — and overnight jobs are safe because the nightly bhavcopy sync backfills on the morning startup. Flip this ON once live testing settles and you want the ~₹1,000/month saving.',
+  },
 ];
 
 /** Numeric runtime settings — same storage table (INTEGER value), rendered as

@@ -25,6 +25,28 @@
 // scheduler is wired, so you rarely need this.
 
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+/**
+ * Locate the aws binary. Prefer an explicit AWS_CLI_PATH, then the known
+ * install locations (which work even when a freshly-opened terminal still has
+ * a stale PATH — a common Windows gotcha right after installing the CLI), then
+ * fall back to `aws` on PATH.
+ */
+function resolveAwsBin() {
+  if (process.env.AWS_CLI_PATH && existsSync(process.env.AWS_CLI_PATH)) return process.env.AWS_CLI_PATH;
+  const candidates = [];
+  if (process.platform === 'win32') {
+    if (process.env.LOCALAPPDATA)
+      candidates.push(join(process.env.LOCALAPPDATA, 'Programs', 'Amazon', 'AWSCLIV2', 'aws.exe'));
+    candidates.push(join(process.env.ProgramFiles || 'C:\\Program Files', 'Amazon', 'AWSCLIV2', 'aws.exe'));
+  } else {
+    candidates.push('/usr/local/bin/aws', '/usr/bin/aws', '/opt/homebrew/bin/aws');
+  }
+  return candidates.find((c) => existsSync(c)) || 'aws';
+}
+const AWS_BIN = resolveAwsBin();
 
 const REGION = process.env.AWS_REGION || process.env.PROD_BOX_REGION || 'ap-south-1';
 const IP = process.env.PROD_BOX_IP || '3.108.33.64';
@@ -43,7 +65,7 @@ function die(msg) {
 /** Run the aws CLI and return trimmed stdout. Throws with a readable message. */
 function aws(args) {
   try {
-    return execFileSync('aws', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    return execFileSync(AWS_BIN, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   } catch (err) {
     const stderr = (err.stderr || '').toString().trim();
     if (err.code === 'ENOENT') {
