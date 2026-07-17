@@ -40,6 +40,31 @@ export async function commentaryTimeContext(nowIST?: string | null): Promise<str
 }
 
 /**
+ * TODAY's real scanner window, taken from the scan result (engine.ts resolves
+ * WINDOW_START_MIN/WINDOW_END_MIN from /config on every run, so this is already
+ * the operator's live setting).
+ *
+ * WHY this exists: the battle-tested system prompt names the DEFAULT window
+ * ("09:40–11:00") as literal prose, and the model quotes those numbers back
+ * instead of reading window.closesAt from the JSON — on 2026-07-17 the operator
+ * had widened the window to 12:15 and the read still announced "Entry window
+ * closed at 11:00", going silent on entries the code would still have allowed.
+ * Same override pattern as commentaryTimeContext / EXECUTION TRUTH:
+ * deterministic fact in the USER turn, system prompt stays byte-identical.
+ * Null when a scan carries no window (behaviour then is exactly as before).
+ */
+export function commentaryWindowContext(window: SuggestResponse['window'] | null | undefined): string | null {
+  if (!window?.opensAt || !window?.closesAt) return null;
+  return (
+    'WINDOW CONTEXT (deterministic, from code — overrides EVERY window time named in your instructions): ' +
+    `today's scanner window is ${window.opensAt}–${window.closesAt} and it is ${window.active ? 'ACTIVE' : 'CLOSED'} right now. ` +
+    'The 09:40–11:00 in your instructions is only the default example — never quote it, and never announce the ' +
+    `window closed at any time other than ${window.closesAt}. While the window is ACTIVE a setup meeting the full ` +
+    'bar is tradeable; the TIME CONTEXT line, when present, is the ONLY thing that stops fresh entries.'
+  );
+}
+
+/**
  * The BATTLE-TESTED page contract — output format + hard rules, benched via
  * scripts/dry-run-commentary.ts and lived through real trading days. Exported
  * so the auto-trader's merged reads (lib/auto-trade/decision/system-prompt.ts)
@@ -256,6 +281,9 @@ export async function generateCommentary(
   }));
   // Afternoon exit-focus: a code-decided instruction line, not prompt-vibes.
   const timeContext = await commentaryTimeContext(result.window?.nowIST ?? null);
+  // Today's REAL window (the operator's /config values), so the read stops
+  // quoting the default 09:40–11:00 written in the system prompt.
+  const windowContext = commentaryWindowContext(result.window);
   const resp = await client.chat.completions.create(
     {
       model,
@@ -266,6 +294,7 @@ export async function generateCommentary(
           role: 'user',
           content:
             (executionTruth ? `${executionTruth}\n\n` : '') +
+            (windowContext ? `${windowContext}\n\n` : '') +
             (timeContext ? `${timeContext}\n\n` : '') +
             (recent.length ? 'Latest scan — continue the running commentary:\n' : 'First scan of the day:\n') +
             JSON.stringify(trimForPrompt(result)),
