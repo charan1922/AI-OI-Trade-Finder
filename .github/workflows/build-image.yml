@@ -2,11 +2,10 @@
 # GitHub Container Registry (ghcr.io). The AWS box then only PULLS this image —
 # it never builds (so a tiny 2 GB box is enough).
 #
-# CI/CD model (matches the deploy flow: develop → main → prod):
-#   • push to `prod` → tag `:latest`  — the DEPLOY image the box auto-pulls.
-#   • push to `main` → tag `:main`    — an integration image; the box ignores it.
-# So a merge/push to prod is the single deploy signal; main stays testable
-# without touching production.
+# CI/CD model: ONLY a push to `prod` builds/deploys.
+#   • push to `prod` → tag `:latest` — the DEPLOY image the box auto-pulls.
+#   • push to `main` → NOTHING (main is for integration; it never deploys).
+# So merging to prod is the single deploy signal; main stays quiet.
 #
 # No secrets to configure: the built-in GITHUB_TOKEN can push to ghcr.io.
 # The image carries NO secrets or DB (see .dockerignore) — those are supplied
@@ -15,7 +14,7 @@ name: build-image
 
 on:
   push:
-    branches: [main, prod]
+    branches: [prod]
   workflow_dispatch: {} # lets you trigger a build by hand from the Actions tab
 
 jobs:
@@ -34,21 +33,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # prod → :latest (deploy) · main → :main (integration). One tag per push,
-      # decided by the branch, so the box's :latest only ever moves on a prod push.
-      - name: Choose image tag from branch
-        id: tag
-        run: |
-          if [ "${{ github.ref_name }}" = "prod" ]; then
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=main" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           # Image name must be lowercase for ghcr — the repo owner + a fixed name.
-          tags: ghcr.io/${{ github.repository_owner }}/project-r-simulator:${{ steps.tag.outputs.tag }}
+          tags: ghcr.io/${{ github.repository_owner }}/project-r-simulator:latest
