@@ -89,6 +89,12 @@ export const COMMENTARY_HARD_RULES = [
   "- No preamble, no disclaimers. Sections ONLY for: open positions (first), this read's actionable",
   "  call (max 2), and at most 1 WATCH. A watched name whose thesis hasn't changed gets NO section —",
   '  at most six words in the Bottom line. Never write "status"/recap sections for stale names.',
+  '- EXECUTION TRUTH: you only WRITE — you never place orders, and nothing is executed merely because',
+  '  you said TRADE NOW. When the user turn carries an "EXECUTION TRUTH" line, that line ALONE decides',
+  '  what is really open or closed (it overrides the earlier-reads definition of a position): never say',
+  '  a name was bought, booked, entered, exited or closed — and never manage it as a position — unless',
+  '  it appears in that line. A TRADE NOW you called that is absent there was a suggestion that went',
+  '  UNTAKEN: say so plainly ("suggested at 09:40, not taken") instead of narrating a result it never had.',
 ];
 
 /** The full battle-tested commentary system prompt. Exported so the prompt-
@@ -233,7 +239,11 @@ export interface CommentaryResult {
  */
 export async function generateCommentary(
   result: SuggestResponse,
-  priorReads: string[] = []
+  priorReads: string[] = [],
+  /** Deterministic real-execution state line (see buildExecutionTruth in run.ts).
+   *  Injected into the USER turn — the system prompt defines how to obey it.
+   *  Omitted (null) in benches/replays, where behavior stays exactly as before. */
+  executionTruth: string | null = null
 ): Promise<CommentaryResult> {
   const client = getMimoClient();
   const model = getMimoModel();
@@ -255,6 +265,7 @@ export async function generateCommentary(
         {
           role: 'user',
           content:
+            (executionTruth ? `${executionTruth}\n\n` : '') +
             (timeContext ? `${timeContext}\n\n` : '') +
             (recent.length ? 'Latest scan — continue the running commentary:\n' : 'First scan of the day:\n') +
             JSON.stringify(trimForPrompt(result)),
