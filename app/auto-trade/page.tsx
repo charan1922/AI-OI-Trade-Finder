@@ -10,6 +10,7 @@
 import { AlertTriangle, LineChart, Loader2, Play, RefreshCw, ShieldAlert, ShieldCheck, Zap } from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
+import { RichText } from '@/components/rich-text';
 
 interface Settings {
   mode: 'off' | 'paper' | 'approval' | 'live';
@@ -302,7 +303,7 @@ function TradeCard({
             : ` · stop ₹${trade.slPremium} · target ₹${trade.targetPremium}`}
         </span>
       </div>
-      <div className="mt-1.5 text-xs text-foreground/90">{trade.aiReasonEntry}</div>
+      <RichText content={trade.aiReasonEntry} className="mt-1.5 space-y-1 text-xs text-foreground/90" />
       {trade.exitReason && <div className="mt-0.5 text-[11px] text-muted-foreground">exit: {trade.exitReason}</div>}
       {trade.status === 'failed' && trade.shadowPnlRupees != null && (
         <div className="mt-2 rounded border border-dashed border-border bg-muted/40 p-2 text-[11px]">
@@ -718,7 +719,7 @@ export default function AutoTradePage() {
                 </span>
               )}
             </div>
-            <div className="mt-1 text-xs whitespace-pre-wrap text-foreground/90">{d.summary}</div>
+            <RichText content={d.summary} className="mt-1 space-y-1 text-xs text-foreground/90" />
           </div>
         ))}
       </section>
