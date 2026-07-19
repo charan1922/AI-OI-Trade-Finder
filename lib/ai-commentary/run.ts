@@ -83,7 +83,7 @@ export async function runAndStoreCommentary(
   const c = await tstep(
     'commentary: MiMo generate',
     async () => generateCommentary(result, priorReads, await buildExecutionTruth(today)),
-    (r) => r.model
+    (r) => `${r.model} · ${(r.promptTokens ?? 0).toLocaleString('en-IN')}+${(r.completionTokens ?? 0).toLocaleString('en-IN')} tok`
   );
   // Prompt-versioning stamp: record the system prompt used (new row only when
   // the text changed) and remember which version wrote this commentary.

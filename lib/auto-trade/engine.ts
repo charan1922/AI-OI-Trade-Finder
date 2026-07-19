@@ -234,8 +234,9 @@ export async function runAutoTradePass(
           tools: AUTO_TRADE_TOOLS,
           execute: (name, args) => executeAutoTradeTool(rt, name, args),
         }),
-      // Per-call breakdown: WHERE the loop's time went (model vs tools).
-      (r) => `${r.model} · ${r.spans.map((s) => `${s.name} ${(s.ms / 1000).toFixed(1)}s`).join(' · ')}`
+      // Per-call breakdown: WHERE the loop's time went (model vs tools) + cost.
+      (r) =>
+        `${r.model} · ${(r.promptTokens ?? 0).toLocaleString('en-IN')}+${(r.completionTokens ?? 0).toLocaleString('en-IN')} tok · ${r.spans.map((s) => `${s.name} ${(s.ms / 1000).toFixed(1)}s`).join(' · ')}`
     );
     const preloadedReads = new Set(['get_account_state', 'get_open_positions', 'get_scan_picks']);
     const redundantReadTools = result.trace.filter((step) => preloadedReads.has(step.name)).length;

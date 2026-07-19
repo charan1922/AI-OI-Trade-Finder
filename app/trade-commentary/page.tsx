@@ -38,6 +38,8 @@ interface CommentaryRow {
   model: string;
   text: string;
   picks: StoredPick[];
+  promptTokens: number | null;
+  completionTokens: number | null;
   createdAt: string;
 }
 interface CycleStep {
@@ -453,7 +455,15 @@ export default function TradeCommentaryPage() {
                         in window
                       </span>
                     )}
-                    <span className="ml-auto">
+                    {(r.promptTokens != null || r.completionTokens != null) && (
+                      <span
+                        className="ml-auto rounded-full bg-muted/60 px-1.5 py-0.5 text-[9px] font-medium tabular-nums"
+                        title={`AI tokens this cycle: ${(r.promptTokens ?? 0).toLocaleString('en-IN')} prompt + ${(r.completionTokens ?? 0).toLocaleString('en-IN')} completion`}
+                      >
+                        {((r.promptTokens ?? 0) + (r.completionTokens ?? 0)).toLocaleString('en-IN')} tok
+                      </span>
+                    )}
+                    <span className={r.promptTokens != null || r.completionTokens != null ? '' : 'ml-auto'}>
                       {r.picksCount} pick{r.picksCount === 1 ? '' : 's'}
                     </span>
                   </div>
