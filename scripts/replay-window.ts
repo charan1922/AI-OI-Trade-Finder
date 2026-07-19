@@ -99,6 +99,32 @@ const VARIANTS: Variant[] = [
   //     gainers #15→#7). ≥5 is the stricter cut in case ≥1 admits junk over days.
   { ...SHIPPED_VARIANT, name: 'rank-climb catch >=1', rankClimbCatch: true, rankClimbMinSpots: 1 },
   { ...SHIPPED_VARIANT, name: 'rank-climb catch >=5', rankClimbCatch: true, rankClimbMinSpots: 5 },
+  //     Refinements from the first live loser on this path (AXISBANK 17-Jul,
+  //     −₹1,344: admitted at NSE +2.1% on an OI-board drift 41→35 while
+  //     SLIPPING on gainers 18→19; the 16-Jul winner ADANIENSOL led with PRICE,
+  //     gainers #15→#7). gainers-only = the climb must be on the price board;
+  //     arrive<=15 = the climb must END near the top, not mid-pack. Both keep
+  //     ADANIENSOL and reject AXISBANK — but that's fitted to N=2, which is
+  //     exactly why they sit in the grid instead of the engine.
+  {
+    ...SHIPPED_VARIANT,
+    name: 'rank-climb gainers-only',
+    rankClimbCatch: true,
+    rankClimbGainersOnly: true,
+  },
+  {
+    ...SHIPPED_VARIANT,
+    name: 'rank-climb arrive<=15',
+    rankClimbCatch: true,
+    rankClimbMaxRank: 15,
+  },
+  {
+    ...SHIPPED_VARIANT,
+    name: 'rank-climb gainers<=15',
+    rankClimbCatch: true,
+    rankClimbGainersOnly: true,
+    rankClimbMaxRank: 15,
+  },
   // Candidate feature: require the options-led OI path (NSE combined ≥5%) to be
   // ACTIVELY building — combined-OI slope over the trailing ~30 min (from the
   // per-5-min nseOiPct series) — instead of accepting a stale morning print.
@@ -133,7 +159,7 @@ console.log(
   `Coverage: candidate ranks ${day.coverage.rankSnapshots ? 'point-in-time' : 'MISSING (falls back to recorded end-of-day universe)'}; scan mode ${day.coverage.scanModeRecorded ? 'point-in-time' : 'MISSING (assumes movers-only when ranks exist)'}; options-led fields ${day.coverage.optionsLedFields ? 'point-in-time' : 'MISSING (options-led OI path cannot qualify)'}.`
 );
 console.log(
-  'Daily trade cap: 2. Remaining fidelity gap: option-contract premiums are not recorded, so affordability cannot be replayed. Days with missing coverage are exploratory, not production-fidelity evidence.\n'
+  'Daily trade cap: 2 (the "picks" line). The "all fires" line drops the cap and scores EVERY first-seen qualified fire — the evidence read for comparing admission quality (the cap often fills by 09:40, hiding late fires from every variant). Remaining fidelity gap: option-contract premiums are not recorded, so affordability cannot be replayed. Days with missing coverage are exploratory, not production-fidelity evidence.\n'
 );
 
 for (const v of VARIANTS) {
@@ -147,6 +173,17 @@ for (const v of VARIANTS) {
     );
     // Self-consistent reasons — every number is as-of p.asOfIST, from the tick.
     for (const reason of p.reasons) console.log(`        · ${reason}`);
+  }
+  const all = evaluateDay(day, v, { allFires: true });
+  console.log(
+    `   all fires ${String(all.picks.length).padStart(2)} · target ${all.targets} / SL ${all.stops} / open ${all.picks.length - all.targets - all.stops} · ΣR ${all.totalR >= 0 ? '+' : ''}${all.totalR.toFixed(2)} · ≥1% fav ${all.hits1pct}/${all.picks.length}`
+  );
+  const capped = new Set(r.picks.map(({ p }) => `${p.symbol}:${p.side}`));
+  for (const { p, o } of all.picks) {
+    if (capped.has(`${p.symbol}:${p.side}`)) continue;
+    console.log(
+      `     + ${p.asOfIST} ${p.symbol.padEnd(12)} ${p.side} @${String(p.entry).padStart(8)} SL ${String(p.sl ?? '—').padStart(8)} (${p.slBasis}) → ${o.hit.toUpperCase().padEnd(6)} R ${o.rMultiple >= 0 ? '+' : ''}${o.rMultiple.toFixed(2)} · fav ${o.maxFavPct.toFixed(2)}% adv ${o.maxAdvPct.toFixed(2)}%${p.extended ? ' · EXT' : ''}${p.orBreakout ? ' · ORB' : ''}`
+    );
   }
 }
 console.log(

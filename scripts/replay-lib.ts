@@ -72,6 +72,19 @@ import { buildSpotPlan, computeCompositeScore, type ScoreWeights } from '../lib/
 const db = new Database('./data/project-r.db', { readonly: true });
 const REPLAY_DAILY_TRADE_CAP = 2;
 
+/** Harness modes (NOT strategy knobs — those live on Variant).
+ *  allFires: drop the daily trade cap so EVERY first-seen qualified fire is
+ *  scored, not just the first REPLAY_DAILY_TRADE_CAP. The cap fills early on
+ *  busy mornings (2026-07-17: both slots gone by 09:40), which blinds the grid
+ *  to exactly the admissions under study — late-morning catch-path fires like
+ *  AXISBANK 10:25 never got scored by ANY variant. Capped mode stays the
+ *  production-fidelity read; all-fires is the evidence read for comparing
+ *  variant admission quality. Per-scan MAX_PICKS still applies — a name outside
+ *  a scan's top picks would never be surfaced live either. */
+export interface ReplayOptions {
+  allFires?: boolean;
+}
+
 // ─── Experiment configuration (what the loop is allowed to mutate) ──────────
 export interface Variant {
   name: string;
@@ -120,6 +133,17 @@ export interface Variant {
   rankClimbCatch: boolean;
   rankClimbMinSpots: number;
   rankClimbMinNsePct: number;
+  /** When true, only a climb on the 'gainers' (price) board qualifies — the OI
+   *  board alone doesn't. The 16-Jul winner led with price (ADANIENSOL gainers
+   *  #15→#7) while the 17-Jul live loser (AXISBANK, −₹1,344, admitted at NSE
+   *  +2.1%) climbed only the OI board 41→35 and was SLIPPING on gainers 18→19.
+   *  False in prod (engine.ts takes best of both boards). */
+  rankClimbGainersOnly: boolean;
+  /** When non-null, the climb must also ARRIVE: the latest rank on the
+   *  qualifying board must be ≤ this ("climbing and arriving", not mid-pack
+   *  drift — ADANIENSOL's gainers climb ended at #7; AXISBANK's OI climb ended
+   *  at #35). Null in prod (engine.ts has no rank ceiling). */
+  rankClimbMaxRank: number | null;
   /** When true, drop candidates fighting their sector's turnover-weighted move
    *  (lib/sector/aggregate.ts; flat sectors <0.1% pass). False in prod —
    *  sector alignment is display evidence until this variant earns its place. */
@@ -150,6 +174,8 @@ export const SHIPPED_VARIANT: Variant = {
   rankClimbCatch: USE_RANK_CLIMB_GATE,
   rankClimbMinSpots: RANK_CLIMB_MIN_SPOTS,
   rankClimbMinNsePct: RANK_CLIMB_MIN_NSE_OI_PCT,
+  rankClimbGainersOnly: false,
+  rankClimbMaxRank: null,
   requireSectorAlign: false,
 };
 
@@ -479,7 +505,8 @@ export interface ReplayPick {
 
 export function replayVariant(
   day: DayData,
-  variant: Variant
+  variant: Variant,
+  opts?: ReplayOptions
 ): { picks: ReplayPick[]; gateCounts: Record<string, number> } {
   const firstSeen = new Map<string, ReplayPick>();
   const gateCounts: Record<string, number> = {};
@@ -487,14 +514,31 @@ export function replayVariant(
     gateCounts[k] = (gateCounts[k] ?? 0) + 1;
   };
   /** Best ~30-min leaderboard climb across the gainers/OI boards as of a tick
-   *  (positive = climbing; null = no supportable read on either board). */
-  const bestRankClimbOf = (symbol: string, asOf: number): number | null => {
+   *  (positive = climbing; null = no supportable read on either board). Only
+   *  those two feeds count — the live engine's CLIMB_FEEDS (rank-tracker.ts);
+   *  rank_snapshots also holds 'active-value' rows the gate never reads.
+   *  `opts` narrows which climbs QUALIFY (the catch-gate refinements under
+   *  evaluation); omit for the plain evidence read. */
+  const bestRankClimbOf = (
+    symbol: string,
+    asOf: number,
+    opts?: { gainersOnly?: boolean; maxRank?: number | null }
+  ): number | null => {
     const feeds = day.rankHistoryBySymbol?.get(symbol);
     if (!feeds) return null;
     let best: number | null = null;
-    for (const series of feeds.values()) {
+    for (const [feed, series] of feeds) {
+      if (feed !== 'gainers' && feed !== 'oi') continue;
+      if (opts?.gainersOnly && feed !== 'gainers') continue;
       const climb = rankClimb(series, asOf);
-      if (climb != null && (best == null || climb > best)) best = climb;
+      if (climb == null) continue;
+      if (opts?.maxRank != null) {
+        // rankClimb returned non-null, so the series has a fresh point ≤ asOf —
+        // its rank is the destination the climb was measured to.
+        const pts = series.filter((p) => p.bucketTs <= asOf);
+        if (pts[pts.length - 1].rank > opts.maxRank) continue;
+      }
+      if (best == null || climb > best) best = climb;
     }
     return best;
   };
@@ -692,7 +736,10 @@ export function replayVariant(
         nseOiPct < variant.minNseOiPct &&
         nseOptionsLegsOk
       ) {
-        const climb = bestRankClimbOf(s, tick);
+        const climb = bestRankClimbOf(s, tick, {
+          gainersOnly: variant.rankClimbGainersOnly,
+          maxRank: variant.rankClimbMaxRank,
+        });
         if (climb != null && climb >= variant.rankClimbMinSpots) {
           bump('climbAdmitted');
           nseOiOk = true;
@@ -814,7 +861,7 @@ export function replayVariant(
         })
       : survivors;
     for (const sv of eligible.slice(0, MAX_PICKS)) {
-      if (firstSeen.size >= REPLAY_DAILY_TRADE_CAP) break;
+      if (!opts?.allFires && firstSeen.size >= REPLAY_DAILY_TRADE_CAP) break;
       const side: 'CE' | 'PE' = sv.direction === 'bullish' ? 'CE' : 'PE';
       const key = `${sv.row.symbol}:${side}`;
       if (firstSeen.has(key)) continue;
@@ -975,8 +1022,8 @@ export interface DayResult {
   stops: number;
   hits1pct: number;
 }
-export function evaluateDay(day: DayData, variant: Variant): DayResult {
-  const { picks } = replayVariant(day, variant);
+export function evaluateDay(day: DayData, variant: Variant, opts?: ReplayOptions): DayResult {
+  const { picks } = replayVariant(day, variant, opts);
   const outs = picks
     .map((p) => ({ p, o: scorePick(day, p) }))
     .filter((x): x is { p: ReplayPick; o: Outcome } => x.o !== null);
