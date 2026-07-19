@@ -23,14 +23,22 @@
 // to power off mid-trade). Only run box:stop when you know you're flat, or pass
 // --force to acknowledge.
 //
+// MANUAL OVERRIDES THE SCHEDULE: `box:start` drops an auto-stop HOLD on the box
+// so it stays up until you run `box:stop` (which clears the hold) — a hand start
+// is never powered off from under you. This needs SSH to the box (key at
+// ~/.ssh/projectr-throwaway.pem, or PROD_BOX_SSH_KEY); if SSH is unavailable the
+// power action still succeeds and the box's own 45-min post-start grace covers
+// the gap. EventBridge's 08:15 start hits the AWS API directly, not this script,
+// so scheduled mornings still auto-stop for cost saving.
+//
 // Automatic power on/off also exists (see docs/aws-deployment/07): EventBridge
 // starts the box 08:15 IST on weekdays, and /opt/projectr/autostop.sh stops it
 // after 16:30 / at weekends — but ONLY while the AUTO_SHUTDOWN toggle (/config)
-// is ON and no trade is open. That toggle is OFF by default, so until it is
-// flipped these scripts are the only thing that changes the box's power state.
+// is ON, no trade is open, no hold is set, and the box is past its start grace.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /**
@@ -58,6 +66,55 @@ const IP = process.env.PROD_BOX_IP || '3.108.33.64';
 const HEALTH_URL = process.env.PROD_BOX_URL || 'https://charan-projectr.duckdns.org/login';
 const cmd = (process.argv[2] || '').toLowerCase();
 const FORCE = process.argv.includes('--force');
+
+// SSH into the box to manage the auto-stop HOLD file (see below). Optional: if
+// the key is missing or SSH fails, power control still works — the hold is a
+// best-effort override on top of the 45-min post-start grace.
+const SSH_USER = process.env.PROD_BOX_SSH_USER || 'ubuntu';
+const SSH_KEY = process.env.PROD_BOX_SSH_KEY || join(homedir(), '.ssh', 'projectr-throwaway.pem');
+const HOLD_PATH = '/opt/projectr/autostop.hold';
+
+/**
+ * Manual box:start/stop must OVERRIDE the automatic on/off schedule: a
+ * deliberate start keeps the box up until the operator stops it (not just the
+ * 45-min grace), and a deliberate stop clears that override so the normal
+ * schedule resumes next time. This is done via the box's autostop.hold file
+ * (autostop.sh skips while it exists). EventBridge's 08:15 start calls the AWS
+ * API directly, NOT this script, so it never sets a hold — cost-saving
+ * auto-stop still works on scheduled mornings.
+ *
+ * `set`   → create an indefinite hold (manual start).
+ * `clear` → remove it (manual stop).
+ * Best-effort: a failure is warned, never fatal (power control already ran).
+ */
+function manageHold(action) {
+  if (!existsSync(SSH_KEY)) {
+    log(`note: SSH key ${SSH_KEY} not found — skipping auto-stop ${action} (set PROD_BOX_SSH_KEY to enable).`);
+    return;
+  }
+  const remote =
+    action === 'set'
+      ? `sudo touch ${HOLD_PATH} && echo held`
+      : `sudo rm -f ${HOLD_PATH} && echo cleared`;
+  try {
+    execFileSync(
+      'ssh',
+      [
+        '-i', SSH_KEY,
+        '-o', 'BatchMode=yes',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', 'ConnectTimeout=20',
+        `${SSH_USER}@${IP}`,
+        remote,
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    log(action === 'set' ? 'auto-stop HOLD set — box stays up until `pnpm box:stop`.' : 'auto-stop hold cleared — normal schedule resumes.');
+  } catch (err) {
+    const stderr = (err.stderr || '').toString().trim() || err.message;
+    log(`warn: could not ${action} auto-stop hold over SSH (${stderr}). 45-min post-start grace still applies.`);
+  }
+}
 
 function log(msg) {
   process.stdout.write(`[box] ${msg}\n`);
@@ -145,22 +202,34 @@ async function main() {
 
   if (cmd === 'start') {
     const state = powerState(id);
-    if (state === 'running') return log(`already running (${id}). app: ${await appHealth()}`);
+    if (state === 'running') {
+      log(`already running (${id}). app: ${await appHealth()}`);
+      manageHold('set'); // ensure a manual start always holds, even if it was already up
+      return;
+    }
     log(`starting ${id} …`);
     aws(['ec2', 'start-instances', '--region', REGION, '--instance-ids', id]);
     aws(['ec2', 'wait', 'instance-running', '--region', REGION, '--instance-ids', id]);
     log(`started. instance is running — app boots in ~30s. Check: pnpm box:status`);
+    // Give sshd a moment after instance-running before the hold call.
+    await new Promise((r) => setTimeout(r, 15_000));
+    manageHold('set');
     return;
   }
 
   // stop
   const state = powerState(id);
-  if (state === 'stopped') return log(`already stopped (${id}).`);
+  if (state === 'stopped') {
+    manageHold('clear'); // no-op if unreachable; keeps the schedule clean
+    return log(`already stopped (${id}).`);
+  }
   if (!FORCE) {
     log(`⚠ ${id} is ${state}. box:stop does NOT check for an OPEN position.`);
     log('  Make sure you are flat (check /auto-trade), then re-run: pnpm box:stop --force');
     process.exit(2);
   }
+  // Clear the hold BEFORE powering off (SSH needs the box up).
+  manageHold('clear');
   log(`stopping ${id} …`);
   aws(['ec2', 'stop-instances', '--region', REGION, '--instance-ids', id]);
   log('stop requested. It powers down in ~30-60s. Autonomous jobs will not run until restarted.');
