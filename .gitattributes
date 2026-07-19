@@ -1,1 +1,8 @@
 data/project-r.db filter=lfs diff=lfs merge=lfs -text
+
+# Host-level box scripts are scp'd to the Linux box verbatim. With
+# core.autocrlf=true (the default here on Windows) a fresh checkout would write
+# CRLF, and `#!/usr/bin/env bash\r` fails on the box with "bad interpreter".
+# Pin them to LF regardless of the local autocrlf setting.
+*.sh text eol=lf
+deploy/box/* text eol=lf
