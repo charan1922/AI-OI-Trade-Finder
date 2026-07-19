@@ -9,6 +9,7 @@
  */
 import { todayIST } from '@/lib/dhan/market-feed';
 import { hasMimo } from '@/lib/env';
+import type { CycleTimelineRecorder } from '@/lib/ops/cycle-timeline';
 import { recordPromptVersion } from '@/lib/prompts/store';
 import { isTelegramConfigured, sendCommentaryToTelegram } from '@/lib/telegram';
 import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
@@ -58,7 +59,14 @@ export async function buildExecutionTruth(date: string): Promise<string | null> 
   }
 }
 
-export async function runAndStoreCommentary(result: SuggestResponse): Promise<RunCommentaryOutcome> {
+export async function runAndStoreCommentary(
+  result: SuggestResponse,
+  timeline?: CycleTimelineRecorder
+): Promise<RunCommentaryOutcome> {
+  // Timing wrapper — no-op passthrough when no cycle recorder was provided
+  // (the manual "Generate now" route), so behavior is identical either way.
+  const tstep = <T>(name: string, fn: () => Promise<T>, detail?: (r: T) => string | undefined): Promise<T> =>
+    timeline ? timeline.step(name, fn, detail) : fn();
   if (!hasMimo()) return { generated: false, reason: 'MiMo not configured' };
   if ((result.scanned ?? 0) <= 0)
     return {
@@ -69,26 +77,33 @@ export async function runAndStoreCommentary(result: SuggestResponse): Promise<Ru
   // Carry forward TODAY's earlier reads so this is the next turn of a running
   // conversation (oldest first). New day → empty → a fresh conversation.
   const today = todayIST();
-  const priorToday = await getCommentary({ date: today, limit: 30 });
+  const priorToday = await tstep('commentary: load prior reads', () => getCommentary({ date: today, limit: 30 }));
   const priorReads = priorToday.map((r) => r.text).reverse(); // store returns newest-first
 
-  const c = await generateCommentary(result, priorReads, await buildExecutionTruth(today));
+  const c = await tstep(
+    'commentary: MiMo generate',
+    async () => generateCommentary(result, priorReads, await buildExecutionTruth(today)),
+    (r) => r.model
+  );
   // Prompt-versioning stamp: record the system prompt used (new row only when
   // the text changed) and remember which version wrote this commentary.
   const promptVersion = await recordPromptVersion('trade-commentary', COMMENTARY_SYSTEM);
-  await insertCommentary({
-    date: today,
-    asOf: result.window?.nowIST ? `${today} ${result.window.nowIST}` : new Date().toISOString(),
-    windowActive: Boolean(result.window?.active),
-    picksCount: result.suggestions?.length ?? 0,
-    model: c.model,
-    text: c.text,
-    picks: buildPicks(result),
-    promptTokens: c.promptTokens,
-    completionTokens: c.completionTokens,
-    promptKey: 'trade-commentary',
-    promptVersion,
-  });
+  const commentaryId = await tstep('commentary: store', () =>
+    insertCommentary({
+      date: today,
+      asOf: result.window?.nowIST ? `${today} ${result.window.nowIST}` : new Date().toISOString(),
+      windowActive: Boolean(result.window?.active),
+      picksCount: result.suggestions?.length ?? 0,
+      model: c.model,
+      text: c.text,
+      picks: buildPicks(result),
+      promptTokens: c.promptTokens,
+      completionTokens: c.completionTokens,
+      promptKey: 'trade-commentary',
+      promptVersion,
+    })
+  );
+  timeline?.setCommentaryId(commentaryId);
   // Push the commentary to Telegram so the operator gets it in real-time —
   // rendered as Telegram-native HTML (headings→bold etc., see
   // lib/telegram/commentary.ts) so the phone reads as cleanly as the
@@ -96,13 +111,16 @@ export async function runAndStoreCommentary(result: SuggestResponse): Promise<Ru
   // (actionable TRADE NOW / EXIT NOW reads always go through).
   if (isTelegramConfigured() && c.text) {
     const previousText = priorToday[0]?.text ?? null;
+    const tgT0 = Date.now();
     try {
       const settings = await getAutoTradeSettings();
       if (settings.telegramAlerts) {
         await sendCommentaryToTelegram(c.text, previousText);
       }
+      timeline?.addSpan('commentary: telegram', tgT0, Date.now(), true);
     } catch (err) {
       // Settings are an operator control. A lookup failure must not bypass it.
+      timeline?.addSpan('commentary: telegram', tgT0, Date.now(), false, (err as Error).message);
       console.warn(`[Commentary] Telegram settings/delivery failed: ${(err as Error).message}`);
     }
   }

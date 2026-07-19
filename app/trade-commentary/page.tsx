@@ -40,11 +40,31 @@ interface CommentaryRow {
   picks: StoredPick[];
   createdAt: string;
 }
+interface CycleStep {
+  name: string;
+  startedAt: string;
+  endedAt: string;
+  ms: number;
+  ok: boolean;
+  detail?: string;
+}
+interface CycleTimeline {
+  id: number;
+  date: string;
+  trigger: string;
+  status: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  totalMs: number | null;
+  commentaryId: number | null;
+  steps: CycleStep[];
+}
 interface ApiResponse {
   success: boolean;
   configured?: boolean;
   model?: string;
   rows?: CommentaryRow[];
+  timelines?: CycleTimeline[];
   error?: string;
 }
 
@@ -56,6 +76,87 @@ function fmtTime(s: string): string {
   return Number.isNaN(d.getTime())
     ? s
     : d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+}
+
+/** HH:MM:SS IST — step-level precision for the cycle timeline. */
+function fmtClock(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Kolkata', hour12: false });
+}
+
+function fmtMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+}
+
+// ── Cycle timing (⏱): when each step of the 5-min pass started/ended, how long
+// it took, and which one was slow. Expandable so the read stays the hero.
+function TimelineBlock({ t, standalone = false }: { t: CycleTimeline; standalone?: boolean }) {
+  const steps = t.steps ?? [];
+  const slowest = steps.reduce<CycleStep | null>((a, s) => (a == null || s.ms > a.ms ? s : a), null);
+  const failed = steps.filter((s) => !s.ok).length;
+  const total = t.totalMs ?? steps.reduce((a, s) => a + s.ms, 0);
+  const maxMs = Math.max(1, ...steps.map((s) => s.ms));
+  const statusBad = t.status != null && t.status !== 'completed';
+  return (
+    <details className={standalone ? '' : 'mt-1.5 border-t border-border/40 pt-1.5'}>
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground [&::-webkit-details-marker]:hidden">
+        <span className="font-semibold">⏱ cycle {fmtMs(total)}</span>
+        <span>
+          {fmtClock(t.startedAt)}
+          {t.finishedAt ? ` → ${fmtClock(t.finishedAt)}` : ''} IST
+        </span>
+        {statusBad && (
+          <span className="rounded-full bg-red-100 px-1.5 py-0.5 text-[9px] font-medium text-red-700 dark:bg-red-500/10 dark:text-red-400">
+            {t.status}
+          </span>
+        )}
+        {failed > 0 && (
+          <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+            {failed} step{failed === 1 ? '' : 's'} failed
+          </span>
+        )}
+        {slowest && steps.length > 0 && (
+          <span className="ml-auto">
+            slowest: {slowest.name} {fmtMs(slowest.ms)}
+          </span>
+        )}
+      </summary>
+      {steps.length === 0 ? (
+        <div className="mt-1 text-[10px] text-muted-foreground">No steps recorded{t.status ? ` (${t.status})` : ''}.</div>
+      ) : (
+        <div className="mt-1.5 space-y-0.5">
+          {steps.map((s, i) => (
+            <div key={`${s.name}-${i}`} className="flex items-baseline gap-2 text-[10px]">
+              <span className="w-14 shrink-0 font-mono tabular-nums text-muted-foreground/70">{fmtClock(s.startedAt)}</span>
+              <span
+                className={`min-w-0 flex-1 truncate ${!s.ok ? 'font-semibold text-red-600 dark:text-red-400' : s === slowest ? 'font-semibold text-amber-700 dark:text-amber-400' : 'text-foreground/90'}`}
+                title={s.detail ? `${s.name} — ${s.detail}` : s.name}
+              >
+                {s.name}
+                {s.detail && <span className="ml-1.5 font-normal text-muted-foreground/80">{s.detail}</span>}
+              </span>
+              {/* proportional bar — makes the slow step visible at a glance */}
+              <span className="hidden h-1 w-16 shrink-0 overflow-hidden rounded bg-muted/60 sm:block">
+                <span
+                  className={`block h-full rounded ${!s.ok ? 'bg-red-500/70' : s === slowest ? 'bg-amber-500/70' : 'bg-primary/50'}`}
+                  style={{ width: `${Math.max(2, Math.round((s.ms / maxMs) * 100))}%` }}
+                />
+              </span>
+              <span
+                className={`w-12 shrink-0 text-right font-mono tabular-nums ${!s.ok ? 'text-red-600 dark:text-red-400' : s === slowest ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}
+              >
+                {fmtMs(s.ms)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </details>
+  );
 }
 
 // ── The app's pill (matches /trade-suggest), compact ─────────────────────────
@@ -232,6 +333,23 @@ export default function TradeCommentaryPage() {
   // Newest first (latest on top). API already returns newest-first; add subtle
   // day dividers when the date changes.
   const rows = data?.rows ?? [];
+  const timelines = data?.timelines ?? [];
+  const rowIds = new Set(rows.map((r) => r.id));
+  // Pair each read with the cycle that produced it (timeline.commentaryId).
+  const timelineByCommentary = new Map<number, CycleTimeline>();
+  for (const t of timelines) {
+    if (t.commentaryId != null && rowIds.has(t.commentaryId)) timelineByCommentary.set(t.commentaryId, t);
+  }
+  // Cycles that stored no read (guard-only, AI failed, overlap skips) show as
+  // their own slim entries — anomalies must be visible, not silently absent.
+  const standalone = timelines.filter((t) => t.commentaryId == null || !rowIds.has(t.commentaryId));
+  type StreamItem =
+    | { at: string; date: string; kind: 'read'; row: CommentaryRow }
+    | { at: string; date: string; kind: 'cycle'; timeline: CycleTimeline };
+  const items: StreamItem[] = [
+    ...rows.map((row) => ({ at: row.createdAt, date: row.date, kind: 'read' as const, row })),
+    ...standalone.map((timeline) => ({ at: timeline.startedAt, date: timeline.date, kind: 'cycle' as const, timeline })),
+  ].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
 
   return (
     <div className="mx-auto max-w-5xl space-y-4">
@@ -287,19 +405,38 @@ export default function TradeCommentaryPage() {
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Loading…
         </div>
-      ) : rows.length === 0 ? (
+      ) : items.length === 0 ? (
         <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
           No commentary yet. It generates automatically during market hours, or hit “Generate now”.
         </div>
       ) : (
         <div className="space-y-3">
-          {rows.map((r, idx) => {
-            const showDay = idx === 0 || rows[idx - 1].date !== r.date;
+          {items.map((item, idx) => {
+            const showDay = idx === 0 || items[idx - 1].date !== item.date;
+            if (item.kind === 'cycle') {
+              // A 5-min cycle that produced no read — slim, but expandable so
+              // the operator can see exactly what it did and where time went.
+              const t = item.timeline;
+              return (
+                <Fragment key={`cycle-${t.id}`}>
+                  {showDay && (
+                    <div className="sticky top-0 z-10 -mx-1 bg-background/85 px-1 py-1 text-xs font-semibold text-muted-foreground backdrop-blur">
+                      {item.date}
+                    </div>
+                  )}
+                  <div className="rounded-lg border border-dashed border-border/60 bg-muted/10 px-2.5 py-1.5">
+                    <TimelineBlock t={t} standalone />
+                  </div>
+                </Fragment>
+              );
+            }
+            const r = item.row;
+            const cycleTimeline = timelineByCommentary.get(r.id);
             const picks = r.picks ?? [];
             const split = splitByStock(r.text, picks.map((p) => p.symbol));
             const structured = Object.keys(split.perStock).length > 0;
             return (
-              <Fragment key={r.id}>
+              <Fragment key={`read-${r.id}`}>
                 {showDay && (
                   <div className="sticky top-0 z-10 -mx-1 bg-background/85 px-1 py-1 text-xs font-semibold text-muted-foreground backdrop-blur">
                     {r.date}
@@ -364,6 +501,7 @@ export default function TradeCommentaryPage() {
                       </div>
                     </>
                   )}
+                  {cycleTimeline && <TimelineBlock t={cycleTimeline} />}
                 </div>
               </Fragment>
             );

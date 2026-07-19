@@ -26,12 +26,20 @@ export interface ToolLoopRequest {
   execute: (name: string, args: Record<string, unknown>) => Promise<{ result: unknown; trace: ToolTraceEntry }>;
 }
 
+/** One timed sub-action of the loop (a model call or a tool execution) — the
+ *  cycle timeline renders these so a slow pass shows WHERE the time went. */
+export interface LoopSpan {
+  name: string;
+  ms: number;
+}
+
 export interface ToolLoopResult {
   text: string;
   model: string;
   trace: ToolTraceEntry[];
   promptTokens: number | null;
   completionTokens: number | null;
+  spans: LoopSpan[];
 }
 
 function parseArgs(raw: string | null | undefined): Record<string, unknown> {
@@ -65,11 +73,13 @@ async function runAzureLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<
     parameters: t.parameters,
   }));
   const trace: ToolTraceEntry[] = [];
+  const spans: LoopSpan[] = [];
   const input: OpenAI.Responses.ResponseInputItem[] = [{ role: 'user', content: req.user }];
   let promptTokens = 0;
   let completionTokens = 0;
 
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
+    const modelT0 = Date.now();
     const res = await client.responses.create(
       {
         model,
@@ -80,6 +90,7 @@ async function runAzureLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<
       },
       { signal },
     );
+    spans.push({ name: `model call #${step + 1}`, ms: Date.now() - modelT0 });
     promptTokens += res.usage?.input_tokens ?? 0;
     completionTokens += res.usage?.output_tokens ?? 0;
 
@@ -87,18 +98,22 @@ async function runAzureLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<
       (o): o is OpenAI.Responses.ResponseFunctionToolCall => o.type === 'function_call',
     );
     if (calls.length === 0) {
-      return { text: res.output_text || '(no summary produced)', model, trace, promptTokens, completionTokens };
+      return { text: res.output_text || '(no summary produced)', model, trace, promptTokens, completionTokens, spans };
     }
     // Echo the full output back (reasoning items must accompany their calls).
     input.push(...(res.output as OpenAI.Responses.ResponseInputItem[]));
     for (const call of calls) {
+      const toolT0 = Date.now();
       const { result, trace: t } = await req.execute(call.name, parseArgs(call.arguments));
+      t.ms = Date.now() - toolT0;
+      spans.push({ name: `tool ${call.name}`, ms: t.ms });
       trace.push(t);
       input.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(result) });
     }
   }
 
   // Step cap hit — force a final text summary with tools disabled.
+  const finalT0 = Date.now();
   const final = await client.responses.create(
     {
       model,
@@ -109,9 +124,10 @@ async function runAzureLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<
     },
     { signal },
   );
+  spans.push({ name: 'model call (forced final)', ms: Date.now() - finalT0 });
   promptTokens += final.usage?.input_tokens ?? 0;
   completionTokens += final.usage?.output_tokens ?? 0;
-  return { text: final.output_text || '(no summary produced)', model, trace, promptTokens, completionTokens };
+  return { text: final.output_text || '(no summary produced)', model, trace, promptTokens, completionTokens, spans };
 }
 
 // ─── MiMo (chat.completions + tools) ─────────────────────────────────────────
@@ -124,6 +140,7 @@ async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<T
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }));
   const trace: ToolTraceEntry[] = [];
+  const spans: LoopSpan[] = [];
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: req.system },
     { role: 'user', content: req.user },
@@ -132,6 +149,7 @@ async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<T
   let completionTokens = 0;
 
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
+    const modelT0 = Date.now();
     const res = await client.chat.completions.create(
       {
         model,
@@ -145,6 +163,7 @@ async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<T
       },
       { timeout: 90_000, signal },
     );
+    spans.push({ name: `model call #${step + 1}`, ms: Date.now() - modelT0 });
     promptTokens += res.usage?.prompt_tokens ?? 0;
     completionTokens += res.usage?.completion_tokens ?? 0;
     const msg = res.choices?.[0]?.message;
@@ -154,26 +173,31 @@ async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<T
     if (calls.length === 0) {
       const text = (msg.content ?? '').trim();
       if (!text) throw new Error('MiMo returned empty content (reasoning may have consumed the token budget).');
-      return { text, model, trace, promptTokens, completionTokens };
+      return { text, model, trace, promptTokens, completionTokens, spans };
     }
     messages.push({ role: 'assistant', content: msg.content ?? '', tool_calls: calls });
     for (const call of calls) {
       if (call.type !== 'function') continue;
+      const toolT0 = Date.now();
       const { result, trace: t } = await req.execute(call.function.name, parseArgs(call.function.arguments));
+      t.ms = Date.now() - toolT0;
+      spans.push({ name: `tool ${call.function.name}`, ms: t.ms });
       trace.push(t);
       messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
     }
   }
 
   // Step cap hit — one final call with tools removed to force a summary.
+  const finalT0 = Date.now();
   const final = await client.chat.completions.create(
     { model, messages, temperature: 0.2, max_tokens: 6000 },
     { timeout: 90_000, signal },
   );
+  spans.push({ name: 'model call (forced final)', ms: Date.now() - finalT0 });
   promptTokens += final.usage?.prompt_tokens ?? 0;
   completionTokens += final.usage?.completion_tokens ?? 0;
   const text = (final.choices?.[0]?.message?.content ?? '').trim();
-  return { text: text || '(no summary produced)', model, trace, promptTokens, completionTokens };
+  return { text: text || '(no summary produced)', model, trace, promptTokens, completionTokens, spans };
 }
 
 export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {

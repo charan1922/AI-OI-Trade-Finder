@@ -28,6 +28,7 @@ import { runToolLoop } from './decision/providers';
 import { commentaryTimeContext } from '@/lib/ai-commentary/generate';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
 import { getNumberSetting } from '@/lib/config/feature-toggles';
+import type { CycleTimelineRecorder } from '@/lib/ops/cycle-timeline';
 import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 import { AUTO_TRADER_SYSTEM } from './decision/system-prompt';
 import { runPositionGuard } from './risk/position-guard';
@@ -71,8 +72,17 @@ function providerConfigured(provider: 'azure' | 'mimo'): boolean {
 /**
  * Run one full auto-trade pass. `scan` is this cycle's trade-suggest result
  * (null when no scan ran — management still proceeds). Never throws.
+ * `timeline` (optional, from the poller's capture) records when each phase
+ * started/ended so slow passes show WHERE the time went on /trade-commentary.
  */
-export async function runAutoTradePass(scan: SuggestResponse | null): Promise<AutoTradePassOutcome> {
+export async function runAutoTradePass(
+  scan: SuggestResponse | null,
+  timeline?: CycleTimelineRecorder
+): Promise<AutoTradePassOutcome> {
+  // Timing wrapper — a no-op passthrough when no recorder was provided
+  // (manual "Run pass" route), so behavior is identical either way.
+  const tstep = <T>(name: string, fn: () => Promise<T>, detail?: (r: T) => string | undefined): Promise<T> =>
+    timeline ? timeline.step(name, fn, detail) : fn();
   const settings = await getAutoTradeSettings();
   if (g.__autoTradePassRunning) {
     return {
@@ -102,12 +112,20 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
     }, 30_000);
 
     // 1–2. Reconcile pending fills + position-level truth, expire stale approvals.
-    const reconcileNotes = await reconcileOrdersSafely();
-    const positionNotes = await reconcileOpenPositions({ verifyBroker: true });
-    const expired = await expireStaleApprovals(date, settings.approvalTtlMin);
+    const reconcileNotes = await tstep('reconcile: orders', () => reconcileOrdersSafely(), (n) =>
+      n.length > 0 ? `${n.length} note(s)` : undefined
+    );
+    const positionNotes = await tstep('reconcile: positions', () => reconcileOpenPositions({ verifyBroker: true }), (n) =>
+      n.length > 0 ? `${n.length} note(s)` : undefined
+    );
+    const expired = await tstep('approvals: expire stale', () => expireStaleApprovals(date, settings.approvalTtlMin), (e) =>
+      e.length > 0 ? `${e.length} expired` : undefined
+    );
 
     // 3. Deterministic guard — always, kill switch or not.
-    const guard = await runPositionGuard(date);
+    const guard = await tstep('position guard', () => runPositionGuard(date), (g) =>
+      g.actions.length > 0 ? g.actions.join(' · ') : 'no exits due'
+    );
     const { actions: guardActions } = guard;
     const systemNotes = [
       ...reconcileNotes,
@@ -185,15 +203,17 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
     const now = nowISTClock();
     // Build routine context in parallel before the first model call. Reuse the
     // guard's batched quotes so positions do not issue another Dhan request.
-    const [initialContext, previousRows, timeContext] = await Promise.all([
-      buildInitialDecisionContext(rt, {
-        optionQuotes: guard.optionQuotes,
-        attemptedOptionIds: guard.attemptedOptionIds,
-        spotBySymbol: guard.spotBySymbol,
-      }),
-      getCommentary({ date, limit: 1 }),
-      commentaryTimeContext(now),
-    ]);
+    const [initialContext, previousRows, timeContext] = await tstep('AI: build context', () =>
+      Promise.all([
+        buildInitialDecisionContext(rt, {
+          optionQuotes: guard.optionQuotes,
+          attemptedOptionIds: guard.attemptedOptionIds,
+          spotBySymbol: guard.spotBySymbol,
+        }),
+        getCommentary({ date, limit: 1 }),
+        commentaryTimeContext(now),
+      ])
+    );
     const previousRead = previousRows[0]?.text ?? null;
     const user = JSON.stringify({
       nowIST: now,
@@ -204,13 +224,19 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
       instruction:
         'Use the loaded context immediately. Do not call get_account_state, get_open_positions, or get_scan_picks unless a field is missing or you need a deliberate refresh. Manage positions first, then consider at most one entry, then end with the day-thread read.',
     });
-    const result = await runToolLoop({
-      provider: settings.aiProvider,
-      system: AUTO_TRADER_SYSTEM,
-      user,
-      tools: AUTO_TRADE_TOOLS,
-      execute: (name, args) => executeAutoTradeTool(rt, name, args),
-    });
+    const result = await tstep(
+      'AI: decision loop',
+      () =>
+        runToolLoop({
+          provider: settings.aiProvider,
+          system: AUTO_TRADER_SYSTEM,
+          user,
+          tools: AUTO_TRADE_TOOLS,
+          execute: (name, args) => executeAutoTradeTool(rt, name, args),
+        }),
+      // Per-call breakdown: WHERE the loop's time went (model vs tools).
+      (r) => `${r.model} · ${r.spans.map((s) => `${s.name} ${(s.ms / 1000).toFixed(1)}s`).join(' · ')}`
+    );
     const preloadedReads = new Set(['get_account_state', 'get_open_positions', 'get_scan_picks']);
     const redundantReadTools = result.trace.filter((step) => preloadedReads.has(step.name)).length;
     console.log(`${TAG} latency metric: redundant preloaded read tools=${redundantReadTools}`);
@@ -229,9 +255,10 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
     // `previousRead` (fetched above for the AI thread) doubles as the
     // near-duplicate baseline for the Telegram push below.
     let commentaryStored = false;
+    const commentaryT0 = Date.now();
     try {
       const promptVersion = await recordPromptVersion('auto-trader', AUTO_TRADER_SYSTEM);
-      await insertCommentary({
+      const commentaryId = await insertCommentary({
         date,
         asOf: scan?.window?.nowIST ? `${date} ${scan.window.nowIST}` : new Date().toISOString(),
         windowActive: Boolean(scan?.window?.active),
@@ -244,6 +271,7 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
         promptKey: 'auto-trader',
         promptVersion,
       });
+      timeline?.setCommentaryId(commentaryId);
       commentaryStored = true;
       // Push commentary to Telegram — same rendering + near-duplicate muting
       // as runAndStoreCommentary() (lib/telegram/commentary.ts).
@@ -260,7 +288,7 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
       console.warn(`${TAG} commentary store failed, retrying once: ${(err as Error).message}`);
       try {
         const promptVersion = await recordPromptVersion('auto-trader', AUTO_TRADER_SYSTEM);
-        await insertCommentary({
+        const commentaryId = await insertCommentary({
           date,
           asOf: scan?.window?.nowIST ? `${date} ${scan.window.nowIST}` : new Date().toISOString(),
           windowActive: Boolean(scan?.window?.active),
@@ -273,11 +301,19 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
           promptKey: 'auto-trader',
           promptVersion,
         });
+        timeline?.setCommentaryId(commentaryId);
         commentaryStored = true;
       } catch (retryErr) {
         console.warn(`${TAG} commentary store failed (poller will fall back): ${(retryErr as Error).message}`);
       }
     }
+    timeline?.addSpan(
+      'commentary: store + telegram',
+      commentaryT0,
+      Date.now(),
+      commentaryStored,
+      commentaryStored ? undefined : 'store failed — poller falls back to standalone commentary'
+    );
     console.log(`${TAG} AI pass done: ${result.text.slice(0, 140)}`);
     return {
       ran: true,

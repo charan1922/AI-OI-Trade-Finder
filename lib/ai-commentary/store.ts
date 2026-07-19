@@ -84,12 +84,14 @@ export interface InsertCommentary {
   promptVersion?: number | null;
 }
 
-export async function insertCommentary(row: InsertCommentary): Promise<void> {
+/** Inserts one narration; returns the new row's id (links cycle timelines). */
+export async function insertCommentary(row: InsertCommentary): Promise<number> {
   await ensureCommentaryTable();
-  await prisma.$executeRawUnsafe(
+  const rows = (await prisma.$queryRawUnsafe(
     `INSERT INTO trade_commentary
        (date, asOf, windowActive, picksCount, model, text, picksJson, promptTokens, completionTokens, promptKey, promptVersion, createdAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     RETURNING id`,
     row.date,
     row.asOf,
     row.windowActive ? 1 : 0,
@@ -102,7 +104,8 @@ export async function insertCommentary(row: InsertCommentary): Promise<void> {
     row.promptKey ?? null,
     row.promptVersion ?? null,
     new Date().toISOString(),
-  );
+  )) as { id: number | bigint }[];
+  return Number(rows[0]?.id ?? 0);
 }
 
 interface RawRow {

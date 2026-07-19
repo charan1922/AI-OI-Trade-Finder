@@ -4,6 +4,7 @@ import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getMimoModel } from '@/lib/ai-commentary/client';
 import { runAndStoreCommentary } from '@/lib/ai-commentary/run';
 import { getCommentary, getLatestCommentaryDate } from '@/lib/ai-commentary/store';
+import { getCycleTimelines } from '@/lib/ops/cycle-timeline';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
 
 export const dynamic = 'force-dynamic';
@@ -27,7 +28,10 @@ export async function GET(req: Request) {
     const limitParam = Number(url.searchParams.get('limit'));
     const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 30;
     const rows = await getCommentary({ date, limit });
-    return NextResponse.json({ success: true, configured: hasMimo(), model: getMimoModel(), date, rows });
+    // Per-cycle step timings for the same session — the page pairs each read
+    // with its cycle (timeline.commentaryId) and lists no-read cycles too.
+    const timelines = await getCycleTimelines(date).catch(() => []);
+    return NextResponse.json({ success: true, configured: hasMimo(), model: getMimoModel(), date, rows, timelines });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }

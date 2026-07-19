@@ -31,6 +31,7 @@ import { fetchFutDepth, fetchHistory5m, type FyersBar } from '@/lib/fyers/client
 import { attachFutDepth, fyersBucketFor, pruneCandleHistory, upsertCandles } from '@/lib/fyers/candle-store';
 import { getTrackedUniverse, peekUniverse, resolveFutSymbol, toEqSymbol } from '@/lib/fyers/symbols';
 import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
+import { startCycleTimeline } from '@/lib/ops/cycle-timeline';
 import { pruneRankSnapshots, recordRankSnapshot } from '@/lib/signals/rank-tracker';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import { reviewToday } from '@/lib/trade-suggest/review';
@@ -595,9 +596,20 @@ async function runAutonomousCapture(
       detail: 'previous autonomous capture still running',
     };
     console.warn(`${TAG} capture skipped: previous pass still running (total skips ${state.captureSkips})`);
+    // Persist the skip too — an overlap streak is exactly the anomaly the
+    // /trade-commentary timeline exists to make visible.
+    const skipped = startCycleTimeline(today, 'poller', cycleStart);
+    skipped.setStatus('skipped-overlap');
+    void skipped.finish();
     return;
   }
   state.captureRunning = true;
+  // Per-cycle timing: every step's start/end lands in cycle_timelines and is
+  // shown on /trade-commentary next to the read this cycle produced.
+  const timeline = startCycleTimeline(today, 'poller', cycleStart);
+  if (captureStartedMs > cycleStart) {
+    timeline.addSpan('waiting: priority candle refresh', cycleStart, captureStartedMs, true);
+  }
   const timing: CaptureTiming = {
     cycleStartedAt: new Date(cycleStart).toISOString(),
     captureStartedAt: new Date(captureStartedMs).toISOString(),
@@ -615,9 +627,11 @@ async function runAutonomousCapture(
   try {
     try {
       const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
-      const result = await runTradeSuggest(origin, {
-        candidateSnapshot: candidateSnapshot ?? undefined,
-      });
+      const result = await timeline.step(
+        'scan (trade-suggest)',
+        () => runTradeSuggest(origin, { candidateSnapshot: candidateSnapshot ?? undefined }),
+        (r) => `${r.scanned ?? 0} scanned · ${r.suggestions?.length ?? 0} pick(s)`
+      );
       const scanReadyMs = Date.now();
       timing.tickToScanMs = scanReadyMs - cycleStart;
       console.log(
@@ -632,7 +646,7 @@ async function runAutonomousCapture(
       let commentaryHandled = false;
       try {
         const { runAutoTradePass } = await import('@/lib/auto-trade/engine');
-        const outcome = await runAutoTradePass(result);
+        const outcome = await runAutoTradePass(result, timeline);
         const decisionReadyMs = Date.now();
         timing.status = outcome.ran ? (outcome.error ? 'decision-failed' : 'completed') : 'skipped-overlap';
         timing.scanToDecisionMs = decisionReadyMs - scanReadyMs;
@@ -660,7 +674,7 @@ async function runAutonomousCapture(
       if (!commentaryHandled) {
         try {
           const { runAndStoreCommentary } = await import('@/lib/ai-commentary/run');
-          const outcome = await runAndStoreCommentary(result);
+          const outcome = await runAndStoreCommentary(result, timeline);
           if (outcome.generated) console.log(`${TAG} AI commentary generated`);
         } catch (err) {
           console.warn(`${TAG} commentary failed: ${(err as Error).message}`);
@@ -674,6 +688,8 @@ async function runAutonomousCapture(
     // NOTE: EOD bhavcopy is NOT synced here — NSE only publishes it after close,
     // so it runs in runEodCapture() from the post-market branch instead.
   } finally {
+    timeline.setStatus(timing.status);
+    void timeline.finish();
     state.captureRunning = false;
     // Display-only and deliberately off the decision path. Skip unless this
     // process owned the engine pass, and skip whenever an entry submission or

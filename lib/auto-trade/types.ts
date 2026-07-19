@@ -177,4 +177,7 @@ export interface ToolTraceEntry {
   args: Record<string, unknown>;
   ok: boolean;
   summary: string;
+  /** Wall-clock duration of the tool execution (absent on rows from before
+   *  cycle-timeline instrumentation existed). */
+  ms?: number;
 }
