@@ -51,6 +51,26 @@ The box's cron pulls it within ~10 min and restarts — unless a trade is open, 
 case it waits for a later tick (see [04](04-building-and-shipping-the-app.md)). Watch
 it land via `pnpm box:status` or `/logs`.
 
+## Updating the box cron scripts
+
+`autostop.sh`, `auto-deploy.sh`, `checkopen.js`, `checkshutdown.js` run on the **host**,
+not inside the container. They are **not in the Docker image**, so `git push …:prod`
+does not ship them — editing `deploy/box/*` in the repo changes nothing on the box until
+you copy it across:
+
+```bash
+scp -i <key.pem> deploy/box/autostop.sh ubuntu@3.108.33.64:/tmp/autostop.sh
+ssh -i <key.pem> ubuntu@3.108.33.64 \
+  'sudo install -m 755 /tmp/autostop.sh /opt/projectr/autostop.sh && sudo bash -n /opt/projectr/autostop.sh && echo OK'
+```
+
+Dry-run it once before trusting the cron (it exits 0 and logs a skip when it wouldn't
+stop):
+
+```bash
+sudo AUTOSTOP_GRACE_MIN=45 bash -x /opt/projectr/autostop.sh; tail -5 /opt/projectr/autostop.log
+```
+
 ## Getting in
 
 - **Browser:** Google sign-in is the norm. The password form is hidden but still live
