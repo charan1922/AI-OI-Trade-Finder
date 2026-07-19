@@ -33,7 +33,7 @@ import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 import { FAST_GUARD_TICK_MS } from './config';
 import { isAutoTradePassRunning } from './engine';
-import { reconcileUnresolvedOrders } from './execution';
+import { reconcileOpenPositions, reconcileUnresolvedOrders } from './execution';
 import { runPositionGuard } from './risk/position-guard';
 import { getOpenTrades, getUnresolvedOrders, insertDecision } from './store';
 
@@ -114,6 +114,12 @@ async function tick(): Promise<void> {
       reconcileNoteCount = reconcileNotes.length;
       if (reconcileNotes.length > 0) console.warn(`${TAG} ${reconcileNotes.join(' · ')}`);
     }
+    // Stale-row cleanup (date check only — no broker call): a next-morning
+    // restart must close yesterday's ghost 'open' rows BEFORE any stop can
+    // trip a SELL on a position the broker already squared off. The full
+    // broker-verified check runs on the 5-min engine pass.
+    const staleNotes = await reconcileOpenPositions();
+    if (staleNotes.length > 0) console.warn(`${TAG} ${staleNotes.join(' · ')}`);
     // Broker acknowledgement may arrive just after the bell. Continue
     // reconciling unresolved submissions off-hours, but do not quote/guard
     // ordinary positions outside market hours.

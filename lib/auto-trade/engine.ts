@@ -22,7 +22,7 @@ import { recordPromptVersion } from '@/lib/prompts/store';
 import { isTelegramConfigured, sendCommentaryToTelegram } from '@/lib/telegram';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { expireStaleApprovals } from './approval';
-import { reconcileUnresolvedOrders as reconcileOrdersSafely } from './execution';
+import { reconcileOpenPositions, reconcileUnresolvedOrders as reconcileOrdersSafely } from './execution';
 import { isEntryWindow, nowISTClock } from './config';
 import { runToolLoop } from './decision/providers';
 import { commentaryTimeContext } from '@/lib/ai-commentary/generate';
@@ -101,8 +101,9 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
       void tryAcquireRuntimeLease(ENGINE_LEASE, ENGINE_LEASE_TTL_MS);
     }, 30_000);
 
-    // 1–2. Reconcile pending fills, expire stale approvals.
+    // 1–2. Reconcile pending fills + position-level truth, expire stale approvals.
     const reconcileNotes = await reconcileOrdersSafely();
+    const positionNotes = await reconcileOpenPositions({ verifyBroker: true });
     const expired = await expireStaleApprovals(date, settings.approvalTtlMin);
 
     // 3. Deterministic guard — always, kill switch or not.
@@ -110,6 +111,7 @@ export async function runAutoTradePass(scan: SuggestResponse | null): Promise<Au
     const { actions: guardActions } = guard;
     const systemNotes = [
       ...reconcileNotes,
+      ...positionNotes,
       ...expired.map((e) => `approval expired: ${e}`),
       ...(guard.coalesced ? [] : guardActions),
     ];

@@ -18,6 +18,7 @@ import { isEntryWindow, istMinuteLabel, minuteOfDayIST, nowISTClock } from '../c
 import { exitTrade, placeEntryOrder, type ExecOutcome } from '../execution';
 import { fetchOptionQuote, fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
 import { checkEntryGates, checkStopMove, type EntryGateInput } from '../risk/gates';
+import { getAutoTradeSettings } from '../settings';
 import {
   countEntriesToday,
   dailyRealizedPnl,
@@ -349,6 +350,22 @@ export async function executeAutoTradeTool(
     }
 
     if (name === 'place_entry_order') {
+      // The pass captured settings at its start — an operator flipping the kill
+      // switch (or turning the mode off) while the AI is mid-loop must stop THIS
+      // order, not just the next pass. Re-read the live settings and let the
+      // gates (which check killSwitch + mode) see the fresh truth.
+      try {
+        rt.settings = await getAutoTradeSettings();
+      } catch {
+        // settings unreadable → keep the pass snapshot (gates still enforce it)
+      }
+      if (rt.settings.killSwitch || rt.settings.mode === 'off') {
+        const why = rt.settings.killSwitch ? 'kill switch is ON' : 'auto-trade mode is OFF';
+        return {
+          result: { placed: false, reasons: [`${why} — order refused`] },
+          trace: { name, args, ok: false, summary: `entry refused: ${why} (re-checked mid-pass)` },
+        };
+      }
       const symbol = String(args.symbol ?? '').toUpperCase();
       const reason = String(args.reason ?? '').slice(0, 500);
       const pick = findPick(rt, symbol);

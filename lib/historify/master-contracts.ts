@@ -187,34 +187,54 @@ async function syncFromDhan(today: string): Promise<void> {
     });
   }
 
+  // Row-count sanity (C3, forensic audit): a truncated download / changed CSV
+  // format must never wipe a good table. Refuse to replace when the fresh parse
+  // is implausibly small — absolutely (<1000 rows) or relative to what we hold.
+  const existingCount = await prisma.masterContract.count();
+  if (entries.length < 1000) {
+    throw new Error(
+      `master-contracts sync aborted: parsed only ${entries.length} rows (CSV truncated or format changed) — existing ${existingCount} rows kept`,
+    );
+  }
+  if (existingCount > 0 && entries.length < existingCount * 0.9) {
+    throw new Error(
+      `master-contracts sync aborted: parsed ${entries.length} rows vs ${existingCount} existing (>10% drop) — refusing to replace; re-sync manually if the shrink is expected`,
+    );
+  }
+
   console.log(`[MasterContracts] Parsed ${entries.length} entries, inserting into DB...`);
 
-  // Clear all rows before re-inserting — ensures syncDate is always today
-  await prisma.$executeRawUnsafe('DELETE FROM master_contracts');
-
-  // Bulk insert using raw SQL for speed
+  // DELETE + re-insert inside ONE transaction: a crash mid-sync used to leave
+  // an empty table until a human noticed. Now the old rows survive any failure.
   const CHUNK_SIZE = 500;
-  for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
-    const chunk = entries.slice(i, i + CHUNK_SIZE);
-    const values = chunk
-      .map((e) => {
-        const esc = (s: string) => s.replace(/'/g, "''");
-        const exp = e.expiryDate ? `'${e.expiryDate.toISOString()}'` : 'NULL';
-        const und = e.underlying ? `'${esc(e.underlying)}'` : 'NULL';
-        const sp = e.strikePrice !== null ? `${e.strikePrice}` : 'NULL';
-        const ot = e.optionType ? `'${esc(e.optionType)}'` : 'NULL';
-        return `(NULL, '${esc(e.securityId)}', '${esc(e.symbol)}', '${esc(e.exchange)}', '${esc(e.segment)}', '${esc(e.instrument)}', '${esc(e.name)}', ${und}, ${exp}, ${e.lotSize}, ${sp}, ${ot}, '${e.syncDate}')`;
-      })
-      .join(',');
+  await prisma.$transaction(
+    async (tx) => {
+      // Clear all rows before re-inserting — ensures syncDate is always today
+      await tx.$executeRawUnsafe('DELETE FROM master_contracts');
+      for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+        const chunk = entries.slice(i, i + CHUNK_SIZE);
+        const values = chunk
+          .map((e) => {
+            const esc = (s: string) => s.replace(/'/g, "''");
+            const exp = e.expiryDate ? `'${e.expiryDate.toISOString()}'` : 'NULL';
+            const und = e.underlying ? `'${esc(e.underlying)}'` : 'NULL';
+            const sp = e.strikePrice !== null ? `${e.strikePrice}` : 'NULL';
+            const ot = e.optionType ? `'${esc(e.optionType)}'` : 'NULL';
+            return `(NULL, '${esc(e.securityId)}', '${esc(e.symbol)}', '${esc(e.exchange)}', '${esc(e.segment)}', '${esc(e.instrument)}', '${esc(e.name)}', ${und}, ${exp}, ${e.lotSize}, ${sp}, ${ot}, '${e.syncDate}')`;
+          })
+          .join(',');
 
-    await prisma.$executeRawUnsafe(
-      `INSERT OR IGNORE INTO master_contracts (id, securityId, symbol, exchange, segment, instrument, name, underlying, expiryDate, lotSize, strikePrice, optionType, syncDate) VALUES ${values}`,
-    );
+        await tx.$executeRawUnsafe(
+          `INSERT OR IGNORE INTO master_contracts (id, securityId, symbol, exchange, segment, instrument, name, underlying, expiryDate, lotSize, strikePrice, optionType, syncDate) VALUES ${values}`,
+        );
 
-    if ((i / CHUNK_SIZE) % 50 === 0 && i > 0) {
-      console.log(`[MasterContracts] Inserted ${i}/${entries.length}...`);
-    }
-  }
+        if ((i / CHUNK_SIZE) % 50 === 0 && i > 0) {
+          console.log(`[MasterContracts] Inserted ${i}/${entries.length}...`);
+        }
+      }
+    },
+    { timeout: 180_000, maxWait: 15_000 },
+  );
 
   const elapsed = ((Date.now() - startMs) / 1000).toFixed(1);
   console.log(`[MasterContracts] Synced ${entries.length} rows in ${elapsed}s`);

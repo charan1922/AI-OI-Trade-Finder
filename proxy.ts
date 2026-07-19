@@ -92,8 +92,18 @@ export const proxy = auth(async (req) => {
   }
 
   const adminPassword = process.env.APP_PASSWORD;
-  // Gate disabled (local dev / opt-out) — everyone is admin, no login needed.
-  if (!adminPassword) return forwardAs(req, 'admin');
+  // No password configured: in PRODUCTION this is a fatal misconfiguration —
+  // instrumentation.ts refuses to boot, and this 503 is the belt-and-braces
+  // backstop (never fall open to admin). Local dev keeps the no-op behavior.
+  if (!adminPassword) {
+    if (process.env.NODE_ENV === 'production') {
+      return NextResponse.json(
+        { success: false, error: 'Server misconfigured: APP_PASSWORD is not set. Refusing all requests.' },
+        { status: 503 }
+      );
+    }
+    return forwardAs(req, 'admin');
+  }
 
   // Login/logout and the Auth.js endpoints (signin, callback/google, csrf,
   // session, …) authenticate themselves — always reachable.

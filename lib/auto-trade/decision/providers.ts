@@ -42,9 +42,19 @@ function parseArgs(raw: string | null | undefined): Record<string, unknown> {
   }
 }
 
+/**
+ * Hard wall-clock deadline for one full decision pass. Without it a hung
+ * provider endpoint stalls the pass forever: the engine lease keeps renewing,
+ * every later cycle reports "previous pass still running", and decisions +
+ * commentary silently stop until a restart (H2, forensic audit). The signal is
+ * threaded into every SDK call; ipv4Fetch honors it, so the socket actually
+ * dies when the deadline fires. The guard is unaffected — it runs before the AI.
+ */
+const AI_PASS_DEADLINE_MS = 3 * 60_000;
+
 // ─── Azure OpenAI (Responses API) ────────────────────────────────────────────
 
-async function runAzureLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
+async function runAzureLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<ToolLoopResult> {
   const client = getAzureClient();
   const model = getChatDeployment();
   const tools: OpenAI.Responses.Tool[] = req.tools.map((t) => ({
@@ -60,13 +70,16 @@ async function runAzureLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
   let completionTokens = 0;
 
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
-    const res = await client.responses.create({
-      model,
-      instructions: req.system,
-      input,
-      tools,
-      tool_choice: 'auto',
-    });
+    const res = await client.responses.create(
+      {
+        model,
+        instructions: req.system,
+        input,
+        tools,
+        tool_choice: 'auto',
+      },
+      { signal },
+    );
     promptTokens += res.usage?.input_tokens ?? 0;
     completionTokens += res.usage?.output_tokens ?? 0;
 
@@ -86,13 +99,16 @@ async function runAzureLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
   }
 
   // Step cap hit — force a final text summary with tools disabled.
-  const final = await client.responses.create({
-    model,
-    instructions: req.system,
-    input,
-    tools,
-    tool_choice: 'none',
-  });
+  const final = await client.responses.create(
+    {
+      model,
+      instructions: req.system,
+      input,
+      tools,
+      tool_choice: 'none',
+    },
+    { signal },
+  );
   promptTokens += final.usage?.input_tokens ?? 0;
   completionTokens += final.usage?.output_tokens ?? 0;
   return { text: final.output_text || '(no summary produced)', model, trace, promptTokens, completionTokens };
@@ -100,7 +116,7 @@ async function runAzureLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
 
 // ─── MiMo (chat.completions + tools) ─────────────────────────────────────────
 
-async function runMimoLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
+async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<ToolLoopResult> {
   const client = getMimoClient();
   const model = getMimoModel();
   const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = req.tools.map((t) => ({
@@ -127,7 +143,7 @@ async function runMimoLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
         // as lib/ai-commentary/generate.ts — an exhausted budget = empty content).
         max_tokens: 6000,
       },
-      { timeout: 90_000 },
+      { timeout: 90_000, signal },
     );
     promptTokens += res.usage?.prompt_tokens ?? 0;
     completionTokens += res.usage?.completion_tokens ?? 0;
@@ -152,7 +168,7 @@ async function runMimoLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
   // Step cap hit — one final call with tools removed to force a summary.
   const final = await client.chat.completions.create(
     { model, messages, temperature: 0.2, max_tokens: 6000 },
-    { timeout: 90_000 },
+    { timeout: 90_000, signal },
   );
   promptTokens += final.usage?.prompt_tokens ?? 0;
   completionTokens += final.usage?.completion_tokens ?? 0;
@@ -161,5 +177,15 @@ async function runMimoLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
 }
 
 export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
-  return req.provider === 'mimo' ? runMimoLoop(req) : runAzureLoop(req);
+  const signal = AbortSignal.timeout(AI_PASS_DEADLINE_MS);
+  try {
+    return await (req.provider === 'mimo' ? runMimoLoop(req, signal) : runAzureLoop(req, signal));
+  } catch (err) {
+    if (signal.aborted) {
+      throw new Error(
+        `AI pass exceeded the ${Math.round(AI_PASS_DEADLINE_MS / 60_000)}-min hard deadline and was aborted (provider ${req.provider})`
+      );
+    }
+    throw err;
+  }
 }

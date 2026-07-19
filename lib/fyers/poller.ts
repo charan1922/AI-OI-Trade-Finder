@@ -122,8 +122,17 @@ interface PollerState {
   lastCycle: CycleSummary | null;
   nextTickAt: number | null;
   holidayCache: { date: string; holiday: boolean } | null;
-  /** Last date the once-a-day EOD bhavcopy sync ran (autonomous capture). */
+  /** Last date the once-a-day EOD bhavcopy sync CONFIRMED the expected session
+   *  was stored (H4: never advanced on a mere HTTP 200). */
   lastBhavcopyDate: string | null;
+  /** Last bhavcopy sync attempt (ms) — caps late-publish retries to ~hourly. */
+  lastBhavcopyAttemptMs: number | null;
+  /** Last date the nightly master-contracts auto-sync succeeded (C3). */
+  lastMasterContractsDate: string | null;
+  /** Last master-contracts sync attempt (ms) — caps failure retries to ~hourly. */
+  lastMasterContractsAttemptMs: number | null;
+  /** Last date a master-contracts failure alert was sent (max one per day). */
+  lastMasterContractsAlertDate: string | null;
   /** Last date the once-a-day trade-suggest scorecard (review.ts) ran. */
   lastScorecardDate: string | null;
   /** Guards against a slow autonomous capture overlapping the next one — so the
@@ -154,6 +163,10 @@ function getState(): PollerState {
     nextTickAt: null,
     holidayCache: null,
     lastBhavcopyDate: null,
+    lastBhavcopyAttemptMs: null,
+    lastMasterContractsDate: null,
+    lastMasterContractsAttemptMs: null,
+    lastMasterContractsAlertDate: null,
     lastScorecardDate: null,
     captureRunning: false,
     captureSkips: 0,
@@ -164,16 +177,53 @@ function getState(): PollerState {
   return g.__fyersPoller;
 }
 
-/** NSE holiday lookup (table maintained by lib/backtest/trading-calendar.ts). Soft-fails open. */
+/**
+ * NSE holiday lookup (table maintained by lib/backtest/trading-calendar.ts).
+ * FAILS CLOSED for the trading path (C2, forensic audit): an EMPTY table cannot
+ * clear a date — a fresh deploy that never seeded holidays used to trade
+ * straight through an NSE holiday on the exchange's stale data. When the table
+ * is empty, seed it from the official CSV and re-check; if it still cannot be
+ * verified (or the DB read throws), the date is treated as a holiday and the
+ * cycle skips. instrumentation.ts also seeds at boot, so this path is a backstop.
+ */
 async function isMarketHoliday(date: string): Promise<boolean> {
   const state = getState();
   if (state.holidayCache?.date === date) return state.holidayCache.holiday;
-  let holiday = false;
+  let holiday: boolean;
   try {
-    const rows = await prisma.$queryRawUnsafe<unknown[]>(`SELECT 1 FROM market_holidays WHERE date = ? LIMIT 1`, date);
-    holiday = rows.length > 0;
-  } catch {
-    // Table absent / unreadable → assume trading day; a holiday cycle just fetches empty candles
+    let verified = false;
+    holiday = false;
+    try {
+      const rows = await prisma.$queryRawUnsafe<unknown[]>(
+        `SELECT 1 FROM market_holidays WHERE date = ? LIMIT 1`,
+        date
+      );
+      if (rows.length > 0) {
+        holiday = true;
+        verified = true;
+      } else {
+        const countRows = await prisma.$queryRawUnsafe<{ n: number | bigint }[]>(
+          `SELECT COUNT(*) AS n FROM market_holidays`
+        );
+        // A populated table that doesn't list the date = a real trading day.
+        // An empty table proves nothing — fall through to seeding.
+        if (Number(countRows[0]?.n ?? 0) > 0) verified = true;
+      }
+    } catch {
+      // table may not exist yet (fresh DB) — seeding below creates it
+    }
+    if (!verified) {
+      const { syncHolidays } = await import('@/lib/backtest/trading-calendar');
+      const map = await syncHolidays();
+      if (map.size === 0) {
+        console.error(`${TAG} holiday calendar empty and unseedable — failing CLOSED (treating ${date} as a holiday)`);
+        return true; // do not cache a fail-closed verdict — retry next tick
+      }
+      holiday = map.has(date);
+    }
+  } catch (err) {
+    console.error(`${TAG} holiday lookup failed — failing CLOSED for the trading path: ${(err as Error).message}`);
+    return true; // transient DB error: skip this tick, do not cache
   }
   state.holidayCache = { date, holiday };
   return holiday;
@@ -228,6 +278,9 @@ export async function runFyersCycle(
     // holidays since it backfills the last completed session. The Fyers candle
     // cycle itself stays skipped.
     if (isAutonomousServer()) void runEodCapture(state);
+    // Nightly Dhan scrip-master refresh (same overnight window as bhavcopy) so
+    // rolled expiries never silently break FUT/strike resolution (C3).
+    if (isAutonomousServer()) void runEodMasterContractsSync(state);
     // Same-evening scorecard: grade today's /trade-suggest picks against the
     // recorded candles once, after close. Reads local candles only — no API,
     // no AI, no cost — and never runs during market hours.
@@ -641,23 +694,50 @@ async function refreshDisplayOnlyNiftyContext(): Promise<void> {
 }
 
 /**
- * Post-market EOD capture (Railway-only). NSE publishes the day's bhavcopy in the
- * evening, so this runs from the market-closed branch after ~19:00 IST, once per
- * trading day. Retries every 5-min tick until today's file is actually stored
- * (NSE can publish late) — `lastBhavcopyDate` is only advanced once the sync
- * reports today as the latest session. Best-effort; never throws to the poller.
+ * Latest weekday strictly before `todayIso` that is not an official NSE
+ * holiday — the session whose bhavcopy the overnight sync is expected to have
+ * stored. Null when it cannot be determined (10-day walk exhausted).
+ */
+async function lastExpectedSessionBefore(todayIso: string): Promise<string | null> {
+  const d = new Date(`${todayIso}T00:00:00Z`);
+  for (let i = 0; i < 10; i++) {
+    d.setUTCDate(d.getUTCDate() - 1);
+    const day = d.getUTCDay();
+    if (day === 0 || day === 6) continue;
+    const iso = d.toISOString().slice(0, 10);
+    try {
+      const rows = await prisma.$queryRawUnsafe<unknown[]>(
+        `SELECT 1 FROM market_holidays WHERE date = ? LIMIT 1`,
+        iso
+      );
+      if (rows.length > 0) continue;
+    } catch {
+      // holiday table unreadable — accept the weekday as the expected session
+    }
+    return iso;
+  }
+  return null;
+}
+
+/**
+ * Post-market EOD capture (autonomous server only). NSE publishes the day's
+ * bhavcopy overnight, so this runs from the market-closed branch after the
+ * publish hour. `lastBhavcopyDate` is only advanced once the sync CONFIRMS the
+ * expected session is stored (H4, forensic audit: a bare HTTP 200 with nothing
+ * synced used to mark the day done, silently shifting every baseline one
+ * session when NSE published late). Until confirmed, it retries at most once
+ * an hour — persistent, not a poll. Best-effort; never throws to the poller.
  */
 async function runEodCapture(state: PollerState): Promise<void> {
-  // NSE publishes the day's bhavcopy overnight, so only attempt after the publish
-  // hour, and only ONCE per calendar day (NOT a 5-min poll). syncBhavcopy grabs
-  // every missing available session in its window, so one nightly run backfills
-  // the last completed day; a rare miss self-heals on the next night's run.
   const istNow = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
   if (istNow.getHours() < EOD_PUBLISH_HOUR_IST) return;
   const istToday = `${istNow.getFullYear()}-${String(istNow.getMonth() + 1).padStart(2, '0')}-${String(istNow.getDate()).padStart(2, '0')}`;
-  if (state.lastBhavcopyDate === istToday) return; // already ran once this calendar day
+  if (state.lastBhavcopyDate === istToday) return; // confirmed done for this calendar day
+  const RETRY_INTERVAL_MS = 60 * 60_000;
+  if (state.lastBhavcopyAttemptMs != null && Date.now() - state.lastBhavcopyAttemptMs < RETRY_INTERVAL_MS) return;
   if (state.captureRunning) return;
   state.captureRunning = true;
+  state.lastBhavcopyAttemptMs = Date.now();
   try {
     const origin = `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
     const auth: Record<string, string> = process.env.APP_PASSWORD
@@ -674,13 +754,63 @@ async function runEodCapture(state: PollerState): Promise<void> {
       const j = (await res.json().catch(() => ({}))) as {
         status?: { latestDate?: string };
       };
-      state.lastBhavcopyDate = istToday; // mark done for today, on a successful run
-      console.log(`${TAG} EOD bhavcopy sync ran (latest ${j.status?.latestDate ?? '?'})`);
+      const latest = j.status?.latestDate ?? null;
+      const expected = await lastExpectedSessionBefore(istToday);
+      // Confirmed only when the store actually holds the expected session.
+      // (expected null = calendar undeterminable — accept the run rather than
+      // retry blindly forever.)
+      if (expected == null || (latest != null && latest >= expected)) {
+        state.lastBhavcopyDate = istToday;
+        console.log(`${TAG} EOD bhavcopy sync confirmed (latest ${latest ?? '?'}, expected ${expected ?? '?'})`);
+      } else {
+        console.warn(
+          `${TAG} EOD bhavcopy incomplete: latest stored ${latest ?? 'none'} < expected session ${expected} — retrying in ~1h (NSE may have published late)`
+        );
+      }
     }
   } catch (err) {
     console.warn(`${TAG} EOD bhavcopy sync failed: ${(err as Error).message}`);
   } finally {
     state.captureRunning = false;
+  }
+}
+
+/**
+ * Nightly master-contracts auto-sync (C3, forensic audit): the Dhan scrip
+ * master was previously refreshed only when a human clicked re-sync — expiries
+ * rolled out of the table silently (FUT resolution → null, no OI recorded,
+ * strikes unfindable). Runs from the market-closed branch after the EOD publish
+ * hour so `syncDate` lands on the NEW trading day and `ensureSynced()` passes
+ * all day. Marker advances only on success; failures retry at most hourly and
+ * alert once per day. forceSync() itself is transactional with a row-count
+ * sanity guard, so a crash or a bad CSV can never leave an empty table.
+ */
+async function runEodMasterContractsSync(state: PollerState): Promise<void> {
+  const istNow = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
+  if (istNow.getHours() < EOD_PUBLISH_HOUR_IST) return;
+  const istToday = `${istNow.getFullYear()}-${String(istNow.getMonth() + 1).padStart(2, '0')}-${String(istNow.getDate()).padStart(2, '0')}`;
+  if (state.lastMasterContractsDate === istToday) return;
+  const RETRY_INTERVAL_MS = 60 * 60_000;
+  if (state.lastMasterContractsAttemptMs != null && Date.now() - state.lastMasterContractsAttemptMs < RETRY_INTERVAL_MS)
+    return;
+  state.lastMasterContractsAttemptMs = Date.now();
+  try {
+    const { forceSync } = await import('@/lib/historify/master-contracts');
+    const { count, elapsed } = await forceSync();
+    state.lastMasterContractsDate = istToday;
+    console.log(`${TAG} nightly master-contracts sync: ${count} rows in ${elapsed}`);
+  } catch (err) {
+    const message = (err as Error).message;
+    console.warn(`${TAG} nightly master-contracts sync failed (retrying in ~1h): ${message}`);
+    if (state.lastMasterContractsAlertDate !== istToday) {
+      state.lastMasterContractsAlertDate = istToday;
+      try {
+        const { sendAlert } = await import('@/lib/auto-trade/alerts');
+        sendAlert(`⚠️ Nightly master-contracts sync failed: ${message.slice(0, 200)}`);
+      } catch {
+        // alerting is best-effort
+      }
+    }
   }
 }
 

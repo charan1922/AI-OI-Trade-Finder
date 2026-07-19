@@ -6,9 +6,19 @@ import https from 'node:https';
  * (family: 4) to dodge undici's IPv6-first resolution under Next.js — the same
  * helper the reference Azure OpenAI integration uses. Buffers the whole response
  * (fine for the non-streaming Responses API calls this module makes).
+ *
+ * Honors `init.signal`: the OpenAI SDK's timeout/abort mechanism works by
+ * aborting that signal — dropping it made SDK timeouts a no-op, so a hung
+ * Azure endpoint could stall an AI pass forever (H2, forensic audit).
  */
 export function ipv4Fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   return new Promise((resolve, reject) => {
+    const signal = init?.signal ?? null;
+    const abortError = () => new DOMException('This operation was aborted', 'AbortError');
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
     const url = new URL(
       typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url,
     );
@@ -39,6 +49,7 @@ export function ipv4Fetch(input: RequestInfo | URL, init?: RequestInit): Promise
       const parts: Buffer[] = [];
       res.on('data', (c: Buffer) => parts.push(c));
       res.on('end', () => {
+        cleanup();
         const text = Buffer.concat(parts).toString('utf-8');
         const responseHeaders = new Headers();
         for (const [k, v] of Object.entries(res.headers)) {
@@ -46,10 +57,24 @@ export function ipv4Fetch(input: RequestInfo | URL, init?: RequestInit): Promise
         }
         resolve(new Response(text, { status: res.statusCode ?? 200, headers: responseHeaders }));
       });
-      res.on('error', reject);
+      res.on('error', (err) => {
+        cleanup();
+        reject(err);
+      });
     });
 
-    req.on('error', reject);
+    const onAbort = () => {
+      req.destroy(abortError());
+    };
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    req.on('error', (err) => {
+      cleanup();
+      reject(err);
+    });
     if (body) req.write(body);
     req.end();
   });

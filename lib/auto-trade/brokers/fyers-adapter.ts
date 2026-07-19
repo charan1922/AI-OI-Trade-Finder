@@ -20,6 +20,8 @@ import {
   BrokerSubmissionError,
   type BrokerAdapter,
   type BrokerFunds,
+  type BrokerNetPosition,
+  type BrokerPositionQuery,
   type OrderState,
   type OrderTicket,
   type PlacedOrder,
@@ -345,6 +347,28 @@ export class FyersAdapter implements BrokerAdapter {
       filledQtyUnits,
       detail: row.message ? String(row.message) : undefined,
     };
+  }
+
+  async getNetPosition(query: BrokerPositionQuery): Promise<BrokerNetPosition | null> {
+    try {
+      const fyers = await getFyers();
+      const res = await serial(() => fyers.get_positions());
+      if (!res || res.s !== 'ok') return null; // book unreadable — venue cannot say
+      const rows = Array.isArray(res.netPositions) ? (res.netPositions as Record<string, unknown>[]) : [];
+      const symbol = toFyersOptionSymbol(query);
+      const row = rows.find((p) => String(p.symbol) === symbol);
+      // A successful book read with no row for the contract = definitively flat.
+      if (!row) return { netQtyUnits: 0, sellAvg: null };
+      const net = Number(row.netQty);
+      const sellAvg = Number(row.sellAvg);
+      return {
+        netQtyUnits: Number.isFinite(net) ? net : 0,
+        sellAvg: Number.isFinite(sellAvg) && sellAvg > 0 ? sellAvg : null,
+      };
+    } catch (err) {
+      console.warn(`${TAG} get_positions failed: ${(err as Error).message}`);
+      return null;
+    }
   }
 
   async cancelOrder(brokerOrderId: string): Promise<void> {

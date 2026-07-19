@@ -17,6 +17,8 @@ import {
   BrokerSubmissionError,
   type BrokerAdapter,
   type BrokerFunds,
+  type BrokerNetPosition,
+  type BrokerPositionQuery,
   type OrderState,
   type OrderTicket,
   type PlacedOrder,
@@ -261,6 +263,26 @@ export class DhanAdapter implements BrokerAdapter {
         avgFillPrice: null,
         detail: (err as Error).message,
       };
+    }
+  }
+
+  async getNetPosition(query: BrokerPositionQuery): Promise<BrokerNetPosition | null> {
+    try {
+      const data = await dhanFetch('/positions', { method: 'GET' });
+      // GET /positions returns an array of position objects for the day.
+      const rows = Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+      const row = rows.find((p) => String(p.securityId) === query.optSecurityId);
+      // A successful read with no row for the contract = definitively flat.
+      if (!row) return { netQtyUnits: 0, sellAvg: null };
+      const net = Number(row.netQty);
+      const sellAvg = Number(row.sellAvg ?? row.sellAverage);
+      return {
+        netQtyUnits: Number.isFinite(net) ? net : 0,
+        sellAvg: Number.isFinite(sellAvg) && sellAvg > 0 ? sellAvg : null,
+      };
+    } catch (err) {
+      console.warn(`${TAG} positions lookup failed: ${(err as Error).message}`);
+      return null;
     }
   }
 

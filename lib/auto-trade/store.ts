@@ -12,6 +12,7 @@
  */
 
 import { prisma } from '@/lib/db';
+import { correlationIdForOrder } from './brokers/adapter';
 import type { AutoDecision, AutoOrder, AutoTrade, OrderStatus, ToolTraceEntry, TradeStatus } from './types';
 
 let tablesReady = false;
@@ -454,10 +455,15 @@ export async function claimEntryOrder(o: Parameters<typeof insertOrder>[0]): Pro
  * Atomically claim the next SELL attempt for a trade.
  *
  * Exit retries need a new idempotency key after a rejected/cancelled order,
- * while concurrent guard/AI callers must never both reach the broker. One
- * INSERT ... SELECT statement gives SQLite the whole decision: it inserts a
- * numbered attempt only when no non-terminal SELL already exists. Concurrent
- * callers are serialized by SQLite; at most one receives a row.
+ * while concurrent guard/AI callers must never both reach the broker.
+ *
+ * The correlationId MUST be persisted inside the claim INSERT itself: a crash
+ * between the claim and the broker POST used to leave a `sent` order with no
+ * tag — unrecoverable from the order book and permanently blocking every
+ * future exit attempt. The attempt number is read first so the idemKey (and
+ * its derived correlationId) is known before the insert; a concurrent claim
+ * that lands in between produces the same numbered key and loses on the
+ * UNIQUE constraint (ON CONFLICT DO NOTHING), so at most one caller gets a row.
  */
 export async function claimExitOrder(o: {
   tradeId: number;
@@ -465,33 +471,37 @@ export async function claimExitOrder(o: {
   broker: string;
   mode: AutoTrade['mode'];
   qtyUnits: number;
-}): Promise<{ id: number; idemKey: string } | null> {
+}): Promise<{ id: number; idemKey: string; correlationId: string } | null> {
   await ensureTables();
   const now = new Date().toISOString();
+  const countRows = (await prisma.$queryRawUnsafe(
+    `SELECT COUNT(*) AS n FROM auto_orders WHERE tradeId = ? AND side = 'SELL'`,
+    o.tradeId
+  )) as { n: number | bigint }[];
+  const idemKey = `${o.idemKeyBase}:attempt:${Number(countRows[0]?.n ?? 0) + 1}`;
+  const correlationId = correlationIdForOrder(idemKey);
   const rows = (await prisma.$queryRawUnsafe(
     `INSERT INTO auto_orders
-       (tradeId, idemKey, broker, mode, side, qtyUnits, brokerOrderId, status, avgFillPrice, error, createdAt, updatedAt)
-     SELECT
-       ?, ? || ':attempt:' || (
-         SELECT COUNT(*) + 1 FROM auto_orders WHERE tradeId = ? AND side = 'SELL'
-       ), ?, ?, 'SELL', ?, NULL, 'sent', NULL, NULL, ?, ?
+       (tradeId, idemKey, broker, mode, side, qtyUnits, correlationId, brokerOrderId, status, avgFillPrice, error, createdAt, updatedAt)
+     SELECT ?, ?, ?, ?, 'SELL', ?, ?, NULL, 'sent', NULL, NULL, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM auto_orders
         WHERE tradeId = ? AND side = 'SELL' AND status NOT IN ('rejected', 'cancelled')
      )
-     RETURNING id, idemKey`,
+     ON CONFLICT DO NOTHING
+     RETURNING id, idemKey, correlationId`,
     o.tradeId,
-    o.idemKeyBase,
-    o.tradeId,
+    idemKey,
     o.broker,
     o.mode,
     o.qtyUnits,
+    correlationId,
     now,
     now,
     o.tradeId
-  )) as { id: number | bigint; idemKey: string }[];
+  )) as { id: number | bigint; idemKey: string; correlationId: string }[];
   const row = rows[0];
-  return row ? { id: Number(row.id), idemKey: row.idemKey } : null;
+  return row ? { id: Number(row.id), idemKey: row.idemKey, correlationId: row.correlationId } : null;
 }
 
 export async function updateOrder(

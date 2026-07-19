@@ -8,7 +8,16 @@
  * baskets — defined-risk long options only (the strategy's instrument).
  */
 
+import { createHash } from 'node:crypto';
 import type { OrderSide } from '../types';
+
+/** Broker-safe alphanumeric tag (20 chars, valid for Dhan and Fyers), derived
+ *  deterministically from the order's idempotency key. Lives here (not in
+ *  execution.ts) so the store can persist it inside the atomic order claim
+ *  without an import cycle. */
+export function correlationIdForOrder(idemKey: string): string {
+  return `R${createHash('sha256').update(idemKey).digest('hex').slice(0, 19)}`;
+}
 
 /** Everything an adapter needs to route one order. The full contract identity
  *  travels with the ticket so each adapter maps its own symbology (Dhan wants
@@ -66,6 +75,23 @@ export interface BrokerFunds {
   available: number | null;
 }
 
+/** Contract identity for a position-truth lookup (same fields the ticket carries). */
+export interface BrokerPositionQuery {
+  symbol: string;
+  optionType: 'CE' | 'PE';
+  strike: number;
+  expiryDate: string;
+  optSecurityId: string;
+}
+
+export interface BrokerNetPosition {
+  /** Net units the venue holds RIGHT NOW; 0 = flat (position closed/absent). */
+  netQtyUnits: number;
+  /** Venue-reported average sell price for the day, when available — the best
+   *  estimate of the exit fill when the broker squared off without us. */
+  sellAvg: number | null;
+}
+
 export interface BrokerAdapter {
   readonly id: 'paper' | 'fyers' | 'dhan';
   getFunds(): Promise<BrokerFunds>;
@@ -76,6 +102,11 @@ export interface BrokerAdapter {
   /** Recover a placement response by its durable broker tag. Null means the
    *  venue returned no match; throwing means the lookup itself was unavailable. */
   getOrderByCorrelationId?(correlationId: string): Promise<RecoveredOrder | null>;
+  /** Position-level truth for one contract. Null means the venue CANNOT say
+   *  (lookup failed / unsupported) — callers must NEVER treat null as flat.
+   *  A definite { netQtyUnits: 0 } means the venue read succeeded and the
+   *  contract is flat (e.g. the broker's own intraday square-off already ran). */
+  getNetPosition?(query: BrokerPositionQuery): Promise<BrokerNetPosition | null>;
   cancelOrder(brokerOrderId: string): Promise<void>;
 }
 

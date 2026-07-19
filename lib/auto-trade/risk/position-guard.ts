@@ -100,6 +100,16 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
         continue;
       }
 
+      // A row from a previous session is a ghost — INTRADAY positions never
+      // survive the broker's own square-off. NEVER exit it (that SELL would
+      // open a naked short); reconcileOpenPositions() closes such rows.
+      if (trade.date !== date) {
+        const line = `${trade.symbol} ${trade.optionType}: stale open row from ${trade.date} — skipped (position reconciliation will close it)`;
+        actions.push(line);
+        console.warn(`${TAG} ${line}`);
+        continue;
+      }
+
       let reason: string | null = null;
 
       if (squareOff) {

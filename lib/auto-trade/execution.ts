@@ -9,8 +9,7 @@
  * attempt after an explicitly rejected/cancelled order.
  */
 
-import { createHash } from 'node:crypto';
-import { alerts } from './alerts';
+import { alerts, sendAlert } from './alerts';
 import { FILL_POLL_ATTEMPTS, FILL_POLL_DELAY_MS, MAX_LOSS_PER_LOT_FALLBACK, TARGET_PER_LOT_FALLBACK } from './config';
 import { getAdapterById, getExecutionAdapter } from './brokers';
 import type { BrokerAdapter, OrderTicket } from './brokers/adapter';
@@ -18,6 +17,8 @@ import { ticketQtyUnits } from './brokers/adapter';
 import {
   claimEntryOrder,
   claimExitOrder,
+  getOpenTrades,
+  getOrdersForTrade,
   getTrade,
   getUnresolvedOrders,
   markOrderReconciled,
@@ -25,17 +26,17 @@ import {
   updateTrade,
 } from './store';
 import type { AutoTrade, AutoTradeSettings, TradeMode } from './types';
+import { todayIST } from '@/lib/dhan/market-feed';
 
 const TAG = '[AutoTradeExec]';
-import { BrokerSubmissionError } from './brokers/adapter';
-import type { OrderState, RecoveredOrder } from './brokers/adapter';
+import { BrokerSubmissionError, correlationIdForOrder } from './brokers/adapter';
+import type { BrokerNetPosition, OrderState, RecoveredOrder } from './brokers/adapter';
+
+// Re-export: the tag derivation moved to brokers/adapter.ts (the store persists
+// it inside the atomic exit claim); existing importers keep working.
+export { correlationIdForOrder };
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Broker-safe alphanumeric tag (20 chars, valid for Dhan and Fyers). */
-export function correlationIdForOrder(idemKey: string): string {
-  return `R${createHash('sha256').update(idemKey).digest('hex').slice(0, 19)}`;
-}
 
 /** Premium backstops re-anchored to the ACTUAL fill: stop = tighter of −40%
  *  and −₹cap/lot; target = +₹target/lot (mirrors the scanner's math). */
@@ -347,7 +348,43 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
       ok: false,
       message: `trade ${trade.id} is ${trade.status}, not open`,
     };
+  // Positions are INTRADAY — the broker force-squares them by close. A row
+  // still 'open' from a previous session is a stale ghost; SELLing it would
+  // open a naked short. Refuse; reconcileOpenPositions() closes such rows.
+  if (trade.date !== todayIST()) {
+    return {
+      ok: false,
+      message: `trade ${trade.id} is from ${trade.date} (stale open row) — refusing to place a SELL; position reconciliation will close it`,
+    };
+  }
   const adapter = getAdapterById(trade.broker);
+  // Position-level truth: before SELLing on a real venue, confirm the venue
+  // still holds the contract. A definite flat (e.g. the broker's own 15:26
+  // square-off ran while this process was down) means the SELL would open a
+  // naked short — close the row from the broker's numbers instead. A null
+  // (unverifiable) answer must NEVER block a protective exit.
+  if (adapter.id !== 'paper' && adapter.getNetPosition && trade.entryFillPremium != null) {
+    let pos: BrokerNetPosition | null = null;
+    try {
+      pos = await adapter.getNetPosition({
+        symbol: trade.symbol,
+        optionType: trade.optionType,
+        strike: trade.strike,
+        expiryDate: trade.expiryDate,
+        optSecurityId: trade.optSecurityId,
+      });
+    } catch {
+      // best-effort — an unreadable position book never blocks an exit
+    }
+    if (pos && pos.netQtyUnits <= 0) {
+      await closeBrokerFlatTrade(trade, pos.sellAvg, `${reason} — broker already flat (position squared off at the venue)`);
+      return {
+        ok: true,
+        state: 'filled',
+        message: `position already flat at the broker — row closed${pos.sellAvg != null ? ` from venue sellAvg ₹${pos.sellAvg}` : '; verify final P&L in the broker statement'}`,
+      };
+    }
+  }
   const claim = await claimExitOrder({
     tradeId: trade.id,
     idemKeyBase: `${trade.date}:${trade.symbol}:${trade.optionType}:exit:${trade.id}`,
@@ -358,7 +395,8 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
   if (!claim) return { ok: false, message: `exit for ${trade.symbol} already in flight` };
   const { id: orderId, idemKey } = claim;
   const ticket = ticketFromTrade(trade, 'SELL', idemKey);
-  await updateOrder(orderId, { correlationId: ticket.correlationId });
+  // correlationId is already persisted inside the atomic claim INSERT — a crash
+  // from here on is recoverable from the broker order book by tag.
   // Persist the exit intent before the broker POST. If the response is lost or
   // the process restarts, correlation-based reconciliation can close the fill
   // with the exact operator/guard/AI reason instead of inventing one later.
@@ -450,6 +488,78 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
     state: 'pending',
     message: `exit order ${placed.brokerOrderId} placed; fill pending confirmation`,
   };
+}
+
+/** Close a DB row whose position the broker no longer holds. P&L is booked
+ *  only when the venue reported a sell average — never estimated. */
+async function closeBrokerFlatTrade(trade: AutoTrade, sellAvg: number | null, reasonDetail: string): Promise<void> {
+  const entryFill = trade.entryFillPremium;
+  const pnl = sellAvg != null && entryFill != null ? Math.round((sellAvg - entryFill) * trade.lotSize * trade.lots) : null;
+  await updateTrade(trade.id, {
+    status: 'closed',
+    exitFillPremium: sellAvg,
+    realizedPnlRupees: pnl,
+    exitReason: reasonDetail,
+    closedAt: new Date().toISOString(),
+  });
+  alerts.tradeExited(trade.symbol, reasonDetail, pnl);
+}
+
+/**
+ * Position-level reconciliation — the truth check order-level reconcile cannot
+ * provide. Runs on every engine pass (verifyBroker) and every fast-guard tick
+ * (cheap date check only):
+ *
+ *   1. STALE rows: any 'open' trade dated before today is a ghost — INTRADAY
+ *      product means the broker squared it off at the previous close. Close it
+ *      locally (no invented P&L) and alert; a premium stop tripping on it the
+ *      next morning would otherwise MARKET-SELL a position that no longer
+ *      exists (naked short).
+ *   2. BROKER-FLAT rows (verifyBroker, real venues, market intraday): the venue
+ *      says the contract is flat while the DB row is open → the broker's own
+ *      square-off/manual close ran without us. Close the row from the venue's
+ *      sellAvg. A null (unverifiable) venue answer changes nothing — missing
+ *      broker state is never treated as proof that no position exists.
+ */
+export async function reconcileOpenPositions(options: { verifyBroker?: boolean } = {}): Promise<string[]> {
+  const notes: string[] = [];
+  const today = todayIST();
+  for (const trade of await getOpenTrades()) {
+    try {
+      if (trade.date !== today) {
+        const reason = `stale open row from ${trade.date} auto-closed — INTRADAY position was already squared off broker-side; verify final P&L in the broker statement`;
+        await closeBrokerFlatTrade(trade, null, reason);
+        sendAlert(`🚨 ${trade.symbol} ${trade.optionType}: ${reason}`);
+        notes.push(`${trade.symbol}: ${reason}`);
+        continue;
+      }
+      if (!options.verifyBroker || trade.broker === 'paper' || trade.entryFillPremium == null) continue;
+      const adapter = getAdapterById(trade.broker);
+      if (!adapter.getNetPosition) continue;
+      // An exit already in flight belongs to order-level reconcile — closing the
+      // row here would race the fill that books the real P&L.
+      const activeSell = (await getOrdersForTrade(trade.id)).some(
+        (o) => o.side === 'SELL' && (o.status === 'sent' || o.status === 'unknown')
+      );
+      if (activeSell) continue;
+      const pos = await adapter.getNetPosition({
+        symbol: trade.symbol,
+        optionType: trade.optionType,
+        strike: trade.strike,
+        expiryDate: trade.expiryDate,
+        optSecurityId: trade.optSecurityId,
+      });
+      if (pos && pos.netQtyUnits <= 0) {
+        const reason = `broker shows the position flat (squared off at the venue without us) — row closed${pos.sellAvg != null ? ` at venue sellAvg ₹${pos.sellAvg}` : '; verify final P&L in the broker statement'}`;
+        await closeBrokerFlatTrade(trade, pos.sellAvg, reason);
+        sendAlert(`🚨 ${trade.symbol} ${trade.optionType}: ${reason}`);
+        notes.push(`${trade.symbol}: ${reason}`);
+      }
+    } catch (err) {
+      notes.push(`${trade.symbol}: position reconcile failed (${(err as Error).message})`);
+    }
+  }
+  return notes;
 }
 
 const MAX_RECONCILE_ORDERS = 20;
