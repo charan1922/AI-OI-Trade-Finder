@@ -40,6 +40,7 @@ import { chunkForTelegram, isNearDuplicateRead, markdownToTelegramHtml } from '.
 import { isAdminOnlyPage, requiredPermission, roleForGoogleEmail } from '../lib/auth/rbac';
 import { computeGex } from '../lib/signals/gex';
 import { runQuantShadowChecks } from './quant-shadow-checks';
+import { runConfigDriftChecks } from './config-drift-checks';
 import { todayIST } from '../lib/dhan/market-feed';
 import { hasRequiredEqBar } from '../lib/fyers/poller';
 
@@ -302,6 +303,7 @@ async function main(): Promise<void> {
   // scripts/quant-shadow-checks.ts so the SAME assertions also run DB-free in
   // CI (scripts/verify-quant-shadow.ts). Single source — no drift.
   runQuantShadowChecks(check);
+  await runConfigDriftChecks(check);
 
   // ── 3. Settings CRUD ───────────────────────────────────────────────────────
   const defaults = await getAutoTradeSettings();

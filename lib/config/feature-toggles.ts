@@ -240,9 +240,65 @@ export async function getToggle(key: string, fallback: boolean): Promise<boolean
   }
 }
 
-/** Persist a toggle. Unknown keys are rejected (the registry is the allowlist). */
+/** Number settings whose category also affects the scanner/trading behaviour —
+ *  a drifted WINDOW_END_MIN (e.g. 11:00 → 14:30) changes WHEN trades are taken
+ *  just as materially as a boolean toggle, so drift detection must cover them
+ *  too (PR#2 review 2026-07-20). 'Entry & Exit Times' holds the scan-window
+ *  open/close + the commentary entry cutoff. */
+const DRIFT_NUMBER_CATEGORIES = new Set(['Trade Suggest', 'Entry & Exit Times']);
+
+/** IST clock-style number setting (minutes-from-midnight) → render as HH:MM in
+ *  the summary. Mirrors the /config page heuristic (key ends _MIN, ≥ 06:00). */
+function isClockNumberSetting(key: string, min: number): boolean {
+  return key.endsWith('_MIN') && min >= 6 * 60;
+}
+const minToHHMM = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+
+/**
+ * PURE: which scanner/trading-relevant settings currently differ from their
+ * coded-safe default. Every default IS the safe state; a drifted value is
+ * exactly the class of thing that caused the COLPAL 2026-07-20 loss
+ * (USE_EXTENDED_TREND_BYPASS left ON since 2026-07-10, unnoticed for 10 days).
+ * Split out from the DB read so it is unit-testable without a database
+ * (scripts/config-drift-checks.ts, run in CI). Covers 'Trade Suggest' toggles
+ * AND the numeric window/pick/cutoff settings (PR#2 review 2026-07-20).
+ */
+export function buildConfigOverrideSummary(
+  toggles: Pick<ToggleState, 'label' | 'category' | 'value' | 'default'>[],
+  numbers: Pick<NumberState, 'key' | 'label' | 'category' | 'value' | 'default' | 'min'>[]
+): string[] {
+  const out: string[] = [];
+  for (const t of toggles) {
+    if (t.category === 'Trade Suggest' && t.value !== t.default)
+      out.push(`${t.label}: ${t.value ? 'ON' : 'OFF'} (safe default ${t.default ? 'ON' : 'OFF'})`);
+  }
+  for (const n of numbers) {
+    if (!DRIFT_NUMBER_CATEGORIES.has(n.category) || n.value === n.default) continue;
+    const fmt = isClockNumberSetting(n.key, n.min) ? minToHHMM : (x: number) => String(x);
+    out.push(`${n.label}: ${fmt(n.value)} (safe default ${fmt(n.default)})`);
+  }
+  return out;
+}
+
+/**
+ * Currently-active scanner-config overrides (toggles + numeric settings) vs
+ * their safe defaults. Used by the poller's pre-open reminder (AT-review
+ * 2026-07-20 operational fix); /config renders its own "overridden" badge from
+ * the same value!==default rule. Thin DB wrapper over buildConfigOverrideSummary.
+ */
+export async function tradeSuggestConfigOverrideSummary(): Promise<string[]> {
+  const [toggles, numbers] = await Promise.all([getAllToggles(), getAllNumberSettings()]);
+  return buildConfigOverrideSummary(toggles, numbers);
+}
+
+/** Persist a toggle. Unknown keys are rejected (the registry is the allowlist).
+ *  A 'Trade Suggest' toggle moved AWAY from its safe default fires an immediate
+ *  alert — the moment-of-change reminder that a silent DB flip can't give
+ *  (AT-review 2026-07-20; complements the daily pre-open reminder below). Moving
+ *  BACK to the default is a return to safety, not a risk — no alert. */
 export async function setToggle(key: string, value: boolean): Promise<void> {
-  if (!byKey.has(key)) throw new Error(`unknown toggle: ${key}`);
+  const def = byKey.get(key);
+  if (!def) throw new Error(`unknown toggle: ${key}`);
   await ensureTable();
   await prisma.$executeRawUnsafe(
     `INSERT INTO feature_toggles (key, value, updatedAt) VALUES (?, ?, ?)
@@ -251,6 +307,16 @@ export async function setToggle(key: string, value: boolean): Promise<void> {
     value ? 1 : 0,
     new Date().toISOString()
   );
+  if (def.category === 'Trade Suggest' && value !== def.default) {
+    try {
+      const { sendMessage } = await import('@/lib/telegram');
+      sendMessage(
+        `⚙️ ${def.label} set to ${value ? 'ON' : 'OFF'} — differs from its safe default (${def.default ? 'ON' : 'OFF'}). Check /config if this wasn't intentional.`
+      );
+    } catch {
+      // alerting is best-effort — never block a config write
+    }
+  }
 }
 
 /** One numeric setting's definition plus its current stored state. */
@@ -309,11 +375,26 @@ export async function setNumberSetting(key: string, value: number): Promise<void
     if (start >= end) throw new Error('scan window open must be earlier than scan window close');
   }
   await ensureTable();
+  const next = Math.round(value);
   await prisma.$executeRawUnsafe(
     `INSERT INTO feature_toggles (key, value, updatedAt) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt`,
     key,
-    Math.round(value),
+    next,
     new Date().toISOString()
   );
+  // Immediate drift alert, symmetric with setToggle: a scanner-relevant numeric
+  // moved off its safe default (e.g. WINDOW_END_MIN 11:00→14:30) is exactly the
+  // silent change the daily reminder is meant to catch — surface it at once too.
+  if (DRIFT_NUMBER_CATEGORIES.has(def.category) && next !== def.default) {
+    const fmt = isClockNumberSetting(def.key, def.min) ? minToHHMM : (x: number) => String(x);
+    try {
+      const { sendMessage } = await import('@/lib/telegram');
+      sendMessage(
+        `⚙️ ${def.label} set to ${fmt(next)} — differs from its safe default (${fmt(def.default)}). Check /config if this wasn't intentional.`
+      );
+    } catch {
+      // alerting is best-effort — never block a config write
+    }
+  }
 }

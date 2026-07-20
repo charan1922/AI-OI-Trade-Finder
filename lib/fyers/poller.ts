@@ -26,6 +26,8 @@ import { getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/auth';
 import { EOD_PUBLISH_HOUR_IST, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { prisma } from '@/lib/db';
 import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
+import { markToday, wasMarkedToday } from '@/lib/runtime/daily-marker';
+import { inDriftReminderWindow, runConfigDriftReminderCore } from '@/lib/config/config-drift-reminder';
 import { FyersAuthError, getFyersAccessToken, getFyersTokenStatus, hasFyersAuth } from '@/lib/fyers/auth';
 import { fetchFutDepth, fetchHistory5m, type FyersBar } from '@/lib/fyers/client';
 import { attachFutDepth, fyersBucketFor, pruneCandleHistory, upsertCandles } from '@/lib/fyers/candle-store';
@@ -148,6 +150,9 @@ interface PollerState {
   /** Keeps lastWarmup writes clean when a slow warm-up overlaps the next tick
    *  (the auth modules' promise locks already make the API side safe). */
   warmupRunning: boolean;
+  /** Last date the pre-open config-drift reminder ran (max one per day) — see
+   *  runConfigDriftReminder. */
+  lastConfigDriftAlertDate: string | null;
 }
 
 const g = globalThis as unknown as { __fyersPoller?: PollerState };
@@ -174,6 +179,7 @@ function getState(): PollerState {
     lastCapture: null,
     lastWarmup: null,
     warmupRunning: false,
+    lastConfigDriftAlertDate: null,
   };
   return g.__fyersPoller;
 }
@@ -291,6 +297,8 @@ export async function runFyersCycle(
     // gating lives inside. Note: a PAUSED poller skips this branch entirely —
     // pausing is an explicit operator action, warm-up pauses with it.
     void warmPreOpenTokens(state).catch(() => {});
+    // Pre-open config-drift reminder — same window, independent of tokens.
+    void runConfigDriftReminder(state).catch(() => {});
     return finish('market-closed');
   }
   if (!opts.force && (await isMarketHoliday(summary.date))) return finish('holiday');
@@ -308,6 +316,11 @@ export async function runFyersCycle(
   const leaseRenewal = setInterval(() => {
     void tryAcquireRuntimeLease(POLLER_LEASE, POLLER_LEASE_TTL_MS);
   }, 30_000);
+  // Config-drift reminder also on the market-OPEN path: a server that started
+  // AFTER the 08:40–09:15 pre-open ticks (e.g. 09:20) skipped the market-closed
+  // branch entirely, so without this the day's reminder would never fire. The
+  // persistent marker + window guard keep it at most once/day (PR#2 review).
+  void runConfigDriftReminder(state).catch(() => {});
   try {
     const today = todayIST();
     const date = summary.date;
@@ -922,6 +935,63 @@ export async function runTokenWarmup(): Promise<void> {
   await warmPreOpenTokens(getState(), true);
 }
 
+const DRIFT_MARKER = 'config-drift-reminder';
+const DRIFT_LEASE = 'config-drift-reminder';
+
+/**
+ * Config-drift reminder (AT-review 2026-07-20 op-fix; hardened per PR#2 review).
+ * Any scanner setting left off its coded-safe default — the toggle OR a numeric
+ * like WINDOW_END_MIN (the USE_EXTENDED_TREND_BYPASS drift that caused the
+ * COLPAL 2026-07-20 loss sat unnoticed for 10 days) — is pushed once per trading
+ * day so a forgotten override keeps nagging instead of going silent. Complements
+ * the immediate on-change alert in setToggle/setNumberSetting.
+ *
+ * This is the THIN wrapper: cheap gates (autonomous, window, in-memory cache,
+ * holiday) + real deps → runConfigDriftReminderCore (the pure, unit-tested
+ * decide-and-act in lib/config/config-drift-reminder.ts). Correctness (PR#2
+ * review):
+ *  - once-per-day is a PERSISTENT marker (runtime_daily_markers), so a restart
+ *    mid-session can't resend; the in-memory field is only a fast-path cache;
+ *  - a dedicated runtime LEASE serialises the send (this path can run BEFORE the
+ *    poller's own POLLER_LEASE), so overlapping deploy processes can't both fire;
+ *  - the marker is set ONLY after CONFIRMED delivery, and markToday reports
+ *    whether it actually persisted — a failed read/send/write retries next tick;
+ *  - the window spans 08:40–15:30 (market close), so a late start with
+ *    SCAN_OUTSIDE_WINDOW ON (which can trade past 11:00) still gets alerted.
+ *  Autonomous-server only, like the sibling EOD jobs. Callable from both the
+ *  market-closed and market-open paths — the guards make it idempotent. Never
+ *  throws to the poller.
+ */
+async function runConfigDriftReminder(state: PollerState): Promise<void> {
+  if (!isAutonomousServer()) return;
+  if (!inDriftReminderWindow(nowIST())) return;
+  const today = todayIST();
+  if (state.lastConfigDriftAlertDate === today) return; // fast in-memory path
+  if (await isMarketHoliday(today)) return;
+
+  const { tradeSuggestConfigOverrideSummary } = await import('@/lib/config/feature-toggles');
+  const { sendMessageAsync } = await import('@/lib/telegram');
+  const outcome = await runConfigDriftReminderCore({
+    wasMarked: () => wasMarkedToday(DRIFT_MARKER, today),
+    acquireLease: () => tryAcquireRuntimeLease(DRIFT_LEASE, 120_000),
+    releaseLease: () => releaseRuntimeLease(DRIFT_LEASE),
+    getOverrides: tradeSuggestConfigOverrideSummary,
+    send: async (message) => {
+      const r = await sendMessageAsync(message);
+      return { ok: r.ok, error: r.error };
+    },
+    mark: () => markToday(DRIFT_MARKER, today),
+  });
+
+  if (outcome.completedToday) state.lastConfigDriftAlertDate = today;
+  if (outcome.status === 'sent' && !outcome.markedPersisted)
+    console.warn(`${TAG} config-drift reminder delivered but marker not persisted — a restart today could resend once`);
+  else if (outcome.status === 'send-failed')
+    console.warn(`${TAG} config-drift reminder delivery failed (will retry next tick): ${outcome.message ?? 'unknown'}`);
+  else if (outcome.status === 'error')
+    console.warn(`${TAG} config-drift reminder failed (will retry next tick): ${outcome.message}`);
+}
+
 function scheduleNextTick(): void {
   const state = getState();
   if (!state.started) return;
@@ -987,6 +1057,8 @@ export interface PollerStatus {
   universe: { date: string; symbols: string[] } | null;
   /** Latest pre-open token warm-up outcome (see warmPreOpenTokens). */
   lastWarmup: { date: string; at: number; fyers: string; dhan: string } | null;
+  /** Last date the pre-open config-drift reminder ran (see runConfigDriftReminder). */
+  lastConfigDriftAlertDate: string | null;
 }
 
 export function getFyersPollerStatus(): PollerStatus {
@@ -1007,5 +1079,6 @@ export function getFyersPollerStatus(): PollerStatus {
     token: getFyersTokenStatus(),
     universe: peekUniverse(),
     lastWarmup: state.lastWarmup,
+    lastConfigDriftAlertDate: state.lastConfigDriftAlertDate,
   };
 }
