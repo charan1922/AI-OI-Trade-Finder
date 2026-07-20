@@ -1,6 +1,6 @@
 /**
  * Honest, PATH-DEPENDENT spot grading for /trade-suggest calls
- * (backtest-trustworthiness — Layer A of #7; hardened per PR#3 review).
+ * (backtest-trustworthiness — Layer A of #7; hardened per PR#3 + PR#4 review).
  *
  * The old scorecard scored a "hit" as `maxUpPct >= 1%` over the WHOLE day —
  * path-independent and blind to the plan's stop. This walks the 5-min bars in
@@ -16,8 +16,9 @@
  *    post-suggestion movement. When the suggestion lands mid-candle AND that
  *    candle touched a level, the timing is unknowable → 'entry-ambiguous';
  *  - a MISSING candle (recorder gap, or the session truncated early) could hide
- *    a stop, so a "target"/"timeout" that sits behind a gap is downgraded to
- *    'incomplete' rather than credited;
+ *    EITHER level, so any outcome that sits behind a gap — target, stop, or
+ *    timeout — is downgraded to 'incomplete' rather than credited (symmetric:
+ *    a −1R stop is never counted across a gap either);
  *  - 'entry-ambiguous' and 'incomplete' carry a null R and are EXCLUDED from the
  *    honest win-rate / expectancy — never counted as clean wins or losses.
  */
@@ -49,8 +50,8 @@ export function gradeSpotPath(
   bars: Pick<StoredFyersBar, 'bucketTs' | 'high' | 'low' | 'close'>[],
   sinceSec: number,
   /** Expected LAST 5-min bucket of the session (e.g. 15:25 IST). When given, a
-   *  'timeout' whose data ends >1 candle before it is downgraded to 'incomplete'
-   *  (the recorder died early; a late stop could be hidden). */
+   *  'timeout' whose data ends before it is downgraded to 'incomplete' (the
+   *  recorder died early; a late stop could be hidden). */
   expectedLastBucketSec?: number,
 ): SpotGrade | null {
   const all = bars.filter((b) => b.high > 0 && b.low > 0).sort((a, b) => a.bucketTs - b.bucketTs);
@@ -94,24 +95,27 @@ export function gradeSpotPath(
     return { outcome: 'incomplete', outcomeR: null, ...base };
   }
 
-  // Walk the post-entry path in time, watching for a missing candle before the
-  // outcome (a gap could hide a stop).
+  // Walk the post-entry path in time. A MISSING candle before EITHER level is
+  // reached hides a possible stop AND a possible target, so the order can't be
+  // known — return 'incomplete' the moment a gap appears, symmetrically. (The
+  // old code set a flag but still let a later candle resolve as a −1R stop
+  // across the gap, biasing expectancy pessimistically — PR#4 review #2.)
   let prevTs = midCandle ? entryBucket : entryBucket - BUCKET; // bucket expected just before the first pathBar
-  let gapSeen = false;
   for (const b of pathBars) {
-    if (b.bucketTs - prevTs > BUCKET) gapSeen = true;
+    if (b.bucketTs - prevTs > BUCKET) return { outcome: 'incomplete', outcomeR: null, ...base };
     prevTs = b.bucketTs;
     if (touchesStop(b)) return { outcome: 'stop', outcomeR: -1, ...base }; // stop wins a same-candle tie
-    if (touchesTarget(b)) {
-      // Verified target — unless a candle was missing before it (hidden stop).
-      return gapSeen ? { outcome: 'incomplete', outcomeR: null, ...base } : { outcome: 'target', outcomeR: plannedRR, ...base };
-    }
+    if (touchesTarget(b)) return { outcome: 'target', outcomeR: plannedRR, ...base };
   }
 
-  // Neither level reached. A gap, or data that ended early, could hide a stop.
+  // Neither level reached across a fully contiguous path. If the data ended
+  // before the session's expected last candle, a late stop/target could be
+  // hidden → incomplete. `lastTs < expectedLast` catches a session missing only
+  // its last bucket (that candle could hold the stop/target) — `lastTs + BUCKET
+  // < expectedLast` (off by one, PR#4 review #1) would miss it.
   const lastTs = pathBars[pathBars.length - 1].bucketTs;
-  const truncated = expectedLastBucketSec != null && lastTs + BUCKET < expectedLastBucketSec;
-  if (gapSeen || truncated) return { outcome: 'incomplete', outcomeR: null, ...base };
+  const truncated = expectedLastBucketSec != null && lastTs < expectedLastBucketSec;
+  if (truncated) return { outcome: 'incomplete', outcomeR: null, ...base };
 
   const close = pathBars[pathBars.length - 1].close;
   const timeoutR = round2((bull ? close - entry : entry - close) / risk);

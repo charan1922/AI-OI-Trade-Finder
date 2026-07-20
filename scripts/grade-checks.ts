@@ -49,6 +49,12 @@ export function runGradeChecks(check: CheckFn): void {
   const gGap = gradeSpotPath('CE', 100, 90, 120, [bar(600, 105, 99), bar(1200, 125, 110)], MID);
   check('grade CE: candle gap before target → incomplete (hidden stop possible)', gGap?.outcome === 'incomplete', `${gGap?.outcome}`);
 
+  // PR#4 #2 — gap before a later STOP: symmetric with the gap-before-target case.
+  // The missing 900 candle could have hit the TARGET first, so the order is
+  // unknowable → incomplete, NOT −1R (old code credited a −1R stop across the gap).
+  const gGapStop = gradeSpotPath('CE', 100, 90, 120, [bar(600, 105, 99), bar(1200, 101, 89)], MID);
+  check('grade CE: candle gap before stop → incomplete, not −1R', gGapStop?.outcome === 'incomplete' && gGapStop?.outcomeR === null, `${gGapStop?.outcome} ${gGapStop?.outcomeR}`);
+
   // PR#3 #4 — timeout whose data ends >1 candle before the session's last bucket.
   const gTrunc = gradeSpotPath('CE', 100, 90, 120, [bar(600, 105, 96), bar(900, 106, 97), bar(1200, 105, 98)], MID, 3000);
   check('grade CE: early-truncated session (no hit) → incomplete', gTrunc?.outcome === 'incomplete', `${gTrunc?.outcome}`);
@@ -56,6 +62,13 @@ export function runGradeChecks(check: CheckFn): void {
   // Clean full-session timeout: neither hit, data runs to the expected last bar.
   const gTo = gradeSpotPath('CE', 100, 90, 120, [bar(600, 105, 96), bar(900, 106, 97), bar(1200, 104, 101)], MID, 1200);
   check('grade CE: full-session neither hit → timeout, close-based R 0.25', gTo?.outcome === 'timeout' && gTo?.outcomeR === 0.25, `${gTo?.outcome} ${gTo?.outcomeR}`);
+
+  // PR#4 #1 — only the FINAL expected candle missing (data through 900, expected
+  // last 1200): that missing candle could hold the stop/target → incomplete, not
+  // a clean timeout. Catches the off-by-one the many-candles-early test misses
+  // (`lastTs + BUCKET < expectedLast` would score this a clean timeout).
+  const gLastMiss = gradeSpotPath('CE', 100, 90, 120, [bar(600, 105, 96), bar(900, 106, 97)], MID, 1200);
+  check('grade CE: only the final candle missing → incomplete', gLastMiss?.outcome === 'incomplete', `${gLastMiss?.outcome}`);
 
   // Same candle spans both stop and target → conservative STOP.
   const gBoth = gradeSpotPath('CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 125, 88)], MID);
