@@ -267,7 +267,7 @@ export default function AutoTradeHistoryPage() {
                     )}
                   </td>
                   <td className="p-2 text-[11px] tabular-nums text-muted-foreground">
-                    {r.entryChangePctOpen == null && r.entryForwardRR == null && r.shadowMfeR == null ? (
+                    {r.entryChangePctOpen == null && r.entryForwardRR == null && r.shadowMfeR == null && r.shadowMaeR == null ? (
                       '—'
                     ) : (
                       <>

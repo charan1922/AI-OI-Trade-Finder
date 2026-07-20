@@ -46,10 +46,11 @@ jobs:
       - run: pnpm db:generate
       - run: pnpm typecheck
       - run: pnpm lint
-      # DB-free pure-math checks (re-anchor, observed-baseline MFE/MAE,
-      # entry-candle exclusion, chgOpen bucketing, sector-rate rank). tsx is run
-      # via npx (the repo's standard runner) — no new dependency, no lockfile
-      # entry; it resolves the tsconfig @/ path aliases the same way the box does.
+      # DB-free pure checks: quant-shadow math (re-anchor, observed-baseline
+      # MFE/MAE, entry-candle exclusion, chgOpen bucketing, sector-rate rank) AND
+      # the config-drift override detector (toggle + numeric window/pick drift).
+      # tsx is run via npx (the repo's standard runner) — no new dependency, no
+      # lockfile entry; it resolves the tsconfig @/ path aliases like the box does.
       - run: npx --yes tsx scripts/verify-quant-shadow.ts
 
   build:

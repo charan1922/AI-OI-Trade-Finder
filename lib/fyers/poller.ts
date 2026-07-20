@@ -26,6 +26,7 @@ import { getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/auth';
 import { EOD_PUBLISH_HOUR_IST, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { prisma } from '@/lib/db';
 import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
+import { markToday, wasMarkedToday } from '@/lib/runtime/daily-marker';
 import { FyersAuthError, getFyersAccessToken, getFyersTokenStatus, hasFyersAuth } from '@/lib/fyers/auth';
 import { fetchFutDepth, fetchHistory5m, type FyersBar } from '@/lib/fyers/client';
 import { attachFutDepth, fyersBucketFor, pruneCandleHistory, upsertCandles } from '@/lib/fyers/candle-store';
@@ -314,6 +315,11 @@ export async function runFyersCycle(
   const leaseRenewal = setInterval(() => {
     void tryAcquireRuntimeLease(POLLER_LEASE, POLLER_LEASE_TTL_MS);
   }, 30_000);
+  // Config-drift reminder also on the market-OPEN path: a server that started
+  // AFTER the 08:40–09:15 pre-open ticks (e.g. 09:20) skipped the market-closed
+  // branch entirely, so without this the day's reminder would never fire. The
+  // persistent marker + window guard keep it at most once/day (PR#2 review).
+  void runConfigDriftReminder(state).catch(() => {});
   try {
     const today = todayIST();
     const date = summary.date;
@@ -928,34 +934,79 @@ export async function runTokenWarmup(): Promise<void> {
   await warmPreOpenTokens(getState(), true);
 }
 
+/** Config-drift reminder window (IST minutes): from the pre-open warm-up start
+ *  (08:40) through the end of the proven entry window (11:00). Firing anywhere
+ *  in here — not only pre-09:15 — means a LATE server start (e.g. 09:20) still
+ *  gets the reminder before the trading day's decisions matter (PR#2 review). */
+const DRIFT_REMINDER_START_MIN = WARM_START_MIN; // 08:40
+const DRIFT_REMINDER_END_MIN = 11 * 60; // 11:00
+const DRIFT_MARKER = 'config-drift-reminder';
+const DRIFT_LEASE = 'config-drift-reminder';
+
+function inDriftReminderWindow(ist: Date): boolean {
+  const day = ist.getDay();
+  if (day === 0 || day === 6) return false;
+  const minute = ist.getHours() * 60 + ist.getMinutes();
+  return minute >= DRIFT_REMINDER_START_MIN && minute < DRIFT_REMINDER_END_MIN;
+}
+
 /**
- * Pre-open config-drift reminder (AT-review 2026-07-20 operational fix). Any
- * live 'Trade Suggest' toggle left off its coded-safe default (e.g. the
- * USE_EXTENDED_TREND_BYPASS that caused the COLPAL 2026-07-20 loss) is already
- * visible on /config's "overridden" badge — but that page is passive, and this
- * one sat unnoticed for 10 days. This pushes the same information once per
- * trading day in the pre-open window (08:40–09:15 IST, before the scan window
- * opens), so a forgotten override keeps nagging instead of going silent.
- * Complements the immediate on-change alert in setToggle(). Max one alert per
- * day even with nothing to report (the marker advances either way) — never
- * throws to the poller.
+ * Config-drift reminder (AT-review 2026-07-20 op-fix; hardened per PR#2 review).
+ * Any scanner setting left off its coded-safe default — the toggle OR a numeric
+ * like WINDOW_END_MIN (the USE_EXTENDED_TREND_BYPASS drift that caused the
+ * COLPAL 2026-07-20 loss sat unnoticed for 10 days) — is pushed once per trading
+ * day so a forgotten override keeps nagging instead of going silent. Complements
+ * the immediate on-change alert in setToggle/setNumberSetting.
+ *
+ * Correctness (PR#2 review):
+ *  - once-per-day is a PERSISTENT marker (runtime_daily_markers), so a restart
+ *    mid-window can't resend; the in-memory field is only a fast-path cache;
+ *  - a dedicated runtime LEASE serialises the send, so overlapping processes
+ *    during a rolling deploy can't both fire (the market-closed branch runs
+ *    BEFORE the poller's own lease is acquired);
+ *  - the marker is set ONLY after CONFIRMED delivery (sendMessageAsync().ok),
+ *    so a failed DB read or Telegram send is retried next tick, never lost;
+ *  - runs across 08:40–11:00 (not just pre-09:15), so a late start still alerts.
+ *  Autonomous-server only (an ops signal), like the sibling EOD jobs. Callable
+ *  from both the market-closed and market-open paths — the guards make it
+ *  idempotent. Never throws to the poller.
  */
 async function runConfigDriftReminder(state: PollerState): Promise<void> {
-  if (!inWarmupClockWindow(nowIST())) return;
+  if (!isAutonomousServer()) return;
+  if (!inDriftReminderWindow(nowIST())) return;
   const today = todayIST();
-  if (state.lastConfigDriftAlertDate === today) return;
+  if (state.lastConfigDriftAlertDate === today) return; // fast in-memory path
   if (await isMarketHoliday(today)) return;
-  state.lastConfigDriftAlertDate = today;
+  // Persistent dedup: survives restart / rolling deploy within the day.
+  if (await wasMarkedToday(DRIFT_MARKER, today)) {
+    state.lastConfigDriftAlertDate = today;
+    return;
+  }
+  // Serialise the send across concurrent processes (this path is pre-POLLER_LEASE).
+  if (!(await tryAcquireRuntimeLease(DRIFT_LEASE, 120_000))) return;
   try {
-    const { tradeSuggestOverrideSummary } = await import('@/lib/config/feature-toggles');
-    const overrides = await tradeSuggestOverrideSummary();
-    if (overrides.length === 0) return;
-    const { sendMessage } = await import('@/lib/telegram');
-    sendMessage(
+    const { tradeSuggestConfigOverrideSummary } = await import('@/lib/config/feature-toggles');
+    const overrides = await tradeSuggestConfigOverrideSummary();
+    if (overrides.length === 0) {
+      // Nothing drifted — safe to mark done immediately (no delivery to confirm).
+      await markToday(DRIFT_MARKER, today);
+      state.lastConfigDriftAlertDate = today;
+      return;
+    }
+    const { sendMessageAsync } = await import('@/lib/telegram');
+    const result = await sendMessageAsync(
       `⚠️ Trade-Suggest scanner has ${overrides.length} setting(s) off their safe default today:\n${overrides.map((o) => `• ${o}`).join('\n')}\n\nCheck /config if this wasn't intentional.`
     );
+    if (result.ok) {
+      await markToday(DRIFT_MARKER, today); // mark done ONLY after confirmed delivery
+      state.lastConfigDriftAlertDate = today;
+    } else {
+      console.warn(`${TAG} config-drift reminder delivery failed (will retry next tick): ${result.error ?? 'unknown'}`);
+    }
   } catch (err) {
-    console.warn(`${TAG} config-drift reminder failed: ${(err as Error).message}`);
+    console.warn(`${TAG} config-drift reminder failed (will retry next tick): ${(err as Error).message}`);
+  } finally {
+    await releaseRuntimeLease(DRIFT_LEASE);
   }
 }
 

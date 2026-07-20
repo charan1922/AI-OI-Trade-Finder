@@ -509,3 +509,11 @@ model RuntimeLease {
   @@map("runtime_leases")
 }
 
+model RuntimeDailyMarker {
+  name      String @id
+  day       String
+  updatedAt String
+
+  @@map("runtime_daily_markers")
+}
+
