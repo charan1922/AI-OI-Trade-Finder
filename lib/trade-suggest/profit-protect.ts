@@ -35,9 +35,11 @@
  */
 import type { StoredFyersBar } from '@/lib/fyers/candle-store';
 
-/** Outcome under a protection rule. 'protected' = stopped at the ratcheted
- *  breakeven/locked level AFTER the trigger fired (R ≥ 0); 'stop' = the ORIGINAL
- *  -1R stop hit before the trigger; the rest mirror grade.ts. */
+/** Outcome under a protection rule. 'protected' = the exit was governed by the
+ *  moved-up stop AFTER the trigger armed — usually the ratcheted breakeven/locked
+ *  level, but the OBSERVABLE CLOSE when the arming candle already closed beyond
+ *  that level (so R can be < 0 there). 'stop' = the ORIGINAL -1R stop hit before
+ *  the trigger; the rest mirror grade.ts. */
 export type ProtectOutcome = 'target' | 'protected' | 'stop' | 'timeout' | 'entry-ambiguous' | 'incomplete';
 
 export interface ProtectRule {
@@ -145,7 +147,18 @@ export function simulateProtected(
 
     // Ratchet the stop from THIS bar's favourable excursion, for the NEXT bar.
     mfePrior = Math.max(mfePrior, favExc(b));
-    stopR = Math.max(stopR, ruleStopR(rule, mfePrior)); // tighten-only
+    const candidateStopR = Math.max(stopR, ruleStopR(rule, mfePrior)); // tighten-only
+    if (candidateStopR > stopR) {
+      // The raised stop only becomes active from the NEXT bar (no-lookahead). If
+      // THIS bar already CLOSED at/below the raised level, the market is already
+      // beyond where the stop would rest — a sell-stop (long) / buy-stop (short)
+      // can't sit on the wrong side of price. So the exit is the observable
+      // CLOSE, never the unreachable level (crediting the level would assume
+      // intra-candle trailing this model explicitly disavows) — PR#6 review.
+      const armCloseR = round2((dir * (b.close - entry)) / risk);
+      if (armCloseR <= candidateStopR) return { outcome: 'protected', outcomeR: armCloseR };
+      stopR = candidateStopR;
+    }
   }
 
   // Neither level hit on a contiguous path. Same truncation guard as grade.ts:
@@ -154,8 +167,10 @@ export function simulateProtected(
   if (expectedLastBucketSec != null && lastTs < expectedLastBucketSec) {
     return { outcome: 'incomplete', outcomeR: null };
   }
-  // A fully walked path → timeout at the last close, floored at the ratcheted
-  // stop (we could never have sat through a level below stopR without exiting).
+  // A fully walked path → timeout at the last close. The `max` is defensive:
+  // reaching here means no bar's low hit `stopR`, so the last close is provably
+  // ≥ stopR (a stop above the close would have exited in the arming step above),
+  // i.e. this resolves to closeR — never a floor above the close (PR#6 review).
   const close = pathBars[pathBars.length - 1].close;
   const closeR = round2((dir * (close - entry)) / risk);
   return { outcome: 'timeout', outcomeR: Math.max(closeR, round2(stopR)) };
@@ -240,14 +255,15 @@ export function aggregateProtection(rows: ProtectAggRow[], rules: ProtectRule[] 
   const usable = rows.filter((r) => Number.isFinite(r.baseR));
   const ruleStats = rules.map<ProtectRuleStat>((rule) => {
     const paired = usable.filter((r) => Number.isFinite(r.blob[rule.name]));
-    const avgR = mean(paired.map((r) => r.blob[rule.name]));
-    const baselineAvgR = mean(paired.map((r) => r.baseR));
     return {
       name: rule.name,
       n: paired.length,
-      avgR,
-      baselineAvgR,
-      deltaR: avgR != null && baselineAvgR != null ? Math.round((avgR - baselineAvgR) * 100) / 100 : null,
+      avgR: mean(paired.map((r) => r.blob[rule.name])),
+      baselineAvgR: mean(paired.map((r) => r.baseR)),
+      // ΔR from the PAIRED per-row differences, rounded ONCE — not the difference
+      // of two already-rounded means (double-rounding could shift a ±0.1R signal;
+      // PR#6 review). Mathematically the mean of (rule − base) over the same rows.
+      deltaR: mean(paired.map((r) => r.blob[rule.name] - r.baseR)),
       savedStops: paired.filter((r) => r.baseR <= -1 && r.blob[rule.name] >= 0).length,
       hurt: paired.filter((r) => r.blob[rule.name] < r.baseR).length,
     };

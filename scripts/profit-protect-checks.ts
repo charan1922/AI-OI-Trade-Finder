@@ -39,10 +39,28 @@ export function runProfitProtectChecks(check: CheckFn): void {
   const s4 = simulateProtected('CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 113, 89)], MID, BE1);
   check('protect BE@1R: +1R and stop in one candle → stop −1R (no lookahead)', s4?.outcome === 'stop' && s4?.outcomeR === -1, `${s4?.outcome} ${s4?.outcomeR}`);
 
-  // 5. Trail locks a gain: MFE +1.8R → stop ratchets to +1.3R (1.8−0.5), pullback
-  //    through it → exit AT the locked +1.3R.
-  const s5 = simulateProtected('CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 118, 106), bar(1200, 115, 112)], MID, TRAIL);
-  check('protect trail: +1.8R then pullback → protected +1.3R locked', s5?.outcome === 'protected' && s5?.outcomeR === 1.3, `${s5?.outcome} ${s5?.outcomeR}`);
+  // 5. Trail locks a gain: MFE +1.8R → stop ratchets to +1.3R (1.8−0.5). The
+  //    arming candle CLOSES at +1.4R (above the new stop, so the stop is a valid
+  //    resting level), then a LATER candle pulls back through it → exit AT +1.3R.
+  const s5 = simulateProtected('CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 118, 106, 114), bar(1200, 115, 112)], MID, TRAIL);
+  check('protect trail: +1.8R (closes above stop) then pullback → protected +1.3R locked', s5?.outcome === 'protected' && s5?.outcomeR === 1.3, `${s5?.outcome} ${s5?.outcomeR}`);
+
+  // 5b. PR#6 #blocker — the arming candle CLOSES BELOW its new trail stop (+1.2R
+  //     close vs +1.3R stop). A stop can't rest above the market, so the exit is
+  //     the observable close (+1.2R), never the unreachable +1.3R level.
+  const s5b = simulateProtected('CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 118, 106, 112)], MID, TRAIL);
+  check('protect trail: arming candle closes below its new stop → exit at close +1.2R (not +1.3R)', s5b?.outcome === 'protected' && s5b?.outcomeR === 1.2, `${s5b?.outcome} ${s5b?.outcomeR}`);
+
+  // 5c. PR#6 — breakeven arms (+1.1R high) but the SAME candle CLOSES below entry
+  //     (−0.2R). Price is already through breakeven, so the exit is the close
+  //     (−0.2R), NOT a free 0R — the old code overstated breakeven here.
+  const s5c = simulateProtected('CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 111, 98, 98)], MID, BE1);
+  check('protect BE@1R: arms but closes below entry → protected −0.2R (not 0R)', s5c?.outcome === 'protected' && s5c?.outcomeR === -0.2, `${s5c?.outcome} ${s5c?.outcomeR}`);
+
+  // 5d. PR#6 — the FINAL candle raises the stop above its own close: exit at the
+  //     close (+1.2R), not the timeout floored at the ratcheted +1.3R.
+  const s5d = simulateProtected('CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 110, 104, 108), bar(1200, 118, 112, 112)], MID, TRAIL, 1200);
+  check('protect trail: final candle stop above its close → exit at close +1.2R (no timeout floor)', s5d?.outcome === 'protected' && s5d?.outcomeR === 1.2, `${s5d?.outcome} ${s5d?.outcomeR}`);
 
   // 6. Below the trigger the whole time → plain timeout, close-based (== baseline).
   const s6 = simulateProtected('CE', 100, 90, 120, [bar(600, 104, 98), bar(900, 105, 99, 102)], MID, BE1, 900);
@@ -79,6 +97,12 @@ export function runProfitProtectChecks(check: CheckFn): void {
   //     PE plan: entry 100, stop 110 (risk 10), target 80. +1R = spot 90.
   const s11 = simulateProtected('PE', 100, 110, 80, [bar(600, 101, 99), bar(900, 96, 88), bar(1200, 94, 91)], MID, TRAIL);
   check('protect PE trail: +1.2R down then rally → protected +0.7R locked', s11?.outcome === 'protected' && s11?.outcomeR === 0.7, `${s11?.outcome} ${s11?.outcomeR}`);
+
+  // 11b. PR#6 — PE arming candle closes above its new stop (adverse side): MFE
+  //      +1.8R down (low 82), stop → +1.3R, but the candle closes at +1.2R (spot
+  //      88, on the WRONG side of the +1.3R stop) → exit at the close +1.2R.
+  const s11b = simulateProtected('PE', 100, 110, 80, [bar(600, 101, 99), bar(900, 90, 82, 88)], MID, TRAIL);
+  check('protect PE trail: arming candle closes past its new stop → exit at close +1.2R', s11b?.outcome === 'protected' && s11b?.outcomeR === 1.2, `${s11b?.outcome} ${s11b?.outcomeR}`);
 
   // 12. Unresolvable cases mirror grade.ts.
   const s12a = simulateProtected('CE', 100, 90, 120, [bar(600, 105, 99), bar(1200, 108, 105)], MID, BE1);
