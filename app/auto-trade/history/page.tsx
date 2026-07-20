@@ -30,6 +30,12 @@ interface Trade {
   shadowExitPremium: number | null;
   shadowExitReason: string | null;
   shadowPnlRupees: number | null;
+  /** Quant SHADOW metrics (measurement only — never gates a live entry/exit).
+   *  See lib/auto-trade/quant/reanchor.ts. */
+  entryChangePctOpen: number | null;
+  entryForwardRR: number | null;
+  shadowMfeR: number | null;
+  shadowMaeR: number | null;
 }
 interface Summary {
   trades: number;
@@ -57,6 +63,8 @@ const pnlClass = (n: number | null) =>
       : 'text-red-600 dark:text-red-400';
 const navCls = (disabled: boolean) =>
   `flex h-7 w-7 items-center justify-center rounded-md border border-border ${disabled ? 'opacity-30' : 'hover:bg-accent'}`;
+
+const fmtR = (n: number | null) => (n == null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}R`);
 
 export default function AutoTradeHistoryPage() {
   const [dates, setDates] = useState<string[]>([]);
@@ -198,6 +206,12 @@ export default function AutoTradeHistoryPage() {
                 <th className="p-2 text-right">P&L</th>
                 <th className="p-2 text-left">Status</th>
                 <th className="p-2 text-left">Exit reason</th>
+                <th
+                  className="p-2 text-left"
+                  title="SHADOW measurement only — never gated this trade's entry or exit. chgOpen = how far the stock had already moved from the day's open when the fill confirmed (late-chase signal). fwdRR = reward:risk still available to the stored target from that fill. mfe/mae = best/worst spot-R reached after entry (candle high/low, entry candle excluded)."
+                >
+                  Entry timing (shadow)
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -252,6 +266,26 @@ export default function AutoTradeHistoryPage() {
                       <span className="mt-0.5 block text-[10px] italic opacity-80">would-have: {r.shadowExitReason}</span>
                     )}
                   </td>
+                  <td className="p-2 text-[11px] tabular-nums text-muted-foreground">
+                    {r.entryChangePctOpen == null && r.entryForwardRR == null && r.shadowMfeR == null ? (
+                      '—'
+                    ) : (
+                      <>
+                        {r.entryChangePctOpen != null && (
+                          <span className={Math.abs(r.entryChangePctOpen) >= 3 ? 'font-medium text-amber-600 dark:text-amber-400' : ''}>
+                            {r.entryChangePctOpen >= 0 ? '+' : ''}
+                            {r.entryChangePctOpen.toFixed(1)}% from open
+                          </span>
+                        )}
+                        {r.entryForwardRR != null && <span className="ml-1.5">fwdRR {r.entryForwardRR.toFixed(2)}</span>}
+                        {(r.shadowMfeR != null || r.shadowMaeR != null) && (
+                          <span className="mt-0.5 block text-[10px] opacity-80">
+                            mfe {fmtR(r.shadowMfeR)} · mae {fmtR(r.shadowMaeR)}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -273,6 +307,10 @@ export default function AutoTradeHistoryPage() {
         <span className="italic">
           Values marked <span className="font-semibold">*</span> are would-have (paper) figures for entries that failed
           to reach the broker — replayed from real candles and NOT counted in the day&apos;s P&amp;L.
+        </span>{' '}
+        <span className="italic">
+          &ldquo;Entry timing (shadow)&rdquo; is measurement only — recorded AFTER the fill, it never changed this
+          trade&apos;s entry or exit. Hover the column header for what each number means.
         </span>
       </p>
     </div>

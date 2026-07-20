@@ -240,9 +240,30 @@ export async function getToggle(key: string, fallback: boolean): Promise<boolean
   }
 }
 
-/** Persist a toggle. Unknown keys are rejected (the registry is the allowlist). */
+/**
+ * Currently-active 'Trade Suggest' overrides — any toggle in that category
+ * whose stored value differs from its coded-safe default. Every default here
+ * IS the safe state (see each description above); a drifted value is exactly
+ * the class of thing that caused the COLPAL 2026-07-20 loss
+ * (USE_EXTENDED_TREND_BYPASS left ON since 2026-07-10, unnoticed for 10 days).
+ * Used by both /config's "overridden" badge and the poller's pre-open reminder
+ * (AT-review 2026-07-20 operational fix) — single source, no drift of its own.
+ */
+export async function tradeSuggestOverrideSummary(): Promise<string[]> {
+  const toggles = await getAllToggles();
+  return toggles
+    .filter((t) => t.category === 'Trade Suggest' && t.value !== t.default)
+    .map((t) => `${t.label}: ${t.value ? 'ON' : 'OFF'} (safe default ${t.default ? 'ON' : 'OFF'})`);
+}
+
+/** Persist a toggle. Unknown keys are rejected (the registry is the allowlist).
+ *  A 'Trade Suggest' toggle moved AWAY from its safe default fires an immediate
+ *  alert — the moment-of-change reminder that a silent DB flip can't give
+ *  (AT-review 2026-07-20; complements the daily pre-open reminder below). Moving
+ *  BACK to the default is a return to safety, not a risk — no alert. */
 export async function setToggle(key: string, value: boolean): Promise<void> {
-  if (!byKey.has(key)) throw new Error(`unknown toggle: ${key}`);
+  const def = byKey.get(key);
+  if (!def) throw new Error(`unknown toggle: ${key}`);
   await ensureTable();
   await prisma.$executeRawUnsafe(
     `INSERT INTO feature_toggles (key, value, updatedAt) VALUES (?, ?, ?)
@@ -251,6 +272,16 @@ export async function setToggle(key: string, value: boolean): Promise<void> {
     value ? 1 : 0,
     new Date().toISOString()
   );
+  if (def.category === 'Trade Suggest' && value !== def.default) {
+    try {
+      const { sendMessage } = await import('@/lib/telegram');
+      sendMessage(
+        `⚙️ ${def.label} set to ${value ? 'ON' : 'OFF'} — differs from its safe default (${def.default ? 'ON' : 'OFF'}). Check /config if this wasn't intentional.`
+      );
+    } catch {
+      // alerting is best-effort — never block a config write
+    }
+  }
 }
 
 /** One numeric setting's definition plus its current stored state. */

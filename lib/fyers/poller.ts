@@ -148,6 +148,9 @@ interface PollerState {
   /** Keeps lastWarmup writes clean when a slow warm-up overlaps the next tick
    *  (the auth modules' promise locks already make the API side safe). */
   warmupRunning: boolean;
+  /** Last date the pre-open config-drift reminder ran (max one per day) — see
+   *  runConfigDriftReminder. */
+  lastConfigDriftAlertDate: string | null;
 }
 
 const g = globalThis as unknown as { __fyersPoller?: PollerState };
@@ -174,6 +177,7 @@ function getState(): PollerState {
     lastCapture: null,
     lastWarmup: null,
     warmupRunning: false,
+    lastConfigDriftAlertDate: null,
   };
   return g.__fyersPoller;
 }
@@ -291,6 +295,8 @@ export async function runFyersCycle(
     // gating lives inside. Note: a PAUSED poller skips this branch entirely —
     // pausing is an explicit operator action, warm-up pauses with it.
     void warmPreOpenTokens(state).catch(() => {});
+    // Pre-open config-drift reminder — same window, independent of tokens.
+    void runConfigDriftReminder(state).catch(() => {});
     return finish('market-closed');
   }
   if (!opts.force && (await isMarketHoliday(summary.date))) return finish('holiday');
@@ -922,6 +928,37 @@ export async function runTokenWarmup(): Promise<void> {
   await warmPreOpenTokens(getState(), true);
 }
 
+/**
+ * Pre-open config-drift reminder (AT-review 2026-07-20 operational fix). Any
+ * live 'Trade Suggest' toggle left off its coded-safe default (e.g. the
+ * USE_EXTENDED_TREND_BYPASS that caused the COLPAL 2026-07-20 loss) is already
+ * visible on /config's "overridden" badge — but that page is passive, and this
+ * one sat unnoticed for 10 days. This pushes the same information once per
+ * trading day in the pre-open window (08:40–09:15 IST, before the scan window
+ * opens), so a forgotten override keeps nagging instead of going silent.
+ * Complements the immediate on-change alert in setToggle(). Max one alert per
+ * day even with nothing to report (the marker advances either way) — never
+ * throws to the poller.
+ */
+async function runConfigDriftReminder(state: PollerState): Promise<void> {
+  if (!inWarmupClockWindow(nowIST())) return;
+  const today = todayIST();
+  if (state.lastConfigDriftAlertDate === today) return;
+  if (await isMarketHoliday(today)) return;
+  state.lastConfigDriftAlertDate = today;
+  try {
+    const { tradeSuggestOverrideSummary } = await import('@/lib/config/feature-toggles');
+    const overrides = await tradeSuggestOverrideSummary();
+    if (overrides.length === 0) return;
+    const { sendMessage } = await import('@/lib/telegram');
+    sendMessage(
+      `⚠️ Trade-Suggest scanner has ${overrides.length} setting(s) off their safe default today:\n${overrides.map((o) => `• ${o}`).join('\n')}\n\nCheck /config if this wasn't intentional.`
+    );
+  } catch (err) {
+    console.warn(`${TAG} config-drift reminder failed: ${(err as Error).message}`);
+  }
+}
+
 function scheduleNextTick(): void {
   const state = getState();
   if (!state.started) return;
@@ -987,6 +1024,8 @@ export interface PollerStatus {
   universe: { date: string; symbols: string[] } | null;
   /** Latest pre-open token warm-up outcome (see warmPreOpenTokens). */
   lastWarmup: { date: string; at: number; fyers: string; dhan: string } | null;
+  /** Last date the pre-open config-drift reminder ran (see runConfigDriftReminder). */
+  lastConfigDriftAlertDate: string | null;
 }
 
 export function getFyersPollerStatus(): PollerStatus {
@@ -1007,5 +1046,6 @@ export function getFyersPollerStatus(): PollerStatus {
     token: getFyersTokenStatus(),
     universe: peekUniverse(),
     lastWarmup: state.lastWarmup,
+    lastConfigDriftAlertDate: state.lastConfigDriftAlertDate,
   };
 }
