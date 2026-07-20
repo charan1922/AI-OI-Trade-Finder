@@ -190,10 +190,12 @@ export interface StoredSuggestion {
   maxDownPct: number | null;
   closePct: number | null;
   /** Honest PATH-DEPENDENT grade vs the stored plan (grade.ts): which of the
-   *  plan's stop/target was reached FIRST, or 'timeout'. Null on legacy rows
-   *  graded before this existed (they fall back to the maxUp-based hit test). */
-  spotOutcome: 'target' | 'stop' | 'timeout' | null;
-  /** Realised R against the plan's own risk (stop −1, target +RR, timeout close-based). */
+   *  plan's stop/target was reached FIRST, or 'timeout'. 'entry-ambiguous' /
+   *  'incomplete' = 5-min blind spots (excluded from the win-rate). Null on
+   *  legacy rows graded before this existed. */
+  spotOutcome: 'target' | 'stop' | 'timeout' | 'entry-ambiguous' | 'incomplete' | null;
+  /** Realised R against the plan's own risk (stop −1, target +RR, timeout
+   *  close-based); null for the unresolvable outcomes and legacy rows. */
   spotOutcomeR: number | null;
   outcomeAt: string | null;
 }
