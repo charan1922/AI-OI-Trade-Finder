@@ -21,6 +21,17 @@
  * NO intra-candle lookahead: the protective stop that guards bar N is set from
  * the max-favourable-excursion through bar N-1 only. We never let a candle's own
  * high raise the stop that then "saves" that same candle's low.
+ *
+ * THEORETICAL STOP-LEVEL FILLS (PR#5 review #2): when a stop is crossed we credit
+ * the exact stop level — the SAME assumption grade.ts makes for its baseline −1R
+ * stop. It ignores intrabar gap-through slippage (a candle that OPENS beyond the
+ * stop would really fill at the open, worse than the level). This is deliberate:
+ * modelling gaps on the protection side ALONE would bias the ΔR against
+ * protection, since the baseline it's compared to also fills at its level. Gap
+ * slippage hits both sides comparably, so it largely cancels in the ΔR. The
+ * per-rule numbers are therefore a THEORETICAL (level-fill) expectancy, matched
+ * to the baseline — a decision metric, not a promise of live fills. If gap
+ * realism is ever wanted, it must be added to grade.ts too, symmetrically.
  */
 import type { StoredFyersBar } from '@/lib/fyers/candle-store';
 
@@ -43,8 +54,10 @@ export interface ProtectRule {
 
 export interface ProtectGrade {
   outcome: ProtectOutcome;
-  /** Realised R vs the plan's own initial risk. null for the unresolvable
-   *  outcomes (entry-ambiguous / incomplete), exactly like grade.ts. */
+  /** THEORETICAL (level-fill) R vs the plan's own initial risk — assumes the
+   *  exit fills at the stop level, same as grade.ts's baseline (gap slippage
+   *  ignored on both sides; see header). null for the unresolvable outcomes
+   *  (entry-ambiguous / incomplete), exactly like grade.ts. */
   outcomeR: number | null;
 }
 
@@ -100,11 +113,17 @@ export function simulateProtected(
   const entryBar = all.find((b) => b.bucketTs === entryBucket) ?? null;
   const pathBars = all.filter((b) => (midCandle ? b.bucketTs > entryBucket : b.bucketTs >= entryBucket));
 
-  // Entry-candle blind spot + missing entry period — mirror grade.ts exactly so
-  // the baseline and the counterfactual are computed over the SAME resolvable set.
+  // Entry-candle blind spot + missing entry period — mirror grade.ts, PLUS this
+  // rule's own TRIGGER. A mid-candle suggestion whose entry candle touched the
+  // original stop/target OR reached this rule's profit trigger is unresolvable:
+  // we can't tell if the trigger (which ARMS the stop move) fired before or after
+  // the fill. Without the trigger check the entry candle's spike is silently
+  // dropped (mfePrior starts at 0) and the rule is scored pessimistically as
+  // never-armed — biasing ΔR downward (PR#5 review #1). Per-rule, so a stricter
+  // rule (e.g. breakeven@1.5R) can still resolve when a 1R trigger was ambiguous.
   const touchesInitStop = (b: { high: number; low: number }) => (bull ? b.low <= stop : b.high >= stop);
   const touchesTarget = (b: { high: number; low: number }) => (bull ? b.high >= target : b.low <= target);
-  if (midCandle && entryBar && (touchesInitStop(entryBar) || touchesTarget(entryBar))) {
+  if (midCandle && entryBar && (touchesInitStop(entryBar) || touchesTarget(entryBar) || favExc(entryBar) >= rule.triggerR)) {
     return { outcome: 'entry-ambiguous', outcomeR: null };
   }
   if ((midCandle && !entryBar) || pathBars.length === 0) return { outcome: 'incomplete', outcomeR: null };
@@ -160,4 +179,78 @@ export function simulateAllPresets(
     if (g && g.outcomeR != null) out[rule.name] = g.outcomeR;
   }
   return out;
+}
+
+/** Parse a persisted protectShadow JSON blob → { ruleName: R }. Never throws;
+ *  drops any non-numeric entry. Shared by store.ts and the report so the parse
+ *  is defined once and unit-testable. */
+export function parseProtectBlob(v: unknown): Record<string, number> {
+  try {
+    const parsed = JSON.parse(String(v ?? '{}'));
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, number> = {};
+    for (const [k, val] of Object.entries(parsed)) if (typeof val === 'number' && Number.isFinite(val)) out[k] = val;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** One resolved pick's inputs to the aggregation: its baseline R + parsed blob. */
+export interface ProtectAggRow {
+  baseR: number;
+  blob: Record<string, number>;
+}
+
+export interface ProtectRuleStat {
+  name: string;
+  /** Rows this rule was scored over — its blob carried a finite R for the rule.
+   *  Per-rule (a rule that was entry-ambiguous on some rows has a smaller n). */
+  n: number;
+  /** Mean counterfactual R under the rule (theoretical level-fill). */
+  avgR: number | null;
+  /** Mean BASELINE R over the SAME n rows — apples-to-apples. */
+  baselineAvgR: number | null;
+  /** avgR − baselineAvgR: positive = the rule improved expectancy. */
+  deltaR: number | null;
+  /** Rows the rule rescued: baseline was a −1R stop, the rule exited ≥ 0R. */
+  savedStops: number;
+  /** Rows the rule made WORSE than baseline (the honest cost side). */
+  hurt: number;
+}
+
+export interface ProtectAggregate {
+  /** Resolved rows carrying any protection blob (the overall denominator). */
+  n: number;
+  /** Mean baseline R over those rows — the bar every rule must beat. */
+  baselineAvgR: number | null;
+  rules: ProtectRuleStat[];
+}
+
+const mean = (v: number[]): number | null =>
+  v.length === 0 ? null : Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 100) / 100;
+
+/**
+ * PURE aggregation of the profit-protection shadow (PR#5 review #4): given the
+ * resolved rows' baseline R + parsed blobs, compare each rule against the
+ * baseline over the SAME paired rows. No DB — store.getProtectionStats() just
+ * loads the rows and calls this, so the savedStops/hurt/ΔR math is unit-testable.
+ */
+export function aggregateProtection(rows: ProtectAggRow[], rules: ProtectRule[] = PROTECT_PRESETS): ProtectAggregate {
+  const usable = rows.filter((r) => Number.isFinite(r.baseR));
+  const ruleStats = rules.map<ProtectRuleStat>((rule) => {
+    const paired = usable.filter((r) => Number.isFinite(r.blob[rule.name]));
+    const avgR = mean(paired.map((r) => r.blob[rule.name]));
+    const baselineAvgR = mean(paired.map((r) => r.baseR));
+    return {
+      name: rule.name,
+      n: paired.length,
+      avgR,
+      baselineAvgR,
+      deltaR: avgR != null && baselineAvgR != null ? Math.round((avgR - baselineAvgR) * 100) / 100 : null,
+      savedStops: paired.filter((r) => r.baseR <= -1 && r.blob[rule.name] >= 0).length,
+      hurt: paired.filter((r) => r.blob[rule.name] < r.baseR).length,
+    };
+  });
+  return { n: usable.length, baselineAvgR: mean(usable.map((r) => r.baseR)), rules: ruleStats };
 }
