@@ -109,8 +109,11 @@ export function gradeSpotPath(
   }
 
   // Neither level reached. A gap, or data that ended early, could hide a stop.
+  // The EXPECTED final candle itself must be present: `lastTs < expectedLast`
+  // catches a session missing only its last bucket (that candle could hold the
+  // stop/target) — `lastTs + BUCKET < expectedLast` (off by one) would miss it.
   const lastTs = pathBars[pathBars.length - 1].bucketTs;
-  const truncated = expectedLastBucketSec != null && lastTs + BUCKET < expectedLastBucketSec;
+  const truncated = expectedLastBucketSec != null && lastTs < expectedLastBucketSec;
   if (gapSeen || truncated) return { outcome: 'incomplete', outcomeR: null, ...base };
 
   const close = pathBars[pathBars.length - 1].close;

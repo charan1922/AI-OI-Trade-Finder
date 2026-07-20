@@ -57,6 +57,12 @@ export function runGradeChecks(check: CheckFn): void {
   const gTo = gradeSpotPath('CE', 100, 90, 120, [bar(600, 105, 96), bar(900, 106, 97), bar(1200, 104, 101)], MID, 1200);
   check('grade CE: full-session neither hit → timeout, close-based R 0.25', gTo?.outcome === 'timeout' && gTo?.outcomeR === 0.25, `${gTo?.outcome} ${gTo?.outcomeR}`);
 
+  // Only the FINAL expected candle missing (data through 900, expected last 1200):
+  // that missing candle could hold the stop/target → incomplete, not a clean
+  // timeout. Catches the off-by-one the many-candles-early test misses.
+  const gLastMiss = gradeSpotPath('CE', 100, 90, 120, [bar(600, 105, 96), bar(900, 106, 97)], MID, 1200);
+  check('grade CE: only the final candle missing → incomplete', gLastMiss?.outcome === 'incomplete', `${gLastMiss?.outcome}`);
+
   // Same candle spans both stop and target → conservative STOP.
   const gBoth = gradeSpotPath('CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 125, 88)], MID);
   check('grade CE: one post-entry candle hits both → conservative stop', gBoth?.outcome === 'stop');
