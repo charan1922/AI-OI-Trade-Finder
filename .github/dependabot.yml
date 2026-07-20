@@ -1,0 +1,20 @@
+# Dependabot keeps the SHA-pinned GitHub Actions current: it reads the trailing
+# `# vX.Y.Z` version comment next to each pinned SHA in .github/workflows/, and
+# opens a PR that bumps BOTH the SHA and the comment together (with release
+# notes). This is what makes SHA-pinning maintainable — without it, pinned
+# actions silently go stale and miss security patches (PR#6 review 2026-07-21).
+#
+# Scoped to github-actions only for now (npm/pnpm deps are intentionally left
+# out to keep PR noise low). All action bumps are grouped into ONE weekly PR.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"

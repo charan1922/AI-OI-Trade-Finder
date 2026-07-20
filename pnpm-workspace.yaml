@@ -11,3 +11,6 @@ allowBuilds:
   '@scarf/scarf': false
   # fyers-api-v3 dep; postinstall only matters for its websocket path, which we don't use
   protobufjs: false
+  # tsx's transpiler (pinned devDep for the CI `pnpm exec tsx` checks); its build
+  # fetches the platform esbuild binary — required for tsx to run (PR#6 review).
+  esbuild: true

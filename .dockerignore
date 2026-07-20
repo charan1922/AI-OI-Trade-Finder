@@ -20,6 +20,18 @@ data
 # production `next build`. Nothing in app/lib/components imports from here.
 scripts
 
+# Docs, notes, design vaults and validation journals — referenced only in code
+# COMMENTS, never imported/read at runtime (verified: no app/lib/components
+# import from them). Keeping them out of the build context shrinks the image and
+# speeds the build — R-Obsidian alone is ~18 MB of markdown that was being copied
+# across the Windows↔WSL mount on every local build.
+R-Obsidian
+derive-r
+openspec
+tracking
+okf
+autotrade-aicommentary
+
 # Logs, OS cruft, scratch
 *.log
 npm-debug.log*

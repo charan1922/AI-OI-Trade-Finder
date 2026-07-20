@@ -2,9 +2,15 @@
 # GitHub Container Registry (ghcr.io). The AWS box then only PULLS this image —
 # it never builds (so a tiny 2 GB box is enough).
 #
-# CI/CD model: ONLY a push to `prod` builds/deploys.
-#   • push to `prod` → tag `:latest` — the DEPLOY image the box auto-pulls.
-#   • push to `main` → NOTHING (main is for integration; it never deploys).
+# CI/CD model — building is separate from PUBLISHING (PR#7 review):
+#   • PR to `main`      → validate + BUILD the runtime image + smoke-test it
+#                         (no g++, native module loads, boots on a fresh DB and
+#                         answers HTTP). NEVER pushed.
+#   • push to `prod`    → validate + build + PUSH `:latest` (+ sha-*); the box pulls it.
+#   • workflow_dispatch → validate + build + smoke-test, NEVER pushed — so a manual
+#                         run on main/any branch can't overwrite production `latest`.
+# Publishing is gated on `event==push && ref==refs/heads/prod`; the ghcr login and
+# push both carry that condition, nothing else can publish.
 #
 # Speed/cost: buildx layer caching via the GitHub Actions cache (type=gha).
 # GitHub runners start empty every run — without this cache every build redoes
@@ -22,8 +28,15 @@ on:
   push:
     branches: [prod]
   pull_request:
-    branches: [main] # run the validate gate on PRs (typecheck+lint) — no image build
+    branches: [main] # PRs: validate + build the image + smoke-test it (never pushed)
   workflow_dispatch: {} # lets you trigger a build by hand from the Actions tab
+
+# Least-privilege default for every job: read-only. The build job re-grants the
+# one extra scope it needs (packages: write, to push to ghcr). Without this the
+# validate job would inherit the repo-wide default token scope — money-touching
+# CI should grant only what each job actually uses (PR#6 review 2026-07-21).
+permissions:
+  contents: read
 
 jobs:
   # Money-touching code must not ship unvalidated (AT-016): typecheck + lint
@@ -34,8 +47,12 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      # Actions pinned to a full commit SHA (immutable) with the version in a
+      # trailing comment — a moved/compromised tag can't inject code, and
+      # Dependabot (.github/dependabot.yml) reads the comment to open version-bump
+      # PRs, so pinning stays current without manual chasing (PR#6 review).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24 # match the Dockerfile base (node:24-bookworm-slim)
       # Provide pnpm exactly as the Docker image does (npm global install of the
@@ -49,46 +66,95 @@ jobs:
       # DB-free pure checks: quant-shadow math (re-anchor, observed-baseline
       # MFE/MAE, entry-candle exclusion, chgOpen bucketing, sector-rate rank) AND
       # the config-drift override detector (toggle + numeric window/pick drift).
-      # tsx is run via npx (the repo's standard runner) — no new dependency, no
-      # lockfile entry; it resolves the tsconfig @/ path aliases like the box does.
-      - run: npx --yes tsx scripts/verify-quant-shadow.ts
+      # tsx is a PINNED devDependency run via `pnpm exec` (not `npx --yes`, which
+      # downloads an unpinned tsx each run) — reproducible + no runtime fetch
+      # (PR#6 review). It resolves the tsconfig @/ path aliases like the box does.
+      - run: pnpm exec tsx scripts/verify-quant-shadow.ts
 
   build:
     needs: validate
-    # A PR to main only runs the validate gate above — it must never build or
-    # push an image (deploy stays prod-only). Prod pushes + manual dispatch build.
-    if: github.event_name != 'pull_request'
+    # Runs on EVERY trigger now (PR#7 review): PRs and manual dispatch build +
+    # smoke-test the image; only a real prod push publishes it (see the publish
+    # condition below). Building on PRs is what proves the exact runtime container
+    # actually boots BEFORE it can reach prod.
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # allows pushing to ghcr.io
+      packages: write # only exercised on a real prod-push publish (login/push are gated)
+    env:
+      # Single source of truth for "is this the deploy publish?" — a real push to
+      # the prod branch. Everything else builds + smoke-tests without pushing, so a
+      # workflow_dispatch on any branch can NEVER overwrite production `latest`.
+      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/prod' }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/project-r-simulator
     steps:
-      # Action majors pinned to the Node 24 runtimes (Node 20 is deprecated on
-      # GitHub runners; older majors emit the "Node 20 is being deprecated"
-      # warning on every run — setup-buildx v3 was the last offender, now v4).
-      - uses: actions/checkout@v7
+      # SHA-pinned (see the validate job's note); comments carry the version, all
+      # on Node 24 runtimes (Node 20 is deprecated on GitHub runners).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
+      # Log in ONLY when we are actually publishing (real prod push). A PR / manual
+      # dispatch never authenticates to the registry — it can't push.
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
+      - name: Build image (push only on a real prod deploy)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          push: true
-          # Image name must be lowercase for ghcr — the repo owner + a fixed name.
-          # `latest` is the box's auto-pull convenience alias; the sha-* tag is
-          # the IMMUTABLE identity (AT-017) — exact rollback target, and the
-          # running code is identifiable from the commit it was built from.
+          target: runtime
+          # Publish only on a prod push. Otherwise `load` the built image into the
+          # runner's docker so the smoke test below can actually run it.
+          push: ${{ env.PUBLISH == 'true' }}
+          load: ${{ env.PUBLISH != 'true' }}
+          # `latest` is the box's auto-pull alias; the sha-* tag is the
+          # commit-addressed rollback target (not registry-immutable unless the
+          # package enforces it — treated as an operational rollback id).
           tags: |
-            ghcr.io/${{ github.repository_owner }}/project-r-simulator:latest
-            ghcr.io/${{ github.repository_owner }}/project-r-simulator:sha-${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Prove the EXACT runtime container works, on non-publish runs (PR / dispatch)
+      # — this is what makes "PRs build the image" meaningful (PR#7 review Blocker 1):
+      #   1. the compiler is gone from the runtime stage,
+      #   2. the trading-critical native module (better-sqlite3) + Prisma adapter load,
+      #   3. the container boots on a FRESH DB (prisma db push → next start) and
+      #      answers HTTP — i.e. the autonomous server would actually come up.
+      - name: Smoke test the runtime image
+        if: env.PUBLISH != 'true'
+        env:
+          REF: ${{ env.IMAGE }}:sha-${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::runtime stage has no C/C++ compiler"
+          docker run --rm --entrypoint sh "$REF" -lc '! command -v g++ && echo "OK: no g++ in runtime"'
+          echo "::endgroup::"
+
+          echo "::group::native module + Prisma adapter load (no toolchain)"
+          docker run --rm --entrypoint node "$REF" -e "const D=require('better-sqlite3');const db=new D(':memory:');db.exec('create table t(x)');db.prepare('insert into t values(1)').run();console.log('better-sqlite3 OK',JSON.stringify(db.prepare('select count(*) c from t').get()));require('@prisma/adapter-better-sqlite3');console.log('prisma adapter OK')"
+          echo "::endgroup::"
+
+          echo "::group::container boots on a fresh DB and answers HTTP"
+          tmp="$(mktemp -d)"
+          docker run -d --name pr-smoke -e PORT=5001 -v "$tmp:/app/data" -p 5001:5001 "$REF"
+          ok=0
+          for i in $(seq 1 60); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5001/ || echo 000)"
+            if [ "$code" != "000" ]; then echo "HTTP responded ($code) after $((i*2))s"; ok=1; break; fi
+            sleep 2
+          done
+          echo "---- last 40 lines of container log ----"
+          docker logs pr-smoke 2>&1 | tail -40 || true
+          docker rm -f pr-smoke >/dev/null 2>&1 || true
+          [ "$ok" = "1" ] || { echo "::error::runtime container did not answer HTTP within 120s"; exit 1; }
+          echo "::endgroup::"

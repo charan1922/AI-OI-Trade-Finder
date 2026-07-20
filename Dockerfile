@@ -1,18 +1,26 @@
 # syntax=docker/dockerfile:1
 #
-# Railway deployment image for Project-R-simulator (Next.js 16, App Router).
+# Multi-stage image for Project-R-simulator (Next.js 16, App Router).
 #
-# Single stage on purpose: the app needs ALL dependencies at runtime, not just
-# prod ones — the native data layer (better-sqlite3, @duckdb/node-api) and the
-# Prisma CLI (used by the start command's `prisma db push`) are both required
-# after the build. A standard `next start` over the full node_modules is more
-# reliable here than `output: standalone`, which can fail to trace the native
-# modules (kept external via serverExternalPackages) and the runtime fs reads
-# of lib/data/*.json.
-FROM node:24-bookworm-slim
+# WHY multi-stage: the native data layer (better-sqlite3, @duckdb/node-api) needs
+# a C/C++ toolchain (python3/make/g++) to COMPILE at install time — but NOT to
+# RUN, once the .node binaries exist. The previous single-stage image baked that
+# ~250-300MB compiler into the image the box PULLS on every deploy. Here the
+# toolchain lives ONLY in the `builder` stage; `runtime` copies the already-built
+# node_modules + app onto a clean base, so the deploy image is that much smaller
+# with byte-identical runtime behaviour.
+#
+# Still the FULL node_modules, NOT `output: standalone`, on purpose: standalone's
+# file tracing drops the native modules (kept external via serverExternalPackages)
+# and the runtime fs reads of lib/data/*.json. Both stages share the SAME base
+# (node:24-bookworm-slim), so the compiled native binaries copied across are
+# ABI/arch-compatible — the one rule that makes copying node_modules safe.
+
+# ---- Stage 1: builder — has the compiler; produces node_modules + .next -------
+FROM node:24-bookworm-slim AS builder
 
 # Build toolchain for native modules, in case a prebuilt binary isn't published
-# for this platform. openssl is Prisma's runtime dependency.
+# for this platform. openssl is Prisma's dependency.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ ca-certificates openssl \
   && rm -rf /var/lib/apt/lists/* \
@@ -33,9 +41,28 @@ COPY . .
 RUN pnpm prisma generate --config prisma/prisma.config.ts \
   && pnpm build
 
+# ---- Stage 2: runtime — no compiler; just runs the built app ------------------
+FROM node:24-bookworm-slim AS runtime
+
+# Runtime needs ONLY openssl (Prisma query engine) + ca-certificates + pnpm (the
+# start command below uses `pnpm prisma db push` / `pnpm exec next start`). The
+# C/C++ toolchain is deliberately ABSENT — that absence IS the size saving.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates openssl \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm i -g pnpm@10
+
+ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
-# Guarantee the mount point exists even if the volume is ever detached; Railway
-# mounts the real persistent volume over this at start time.
+WORKDIR /app
+
+# The whole built working tree from the builder: node_modules (compiled .node
+# binaries + the generated Prisma client), .next, source, and the package files.
+# Same base OS/arch as the builder, so those native binaries load unchanged.
+COPY --from=builder /app ./
+
+# Guarantee the mount point exists even if the volume is ever detached; the real
+# persistent volume is mounted over this at start time.
 RUN mkdir -p /app/data
 
 EXPOSE 5001
