@@ -104,3 +104,23 @@ All CI-only, no app/runtime change:
 - **Pin the `node:24-bookworm-slim` base by digest** for full reproducibility.
 - **A `triggered` count** in the profit-protection aggregation (see
   `profit-protection-shadow.md` §3) to state exactly how many losers reached +1R.
+
+## 8. Shipped — `v1.25.0` (2026-07-21)
+
+Deployed to prod via the repo's standard flow (merge → tag → `git push origin
+main:prod`):
+
+- **PR #7** reviewed (two blockers fixed: PR image build+boot test, publish gated
+  to prod) and merged to `main` as squash `96425a8`.
+- Tagged **`v1.25.0`**, pushed `main` + tag.
+- `git push origin main:prod` → clean fast-forward `16200ca..96425a8`.
+- The prod push ran the new workflow with `PUBLISH=true` and **built + pushed the
+  multi-stage image** (`:latest` + `:sha-96425a8`) — **build green**
+  ([run](https://github.com/charan1922/AI-OI-Trade-Finder/actions/runs/29784192081)).
+  This was the **first prod deploy of the multi-stage image**; it had already
+  passed the PR build + boot smoke-test (fresh DB → `next start` → HTTP), so the
+  container was proven to come up before publishing.
+- No env changed, so no env-file edit / container recreate beyond the box's usual
+  pull of `:latest`.
+
+Rollback target if ever needed: redeploy the prior image tag `:sha-16200ca`.
