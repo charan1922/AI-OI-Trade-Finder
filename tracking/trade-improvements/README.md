@@ -22,8 +22,8 @@ reached +1R needs a dedicated trigger-count metric we don't record yet — the
 | Doc | What it covers |
 | --- | --- |
 | [`honest-grading.md`](honest-grading.md) | Why the old win-rate was misleading, and the new **path-dependent grader** that walks the candles in time order (stop-before-target = a loss, even if it recovers). Turned an optimistic scorecard into an honest **10% win / −0.47R**. |
-| [`profit-protection-shadow.md`](profit-protection-shadow.md) | A **measurement-only** simulator that re-runs the same graded picks under "move the stop up once in profit" rules (breakeven / trailing) to see if they'd improve results. Now visible on the `/trade-suggest/history` page. Includes the model-version safety and the honest, tiny-sample caveats. |
-| [`docker-multistage-image.md`](docker-multistage-image.md) | **Infra/deploy, not trade logic.** Multi-stage Docker build that drops the ~296 MB compiler toolchain from the deploy image, a slimmer build context, and CI hardening (least-privilege token, SHA-pinned actions + Dependabot, pinned `tsx`). Runtime behaviour unchanged. |
+| [`profit-protection-shadow.md`](profit-protection-shadow.md) | A **measurement-only** what-if calculator that re-runs the same graded picks under "move the stop up once in profit" rules (breakeven / trailing) to see whether they'd have helped. Now shown on the `/trade-suggest/history` page. Includes a safeguard that stops old and new numbers being mixed, plus the honest, tiny-sample caveats. |
+| [`docker-multistage-image.md`](docker-multistage-image.md) | **Infrastructure, not trade logic.** Makes the packaged app the live server downloads ~296 MB smaller (the build-only compiler tools are no longer shipped inside it), plus a safer, locked-down build pipeline. The running app is unchanged. |
 
 ## Ground rules these docs follow
 

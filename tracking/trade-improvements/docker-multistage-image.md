@@ -1,40 +1,54 @@
-# Multi-stage Docker image + CI hardening
+# Smaller deploy image + safer build pipeline
 
-Done 2026-07-21. **Infra/deploy change — no trading logic touched.** Shrinks the
-image the AWS box pulls on every deploy, and hardens the CI pipeline. Shipped as
-one PR off `chore/build-ci-docs-hardening`.
+Done 2026-07-21. **This is an infrastructure / deploy change — no trading logic
+changed at all.** It makes the packaged app that the live server downloads on
+every deploy smaller, and makes the automated build pipeline safer.
 
-## 1. Why — the deploy image carried a compiler it never uses
+**A few words used below, in plain terms:**
+- **Image / container** — the packaged-up app the live AWS server downloads and runs.
+- **Build pipeline (CI)** — the automation on GitHub that packages the app and, on a real release, publishes it.
+- **`better-sqlite3`** — the small database library the app uses. Part of it is *compiled* (machine code), so building it needs compiler tools; running it does not.
 
-The image was **single-stage**: it installed the C/C++ build toolchain
-(`python3 make g++` + deps) so the native modules (`better-sqlite3`) can COMPILE
-during `pnpm install`. But that toolchain is **only needed at build time** — once
-the `.node` binary exists, running it needs no compiler. The single-stage image
-baked that toolchain (**~296 MB**, measured from the apt step) into the image the
-box pulls on **every** deploy.
+## 1. Why — the packaged app was carrying a compiler it never uses
 
-## 2. What changed — `Dockerfile` is now two stages
+To build `better-sqlite3`, the packaging step installs compiler tools
+(`python3`, `make`, `g++`). Those tools are only needed **while building** — once
+the compiled file exists, actually running the app doesn't need them. The old
+build left the compiler tools **inside** the shipped image anyway: about
+**296 MB** of dead weight the live server downloaded on **every** deploy.
 
-- **`builder`** — has the toolchain; runs `pnpm install` (compiles native
-  modules) + `next build`. Byte-for-byte the same steps as the old single-stage.
-- **`runtime`** — a clean `node:24-bookworm-slim` with **no compiler** (only
-  `openssl` for Prisma + `pnpm`). It `COPY --from=builder /app ./` — the whole
-  built tree: `node_modules` (with the compiled `.node` binaries + generated
-  Prisma client), `.next`, source, package files.
+## 2. What changed — the build now happens in two stages
 
-The one rule that makes copying `node_modules` safe: **both stages share the same
-base** (`node:24-bookworm-slim`), so the compiled native binaries are ABI/arch
-compatible. Still the FULL `node_modules` (not `output: standalone`) on purpose —
-standalone's file tracing drops the externalised native modules and the runtime
-`lib/data/*.json` reads.
+The `Dockerfile` (the build recipe) is split in two:
 
-## 3. How it was verified (before trusting it near prod)
+- **Stage 1 — `builder`:** has the compiler tools; installs dependencies
+  (`pnpm install`, which compiles `better-sqlite3`) and builds the app
+  (`next build`). Exactly the same steps as before.
+- **Stage 2 — `runtime`:** a clean base with **no compiler** — only what's needed
+  to *run* (`openssl` for the database engine, plus `pnpm`). It copies the
+  already-built files over from stage 1 (`COPY --from=builder`): the whole
+  dependency folder (`node_modules`, including the compiled database file), the
+  built app (`.next`), and the source.
 
-The full app image couldn't be built locally (podman-on-Windows copies the build
-context across the WSL filesystem boundary painfully slowly — an environment
-quirk, not a Dockerfile fault). So the **one real risk** — "does the native
-module load without the compiler?" — was proven with a tiny, targeted 2-stage
-build (`scripts`-free, no `next build`):
+The shipped image is stage 2, so the ~296 MB of compiler tools is gone.
+
+**Why copying the built files across is safe:** both stages use the **exact same
+base system** (`node:24-bookworm-slim`). A compiled file only works on the system
+it was built for — same base means the compiled database file still works in the
+runtime stage.
+
+**One deliberate choice:** we copy the **whole** dependency folder, not Next.js's
+"standalone" slimming mode. Standalone tries to auto-detect what to include and
+would drop our database library and some data files the app reads while running
+(`lib/data/*.json`) — so we don't use it.
+
+## 3. How we made sure it works before trusting it near the live server
+
+We couldn't build the full app locally — building on this Windows machine is
+painfully slow because of how Windows shares files with the Linux builder (an
+environment quirk, not a problem with the recipe). So we proved the **one real
+risk** — "does the database library still load without the compiler?" — with a
+tiny throwaway build:
 
 ```
 build log:  OK: no g++ in runtime stage
@@ -42,85 +56,84 @@ run output: better-sqlite3 loads + runs without toolchain: {"c":1}
             prisma better-sqlite3 adapter resolves: true
 ```
 
-i.e. in a compiler-free runtime on the same base OS, `better-sqlite3` loaded,
-created an in-memory DB, inserted and counted a row, and the Prisma adapter
-resolved.
+In plain terms: on a clean system with **no compiler**, the database library
+loaded, created a test database in memory, wrote and counted a row, and the
+Prisma piece loaded too.
 
-**CI now builds + boots the full image on every PR** (PR#7 review). The build job
-runs on PRs and manual dispatch too — it builds the `runtime` target, then
-smoke-tests the exact image: asserts no `g++`, that `better-sqlite3` + the Prisma
-adapter load, and that the container **boots on a fresh DB (`prisma db push` →
-`next start`) and answers HTTP**. So the real container is proven to come up
-before any change can reach prod — no Windows-mount slowness on GitHub's runners.
-Only a real push to `prod` publishes; PRs/dispatch never push.
+And now the automation does the **full** check on **every proposed change** (every
+PR): it builds the real image and actually **starts the container from scratch** —
+creates a fresh database (`prisma db push`) and boots the web server
+(`next start`) — then sends it a web request and confirms it answers. So a
+container that can't start is caught **before** it can reach the live server. Only
+a real release to `prod` publishes the live image; PRs and manual runs never do.
 
-`better-sqlite3` is the **only** trading-critical native module (the simulator
-does **not** use duckdb — backtest storage is SQLite via Prisma).
+(`better-sqlite3` is the **only** compiled library that matters here — the
+simulator does **not** use duckdb; its backtest data is plain SQLite via Prisma.)
 
-## 4. Smaller build context — `.dockerignore`
+## 4. Smaller download — leaving docs out of the package
 
-`COPY . .` was pulling ~19 MB of **docs/notes/vaults** into the build context and
-image (`R-Obsidian` alone is ~18 MB of markdown). None are imported at runtime
-(verified: only referenced in code *comments*). Added to `.dockerignore`:
-`R-Obsidian`, `derive-r`, `openspec`, `tracking`, `okf`, `autotrade-aicommentary`.
-Smaller image + faster context upload, zero runtime effect.
+The build was also copying ~19 MB of notes / docs / design vaults into the image
+(the `R-Obsidian` folder alone is ~18 MB of text). The app never reads these —
+they only appear in code *comments*. We told the build to skip them
+(`R-Obsidian`, `derive-r`, `openspec`, `tracking`, `okf`,
+`autotrade-aicommentary`) via `.dockerignore`. Smaller package, faster builds, no
+effect on the running app.
 
-## 5. CI hardening (shipped in the same PR)
+## 5. Safer build pipeline (same PR, nothing changes in the running app)
 
-All CI-only, no app/runtime change:
-
-- **Least privilege** — a workflow-level `permissions: contents: read` default;
-  the build job re-grants only `packages: write` (to push to ghcr). Previously
-  the validate job inherited the repo-wide default token scope.
-- **SHA-pinned actions** — all five actions pinned to a full commit SHA with a
-  `# vX.Y.Z` comment (a moved/compromised tag can't inject code). Paired with
-  **`.github/dependabot.yml`** (github-actions, weekly, grouped) which reads the
-  version comment and opens bump PRs — so pinning stays current automatically.
-  (Dependabot would have caught the Node-20 `setup-buildx` deprecation itself.)
-- **Pinned `tsx`** — CI ran `npx --yes tsx …`, which downloads an *unpinned* tsx
-  each run. `tsx` is now a pinned devDependency run via `pnpm exec tsx`
-  (reproducible, no runtime fetch). Its transpiler `esbuild` is approved in
-  `pnpm-workspace.yaml` (`esbuild: true`) so pnpm 10 builds it.
-- **Publish gating** — publishing (`login` + `push`) is gated on
-  `event == push && ref == refs/heads/prod`. Previously any `workflow_dispatch`
-  built with `push: true`, so a manual run on a non-prod branch could overwrite
-  production `latest`. Now only a real prod push publishes (PR#7 review).
+- **Minimum access** — the automation now gets only *read* access by default;
+  only the publish step gets the *write* access it needs to publish the image.
+  Before, the check step inherited more access than it used.
+- **Locked-down helper tools** — the reusable build steps ("actions") are pinned
+  to an exact code version (a specific commit), so if one were ever hijacked, a
+  bad update couldn't sneak into our build. A bot (**Dependabot**) watches for
+  genuine new versions and opens an update for review, so the pins stay current on
+  their own. (This bot would have caught the earlier Node-20 warning by itself.)
+- **Locked-down `tsx`** — the tool that runs our check scripts used to be
+  downloaded fresh (unpinned) on every run. It's now a fixed dependency, so every
+  run uses the same known version.
+- **Publish only on a real release** — publishing the live image is now allowed
+  **only** on a real release to the `prod` branch. Before, a manual test run on
+  any branch could have accidentally overwritten the live image. It can't now.
 
 ## 6. Safety / rollback
 
-- Toggle-free change; behaviour identical at runtime.
-- The `sha-<commit>` image tag is the **commit-addressed** rollback target — if a
-  multi-stage image ever misbehaved, redeploy the prior `sha-*` tag. (It's a
-  rollback *identifier*, not registry-immutable unless the ghcr package enforces
-  no-overwrite — treat immutability as operational, not automatic.) The box only
-  ever pulls a **successfully built** image, and the image now has to pass the PR
-  boot smoke-test before it can be merged toward prod.
+- Nothing about the running app changes.
+- Every build is tagged with its exact code version (`sha-<commit>`), so if a
+  build ever misbehaved we can re-deploy the previous one. (That tag is a rollback
+  *label*; it isn't guaranteed unchangeable unless the registry is set to forbid
+  overwrites — treat rollback as an operational step, not automatic.) The live
+  server only ever downloads a build that **succeeded**, and a build now also has
+  to pass the "does it actually start?" check before it can be merged toward the
+  live server.
 
-## 7. Deferred (non-blocking, noted follow-ups)
+## 7. Deferred (optional follow-ups, noted for later)
 
-- **Pin the exact pnpm version** (via `packageManager` + Corepack) so a future
-  pnpm 10.x can't silently change the build — deferred to keep this PR focused and
-  because an exact pin needs npm-ecosystem Dependabot to avoid going stale.
-- **Pin the `node:24-bookworm-slim` base by digest** for full reproducibility.
-- **A `triggered` count** in the profit-protection aggregation (see
-  `profit-protection-shadow.md` §3) to state exactly how many losers reached +1R.
+- **Pin the exact `pnpm` version** (via `packageManager` + Corepack) so a future
+  pnpm 10.x release can't quietly change the build. Deferred to keep the PR
+  focused, and because an exact pin needs a matching update-bot to avoid going stale.
+- **Pin the base system by exact fingerprint** (`node:24-bookworm-slim` by digest)
+  for full build-to-build reproducibility.
+- **A "how many trades reached +1R" count** in the profit-protection numbers (see
+  `profit-protection-shadow.md` §3) so that claim is exact rather than inferred.
 
 ## 8. Shipped — `v1.25.0` (2026-07-21)
 
-Deployed to prod via the repo's standard flow (merge → tag → `git push origin
-main:prod`):
+Released to the live server using the repo's normal flow (merge the change → tag a
+version → push to the `prod` branch):
 
-- **PR #7** reviewed (two blockers fixed: PR image build+boot test, publish gated
-  to prod) and merged to `main` as squash `96425a8`.
-- Tagged **`v1.25.0`**, pushed `main` + tag.
-- `git push origin main:prod` → clean fast-forward `16200ca..96425a8`.
-- The prod push ran the new workflow with `PUBLISH=true` and **built + pushed the
-  multi-stage image** (`:latest` + `:sha-96425a8`) — **build green**
+- **PR #7** was reviewed (two must-fix items handled: build-and-start-test the
+  image on every PR; publish only on a real prod release) and merged to `main` as
+  `96425a8`.
+- Tagged **`v1.25.0`** and pushed.
+- Pushed `main` to `prod` (`16200ca` → `96425a8`) — this is what triggers a release.
+- The release build ran, **built and published the new two-stage image** (as
+  `:latest` and `:sha-96425a8`) — **succeeded**
   ([run](https://github.com/charan1922/AI-OI-Trade-Finder/actions/runs/29784192081)).
-  This was the **first prod deploy of the multi-stage image**; it had already
-  passed the PR build + boot smoke-test (fresh DB → `next start` → HTTP), so the
-  container was proven to come up before publishing.
-- No env changed, so no env-file edit / container recreate beyond the box's usual
-  pull of `:latest`.
+  This was the **first live release of the two-stage image**; it had already
+  passed the PR "does it start?" check (fresh database → web server → answered a
+  request), so we knew the container comes up before publishing it.
+- No settings/secrets changed, so nothing extra was needed on the server beyond
+  its normal download of the new `:latest`.
 
-Rollback target if ever needed: redeploy the prior image tag `:sha-16200ca`.
+If a rollback is ever needed: re-deploy the previous image, tagged `:sha-16200ca`.
