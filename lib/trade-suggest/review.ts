@@ -15,6 +15,7 @@
 
 import { todayIST } from '@/lib/dhan/market-feed';
 import { getFyersCandles } from '@/lib/fyers/candle-store';
+import { gradeSpotPath } from '@/lib/trade-suggest/grade';
 import { getSuggestions, recordOutcome } from '@/lib/trade-suggest/store';
 import type { StoredSuggestion } from '@/lib/trade-suggest/types';
 
@@ -35,19 +36,24 @@ export async function reviewToday(): Promise<ReviewResult> {
 
   for (const s of suggestions) {
     const sinceSec = Math.floor(Date.parse(s.suggestedAt) / 1000);
-    const bars = (await getFyersCandles(s.symbol, date, 'EQ')).filter((b) => b.bucketTs >= sinceSec && b.high > 0);
+    const bars = (await getFyersCandles(s.symbol, date, 'EQ'))
+      .filter((b) => b.bucketTs >= sinceSec && b.high > 0)
+      .sort((a, b) => a.bucketTs - b.bucketTs); // grade.ts needs chronological order
     if (bars.length === 0 || s.spotAtSuggest <= 0) {
       skipped++;
       continue;
     }
-    const hi = Math.max(...bars.map((b) => b.high));
-    const lo = Math.min(...bars.map((b) => b.low));
-    const close = bars[bars.length - 1].close;
     const pct = (v: number) => Math.round(((v - s.spotAtSuggest) / s.spotAtSuggest) * 10000) / 100;
+    // Honest path-dependent grade against the stored plan (stop-before-target =
+    // loss even if it recovers). Null when the plan lacked well-formed levels —
+    // then only the excursion figures are recorded, as before.
+    const grade = gradeSpotPath(s.optionType, s.spotAtSuggest, s.slSpot, s.targetSpot, bars);
     await recordOutcome(date, s.symbol, s.optionType, {
-      maxUpPct: pct(hi),
-      maxDownPct: pct(lo),
-      closePct: pct(close),
+      maxUpPct: grade?.maxUpPct ?? pct(Math.max(...bars.map((b) => b.high))),
+      maxDownPct: grade?.maxDownPct ?? pct(Math.min(...bars.map((b) => b.low))),
+      closePct: grade?.closePct ?? pct(bars[bars.length - 1].close),
+      spotOutcome: grade?.outcome ?? null,
+      spotOutcomeR: grade?.outcomeR ?? null,
     });
     reviewed++;
   }

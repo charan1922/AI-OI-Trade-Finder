@@ -41,6 +41,7 @@ import { isAdminOnlyPage, requiredPermission, roleForGoogleEmail } from '../lib/
 import { computeGex } from '../lib/signals/gex';
 import { runQuantShadowChecks } from './quant-shadow-checks';
 import { runConfigDriftChecks } from './config-drift-checks';
+import { runGradeChecks } from './grade-checks';
 import { todayIST } from '../lib/dhan/market-feed';
 import { hasRequiredEqBar } from '../lib/fyers/poller';
 
@@ -304,6 +305,7 @@ async function main(): Promise<void> {
   // CI (scripts/verify-quant-shadow.ts). Single source — no drift.
   runQuantShadowChecks(check);
   await runConfigDriftChecks(check);
+  runGradeChecks(check);
 
   // ── 3. Settings CRUD ───────────────────────────────────────────────────────
   const defaults = await getAutoTradeSettings();

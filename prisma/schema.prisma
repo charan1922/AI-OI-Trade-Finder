@@ -267,6 +267,8 @@ model TradeSuggestion {
   maxUpPct      Float?
   maxDownPct    Float?
   closePct      Float?
+  spotOutcome   String?
+  spotOutcomeR  Float?
   outcomeAt     String?
 
   @@id([date, symbol, optionType])

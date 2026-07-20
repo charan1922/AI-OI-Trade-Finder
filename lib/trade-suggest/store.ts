@@ -52,6 +52,15 @@ export async function ensureSuggestionsTable(): Promise<void> {
     )
   `);
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_trade_suggestions_date ON trade_suggestions (date)`);
+  // Honest path-dependent grade (grade.ts) — added to the EXISTING table via
+  // ALTER (CREATE IF NOT EXISTS never adds columns to a table that already
+  // exists in prod). Mirrored in schema.prisma.
+  const cols = new Set(
+    ((await prisma.$queryRawUnsafe(`PRAGMA table_info(trade_suggestions)`)) as { name: string }[]).map((c) => c.name),
+  );
+  for (const col of ['spotOutcome TEXT', 'spotOutcomeR REAL']) {
+    if (!cols.has(col.split(' ')[0])) await prisma.$executeRawUnsafe(`ALTER TABLE trade_suggestions ADD COLUMN ${col}`);
+  }
   tableReady = true;
 }
 
@@ -138,6 +147,9 @@ function rowToStored(r: Record<string, unknown>): StoredSuggestion {
     maxUpPct: toNumOrNull(r.maxUpPct),
     maxDownPct: toNumOrNull(r.maxDownPct),
     closePct: toNumOrNull(r.closePct),
+    spotOutcome:
+      r.spotOutcome === 'target' || r.spotOutcome === 'stop' || r.spotOutcome === 'timeout' ? r.spotOutcome : null,
+    spotOutcomeR: toNumOrNull(r.spotOutcomeR),
     outcomeAt: r.outcomeAt == null ? null : String(r.outcomeAt),
   };
 }
@@ -183,6 +195,10 @@ export async function getSuggestionHistory(days = 30): Promise<SuggestionDay[]> 
   }
   const isHit = (s: StoredSuggestion) => {
     if (s.outcomeAt == null) return false;
+    // Honest grade when present: a win is TARGET-before-stop, not just any ≥1%
+    // spike (a stop-then-recover trade is a loss). Legacy rows (no spotOutcome)
+    // fall back to the old maxUp-based test.
+    if (s.spotOutcome != null) return s.spotOutcome === 'target';
     const favorable = s.optionType === 'PE' ? -(s.maxDownPct ?? 0) : (s.maxUpPct ?? 0);
     return favorable >= 1;
   };
@@ -212,6 +228,11 @@ export interface SuggestStats {
   hitRatePct: number | null;
   avgFavorablePct: number | null;
   avgAdversePct: number | null;
+  /** Honest expectancy: mean realised R over path-dependently graded rows
+   *  (stop −1, target +RR, timeout close-based). Null until such rows exist. */
+  avgOutcomeR: number | null;
+  /** How many reviewed rows carry the honest grade (vs legacy maxUp-only). */
+  gradedRows: number;
   byRank: { rank: number; n: number; hits: number }[];
   byScoreBucket: { bucket: string; n: number; hits: number }[];
 }
@@ -225,7 +246,7 @@ export async function getStats(days = 30): Promise<SuggestStats> {
   await ensureSuggestionsTable();
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
-    `SELECT optionType, score, rank, maxUpPct, maxDownPct, closePct, outcomeAt
+    `SELECT optionType, score, rank, maxUpPct, maxDownPct, closePct, spotOutcome, spotOutcomeR, outcomeAt
        FROM trade_suggestions WHERE date >= ?`,
     since,
   );
@@ -235,7 +256,10 @@ export async function getStats(days = 30): Promise<SuggestStats> {
     r.optionType === 'PE' ? -Number(r.maxDownPct ?? 0) : Number(r.maxUpPct ?? 0);
   const adverse = (r: Record<string, unknown>) =>
     r.optionType === 'PE' ? Number(r.maxUpPct ?? 0) : -Number(r.maxDownPct ?? 0);
-  const isHit = (r: Record<string, unknown>) => favorable(r) >= 1;
+  // Honest hit when the path-dependent grade exists (target-before-stop), else
+  // legacy maxUp≥1% fallback for rows graded before grade.ts.
+  const isHit = (r: Record<string, unknown>) =>
+    r.spotOutcome != null ? r.spotOutcome === 'target' : favorable(r) >= 1;
 
   const byRank = new Map<number, { n: number; hits: number }>();
   const byBucket = new Map<string, { n: number; hits: number }>();
@@ -255,6 +279,7 @@ export async function getStats(days = 30): Promise<SuggestStats> {
   const hits = reviewedRows.filter(isHit).length;
   const avg = (vals: number[]) =>
     vals.length === 0 ? null : Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
+  const gradedR = reviewedRows.filter((r) => r.spotOutcomeR != null).map((r) => Number(r.spotOutcomeR));
 
   return {
     days,
@@ -264,26 +289,39 @@ export async function getStats(days = 30): Promise<SuggestStats> {
     hitRatePct: reviewedRows.length === 0 ? null : Math.round((hits / reviewedRows.length) * 10000) / 100,
     avgFavorablePct: avg(reviewedRows.map(favorable)),
     avgAdversePct: avg(reviewedRows.map(adverse)),
+    avgOutcomeR: avg(gradedR),
+    gradedRows: gradedR.length,
     byRank: [...byRank.entries()].sort((a, b) => a[0] - b[0]).map(([rank, v]) => ({ rank, ...v })),
     byScoreBucket: [...byBucket.entries()].map(([bucket, v]) => ({ bucket, ...v })),
   };
 }
 
-/** Fill outcome columns for one suggestion (same-day scorecard). */
+/** Fill outcome columns for one suggestion (same-day scorecard). spotOutcome /
+ *  spotOutcomeR are the honest path-dependent grade (grade.ts); null when the
+ *  plan lacked well-formed stop/target levels to grade against. */
 export async function recordOutcome(
   date: string,
   symbol: string,
   optionType: string,
-  outcome: { maxUpPct: number; maxDownPct: number; closePct: number },
+  outcome: {
+    maxUpPct: number;
+    maxDownPct: number;
+    closePct: number;
+    spotOutcome?: 'target' | 'stop' | 'timeout' | null;
+    spotOutcomeR?: number | null;
+  },
   nowMs = Date.now(),
 ): Promise<void> {
   await ensureSuggestionsTable();
   await prisma.$executeRawUnsafe(
-    `UPDATE trade_suggestions SET maxUpPct = ?, maxDownPct = ?, closePct = ?, outcomeAt = ?
-     WHERE date = ? AND symbol = ? AND optionType = ?`,
+    `UPDATE trade_suggestions
+        SET maxUpPct = ?, maxDownPct = ?, closePct = ?, spotOutcome = ?, spotOutcomeR = ?, outcomeAt = ?
+      WHERE date = ? AND symbol = ? AND optionType = ?`,
     outcome.maxUpPct,
     outcome.maxDownPct,
     outcome.closePct,
+    outcome.spotOutcome ?? null,
+    outcome.spotOutcomeR ?? null,
     new Date(nowMs).toISOString(),
     date,
     symbol,
