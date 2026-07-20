@@ -1,9 +1,11 @@
 # Honest grading — the path-dependent scorecard
 
-Done 2026-07-20 (shipped in **PR #4**, merged to `main`). This fixes a scorecard
-that was quietly *overstating* how well the scanner's picks did, so every
-downstream decision (including "are our exits bad?") was built on a number we
-couldn't trust.
+Done 2026-07-20. The path-dependent grader itself landed in **PR #3** (`feat:
+honest path-dependent spot scorecard`); **PR #4** hardened it (gap symmetry,
+final-candle truncation, no silent skips). Both are merged to `main`. It fixes a
+scorecard that was quietly *overstating* how well the scanner's picks did, so
+every downstream decision (including "are our exits bad?") was built on a number
+we couldn't trust.
 
 **Measurement only** — this changes how we *score* past picks, not how any trade
 is entered or exited.
@@ -39,16 +41,18 @@ touched **first**:
 
 | Outcome | Meaning |
 | --- | --- |
-| `target` | Price reached the target before ever touching the stop → a real win (+RR in R). |
-| `stop` | Price touched the stop first → a real loss (−1R). |
+| `target` | Price reached the target before ever touching the stop → a modeled spot-plan win (+RR in R). |
+| `stop` | Price touched the stop first → a modeled spot-plan loss (−1R). |
 | `timeout` | Neither level was hit by the close → graded at where it closed. |
 | `entry-ambiguous` | The suggestion came *mid-candle* and that same candle already touched the stop or target — we can't know the order within a 5-min bar, so we refuse to guess. |
 | `incomplete` | The candle history has a gap, or the last candle of the day is missing — a late exit could be hidden, so we don't claim a result. |
 
 Two honesty rules matter most:
 
-1. **If a single candle touches BOTH the stop and the target, the stop wins.** A
-   disciplined trader's stop fills first; crediting the target would be wishful.
+1. **If a single candle touches BOTH the stop and the target, the stop wins.**
+   With only 5-minute OHLC we *cannot* know which the price hit first inside the
+   bar — so the grader makes the **conservative** choice and records the stop,
+   rather than assuming the favourable order.
 2. **Blind spots are excluded, not counted.** `entry-ambiguous` and `incomplete`
    are left *out* of the win-rate entirely — we never pad the record with a
    result we can't stand behind. They surface separately as "unresolvable".
@@ -102,9 +106,12 @@ are pruned — which is a deliberate storage limit, not a bug.
 
 ## 6. Honest caveats
 
-- **Level-fill assumption.** A stop/target is credited at its exact level. Real
-  fills can be worse on a gap. We accept this because it's applied consistently
-  (see the shadow doc — it cancels out when comparing rules).
+- **Modeled, not real fills.** A `target`/`stop`/`timeout` is a *modeled*
+  spot-plan outcome — it comes from the spot candles credited at the exact level,
+  **not** from real option quotes or broker executions. Real fills can be worse
+  on a gap. Both the baseline and the shadow rules use this same level-fill
+  assumption, which keeps their comparison consistent — though real gap slippage
+  may still hit the two differently and may not cancel exactly.
 - **5-minute resolution.** Within one candle we can't know tick order; that's why
   the two blind-spot outcomes exist rather than a forced guess.
 - **Small sample.** 30 resolved picks is enough to *stop fooling ourselves*, not

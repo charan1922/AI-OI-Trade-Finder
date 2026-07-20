@@ -25,6 +25,13 @@ on:
     branches: [main] # run the validate gate on PRs (typecheck+lint) — no image build
   workflow_dispatch: {} # lets you trigger a build by hand from the Actions tab
 
+# Least-privilege default for every job: read-only. The build job re-grants the
+# one extra scope it needs (packages: write, to push to ghcr). Without this the
+# validate job would inherit the repo-wide default token scope — money-touching
+# CI should grant only what each job actually uses (PR#6 review 2026-07-21).
+permissions:
+  contents: read
+
 jobs:
   # Money-touching code must not ship unvalidated (AT-016): typecheck + lint
   # gate the image build. The FULL auto-trade bench needs a populated SQLite DB,
@@ -34,8 +41,12 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      # Actions pinned to a full commit SHA (immutable) with the version in a
+      # trailing comment — a moved/compromised tag can't inject code, and
+      # Dependabot (.github/dependabot.yml) reads the comment to open version-bump
+      # PRs, so pinning stays current without manual chasing (PR#6 review).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24 # match the Dockerfile base (node:24-bookworm-slim)
       # Provide pnpm exactly as the Docker image does (npm global install of the
@@ -49,9 +60,10 @@ jobs:
       # DB-free pure checks: quant-shadow math (re-anchor, observed-baseline
       # MFE/MAE, entry-candle exclusion, chgOpen bucketing, sector-rate rank) AND
       # the config-drift override detector (toggle + numeric window/pick drift).
-      # tsx is run via npx (the repo's standard runner) — no new dependency, no
-      # lockfile entry; it resolves the tsconfig @/ path aliases like the box does.
-      - run: npx --yes tsx scripts/verify-quant-shadow.ts
+      # tsx is a PINNED devDependency run via `pnpm exec` (not `npx --yes`, which
+      # downloads an unpinned tsx each run) — reproducible + no runtime fetch
+      # (PR#6 review). It resolves the tsconfig @/ path aliases like the box does.
+      - run: pnpm exec tsx scripts/verify-quant-shadow.ts
 
   build:
     needs: validate
@@ -63,23 +75,22 @@ jobs:
       contents: read
       packages: write # allows pushing to ghcr.io
     steps:
-      # Action majors pinned to the Node 24 runtimes (Node 20 is deprecated on
-      # GitHub runners; older majors emit the "Node 20 is being deprecated"
-      # warning on every run — setup-buildx v3 was the last offender, now v4).
-      - uses: actions/checkout@v7
+      # SHA-pinned (see the validate job's note); comments carry the version, all
+      # on Node 24 runtimes (Node 20 is deprecated on GitHub runners).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           push: true

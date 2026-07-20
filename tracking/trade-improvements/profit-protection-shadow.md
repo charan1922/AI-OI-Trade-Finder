@@ -1,7 +1,8 @@
 # Profit-protection shadow — "would moving the stop up have helped?"
 
 Built 2026-07-20 → 21 across **PR #5** (the simulator) and **PR #6** (review
-fixes + version safety + the UI panel). PR #5 is merged; **PR #6 is open.**
+fixes + version safety + the UI panel). Both are merged into `main` and deployed
+to `prod` (release `v1.24.0`).
 
 **Measurement only.** Nothing here moves a stop, changes an entry, or alters a
 live exit. It is a read-only *what-if* calculator whose entire job is to tell us
@@ -46,8 +47,9 @@ It is deliberately **honest and conservative**:
   not at an impossible level.
 - **Theoretical level-fill R.** Exits are credited at the stop level — the exact
   same assumption the baseline grader makes. Real gaps are ignored on *both*
-  sides, so gap slippage cancels out when we compare a rule to the baseline. These
-  numbers are a *decision metric*, not a promise of live fills.
+  sides. Sharing that assumption keeps the baseline-vs-rule comparison
+  *consistent*, but real gap slippage can hit the two differently and may not
+  cancel exactly. These numbers are a *decision metric*, not a promise of live fills.
 - **Target detected by price**, using the identical check as the grader, so the
   shadow and the baseline can never disagree on whether the target was hit.
 - **One indivisible lot.** No partial exits (we trade one lot, so half-booking
@@ -59,28 +61,38 @@ the rule would have improved expectancy.
 
 ## 3. What it found (tiny, directional)
 
-Over ~29–30 resolved picks from the retained sessions:
+Honest baseline scorecard: **10% win / −0.47R** over 30 resolved picks. Each rule
+is then compared to the plan over **its own paired picks** — the `n` differs per
+rule because entry-ambiguous picks drop out for the rule whose trigger they
+touched (so the ΔRs are *not* all measured over the same set):
 
 ```
-Baseline (fixed plan):   −0.47R   (win rate 10%)
-
-trail@1R-lock0.5   ΔR  +0.11    saved 2 losers   hurt 1
-breakeven@1R       ΔR  +0.08    saved 2 losers   hurt 0
-breakeven@1.5R     ΔR  +0.02    saved 1 loser    hurt 1
+Rule                n     ΔR vs plan    saved    hurt
+trail@1R-lock0.5    25      +0.11         2        1
+breakeven@1R        25      +0.08         2        0
+breakeven@1.5R      29      +0.02         1        1
 ```
 
-- **"saved"** = a pick the plan lost (−1R) that the rule rescued to ≥ 0R.
-- **"hurt"** = a pick the rule made *worse* (scratched a wick that would have run).
+- **"saved"** = a pick the plan lost (baseline ≤ −1R) that the rule pulled back to ≥ 0R.
+- **"hurt"** = a pick the rule made *worse* than the plan (scratched a wick that would have run).
 
-So a trailing/breakeven stop **does** help a little — it's a small, real edge, not
-noise in the wrong direction. **But the headline finding is more important:**
+So a trailing/breakeven stop shows a **small positive signal** — but with ~25–30
+picks this is **not enough to tell a real edge from noise**; read it as direction,
+not proof. And a precision caveat on the numbers: `saved` counts only picks that
+were *rescued to ≥ 0R* — it is **not** the same as "how many losers reached +1R."
+A pick can reach the +1R trigger yet still close below breakeven, be
+entry-ambiguous, or end negative, so `saved = 2` undercounts trigger-reached (we
+don't currently record a separate trigger count).
 
-> Only ~2 of the losers ever reached +1R in the first place. **Most losses never
-> got into profit at all.** You can't protect a profit that never existed.
+What we *can* say precisely, and it's the more important point:
 
-That reframes your original complaint: the bigger problem is **entries** (picks
-going red almost immediately), not exits. Better exits are worth a few percent;
-better entries are worth far more. This is the natural next investigation.
+> **Most losing picks never reached the +1R level these rules need.** You can't
+> protect a profit the trade never built. (That is narrower than "never got into
+> profit at all" — a pick could reach +0.3R and still not arm a +1R rule.)
+
+That points the bigger lever at **entries** (picks going red before reaching +1R),
+not exits — the natural next investigation, though "entries > exits" is a
+direction this small sample suggests, not yet proves.
 
 ## 4. Where you see it — the `/trade-suggest/history` panel (PR #6)
 
@@ -113,26 +125,35 @@ sessions, so today **29/29 stored blobs are `_v:2`** and nothing is excluded.
   line).
 - **Theoretical fills.** See §2 — real gaps could make both the baseline and the
   rules worse; the comparison stays fair, the absolute R does not promise live P&L.
-- **The exit edge is small.** +0.11R best case. The entry problem dwarfs it.
+- **The exit edge is small.** +0.11R best case — and the entry side looks like
+  the bigger lever (a direction this sample suggests, not proof).
 - **It never trades.** If this file ever seems to describe a live behaviour, that
   is a documentation error — the code has no path from here to an order.
 
 ## 7. How to re-run
 
+These run from a **repo checkout** (with deps installed), not from the deployed
+container — `scripts/` is `.dockerignore`d, so it is deliberately NOT in the prod
+image. `tsx` is a pinned devDependency, so `pnpm exec tsx` is the reproducible
+runner (`npx tsx` also works locally):
+
 ```bash
 # Pure logic (no DB) — 38 assertions incl. no-lookahead, version enforcement:
-npx tsx scripts/verify-quant-shadow.ts
+pnpm exec tsx scripts/verify-quant-shadow.ts
 
-# Regrade retained sessions + print the shadow table (local or on the box):
-npx tsx scripts/regrade-suggestions.ts
-docker exec projectr npx tsx scripts/regrade-suggestions.ts   # prod box
+# Regrade retained sessions + print the shadow table (points at ./data/project-r.db):
+pnpm exec tsx scripts/regrade-suggestions.ts
 
-# Read-only shadow report against the DB (prints version accounting):
-npx tsx scripts/profit-protect-report.ts [--since YYYY-MM-DD] [--db path]
+# Read-only shadow report against a DB (prints version accounting):
+pnpm exec tsx scripts/profit-protect-report.ts [--since YYYY-MM-DD] [--db path]
 
 # Full DB roundtrip bench (persistence + regrade-preserves-time):
-npx tsx scripts/verify-auto-trade.ts
+pnpm exec tsx scripts/verify-auto-trade.ts
 ```
+
+To regrade the **prod** DB you point `--db` at a copy of the box's
+`project-r.db` from a repo checkout — there is no in-container path, since the
+scripts aren't shipped in the image.
 
 All green as of PR #6 head: typecheck, lint, 38 pure checks, auto-trade DB bench.
 
