@@ -103,6 +103,12 @@ export interface AutoTrade {
   /** Max favorable / adverse spot excursion in R over the hold (giveback view). */
   shadowMfeR: number | null;
   shadowMaeR: number | null;
+  /** Re-anchor-at-placement shadow (doc §7/§14): forward reward:risk to the
+   *  stored target at the fresh entry, and the stop/target a rebuild at the fill
+   *  moment would produce. Measurement only — never changes the order. */
+  entryForwardRR: number | null;
+  entryFreshSlSpot: number | null;
+  entryFreshTargetSpot: number | null;
   aiReasonEntry: string;
   aiReasonExit: string | null;
   /** (exitFill − entryFill) × lotSize × lots, set at close when both known. */

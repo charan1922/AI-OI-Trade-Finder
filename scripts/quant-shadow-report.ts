@@ -46,6 +46,7 @@ interface Row {
   entryRemainingRewardR: number | null;
   entrySectorRank: number | null;
   entrySectorCount: number | null;
+  entryForwardRR: number | null;
   shadowMfeR: number | null;
   shadowMaeR: number | null;
   realizedPnlRupees: number | null;
@@ -56,7 +57,7 @@ const rows = db
   .prepare(
     `SELECT date, symbol, direction, status,
             entryChangePctOpen, entryProgressR, entryRemainingRewardR,
-            entrySectorRank, entrySectorCount, shadowMfeR, shadowMaeR,
+            entrySectorRank, entrySectorCount, entryForwardRR, shadowMfeR, shadowMaeR,
             realizedPnlRupees, exitReason
        FROM auto_trades
       WHERE date >= ? AND status IN ('open','closed')
@@ -74,7 +75,7 @@ const realizedR = (r: Row) => (r.realizedPnlRupees == null ? null : r.realizedPn
 
 console.log(`\n=== Quant SHADOW report — ${rows.length} trade(s) since ${since} (db: ${dbPath}) ===\n`);
 console.log(
-  ['date', 'symbol', 'dir', 'chgOpen%', 'progR', 'remRewR', 'sector#', 'mfeR', 'maeR', '₹pnl', 'realR', 'giveback?']
+  ['date', 'symbol', 'dir', 'chgOpen%', 'progR', 'remRewR', 'fwdRR', 'sector#', 'mfeR', 'maeR', '₹pnl', 'realR', 'giveback?']
     .map((h) => h.padEnd(10))
     .join('')
 );
@@ -91,6 +92,7 @@ for (const r of rows) {
       f(r.entryChangePctOpen, 1),
       f(r.entryProgressR),
       f(r.entryRemainingRewardR),
+      f(r.entryForwardRR),
       r.entrySectorRank == null ? '—' : `${r.entrySectorRank}/${r.entrySectorCount ?? '—'}`,
       f(r.shadowMfeR),
       f(r.shadowMaeR),

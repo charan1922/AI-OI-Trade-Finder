@@ -8,6 +8,8 @@
  */
 
 import { isMarketHours } from '@/lib/dhan/market-feed';
+import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
+import { computeReanchor } from '@/lib/auto-trade/quant/reanchor';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
 import { getNumberSetting } from '@/lib/config/feature-toggles';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
@@ -319,6 +321,34 @@ async function recordEntryQuantSnapshot(rt: ToolRuntime, pick: TradeSuggestion, 
       sectorRank = idx >= 0 ? idx + 1 : null;
     }
 
+    // Re-anchor-at-placement (doc §7/§14): rebuild the plan from the locally
+    // recorded 5-min candles (no broker call) and measure the forward R:R to the
+    // stored target at the fresh entry. Only runs when we have a fresh spot.
+    let forwardRR: number | null = null;
+    let freshSlSpot: number | null = null;
+    let freshTargetSpot: number | null = null;
+    if (freshSpot != null) {
+      try {
+        const bars = await getFyersCandles(pick.symbol, rt.date, 'EQ');
+        if (bars.length > 0) {
+          const reanchor = computeReanchor({
+            side: pick.option?.optionType ?? (pick.direction === 'bullish' ? 'CE' : 'PE'),
+            direction: pick.direction,
+            plannedSlSpot: slSpot,
+            plannedTargetSpot: targetSpot,
+            freshSpot,
+            bars,
+            nowBucketTs: fyersBucketFor(Date.now()),
+          });
+          forwardRR = reanchor.forwardRR;
+          freshSlSpot = reanchor.freshSlSpot;
+          freshTargetSpot = reanchor.freshTargetSpot;
+        }
+      } catch {
+        // candle read / rebuild is best-effort — a miss must not affect the trade
+      }
+    }
+
     await recordEntryQuant(tradeId, {
       entryFreshSpot: freshSpot,
       entryChangePctOpen: pick.changePctOpen,
@@ -326,9 +356,12 @@ async function recordEntryQuantSnapshot(rt: ToolRuntime, pick: TradeSuggestion, 
       entryRemainingRewardR: remainingRewardR,
       entrySectorRank: sectorRank,
       entrySectorCount: sectorCount,
+      entryForwardRR: forwardRR,
+      entryFreshSlSpot: freshSlSpot,
+      entryFreshTargetSpot: freshTargetSpot,
     });
     console.log(
-      `[AutoTrade][shadow] ${pick.symbol} entry: chgFromOpen ${pick.changePctOpen ?? '—'}% · progressR ${progressR ?? '—'} · remainingRewardR ${remainingRewardR ?? '—'} · sector ${pick.sector} rank ${sectorRank ?? '—'}/${sectorCount ?? '—'}`
+      `[AutoTrade][shadow] ${pick.symbol} entry: chgFromOpen ${pick.changePctOpen ?? '—'}% · progressR ${progressR ?? '—'} · remainingRewardR ${remainingRewardR ?? '—'} · forwardRR ${forwardRR ?? '—'} · sector ${pick.sector} rank ${sectorRank ?? '—'}/${sectorCount ?? '—'}`
     );
   } catch (err) {
     console.warn(`[AutoTrade][shadow] entry quant snapshot failed for ${pick.symbol}: ${(err as Error).message}`);

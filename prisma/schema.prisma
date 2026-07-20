@@ -380,6 +380,9 @@ model AutoTrade {
   entrySectorCount      Int?
   shadowMfeR            Float?
   shadowMaeR            Float?
+  entryForwardRR        Float?
+  entryFreshSlSpot      Float?
+  entryFreshTargetSpot  Float?
   proposedAt        String
   openedAt          String?
   closedAt          String?

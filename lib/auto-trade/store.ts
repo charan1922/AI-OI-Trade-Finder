@@ -74,6 +74,12 @@ async function ensureTables(): Promise<void> {
     'entrySectorCount INTEGER', // how many sectors were ranked this scan
     'shadowMfeR REAL', // max FAVORABLE spot excursion in R over the hold (giveback measurement)
     'shadowMaeR REAL', // max ADVERSE spot excursion in R over the hold
+    // Re-anchor-at-placement shadow (lib/auto-trade/quant/reanchor.ts): what a
+    // plan rebuilt from fresh candles at the fill moment WOULD look like, and the
+    // forward reward:risk to the STORED target at the fresh entry (doc §7/§14).
+    'entryForwardRR REAL', // (storedTarget − freshSpot)/(freshSpot − storedStop): <1 = late chase
+    'entryFreshSlSpot REAL', // stop a rebuild at placement would set (vs stored slSpot → drift)
+    'entryFreshTargetSpot REAL', // target a rebuild at placement would set
   ]) {
     if (!existingTradeColumns.has(col.split(' ')[0]))
       await prisma.$executeRawUnsafe(`ALTER TABLE auto_trades ADD COLUMN ${col}`);
@@ -262,6 +268,9 @@ const ENTRY_QUANT_COLUMNS = new Set([
   'entryRemainingRewardR',
   'entrySectorRank',
   'entrySectorCount',
+  'entryForwardRR',
+  'entryFreshSlSpot',
+  'entryFreshTargetSpot',
 ]);
 
 export async function recordEntryQuant(
@@ -275,6 +284,9 @@ export async function recordEntryQuant(
       | 'entryRemainingRewardR'
       | 'entrySectorRank'
       | 'entrySectorCount'
+      | 'entryForwardRR'
+      | 'entryFreshSlSpot'
+      | 'entryFreshTargetSpot'
     >
   >
 ): Promise<void> {
@@ -358,6 +370,9 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     entrySectorCount: r.entrySectorCount == null ? null : Number(r.entrySectorCount),
     shadowMfeR: r.shadowMfeR == null ? null : Number(r.shadowMfeR),
     shadowMaeR: r.shadowMaeR == null ? null : Number(r.shadowMaeR),
+    entryForwardRR: r.entryForwardRR == null ? null : Number(r.entryForwardRR),
+    entryFreshSlSpot: r.entryFreshSlSpot == null ? null : Number(r.entryFreshSlSpot),
+    entryFreshTargetSpot: r.entryFreshTargetSpot == null ? null : Number(r.entryFreshTargetSpot),
   };
 }
 
