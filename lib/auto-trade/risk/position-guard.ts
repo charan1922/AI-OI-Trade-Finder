@@ -21,7 +21,7 @@ import { isPastSquareOff, istMinuteLabel, minuteOfDayIST } from '../config';
 import { exitTrade } from '../execution';
 import { fetchOptionQuotesWithHealth, latestSpotRead, type OptionQuote } from '../quotes';
 import { getAutoTradeSettings } from '../settings';
-import { getOpenTrades, getOrdersForTrade, updateTrade } from '../store';
+import { getOpenTrades, getOrdersForTrade, updateShadowExcursion, updateTrade } from '../store';
 import type { AutoTrade } from '../types';
 import { activateRiskLatch, clearRiskLatchReason } from './latch';
 import { supertrend } from '@/lib/signals/indicators';
@@ -105,6 +105,41 @@ const EXIT_FAILURE_ESCALATE = 3;
 
 /** Trailing stop: once premium gains this %, move SL to entry (risk-free). */
 const TRAIL_STOP_TRIGGER_PCT = 30;
+
+/** SHADOW-only R level at which an R-based rule would protect near breakeven —
+ *  the doc's alternative to the +30%-premium rule. Used for MEASUREMENT logging,
+ *  it never moves a stop or exits. */
+const SHADOW_R_PROTECT_AT = 1;
+
+/**
+ * SHADOW measurement (never exits, never moves a stop): track the spot-R
+ * excursion over the hold so R-based profit protection can be calibrated against
+ * the live +30%-premium breakeven rule. The doc's finding — a +30% premium move
+ * is an inconsistent proxy for spot-R — means a trade can reach a real R-gain
+ * and give it back before the premium rule ever arms (COLPAL 2026-07-20: peaked
+ * ~+0.8R, premium never near +30%, gave it all back to the cash stop).
+ */
+async function recordShadowExcursion(trade: AutoTrade, spot: number, actions: string[]): Promise<void> {
+  try {
+    if (trade.slSpot == null) return;
+    const risk = Math.abs(trade.entrySpot - trade.slSpot);
+    if (!(risk > 0)) return;
+    const dirSign = trade.direction === 'bullish' ? 1 : -1;
+    const spotR = Math.round(((dirSign * (spot - trade.entrySpot)) / risk) * 100) / 100;
+    const prevMfe = trade.shadowMfeR;
+    await updateShadowExcursion(trade.id, spotR > 0 ? spotR : null, spotR < 0 ? spotR : null);
+    // Transition note: first crossing of the R-protect level while the LIVE
+    // premium breakeven (needs +30% premium) has not armed — the giveback window.
+    const beArmed = trade.entryFillPremium != null && trade.slPremium >= trade.entryFillPremium;
+    if (spotR >= SHADOW_R_PROTECT_AT && (prevMfe == null || prevMfe < SHADOW_R_PROTECT_AT) && !beArmed) {
+      const line = `${trade.symbol}: [shadow] reached +${spotR}R on spot but premium breakeven not armed (live rule needs +30% premium) — an R-based rule would protect near breakeven here`;
+      actions.push(line);
+      console.log(`${TAG} ${line}`);
+    }
+  } catch (err) {
+    console.warn(`${TAG} shadow excursion failed for ${trade.symbol}: ${(err as Error).message}`);
+  }
+}
 
 interface PositionGuardCoreResult {
   actions: string[];
@@ -247,6 +282,7 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
             console.warn(`${TAG} ${line}`);
           } else if (spotRead != null) {
             reason = spotExitReason(trade, spotRead.price);
+            await recordShadowExcursion(trade, spotRead.price, actions);
           }
         }
       }

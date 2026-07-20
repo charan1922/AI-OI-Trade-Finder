@@ -90,6 +90,19 @@ export interface AutoTrade {
   shadowExitPremium: number | null;
   shadowExitReason: string | null;
   shadowPnlRupees: number | null;
+  /** Quant SHADOW metrics — recorded on real trades purely to MEASURE entry/exit
+   *  quality (late-chase, giveback, weak-sector). None of these gates or alters a
+   *  live entry/exit; they exist so thresholds can be calibrated on recorded days
+   *  before anything here becomes a gate. */
+  entryFreshSpot: number | null;
+  entryChangePctOpen: number | null;
+  entryProgressR: number | null;
+  entryRemainingRewardR: number | null;
+  entrySectorRank: number | null;
+  entrySectorCount: number | null;
+  /** Max favorable / adverse spot excursion in R over the hold (giveback view). */
+  shadowMfeR: number | null;
+  shadowMaeR: number | null;
   aiReasonEntry: string;
   aiReasonExit: string | null;
   /** (exitFill − entryFill) × lotSize × lots, set at close when both known. */

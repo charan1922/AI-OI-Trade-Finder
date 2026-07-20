@@ -57,7 +57,24 @@ async function ensureTables(): Promise<void> {
   // candles, display-only (see types.ts AutoTrade).
   const tradeColumns = (await prisma.$queryRawUnsafe(`PRAGMA table_info(auto_trades)`)) as { name: string }[];
   const existingTradeColumns = new Set(tradeColumns.map((c) => c.name));
-  for (const col of ['shadowEntryPremium REAL', 'shadowExitPremium REAL', 'shadowExitReason TEXT', 'shadowPnlRupees REAL']) {
+  for (const col of [
+    'shadowEntryPremium REAL',
+    'shadowExitPremium REAL',
+    'shadowExitReason TEXT',
+    'shadowPnlRupees REAL',
+    // Quant SHADOW metrics — recorded on real trades to MEASURE the entry/exit
+    // quality the doc calls out (late-chase, giveback, weak sector). Pure
+    // observation: nothing here gates or changes a live entry/exit. Calibrate
+    // thresholds from these on recorded days before any of them becomes a gate.
+    'entryFreshSpot REAL', // underlying spot at the placement moment
+    'entryChangePctOpen REAL', // how far the stock had run from the day's open at entry (late-chase signal)
+    'entryProgressR REAL', // (freshSpot − plannedEntry)/plannedRisk, signed for direction (intra-cycle drift)
+    'entryRemainingRewardR REAL', // (plannedTarget − freshSpot)/plannedRisk, signed (forward reward left at real entry)
+    'entrySectorRank INTEGER', // pick's sector rank by OI activity among all scanned sectors (1 = most active)
+    'entrySectorCount INTEGER', // how many sectors were ranked this scan
+    'shadowMfeR REAL', // max FAVORABLE spot excursion in R over the hold (giveback measurement)
+    'shadowMaeR REAL', // max ADVERSE spot excursion in R over the hold
+  ]) {
     if (!existingTradeColumns.has(col.split(' ')[0]))
       await prisma.$executeRawUnsafe(`ALTER TABLE auto_trades ADD COLUMN ${col}`);
   }
@@ -235,6 +252,61 @@ export async function updateTrade(
   );
 }
 
+/** Entry-time quant SHADOW snapshot (allowlisted columns). Written best-effort
+ *  right after a trade is inserted; a failure here must never affect the trade.
+ *  Pure measurement — none of these fields gates or alters a live entry. */
+const ENTRY_QUANT_COLUMNS = new Set([
+  'entryFreshSpot',
+  'entryChangePctOpen',
+  'entryProgressR',
+  'entryRemainingRewardR',
+  'entrySectorRank',
+  'entrySectorCount',
+]);
+
+export async function recordEntryQuant(
+  id: number,
+  metrics: Partial<
+    Pick<
+      AutoTrade,
+      | 'entryFreshSpot'
+      | 'entryChangePctOpen'
+      | 'entryProgressR'
+      | 'entryRemainingRewardR'
+      | 'entrySectorRank'
+      | 'entrySectorCount'
+    >
+  >
+): Promise<void> {
+  await ensureTables();
+  const keys = Object.keys(metrics).filter(
+    (k) => ENTRY_QUANT_COLUMNS.has(k) && (metrics as Record<string, unknown>)[k] != null
+  );
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  const values = keys.map((k) => (metrics as Record<string, unknown>)[k] as number);
+  await prisma.$executeRawUnsafe(`UPDATE auto_trades SET ${sets} WHERE id = ?`, ...values, id);
+}
+
+/** Update the running max favorable / adverse excursion (in spot-R) for an open
+ *  trade. Monotonic: mfeR only rises, maeR only falls. Guard-driven SHADOW
+ *  measurement of giveback — never triggers an exit or moves a stop. */
+export async function updateShadowExcursion(id: number, mfeR: number | null, maeR: number | null): Promise<void> {
+  await ensureTables();
+  if (mfeR == null && maeR == null) return;
+  const parts: string[] = [];
+  const values: number[] = [];
+  if (mfeR != null) {
+    parts.push('shadowMfeR = MAX(COALESCE(shadowMfeR, -1e9), ?)');
+    values.push(mfeR);
+  }
+  if (maeR != null) {
+    parts.push('shadowMaeR = MIN(COALESCE(shadowMaeR, 1e9), ?)');
+    values.push(maeR);
+  }
+  await prisma.$executeRawUnsafe(`UPDATE auto_trades SET ${parts.join(', ')} WHERE id = ?`, ...values, id);
+}
+
 /** Atomic lifecycle transition. Exactly one concurrent caller can own a
  * pending approval or other state hand-off. */
 export async function transitionTradeStatus(
@@ -278,6 +350,14 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     shadowExitPremium: r.shadowExitPremium == null ? null : Number(r.shadowExitPremium),
     shadowExitReason: r.shadowExitReason == null ? null : String(r.shadowExitReason),
     shadowPnlRupees: r.shadowPnlRupees == null ? null : Number(r.shadowPnlRupees),
+    entryFreshSpot: r.entryFreshSpot == null ? null : Number(r.entryFreshSpot),
+    entryChangePctOpen: r.entryChangePctOpen == null ? null : Number(r.entryChangePctOpen),
+    entryProgressR: r.entryProgressR == null ? null : Number(r.entryProgressR),
+    entryRemainingRewardR: r.entryRemainingRewardR == null ? null : Number(r.entryRemainingRewardR),
+    entrySectorRank: r.entrySectorRank == null ? null : Number(r.entrySectorRank),
+    entrySectorCount: r.entrySectorCount == null ? null : Number(r.entrySectorCount),
+    shadowMfeR: r.shadowMfeR == null ? null : Number(r.shadowMfeR),
+    shadowMaeR: r.shadowMaeR == null ? null : Number(r.shadowMaeR),
   };
 }
 

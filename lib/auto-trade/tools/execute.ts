@@ -29,6 +29,7 @@ import {
   getPendingApprovals,
   getTrade,
   insertTrade,
+  recordEntryQuant,
   symbolTradedToday,
   updateTrade,
 } from '../store';
@@ -275,6 +276,65 @@ async function buildGateInput(
   };
 }
 
+/**
+ * Record the entry-time quant SHADOW snapshot for a just-inserted trade. Pure
+ * MEASUREMENT — it never gates or alters the entry (it runs AFTER the trade row
+ * exists) and is fully best-effort: any failure is swallowed so a shadow miss
+ * can never disturb a live order. Captures, against the freshest spot at the
+ * placement moment:
+ *   - how far the stock had already run from the day's open (late-chase signal),
+ *   - forward reward left in R vs the scanner plan at the real entry,
+ *   - whether the pick sits in a market-leading (by OI activity) sector.
+ * These accrue on real trades so the anti-chase / R-target / sector-strength
+ * thresholds can be calibrated on recorded days before any becomes a gate.
+ */
+async function recordEntryQuantSnapshot(rt: ToolRuntime, pick: TradeSuggestion, tradeId: number): Promise<void> {
+  try {
+    const freshSpot = await latestSpot(pick.symbol, rt.date);
+    const entrySpot = pick.plan.entrySpot;
+    const slSpot = pick.plan.slSpot;
+    const targetSpot = pick.plan.targetSpot;
+    const dirSign = pick.direction === 'bullish' ? 1 : -1;
+    const risk = slSpot != null ? Math.abs(entrySpot - slSpot) : null;
+
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const progressR = freshSpot != null && risk != null && risk > 0 ? round2((dirSign * (freshSpot - entrySpot)) / risk) : null;
+    const remainingRewardR =
+      freshSpot != null && targetSpot != null && risk != null && risk > 0
+        ? round2((dirSign * (targetSpot - freshSpot)) / risk)
+        : null;
+
+    // Sector activity rank: order the scan's sectors by OI-spurt count (the
+    // big-player-activity proxy the whole strategy keys on), tie-broken by the
+    // magnitude of the sector's turnover move. 1 = most active.
+    let sectorRank: number | null = null;
+    let sectorCount: number | null = null;
+    const flow = rt.scan?.sectorFlow;
+    if (flow && flow.length > 0) {
+      const ranked = [...flow].sort(
+        (a, b) => b.oiSpurts - a.oiSpurts || Math.abs(b.avgChgPct ?? 0) - Math.abs(a.avgChgPct ?? 0)
+      );
+      const idx = ranked.findIndex((f) => f.sector === pick.sector);
+      sectorCount = ranked.length;
+      sectorRank = idx >= 0 ? idx + 1 : null;
+    }
+
+    await recordEntryQuant(tradeId, {
+      entryFreshSpot: freshSpot,
+      entryChangePctOpen: pick.changePctOpen,
+      entryProgressR: progressR,
+      entryRemainingRewardR: remainingRewardR,
+      entrySectorRank: sectorRank,
+      entrySectorCount: sectorCount,
+    });
+    console.log(
+      `[AutoTrade][shadow] ${pick.symbol} entry: chgFromOpen ${pick.changePctOpen ?? '—'}% · progressR ${progressR ?? '—'} · remainingRewardR ${remainingRewardR ?? '—'} · sector ${pick.sector} rank ${sectorRank ?? '—'}/${sectorCount ?? '—'}`
+    );
+  } catch (err) {
+    console.warn(`[AutoTrade][shadow] entry quant snapshot failed for ${pick.symbol}: ${(err as Error).message}`);
+  }
+}
+
 /** Run one tool by name. Returns the data plus an audit trace entry. */
 export async function executeAutoTradeTool(
   rt: ToolRuntime,
@@ -498,6 +558,8 @@ export async function executeAutoTradeTool(
           },
         };
       }
+      // SHADOW measurement (never gates): stamp entry-quality metrics on the row.
+      await recordEntryQuantSnapshot(rt, pick, tradeId);
       if (rt.settings.mode === 'approval') {
         // Push approval alert with Approve/Reject buttons to Telegram
         alerts.approvalRequested(
