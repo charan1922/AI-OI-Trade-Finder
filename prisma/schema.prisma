@@ -269,6 +269,7 @@ model TradeSuggestion {
   closePct      Float?
   spotOutcome   String?
   spotOutcomeR  Float?
+  protectShadow String? // profit-protection counterfactual R per rule (JSON); measurement-only
   outcomeAt     String?
 
   @@id([date, symbol, optionType])
