@@ -94,11 +94,18 @@ export const MAX_TOOL_STEPS = 10;
  * Fast guard loop cadence (lib/auto-trade/guard-loop.ts). Between the poller's
  * 5-min passes, OPEN positions get their premium stop/target re-checked every
  * this-many ms (all open contracts are batched into at most one live Dhan
- * quote request per active tick). The target
- * cadence is 60 seconds; the guard heartbeat reports actual scheduling and
- * quote latency. Deterministic code only — no AI in this loop.
+ * quote request per active tick, through the shared serial quote gate).
+ * 10 seconds (was 60; AT-026, gap analysis 2026-07-20): a one-minute window on
+ * an intraday option stop was a material chunk of the risk budget. This is a
+ * TARGET cadence, not an exit-latency guarantee — the guard heartbeat reports
+ * actual scheduling and quote latency. Deterministic code only — no AI here.
  */
-export const FAST_GUARD_TICK_MS = 60_000;
+export const FAST_GUARD_TICK_MS = 10_000;
+
+/** place_entry_order demands a check_order ALLOW for the SAME symbol within
+ *  this window (AT-006: the check-then-place workflow is code-enforced, not
+ *  prompt-enforced). Placement still re-runs every gate regardless. */
+export const CHECK_ORDER_TTL_MS = 2 * 60_000;
 
 export { nowIST, minuteOfDayIST, nowISTClock };
 

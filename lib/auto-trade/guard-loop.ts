@@ -34,7 +34,7 @@ import { tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 import { FAST_GUARD_TICK_MS } from './config';
 import { isAutoTradePassRunning } from './engine';
 import { reconcileOpenPositions, reconcileUnresolvedOrders } from './execution';
-import { runPositionGuard } from './risk/position-guard';
+import { getGuardHealth, runPositionGuard, type GuardHealth } from './risk/position-guard';
 import { getOpenTrades, getUnresolvedOrders, insertDecision } from './store';
 
 const TAG = '[FastGuard]';
@@ -195,12 +195,14 @@ export function startGuardLoop(): void {
   );
 }
 
-/** Status for ops/diagnostics (not yet surfaced in UI). */
+/** Status for ops/diagnostics (surfaced via GET /api/auto-trade). */
 export function getGuardLoopStatus(): {
   started: boolean;
   ticks: number;
   lastActive: GuardLoopState['lastActive'];
   lastTick: GuardLoopState['lastTick'];
+  /** Quote-sight health of the deterministic guard (AT-005). */
+  health: GuardHealth;
 } {
   const s = getState();
   return {
@@ -208,5 +210,6 @@ export function getGuardLoopStatus(): {
     ticks: s.ticks,
     lastActive: s.lastActive,
     lastTick: s.lastTick,
+    health: getGuardHealth(),
   };
 }

@@ -14,11 +14,13 @@ import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generat
 import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types';
 import { alerts } from '../alerts';
 import { getExecutionAdapter } from '../brokers';
-import { isEntryWindow, istMinuteLabel, minuteOfDayIST, nowISTClock } from '../config';
+import { CHECK_ORDER_TTL_MS, isEntryWindow, istMinuteLabel, minuteOfDayIST, nowISTClock } from '../config';
 import { exitTrade, placeEntryOrder, type ExecOutcome } from '../execution';
 import { fetchOptionQuote, fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
 import { checkEntryGates, checkStopMove, type EntryGateInput } from '../risk/gates';
+import { getRiskLatch } from '../risk/latch';
 import { getAutoTradeSettings } from '../settings';
+import { isVerifiedTradingDay } from '@/lib/backtest/trading-calendar';
 import {
   countEntriesToday,
   dailyRealizedPnl,
@@ -36,6 +38,19 @@ export interface ToolRuntime {
   scan: SuggestResponse | null;
   settings: AutoTradeSettings;
   date: string;
+  /** Pass-scoped one-entry policy (AT-006): the "one place_entry_order per
+   *  pass, only after a fresh check_order ALLOW" rule used to live ONLY in the
+   *  prompt — this state makes it code-enforced. Reset by the engine per pass. */
+  pass: {
+    entryAttempted: boolean;
+    /** symbol → epoch-ms of its latest check_order ALLOW this pass. */
+    checkedAllowAt: Map<string, number>;
+  };
+}
+
+/** Fresh pass-policy state — the engine builds one per pass. */
+export function newPassPolicyState(): ToolRuntime['pass'] {
+  return { entryAttempted: false, checkedAllowAt: new Map() };
 }
 
 interface ToolResult {
@@ -221,11 +236,13 @@ async function buildGateInput(
   pick: TradeSuggestion
 ): Promise<{ input: EntryGateInput; freshPremium: number | null }> {
   const scanPremium = pick.option?.premium?.ltp ?? null;
-  const [state, fresh, tradedToday, entryCutoffMin] = await Promise.all([
+  const [state, fresh, tradedToday, entryCutoffMin, latch, sessionVerified] = await Promise.all([
     buildAccountState(rt, { includeBrokerFunds: true }),
     pick.option ? fetchOptionQuote(pick.option.optSecurityId) : null,
     symbolTradedToday(rt.date, pick.symbol),
     getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
+    getRiskLatch(),
+    isVerifiedTradingDay(rt.date),
   ]);
   const freshPremium = fresh?.ltp ?? null;
   const slippagePct =
@@ -238,6 +255,8 @@ async function buildGateInput(
       settings: rt.settings,
       liveEnvEnabled: state.liveEnvEnabled,
       marketOpen: state.marketOpen,
+      sessionVerified,
+      riskLatchReasons: latch.blocked ? latch.reasons.map((r) => `${r.key} (${r.detail})`) : [],
       minuteIST: minuteOfDayIST(),
       entryCutoffMin,
       entriesToday: state.entriesToday,
@@ -338,6 +357,9 @@ export async function executeAutoTradeTool(
       }
       const { input } = await buildGateInput(rt, pick);
       const verdict = checkEntryGates(input);
+      // AT-006: an ALLOW arms placement for THIS symbol for a short window —
+      // place_entry_order refuses without it (and re-runs every gate anyway).
+      if (verdict.allow) rt.pass.checkedAllowAt.set(symbol, Date.now());
       return {
         result: verdict,
         trace: {
@@ -350,6 +372,32 @@ export async function executeAutoTradeTool(
     }
 
     if (name === 'place_entry_order') {
+      const requestedSymbol = String(args.symbol ?? '').toUpperCase();
+      // AT-006 (code-enforced pass policy, was prompt-only):
+      //   1. ONE place_entry_order call per engine pass — a second call is
+      //      refused before any DB/broker work, whatever the account caps say.
+      //   2. Placement requires a check_order ALLOW for the SAME symbol within
+      //      CHECK_ORDER_TTL_MS. This is workflow enforcement; the gates below
+      //      re-validate everything regardless (that is the actual safety).
+      if (rt.pass.entryAttempted) {
+        return {
+          result: { placed: false, reasons: ['one entry attempt is allowed per engine pass — already used this pass'] },
+          trace: { name, args, ok: false, summary: `${requestedSymbol}: second entry call in one pass refused` },
+        };
+      }
+      const allowedAt = rt.pass.checkedAllowAt.get(requestedSymbol);
+      if (allowedAt == null || Date.now() - allowedAt > CHECK_ORDER_TTL_MS) {
+        return {
+          result: {
+            placed: false,
+            reasons: [
+              `a check_order ALLOW for ${requestedSymbol} within the last ${Math.round(CHECK_ORDER_TTL_MS / 60_000)} minute(s) is required immediately before placement — call check_order first`,
+            ],
+          },
+          trace: { name, args, ok: false, summary: `${requestedSymbol}: no recent check_order ALLOW` },
+        };
+      }
+      rt.pass.entryAttempted = true;
       // The pass captured settings at its start — an operator flipping the kill
       // switch (or turning the mode off) while the AI is mid-loop must stop THIS
       // order, not just the next pass. Re-read the live settings and let the

@@ -31,12 +31,15 @@ export async function GET(req: Request) {
 
 /**
  * POST /api/fyers/poller — control the loop.
- * Body: { action: 'pause' | 'resume' | 'run-once' | 'warm-tokens', date?: 'YYYY-MM-DD' }
+ * Body: { action: 'pause' | 'resume' | 'run-once' | 'warm-tokens' | 'sync-master', date?: 'YYYY-MM-DD' }
  * `run-once` runs a full cycle immediately, bypassing the market-hours guard —
  * with `date` it backfills that day's candles (market-closed testing; those
  * rows are pruned by the next regular cycle). `warm-tokens` runs the pre-open
  * token warm-up immediately (window/day checks bypassed) — the ops/test hook
- * for the 08:40–09:15 IST automatic warm-up.
+ * for the 08:40–09:15 IST automatic warm-up. `sync-master` forces a Dhan
+ * master-contracts re-sync NOW, bypassing the after-close gate — the ops hook
+ * to refresh stale contracts during market hours (transactional + row-count
+ * guarded inside forceSync, so a bad CSV can never wipe the table).
  */
 export async function POST(req: Request) {
   const denied = adminOnly(req);
@@ -68,11 +71,16 @@ export async function POST(req: Request) {
       await runTokenWarmup();
       return NextResponse.json({ success: true, ...getFyersPollerStatus() });
     }
+    case 'sync-master': {
+      const { forceSync } = await import('@/lib/historify/master-contracts');
+      const { count, elapsed } = await forceSync();
+      return NextResponse.json({ success: true, count, elapsed });
+    }
     default:
       return NextResponse.json(
         {
           success: false,
-          error: "action must be 'pause' | 'resume' | 'run-once' | 'warm-tokens'",
+          error: "action must be 'pause' | 'resume' | 'run-once' | 'warm-tokens' | 'sync-master'",
         },
         { status: 400 }
       );

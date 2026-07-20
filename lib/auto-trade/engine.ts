@@ -22,7 +22,11 @@ import { recordPromptVersion } from '@/lib/prompts/store';
 import { isTelegramConfigured, sendCommentaryToTelegram } from '@/lib/telegram';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { expireStaleApprovals } from './approval';
-import { reconcileOpenPositions, reconcileUnresolvedOrders as reconcileOrdersSafely } from './execution';
+import {
+  reconcileOpenPositions,
+  reconcileUnresolvedOrders as reconcileOrdersSafely,
+  scanForOrphanBrokerPositions,
+} from './execution';
 import { isEntryWindow, nowISTClock } from './config';
 import { runToolLoop } from './decision/providers';
 import { commentaryTimeContext } from '@/lib/ai-commentary/generate';
@@ -35,7 +39,7 @@ import { runPositionGuard } from './risk/position-guard';
 import { getAutoTradeSettings } from './settings';
 import { countEntriesToday, getOpenTrades, insertDecision } from './store';
 import { AUTO_TRADE_TOOLS } from './tools/defs';
-import { buildInitialDecisionContext, executeAutoTradeTool, type ToolRuntime } from './tools/execute';
+import { buildInitialDecisionContext, executeAutoTradeTool, newPassPolicyState, type ToolRuntime } from './tools/execute';
 
 const TAG = '[AutoTrade]';
 const ENGINE_LEASE = 'auto-trade-engine-pass';
@@ -118,6 +122,11 @@ export async function runAutoTradePass(
     const positionNotes = await tstep('reconcile: positions', () => reconcileOpenPositions({ verifyBroker: true }), (n) =>
       n.length > 0 ? `${n.length} note(s)` : undefined
     );
+    // Reverse (broker → DB) truth: any live venue position with no local
+    // explanation latches new entries (AT-003). Real-broker modes only.
+    const orphanNotes = await tstep('reconcile: broker orphan scan', () => scanForOrphanBrokerPositions(settings), (n) =>
+      n.length > 0 ? `${n.length} note(s)` : undefined
+    );
     const expired = await tstep('approvals: expire stale', () => expireStaleApprovals(date, settings.approvalTtlMin), (e) =>
       e.length > 0 ? `${e.length} expired` : undefined
     );
@@ -130,6 +139,7 @@ export async function runAutoTradePass(
     const systemNotes = [
       ...reconcileNotes,
       ...positionNotes,
+      ...orphanNotes,
       ...expired.map((e) => `approval expired: ${e}`),
       ...(guard.coalesced ? [] : guardActions),
     ];
@@ -199,7 +209,7 @@ export async function runAutoTradePass(
       };
     }
 
-    const rt: ToolRuntime = { scan, settings, date };
+    const rt: ToolRuntime = { scan, settings, date, pass: newPassPolicyState() };
     const now = nowISTClock();
     // Build routine context in parallel before the first model call. Reuse the
     // guard's batched quotes so positions do not issue another Dhan request.

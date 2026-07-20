@@ -95,6 +95,11 @@ interface ApiResponse {
   trades?: TradeRow[];
   pending?: TradeRow[];
   decisions?: DecisionRow[];
+  riskLatch?: {
+    blocked: boolean;
+    reasons: { key: string; detail: string; at: string }[];
+    activatedAt: string | null;
+  };
 }
 
 const POLL_MS = 30_000;
@@ -527,6 +532,36 @@ export default function AutoTradePage() {
         </div>
       )}
       {notice && <div className="rounded-md border border-border bg-muted/50 p-2 text-xs">{notice}</div>}
+
+      {data?.riskLatch?.blocked && (
+        <div className="space-y-2 rounded-md border border-red-500/60 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertTriangle className="size-4" /> RISK LATCH ACTIVE — all new entries are blocked (exits still run)
+          </div>
+          <ul className="list-disc space-y-1 pl-6 text-xs">
+            {data.riskLatch.reasons.map((r) => (
+              <li key={r.key}>
+                <span className="font-mono font-semibold">{r.key}</span> — {r.detail} ({fmtTime(r.at)})
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Clear the risk latch? Only do this AFTER verifying the broker account matches the console. An unresolved condition will re-latch on the next pass.'
+                )
+              )
+                void doAction('clear-risk-latch');
+            }}
+            className="rounded border border-red-500/60 px-3 py-1 text-xs font-semibold hover:bg-red-500/20 disabled:opacity-50"
+          >
+            I verified the broker — clear the latch
+          </button>
+        </div>
+      )}
 
       {s && (
         <div className="space-y-3 rounded-lg border border-border bg-card p-4">

@@ -19,15 +19,16 @@ import { fyersAppId, getFyersAccessToken } from '@/lib/fyers/auth';
 import {
   BrokerSubmissionError,
   type BrokerAdapter,
+  type BrokerBookPosition,
   type BrokerFunds,
-  type BrokerNetPosition,
   type BrokerPositionQuery,
+  type BrokerPositionRead,
   type OrderState,
   type OrderTicket,
   type PlacedOrder,
   type RecoveredOrder,
 } from './adapter';
-import { ticketQtyUnits } from './adapter';
+import { parseFiniteNumber, ticketQtyUnits } from './adapter';
 
 const TAG = '[FyersTrade]';
 const MONTH_CODES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -349,24 +350,58 @@ export class FyersAdapter implements BrokerAdapter {
     };
   }
 
-  async getNetPosition(query: BrokerPositionQuery): Promise<BrokerNetPosition | null> {
+  async getNetPosition(query: BrokerPositionQuery): Promise<BrokerPositionRead> {
     try {
       const fyers = await getFyers();
       const res = await serial(() => fyers.get_positions());
-      if (!res || res.s !== 'ok') return null; // book unreadable — venue cannot say
+      if (!res || res.s !== 'ok') {
+        return { kind: 'unavailable', reason: `position book unreadable: ${String(res?.message ?? 'no response')}` };
+      }
       const rows = Array.isArray(res.netPositions) ? (res.netPositions as Record<string, unknown>[]) : [];
       const symbol = toFyersOptionSymbol(query);
       const row = rows.find((p) => String(p.symbol) === symbol);
       // A successful book read with no row for the contract = definitively flat.
-      if (!row) return { netQtyUnits: 0, sellAvg: null };
-      const net = Number(row.netQty);
+      if (!row) return { kind: 'verified', netQtyUnits: 0, sellAvg: null };
+      // STRICT quantity parse — a row that exists but has no parseable netQty is
+      // UNKNOWN, never flat (the old ?: 0 fallback closed real positions).
+      const net = parseFiniteNumber(row, ['netQty']);
+      if (net == null) {
+        return { kind: 'unavailable', reason: `position row for ${symbol} has no parseable netQty (${safeJson(row, 200)})` };
+      }
       const sellAvg = Number(row.sellAvg);
       return {
-        netQtyUnits: Number.isFinite(net) ? net : 0,
+        kind: 'verified',
+        netQtyUnits: net,
         sellAvg: Number.isFinite(sellAvg) && sellAvg > 0 ? sellAvg : null,
       };
     } catch (err) {
       console.warn(`${TAG} get_positions failed: ${(err as Error).message}`);
+      return { kind: 'unavailable', reason: (err as Error).message };
+    }
+  }
+
+  async listNetPositions(): Promise<BrokerBookPosition[] | null> {
+    try {
+      const fyers = await getFyers();
+      const res = await serial(() => fyers.get_positions());
+      if (!res || res.s !== 'ok') return null;
+      const rows = Array.isArray(res.netPositions) ? (res.netPositions as Record<string, unknown>[]) : [];
+      // Only the class of position this module can ever create (or lose track
+      // of): INTRADAY NSE F&O contracts. Delivery/margin equity positions are
+      // the operator's own business and must not trip the orphan latch.
+      return rows
+        .filter((p) => {
+          const symbol = String(p.symbol ?? '');
+          const product = String(p.productType ?? '');
+          return product === 'INTRADAY' && symbol.startsWith('NSE:') && /(?:CE|PE|FUT)$/.test(symbol);
+        })
+        .map((p) => ({
+          rawSymbol: String(p.symbol),
+          securityId: null,
+          netQtyUnits: parseFiniteNumber(p, ['netQty']),
+        }));
+    } catch (err) {
+      console.warn(`${TAG} listNetPositions failed: ${(err as Error).message}`);
       return null;
     }
   }

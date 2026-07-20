@@ -3,6 +3,8 @@ import { todayIST } from '@/lib/dhan/market-feed';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
 import { adminOnly } from '@/lib/auth/server';
 import { istMinuteLabel, isEntryWindow, nowISTClock } from '@/lib/auto-trade/config';
+import { getGuardLoopStatus } from '@/lib/auto-trade/guard-loop';
+import { getRiskLatch } from '@/lib/auto-trade/risk/latch';
 import { getAutoTradeSettings, SETTING_DEFS } from '@/lib/auto-trade/settings';
 import { getNumberSetting } from '@/lib/config/feature-toggles';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
@@ -31,7 +33,7 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const date = url.searchParams.get('date') ?? todayIST();
     const settings = await getAutoTradeSettings();
-    const [trades, pending, decisions, entriesToday, exposure, pnl, commentaryCutoffMin] = await Promise.all([
+    const [trades, pending, decisions, entriesToday, exposure, pnl, commentaryCutoffMin, riskLatch] = await Promise.all([
       getTradesByDate(date),
       getPendingApprovals(date),
       getDecisions(date, 30),
@@ -41,6 +43,7 @@ export async function GET(req: Request) {
       getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT).catch(
         () => COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT
       ),
+      getRiskLatch(),
     ]);
     const effectiveEntryEndMin = Math.min(settings.entryEndMin, commentaryCutoffMin - 1, settings.squareOffMin - 1);
     // Attach each trade's broker orders so the console can show why an entry
@@ -73,6 +76,8 @@ export async function GET(req: Request) {
       trades: tradesWithOrders,
       pending,
       decisions,
+      riskLatch,
+      guardLoop: getGuardLoopStatus(),
     });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });

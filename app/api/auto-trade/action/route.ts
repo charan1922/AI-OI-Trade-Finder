@@ -3,6 +3,7 @@ import { approveTrade, rejectTrade } from '@/lib/auto-trade/approval';
 import { runOrderPipelineSmoke } from '@/lib/auto-trade/brokers/fyers-adapter';
 import { runAutoTradePass } from '@/lib/auto-trade/engine';
 import { exitTrade } from '@/lib/auto-trade/execution';
+import { clearRiskLatch } from '@/lib/auto-trade/risk/latch';
 import { getTrade, insertDecision } from '@/lib/auto-trade/store';
 import { adminOnly } from '@/lib/auth/server';
 import { prisma } from '@/lib/db';
@@ -14,7 +15,7 @@ export const runtime = 'nodejs';
 
 /**
  * POST /api/auto-trade/action — operator actions from the /auto-trade console.
- * body { action: 'approve' | 'reject' | 'exit' | 'run-pass' | 'order-smoke', tradeId?, symbol? }
+ * body { action: 'approve' | 'reject' | 'exit' | 'run-pass' | 'order-smoke' | 'clear-risk-latch', tradeId?, symbol? }
  *
  *  approve / reject — decide a pending approval (approve re-runs every gate
  *                     against a fresh quote before touching the broker)
@@ -81,6 +82,27 @@ export async function POST(req: Request) {
         },
         { status: 409 }
       );
+    }
+
+    if (action === 'clear-risk-latch') {
+      // Operator acknowledgement of latched incidents (orphan position, qty
+      // mismatch, guard blindness…). Clearing WITHOUT resolving the underlying
+      // condition is safe-ish: the next reconcile/orphan scan re-latches it.
+      const cleared = await clearRiskLatch();
+      await insertDecision({
+        date: todayIST(),
+        pass: 'system',
+        provider: null,
+        model: null,
+        summary:
+          cleared.length === 0
+            ? 'Operator cleared the risk latch (it was already empty)'
+            : `Operator cleared the risk latch: ${cleared.map((r) => `${r.key} (${r.detail})`).join('; ')}`,
+        toolTrace: [],
+        promptTokens: null,
+        completionTokens: null,
+      });
+      return NextResponse.json({ success: true, cleared });
     }
 
     if (action === 'run-pass') {

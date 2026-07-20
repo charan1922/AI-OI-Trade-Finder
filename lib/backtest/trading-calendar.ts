@@ -45,6 +45,49 @@ export interface WindowCalendar {
   noDataDays: string[];
 }
 
+/**
+ * Fail-closed session verdict for MONEY-TOUCHING entry paths (AT-007): true
+ * only when the holiday calendar POSITIVELY verifies the date is a trading
+ * day. The weekday/time check stays with isMarketHours(); this closes the gap
+ * where approval and manual passes trusted weekday+clock alone and could act
+ * on stale quotes during a weekday NSE holiday.
+ *
+ * Verification chain (mirrors the poller's fail-closed holiday logic):
+ *   date listed as holiday          → false
+ *   table populated, date not listed → true (cached per date)
+ *   table empty                      → seed from the official CSV, re-check
+ *   still unverifiable / DB error    → FALSE — never cached, retried next call
+ *
+ * Exits are NEVER gated on this — they only reduce risk.
+ */
+export async function isVerifiedTradingDay(date: string): Promise<boolean> {
+  const host = globalThis as unknown as { __verifiedTradingDay?: { date: string; verdict: boolean } };
+  if (host.__verifiedTradingDay?.date === date) return host.__verifiedTradingDay.verdict;
+  try {
+    let verdict: boolean | null = null;
+    try {
+      const hit = await prisma.$queryRawUnsafe<unknown[]>(`SELECT 1 FROM market_holidays WHERE date = ? LIMIT 1`, date);
+      if (hit.length > 0) {
+        verdict = false;
+      } else {
+        const count = await prisma.$queryRawUnsafe<{ n: number | bigint }[]>(`SELECT COUNT(*) AS n FROM market_holidays`);
+        if (Number(count[0]?.n ?? 0) > 0) verdict = true; // populated table that doesn't list the date
+      }
+    } catch {
+      // table may not exist yet — seeding below creates it
+    }
+    if (verdict == null) {
+      const map = await syncHolidays();
+      if (map.size === 0) return false; // unseedable — fail closed, no cache
+      verdict = !map.has(date);
+    }
+    host.__verifiedTradingDay = { date, verdict };
+    return verdict;
+  } catch {
+    return false; // transient DB error — fail closed, no cache
+  }
+}
+
 async function ensureHolidayTable(): Promise<void> {
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS market_holidays (

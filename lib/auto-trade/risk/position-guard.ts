@@ -19,14 +19,75 @@
 import { alerts } from '../alerts';
 import { isPastSquareOff, istMinuteLabel, minuteOfDayIST } from '../config';
 import { exitTrade } from '../execution';
-import { fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
+import { fetchOptionQuotesWithHealth, latestSpotRead, type OptionQuote } from '../quotes';
 import { getAutoTradeSettings } from '../settings';
 import { getOpenTrades, getOrdersForTrade, updateTrade } from '../store';
 import type { AutoTrade } from '../types';
+import { activateRiskLatch, clearRiskLatchReason } from './latch';
 import { supertrend } from '@/lib/signals/indicators';
 import { getFyersCandles } from '@/lib/fyers/candle-store';
 
 const TAG = '[PositionGuard]';
+
+// ── Guard health (AT-005): a quote failure while positions are open is guard
+// BLINDNESS, never silence. Consecutive failures escalate: warn → critical
+// alert → risk latch (blocks new entries; exits are never blocked). The latch
+// reason auto-clears the moment quotes return.
+const GUARD_BLIND_ALERT_AFTER = 3;
+const GUARD_BLIND_LATCH_AFTER = 6;
+const GUARD_BLIND_LATCH_KEY = 'guard-blind';
+
+export interface GuardHealth {
+  consecutiveQuoteFailures: number;
+  lastQuoteOkAt: string | null;
+  lastQuoteError: string | null;
+  status: 'healthy' | 'degraded' | 'blind';
+}
+
+const healthHost = globalThis as unknown as { __positionGuardHealth?: GuardHealth };
+
+function getHealth(): GuardHealth {
+  healthHost.__positionGuardHealth ??= {
+    consecutiveQuoteFailures: 0,
+    lastQuoteOkAt: null,
+    lastQuoteError: null,
+    status: 'healthy',
+  };
+  return healthHost.__positionGuardHealth;
+}
+
+/** Snapshot for ops/status endpoints. */
+export function getGuardHealth(): GuardHealth {
+  return { ...getHealth() };
+}
+
+async function recordQuoteHealth(sourceOk: boolean, error: string | null, openPositions: number): Promise<string[]> {
+  const health = getHealth();
+  const notes: string[] = [];
+  if (sourceOk) {
+    const wasBlind = health.consecutiveQuoteFailures >= GUARD_BLIND_ALERT_AFTER;
+    health.consecutiveQuoteFailures = 0;
+    health.lastQuoteOkAt = new Date().toISOString();
+    health.lastQuoteError = null;
+    health.status = 'healthy';
+    if (wasBlind) {
+      notes.push('option quotes recovered — guard sight restored');
+      await clearRiskLatchReason(GUARD_BLIND_LATCH_KEY);
+    }
+    return notes;
+  }
+  health.consecutiveQuoteFailures += 1;
+  health.lastQuoteError = error;
+  health.status = health.consecutiveQuoteFailures >= GUARD_BLIND_ALERT_AFTER ? 'blind' : 'degraded';
+  const detail = `option quote request failed ${health.consecutiveQuoteFailures}× in a row with ${openPositions} open position(s): ${error ?? 'unknown error'}`;
+  notes.push(detail);
+  console.error(`${TAG} ${detail}`);
+  if (health.consecutiveQuoteFailures === GUARD_BLIND_ALERT_AFTER) alerts.guardBlind(detail);
+  if (health.consecutiveQuoteFailures === GUARD_BLIND_LATCH_AFTER) {
+    await activateRiskLatch(GUARD_BLIND_LATCH_KEY, `${detail} — premium stops unprotected; spot checks continue`);
+  }
+  return notes;
+}
 
 function spotExitReason(trade: AutoTrade, spot: number): string | null {
   const bullish = trade.direction === 'bullish';
@@ -85,7 +146,13 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
       .filter((id) => Number.isFinite(id) && id > 0)
       .map(String)
   );
-  const optionQuotes = squareOff ? new Map<string, OptionQuote>() : await fetchOptionQuotes([...attemptedOptionIds]);
+  let optionQuotes: ReadonlyMap<string, OptionQuote> = new Map<string, OptionQuote>();
+  if (!squareOff && attemptedOptionIds.size > 0) {
+    const batch = await fetchOptionQuotesWithHealth([...attemptedOptionIds]);
+    optionQuotes = batch.quotes;
+    // A failed batch is BLINDNESS, not silence: warn → critical alert → latch.
+    actions.push(...(await recordQuoteHealth(batch.sourceOk, batch.error, open.length)));
+  }
   const spotBySymbol = new Map<string, number | null>();
 
   for (const trade of open) {
@@ -118,16 +185,29 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
         // Premium backstops — the primary deterministic exit (we HOLD premium).
         const quote = optionQuotes.get(String(Number(trade.optSecurityId))) ?? null;
         if (quote) {
-          if (quote.ltp <= trade.slPremium) {
-            reason = `premium stop hit (₹${quote.ltp} ≤ ₹${trade.slPremium})`;
-          } else if (quote.ltp >= trade.targetPremium) {
-            reason = `premium target hit (₹${quote.ltp} ≥ ₹${trade.targetPremium})`;
+          // Executable exit side (AT-027): a long option EXITS by SELLING, so
+          // the tradable price is the BID, not the last print. The stop falls
+          // back to the resolved price when the book is empty (capital
+          // protection beats waiting for a bid to appear); the target NEVER
+          // fires on LTP alone — an unsellable "target" is not a target.
+          const exitBid = quote.bid;
+          const stopPx = exitBid ?? quote.ltp;
+          const stopSrc = exitBid != null ? 'bid' : quote.priceSource;
+          if (stopPx <= trade.slPremium) {
+            reason = `premium stop hit (${stopSrc} ₹${stopPx} ≤ ₹${trade.slPremium})`;
+          } else if (exitBid != null && exitBid >= trade.targetPremium) {
+            reason = `premium target hit (bid ₹${exitBid} ≥ ₹${trade.targetPremium})`;
+          } else if (exitBid == null && quote.ltp >= trade.targetPremium) {
+            const line = `${trade.symbol} ${trade.optionType}: LTP ₹${quote.ltp} at/above target ₹${trade.targetPremium} but no live bid — holding until the target is executable`;
+            actions.push(line);
+            console.warn(`${TAG} ${line}`);
           }
 
           // Trailing stop: once premium gains TRAIL_STOP_TRIGGER_PCT%, tighten
-          // SL to entry fill price (risk-free trade). Only tightens — never loosens.
+          // SL to entry fill price (risk-free trade). Only tightens — never
+          // loosens. Gain measured on the executable side (bid when available).
           if (!reason && trade.entryFillPremium > 0) {
-            const gainPct = ((quote.ltp - trade.entryFillPremium) / trade.entryFillPremium) * 100;
+            const gainPct = ((stopPx - trade.entryFillPremium) / trade.entryFillPremium) * 100;
             if (gainPct >= TRAIL_STOP_TRIGGER_PCT && trade.slPremium < trade.entryFillPremium) {
               await updateTrade(trade.id, { slPremium: trade.entryFillPremium });
               const line = `${trade.symbol} ${trade.optionType}: trailing stop → SL tightened to entry ₹${trade.entryFillPremium} (+${gainPct.toFixed(0)}% gain)`;
@@ -145,8 +225,8 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
               if (st != null) {
                 const bullish = trade.direction === 'bullish';
                 const stFlipped = bullish ? st.direction === 'down' : st.direction === 'up';
-                if (stFlipped && quote.ltp < trade.entryFillPremium) {
-                  reason = `momentum exit: Supertrend flipped ${st.direction} + premium ₹${quote.ltp} below entry ₹${trade.entryFillPremium}`;
+                if (stFlipped && stopPx < trade.entryFillPremium) {
+                  reason = `momentum exit: Supertrend flipped ${st.direction} + premium ₹${stopPx} below entry ₹${trade.entryFillPremium}`;
                 }
               }
             } catch {
@@ -154,11 +234,20 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
             }
           }
         }
-        // Spot plan levels (scanner's structure-based stop, AI-tightened).
+        // Spot plan levels (scanner's structure-based stop, AI-tightened). A
+        // STALE close must not drive them: a stalled recorder would otherwise
+        // freeze the spot at its last value and silently disable (or misfire)
+        // the spot stop for the rest of the day (AT-005).
         if (!reason) {
-          const spot = await latestSpot(trade.symbol, date);
-          spotBySymbol.set(trade.symbol, spot);
-          if (spot != null) reason = spotExitReason(trade, spot);
+          const spotRead = await latestSpotRead(trade.symbol, date);
+          spotBySymbol.set(trade.symbol, spotRead?.price ?? null);
+          if (spotRead != null && !spotRead.fresh) {
+            const line = `${trade.symbol}: spot close is ${Math.round(spotRead.ageMs / 60_000)} min old (recorder stalled?) — spot stop/target not evaluated on stale data`;
+            actions.push(line);
+            console.warn(`${TAG} ${line}`);
+          } else if (spotRead != null) {
+            reason = spotExitReason(trade, spotRead.price);
+          }
         }
       }
 

@@ -16,15 +16,16 @@ import { env } from '@/lib/env';
 import {
   BrokerSubmissionError,
   type BrokerAdapter,
+  type BrokerBookPosition,
   type BrokerFunds,
-  type BrokerNetPosition,
   type BrokerPositionQuery,
+  type BrokerPositionRead,
   type OrderState,
   type OrderTicket,
   type PlacedOrder,
   type RecoveredOrder,
 } from './adapter';
-import { ticketQtyUnits } from './adapter';
+import { parseFiniteNumber, ticketQtyUnits } from './adapter';
 
 const TAG = '[DhanTrade]';
 const BASE = 'https://api.dhan.co/v2';
@@ -266,22 +267,52 @@ export class DhanAdapter implements BrokerAdapter {
     }
   }
 
-  async getNetPosition(query: BrokerPositionQuery): Promise<BrokerNetPosition | null> {
+  async getNetPosition(query: BrokerPositionQuery): Promise<BrokerPositionRead> {
     try {
       const data = await dhanFetch('/positions', { method: 'GET' });
       // GET /positions returns an array of position objects for the day.
       const rows = Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
       const row = rows.find((p) => String(p.securityId) === query.optSecurityId);
       // A successful read with no row for the contract = definitively flat.
-      if (!row) return { netQtyUnits: 0, sellAvg: null };
-      const net = Number(row.netQty);
+      if (!row) return { kind: 'verified', netQtyUnits: 0, sellAvg: null };
+      // STRICT quantity parse — a row that exists but has no parseable netQty is
+      // UNKNOWN, never flat (the old ?: 0 fallback closed real positions).
+      const net = parseFiniteNumber(row, ['netQty']);
+      if (net == null) {
+        return {
+          kind: 'unavailable',
+          reason: `position row for securityId ${query.optSecurityId} has no parseable netQty`,
+        };
+      }
       const sellAvg = Number(row.sellAvg ?? row.sellAverage);
       return {
-        netQtyUnits: Number.isFinite(net) ? net : 0,
+        kind: 'verified',
+        netQtyUnits: net,
         sellAvg: Number.isFinite(sellAvg) && sellAvg > 0 ? sellAvg : null,
       };
     } catch (err) {
       console.warn(`${TAG} positions lookup failed: ${(err as Error).message}`);
+      return { kind: 'unavailable', reason: (err as Error).message };
+    }
+  }
+
+  async listNetPositions(): Promise<BrokerBookPosition[] | null> {
+    try {
+      const data = await dhanFetch('/positions', { method: 'GET' });
+      const rows = Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+      // Only INTRADAY NSE F&O rows — the class this module creates. The
+      // operator's own delivery/margin positions never trip the orphan latch.
+      return rows
+        .filter(
+          (p) => String(p.exchangeSegment ?? '') === 'NSE_FNO' && String(p.productType ?? '') === 'INTRADAY'
+        )
+        .map((p) => ({
+          rawSymbol: String(p.tradingSymbol ?? p.securityId ?? 'unknown'),
+          securityId: p.securityId == null ? null : String(p.securityId),
+          netQtyUnits: parseFiniteNumber(p, ['netQty']),
+        }));
+    } catch (err) {
+      console.warn(`${TAG} listNetPositions failed: ${(err as Error).message}`);
       return null;
     }
   }

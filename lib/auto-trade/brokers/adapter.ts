@@ -31,6 +31,10 @@ export interface OrderTicket {
   optSecurityId: string; // Dhan security id
   lotSize: number;
   lots: number;
+  /** When set, the order is sent for exactly this many units instead of
+   *  lots × lotSize. Used for reduced-quantity exits: a SELL must never exceed
+   *  the quantity the venue verifiably holds (broker-truth invariant). */
+  qtyUnitsOverride?: number;
   /** Deterministic idempotency key — adapters pass it as correlation/tag where
    *  the API supports one; the store enforces uniqueness before placement. */
   idemKey: string;
@@ -84,12 +88,50 @@ export interface BrokerPositionQuery {
   optSecurityId: string;
 }
 
-export interface BrokerNetPosition {
-  /** Net units the venue holds RIGHT NOW; 0 = flat (position closed/absent). */
-  netQtyUnits: number;
-  /** Venue-reported average sell price for the day, when available — the best
-   *  estimate of the exit fill when the broker squared off without us. */
-  sellAvg: number | null;
+/**
+ * Discriminated position-truth read. `verified` means the venue's book was
+ * read successfully AND the quantity parsed strictly — 0 is a REAL flat, a
+ * negative number is a REAL short. `unavailable` means the venue cannot say
+ * (endpoint failed, row malformed, quantity field missing/non-numeric) —
+ * callers must NEVER treat it as flat. This shape exists because the old
+ * `Number.isFinite(net) ? net : 0` fallback silently turned a malformed
+ * broker payload into "position closed" (AT-001, gap analysis 2026-07-20).
+ */
+export type BrokerPositionRead =
+  | {
+      kind: 'verified';
+      /** Net units the venue holds RIGHT NOW; 0 = flat, < 0 = unexpected short. */
+      netQtyUnits: number;
+      /** Venue-reported average sell price for the day, when available — the best
+       *  estimate of the exit fill when the broker squared off without us. */
+      sellAvg: number | null;
+    }
+  | { kind: 'unavailable'; reason: string };
+
+/** One row of the venue's live intraday F&O position book (orphan scan). */
+export interface BrokerBookPosition {
+  /** The venue's own symbol for the contract (audit + Fyers matching). */
+  rawSymbol: string;
+  /** Dhan security id when the venue reports one (Dhan matching); else null. */
+  securityId: string | null;
+  /** Strictly parsed net units; null = the row had NO parseable quantity —
+   *  callers must treat that as an incident, never as flat. */
+  netQtyUnits: number | null;
+}
+
+/**
+ * Strict quantity parser: only a value that converts to a FINITE number counts.
+ * Missing fields, null, '' and non-numeric strings all return null — the
+ * caller must decide what "cannot parse" means (usually: fail closed).
+ */
+export function parseFiniteNumber(row: Record<string, unknown>, fields: string[]): number | null {
+  for (const name of fields) {
+    const raw = row[name];
+    if (raw === null || raw === undefined || raw === '') continue;
+    const value = Number(raw);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
 }
 
 export interface BrokerAdapter {
@@ -102,15 +144,18 @@ export interface BrokerAdapter {
   /** Recover a placement response by its durable broker tag. Null means the
    *  venue returned no match; throwing means the lookup itself was unavailable. */
   getOrderByCorrelationId?(correlationId: string): Promise<RecoveredOrder | null>;
-  /** Position-level truth for one contract. Null means the venue CANNOT say
-   *  (lookup failed / unsupported) — callers must NEVER treat null as flat.
-   *  A definite { netQtyUnits: 0 } means the venue read succeeded and the
-   *  contract is flat (e.g. the broker's own intraday square-off already ran). */
-  getNetPosition?(query: BrokerPositionQuery): Promise<BrokerNetPosition | null>;
+  /** Position-level truth for one contract. Always returns the discriminated
+   *  BrokerPositionRead — see its doc for the verified/unavailable contract. */
+  getNetPosition?(query: BrokerPositionQuery): Promise<BrokerPositionRead>;
+  /** The venue's full intraday NSE F&O position book (orphan discovery:
+   *  "which live positions exist that we have NO local trade for?").
+   *  Null = the book could not be read — never proof that nothing exists. */
+  listNetPositions?(): Promise<BrokerBookPosition[] | null>;
   cancelOrder(brokerOrderId: string): Promise<void>;
 }
 
-/** qty the exchange wants: units (shares), always whole lot multiples. */
+/** qty the exchange wants: units (shares), always whole lot multiples unless
+ *  a reduced-exit override caps the SELL at the venue's verified holding. */
 export function ticketQtyUnits(t: OrderTicket): number {
-  return t.lots * t.lotSize;
+  return t.qtyUnitsOverride ?? t.lots * t.lotSize;
 }

@@ -14,8 +14,11 @@ try {
 }
 
 import { prisma } from '../lib/db';
+import { parseFiniteNumber } from '../lib/auto-trade/brokers/adapter';
 import { safeJson, toFyersOptionSymbol } from '../lib/auto-trade/brokers/fyers-adapter';
 import { checkEntryGates, checkStopMove } from '../lib/auto-trade/risk/gates';
+import { getRiskLatch } from '../lib/auto-trade/risk/latch';
+import { executeAutoTradeTool, newPassPolicyState, type ToolRuntime } from '../lib/auto-trade/tools/execute';
 import { DEFAULT_SETTINGS } from '../lib/auto-trade/config';
 import { getAutoTradeSettings, setAutoTradeSetting } from '../lib/auto-trade/settings';
 import {
@@ -56,6 +59,8 @@ async function main(): Promise<void> {
     settings: { ...DEFAULT_SETTINGS, mode: 'paper' as const },
     liveEnvEnabled: false,
     marketOpen: true,
+    sessionVerified: true,
+    riskLatchReasons: [] as string[],
     minuteIST: 10 * 60, // 10:00 — inside the window
     entriesToday: 0,
     openLots: 0,
@@ -154,6 +159,15 @@ async function main(): Promise<void> {
     !checkEntryGates({ ...base, minuteIST: Number.NaN }).allow,
     'NaN passes both window comparisons without the guard'
   );
+  check(
+    'gates: unverified exchange session fails closed',
+    !checkEntryGates({ ...base, sessionVerified: false }).allow,
+    'weekday+clock alone can never authorize an entry (AT-007)'
+  );
+  check(
+    'gates: active risk latch blocks entry',
+    !checkEntryGates({ ...base, riskLatchReasons: ['orphan-position:NSE:TEST26JUL100CE (unmanaged venue position)'] }).allow
+  );
   check('stop: bullish tighten up allowed', checkStopMove('bullish', 100, 105).allow);
   check('stop: bullish loosen down blocked', !checkStopMove('bullish', 100, 95).allow);
   check('stop: bearish tighten down allowed', checkStopMove('bearish', 100, 95).allow);
@@ -196,6 +210,52 @@ async function main(): Promise<void> {
   check(
     'fyers freshness: exact completed bucket accepted',
     hasRequiredEqBar([fyersBar(1_000)], 1_000) && hasRequiredEqBar([fyersBar(500)], null)
+  );
+
+  // ── 2a. Broker quantity truth (AT-001): strict parse, never fail-open ─────
+  check(
+    'broker parse: valid quantities (number, string, negative, zero) pass',
+    parseFiniteNumber({ netQty: 75 }, ['netQty']) === 75 &&
+      parseFiniteNumber({ netQty: '75' }, ['netQty']) === 75 &&
+      parseFiniteNumber({ netQty: -50 }, ['netQty']) === -50 &&
+      parseFiniteNumber({ netQty: 0 }, ['netQty']) === 0
+  );
+  check(
+    'broker parse: malformed/renamed quantity is null, never 0/flat',
+    parseFiniteNumber({}, ['netQty']) === null &&
+      parseFiniteNumber({ netQty: null }, ['netQty']) === null &&
+      parseFiniteNumber({ netQty: '' }, ['netQty']) === null &&
+      parseFiniteNumber({ netQty: 'unexpected' }, ['netQty']) === null &&
+      parseFiniteNumber({ netQty: Number.NaN }, ['netQty']) === null &&
+      parseFiniteNumber({ netQuantity: 75 }, ['netQty']) === null
+  );
+
+  // ── 2b′. AT-006: one entry per pass + check-before-place, code-enforced ───
+  const policyRt: ToolRuntime = {
+    scan: null,
+    settings: { ...DEFAULT_SETTINGS, mode: 'paper' },
+    date: '2099-01-01',
+    pass: newPassPolicyState(),
+  };
+  const noCheckPlace = await executeAutoTradeTool(policyRt, 'place_entry_order', { symbol: 'TESTSYM' });
+  check(
+    'pass policy: placement without a recent check_order ALLOW refused',
+    noCheckPlace.trace.ok === false && JSON.stringify(noCheckPlace.result).includes('check_order'),
+    noCheckPlace.trace.summary
+  );
+  policyRt.pass.entryAttempted = true;
+  policyRt.pass.checkedAllowAt.set('TESTSYM', Date.now());
+  const secondPlace = await executeAutoTradeTool(policyRt, 'place_entry_order', { symbol: 'TESTSYM' });
+  check(
+    'pass policy: second entry call in one pass refused',
+    secondPlace.trace.ok === false && JSON.stringify(secondPlace.result).includes('one entry attempt'),
+    secondPlace.trace.summary
+  );
+  const latchState = await getRiskLatch();
+  check(
+    'risk latch: state readable and self-consistent',
+    latchState.blocked === latchState.reasons.length > 0,
+    latchState.reasons.map((r) => r.key).join(', ') || 'unlatched'
   );
 
   // ── 2b. Pure operational helpers ──────────────────────────────────────────

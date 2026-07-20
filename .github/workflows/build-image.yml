@@ -24,7 +24,27 @@ on:
   workflow_dispatch: {} # lets you trigger a build by hand from the Actions tab
 
 jobs:
+  # Money-touching code must not ship unvalidated (AT-016): typecheck + lint
+  # gate the image build. (The auto-trade bench needs a populated SQLite DB, so
+  # it stays a box/laptop step: npx tsx scripts/verify-auto-trade.ts.)
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm typecheck
+      - run: pnpm lint
+
   build:
+    needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -51,6 +71,11 @@ jobs:
           context: .
           push: true
           # Image name must be lowercase for ghcr — the repo owner + a fixed name.
-          tags: ghcr.io/${{ github.repository_owner }}/project-r-simulator:latest
+          # `latest` is the box's auto-pull convenience alias; the sha-* tag is
+          # the IMMUTABLE identity (AT-017) — exact rollback target, and the
+          # running code is identifiable from the commit it was built from.
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/project-r-simulator:latest
+            ghcr.io/${{ github.repository_owner }}/project-r-simulator:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

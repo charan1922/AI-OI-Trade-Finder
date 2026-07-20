@@ -320,6 +320,20 @@ model AutoTradeSetting {
   @@map("auto_trade_settings")
 }
 
+/// Persistent risk latch — single-row table (id = 1) holding the automatic
+/// safety-latch incidents (orphan broker position, quantity mismatch, guard
+/// blindness) as a JSON reason list (created at runtime via raw SQL in
+/// lib/auto-trade/risk/latch.ts; declared here so `db push` keeps it). Any
+/// stored reason blocks new entries via risk/gates.ts; exits are never gated.
+model AutoTradeRiskLatch {
+  id          Int     @id
+  reasonsJson String
+  activatedAt String?
+  updatedAt   String
+
+  @@map("auto_trade_risk_latch")
+}
+
 /// One AI-driven position lifecycle: proposal → (approval) → fill → managed →
 /// exit (created at runtime via raw SQL in lib/auto-trade/store.ts; declared
 /// here so `db push` keeps it). Premium fields are ₹/share; realizedPnlRupees

@@ -9,17 +9,20 @@
  * attempt after an explicitly rejected/cancelled order.
  */
 
-import { alerts, sendAlert } from './alerts';
+import { alerts, sendCriticalAlert } from './alerts';
 import { FILL_POLL_ATTEMPTS, FILL_POLL_DELAY_MS, MAX_LOSS_PER_LOT_FALLBACK, TARGET_PER_LOT_FALLBACK } from './config';
 import { getAdapterById, getExecutionAdapter } from './brokers';
 import type { BrokerAdapter, OrderTicket } from './brokers/adapter';
 import { ticketQtyUnits } from './brokers/adapter';
+import { toFyersOptionSymbol } from './brokers/fyers-adapter';
+import { activateRiskLatch } from './risk/latch';
 import {
   claimEntryOrder,
   claimExitOrder,
   getOpenTrades,
   getOrdersForTrade,
   getTrade,
+  getTradesByDate,
   getUnresolvedOrders,
   markOrderReconciled,
   updateOrder,
@@ -30,7 +33,7 @@ import { todayIST } from '@/lib/dhan/market-feed';
 
 const TAG = '[AutoTradeExec]';
 import { BrokerSubmissionError, correlationIdForOrder } from './brokers/adapter';
-import type { BrokerNetPosition, OrderState, RecoveredOrder } from './brokers/adapter';
+import type { BrokerPositionRead, OrderState, RecoveredOrder } from './brokers/adapter';
 
 // Re-export: the tag derivation moved to brokers/adapter.ts (the store persists
 // it inside the atomic exit claim); existing importers keep working.
@@ -102,9 +105,16 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
   alerts.tradePlaced(trade.symbol, trade.optionType, fill);
 }
 
-async function applyExitFill(orderId: number, trade: AutoTrade, fill: number): Promise<void> {
+async function applyExitFill(
+  orderId: number,
+  trade: AutoTrade,
+  fill: number,
+  soldUnits = trade.lotSize * trade.lots
+): Promise<void> {
   const entryFill = trade.entryFillPremium ?? trade.entryPremium;
-  const pnl = Math.round((fill - entryFill) * trade.lotSize * trade.lots);
+  // P&L from the units ACTUALLY sold — a partial fill must never book the
+  // full-lot P&L (AT-010: quantity is part of the fill, not just the price).
+  const pnl = Math.round((fill - entryFill) * soldUnits);
   await updateOrder(orderId, {
     status: 'filled',
     avgFillPrice: fill,
@@ -124,10 +134,22 @@ async function applyEntryState(
   trade: AutoTrade,
   state: OrderState,
   notifyManual = false,
-  reference = String(orderId)
+  reference = String(orderId),
+  expectedQtyUnits = trade.lotSize * trade.lots
 ): Promise<ExecOutcome | null> {
   if (state.status === 'filled' && state.avgFillPrice != null) {
+    const filledUnits = partialFillUnits(state);
     await applyEntryFill(orderId, trade, state.avgFillPrice);
+    if (filledUnits > 0 && filledUnits !== expectedQtyUnits) {
+      // The venue says TRADED but reported a different quantity than requested.
+      // The row is opened anyway (the guard must protect whatever exists) and
+      // the mismatch is latched — the exit path sells only the venue-verified
+      // quantity, so the wrong local size can never produce an oversized SELL.
+      const detail = `${trade.symbol} entry reported filled ${filledUnits}/${expectedQtyUnits} units (ref ${reference})`;
+      alerts.positionMismatch(trade.symbol, detail);
+      await activateRiskLatch(`entry-qty-mismatch:trade-${trade.id}`, detail);
+      return { ok: true, state: 'filled', message: `filled at ₹${state.avgFillPrice} but only ${filledUnits}/${expectedQtyUnits} units — mismatch latched` };
+    }
     return {
       ok: true,
       state: 'filled',
@@ -164,10 +186,21 @@ async function applyExitState(
   trade: AutoTrade,
   state: OrderState,
   notifyManual = false,
-  reference = String(orderId)
+  reference = String(orderId),
+  expectedQtyUnits = trade.lotSize * trade.lots
 ): Promise<ExecOutcome | null> {
   if (state.status === 'filled' && state.avgFillPrice != null) {
-    await applyExitFill(orderId, trade, state.avgFillPrice);
+    const filledUnits = partialFillUnits(state);
+    const soldUnits = filledUnits > 0 ? filledUnits : expectedQtyUnits;
+    await applyExitFill(orderId, trade, state.avgFillPrice, soldUnits);
+    if (filledUnits > 0 && filledUnits !== expectedQtyUnits) {
+      // TRADED with a different quantity than the order asked for: P&L above
+      // used the real units; the residual position (if any) is the incident.
+      const detail = `${trade.symbol} exit reported filled ${filledUnits}/${expectedQtyUnits} units (ref ${reference}) — residual position possible`;
+      alerts.positionMismatch(trade.symbol, detail);
+      await activateRiskLatch(`exit-qty-mismatch:trade-${trade.id}`, detail);
+      return { ok: true, state: 'filled', message: `exited ${filledUnits}/${expectedQtyUnits} units at ₹${state.avgFillPrice} — mismatch latched` };
+    }
     return {
       ok: true,
       state: 'filled',
@@ -358,15 +391,19 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
     };
   }
   const adapter = getAdapterById(trade.broker);
-  // Position-level truth: before SELLing on a real venue, confirm the venue
-  // still holds the contract. A definite flat (e.g. the broker's own 15:26
-  // square-off ran while this process was down) means the SELL would open a
-  // naked short — close the row from the broker's numbers instead. A null
-  // (unverifiable) answer must NEVER block a protective exit.
+  // Position-level truth: before SELLing on a real venue, classify what the
+  // venue ACTUALLY holds against what the DB expects (AT-002):
+  //   verified 0        → the venue already squared off — close the row, no SELL
+  //   verified < 0      → unexpected SHORT: selling would deepen it — refuse + latch
+  //   verified > expect → excess (manual interference): automation stands down — refuse + latch
+  //   verified < expect → partial: SELL ONLY the verified units (never oversell) + latch
+  //   unavailable       → NEVER blocks a protective exit — sell the expected quantity
+  const expectedQtyUnits = trade.lotSize * trade.lots;
+  let sellQtyUnits = expectedQtyUnits;
   if (adapter.id !== 'paper' && adapter.getNetPosition && trade.entryFillPremium != null) {
-    let pos: BrokerNetPosition | null = null;
+    let read: BrokerPositionRead | null = null;
     try {
-      pos = await adapter.getNetPosition({
+      read = await adapter.getNetPosition({
         symbol: trade.symbol,
         optionType: trade.optionType,
         strike: trade.strike,
@@ -376,13 +413,33 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
     } catch {
       // best-effort — an unreadable position book never blocks an exit
     }
-    if (pos && pos.netQtyUnits <= 0) {
-      await closeBrokerFlatTrade(trade, pos.sellAvg, `${reason} — broker already flat (position squared off at the venue)`);
-      return {
-        ok: true,
-        state: 'filled',
-        message: `position already flat at the broker — row closed${pos.sellAvg != null ? ` from venue sellAvg ₹${pos.sellAvg}` : '; verify final P&L in the broker statement'}`,
-      };
+    if (read?.kind === 'verified') {
+      if (read.netQtyUnits === 0) {
+        await closeBrokerFlatTrade(trade, read.sellAvg, `${reason} — broker already flat (position squared off at the venue)`);
+        return {
+          ok: true,
+          state: 'filled',
+          message: `position already flat at the broker — row closed${read.sellAvg != null ? ` from venue sellAvg ₹${read.sellAvg}` : '; verify final P&L in the broker statement'}`,
+        };
+      }
+      if (read.netQtyUnits < 0) {
+        const detail = `${trade.symbol} venue shows a SHORT of ${read.netQtyUnits} units while the DB expects long ${expectedQtyUnits} — automated SELL refused`;
+        alerts.positionMismatch(trade.symbol, detail);
+        await activateRiskLatch(`unexpected-short:trade-${trade.id}`, detail);
+        return { ok: false, message: `refusing to SELL: ${detail}` };
+      }
+      if (read.netQtyUnits > expectedQtyUnits) {
+        const detail = `${trade.symbol} venue holds ${read.netQtyUnits} units vs expected ${expectedQtyUnits} (excess — manual interference?) — automated SELL refused, resolve at the broker`;
+        alerts.positionMismatch(trade.symbol, detail);
+        await activateRiskLatch(`excess-position:trade-${trade.id}`, detail);
+        return { ok: false, message: `refusing to SELL: ${detail}` };
+      }
+      if (read.netQtyUnits < expectedQtyUnits) {
+        sellQtyUnits = read.netQtyUnits;
+        const detail = `${trade.symbol} venue holds only ${read.netQtyUnits}/${expectedQtyUnits} units — exit reduced to the verified quantity`;
+        alerts.positionMismatch(trade.symbol, detail);
+        await activateRiskLatch(`partial-position:trade-${trade.id}`, detail);
+      }
     }
   }
   const claim = await claimExitOrder({
@@ -390,11 +447,12 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
     idemKeyBase: `${trade.date}:${trade.symbol}:${trade.optionType}:exit:${trade.id}`,
     broker: adapter.id,
     mode: trade.mode,
-    qtyUnits: trade.lotSize * trade.lots,
+    qtyUnits: sellQtyUnits,
   });
   if (!claim) return { ok: false, message: `exit for ${trade.symbol} already in flight` };
   const { id: orderId, idemKey } = claim;
   const ticket = ticketFromTrade(trade, 'SELL', idemKey);
+  if (sellQtyUnits !== expectedQtyUnits) ticket.qtyUnitsOverride = sellQtyUnits;
   // correlationId is already persisted inside the atomic claim INSERT — a crash
   // from here on is recoverable from the broker order book by tag.
   // Persist the exit intent before the broker POST. If the response is lost or
@@ -437,7 +495,7 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
         status: recovered.status === 'unknown' ? 'unknown' : 'sent',
         error: message,
       });
-      const outcome = await applyExitState(orderId, exitingTrade, recovered, true, ticket.correlationId);
+      const outcome = await applyExitState(orderId, exitingTrade, recovered, true, ticket.correlationId, sellQtyUnits);
       if (outcome) return outcome;
       placed = { brokerOrderId: recovered.brokerOrderId };
     } else if (ambiguous) {
@@ -460,7 +518,7 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
   await updateOrder(orderId, { brokerOrderId: placed.brokerOrderId });
 
   if (placed.immediateFillPrice != null) {
-    await applyExitFill(orderId, exitingTrade, placed.immediateFillPrice);
+    await applyExitFill(orderId, exitingTrade, placed.immediateFillPrice, sellQtyUnits);
     return {
       ok: true,
       state: 'filled',
@@ -473,7 +531,7 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
     await sleep(FILL_POLL_DELAY_MS);
     const state = await adapter.getOrderState(placed.brokerOrderId);
     observedPartialUnits = Math.max(observedPartialUnits, partialFillUnits(state));
-    const outcome = await applyExitState(orderId, exitingTrade, state, true, placed.brokerOrderId);
+    const outcome = await applyExitState(orderId, exitingTrade, state, true, placed.brokerOrderId, sellQtyUnits);
     if (outcome) return outcome;
   }
   if (observedPartialUnits > 0) {
@@ -529,7 +587,7 @@ export async function reconcileOpenPositions(options: { verifyBroker?: boolean }
       if (trade.date !== today) {
         const reason = `stale open row from ${trade.date} auto-closed — INTRADAY position was already squared off broker-side; verify final P&L in the broker statement`;
         await closeBrokerFlatTrade(trade, null, reason);
-        sendAlert(`🚨 ${trade.symbol} ${trade.optionType}: ${reason}`);
+        sendCriticalAlert(`🚨 ${trade.symbol} ${trade.optionType}: ${reason}`);
         notes.push(`${trade.symbol}: ${reason}`);
         continue;
       }
@@ -542,22 +600,92 @@ export async function reconcileOpenPositions(options: { verifyBroker?: boolean }
         (o) => o.side === 'SELL' && (o.status === 'sent' || o.status === 'unknown')
       );
       if (activeSell) continue;
-      const pos = await adapter.getNetPosition({
+      const read = await adapter.getNetPosition({
         symbol: trade.symbol,
         optionType: trade.optionType,
         strike: trade.strike,
         expiryDate: trade.expiryDate,
         optSecurityId: trade.optSecurityId,
       });
-      if (pos && pos.netQtyUnits <= 0) {
-        const reason = `broker shows the position flat (squared off at the venue without us) — row closed${pos.sellAvg != null ? ` at venue sellAvg ₹${pos.sellAvg}` : '; verify final P&L in the broker statement'}`;
-        await closeBrokerFlatTrade(trade, pos.sellAvg, reason);
-        sendAlert(`🚨 ${trade.symbol} ${trade.optionType}: ${reason}`);
+      if (read.kind !== 'verified') continue; // venue cannot say — never proof of anything
+      const expected = trade.lotSize * trade.lots;
+      if (read.netQtyUnits === 0) {
+        const reason = `broker shows the position flat (squared off at the venue without us) — row closed${read.sellAvg != null ? ` at venue sellAvg ₹${read.sellAvg}` : '; verify final P&L in the broker statement'}`;
+        await closeBrokerFlatTrade(trade, read.sellAvg, reason);
+        sendCriticalAlert(`🚨 ${trade.symbol} ${trade.optionType}: ${reason}`);
         notes.push(`${trade.symbol}: ${reason}`);
+      } else if (read.netQtyUnits < 0) {
+        const detail = `${trade.symbol} venue shows SHORT ${read.netQtyUnits} units while the DB expects long ${expected}`;
+        alerts.positionMismatch(trade.symbol, detail);
+        await activateRiskLatch(`unexpected-short:trade-${trade.id}`, detail);
+        notes.push(`${trade.symbol}: ${detail} — latched, automation stands down`);
+      } else if (read.netQtyUnits !== expected) {
+        const kind = read.netQtyUnits > expected ? 'excess' : 'partial';
+        const detail = `${trade.symbol} venue holds ${read.netQtyUnits} units vs expected ${expected} (${kind})`;
+        alerts.positionMismatch(trade.symbol, detail);
+        await activateRiskLatch(`${kind}-position:trade-${trade.id}`, detail);
+        notes.push(`${trade.symbol}: ${detail} — latched (exit will use the verified quantity)`);
       }
     } catch (err) {
       notes.push(`${trade.symbol}: position reconcile failed (${(err as Error).message})`);
     }
+  }
+  return notes;
+}
+
+/**
+ * Reverse (broker → DB) reconciliation, AT-003: list every live INTRADAY NSE
+ * F&O position at the ACTIVE broker and demand a local explanation for it. A
+ * position matching no local trade (a lost order, a crash after placement, a
+ * manual order in the automation's account) is an ORPHAN: it has no stop, no
+ * square-off, and no exposure accounting here — latch entries and alert. A
+ * position matching only a CLOSED/FAILED local row means the DB thinks risk is
+ * gone while the venue still holds it — same severity.
+ *
+ * Runs on real-broker modes only (approval/live): in paper/off the operator's
+ * own manual intraday trading must not trip the latch.
+ */
+export async function scanForOrphanBrokerPositions(settings: AutoTradeSettings): Promise<string[]> {
+  if (settings.mode !== 'approval' && settings.mode !== 'live') return [];
+  const adapter = getAdapterById(settings.broker);
+  if (!adapter.listNetPositions) return [];
+  let book: Awaited<ReturnType<NonNullable<BrokerAdapter['listNetPositions']>>>;
+  try {
+    book = await adapter.listNetPositions();
+  } catch (err) {
+    book = null;
+    console.warn(`${TAG} orphan scan: listNetPositions threw: ${(err as Error).message}`);
+  }
+  if (book == null) return ['orphan scan: broker position book unreadable this pass (not proof of flat)'];
+  const notes: string[] = [];
+  const trades = await getTradesByDate(todayIST());
+  const RISK_BEARING = new Set(['open', 'placing', 'pending_approval']);
+  const matchesTrade = (t: AutoTrade, pos: { securityId: string | null; rawSymbol: string }): boolean =>
+    pos.securityId != null
+      ? pos.securityId === t.optSecurityId
+      : pos.rawSymbol ===
+        toFyersOptionSymbol({
+          symbol: t.symbol,
+          optionType: t.optionType,
+          strike: t.strike,
+          expiryDate: t.expiryDate,
+        });
+  for (const pos of book) {
+    if (pos.netQtyUnits === 0) continue;
+    if (pos.netQtyUnits == null) {
+      const detail = `venue reports ${pos.rawSymbol} with an UNPARSEABLE quantity — position truth unknown`;
+      const added = await activateRiskLatch(`unparseable-position:${pos.rawSymbol}`, detail);
+      if (added) notes.push(`orphan scan: ${detail}`);
+      continue;
+    }
+    if (trades.some((t) => RISK_BEARING.has(t.status) && matchesTrade(t, pos))) continue; // known & guarded
+    const matchesClosed = trades.some((t) => matchesTrade(t, pos));
+    const key = matchesClosed ? `closed-but-broker-open:${pos.rawSymbol}` : `orphan-position:${pos.rawSymbol}`;
+    const detail = matchesClosed
+      ? `${settings.broker} still holds ${pos.netQtyUnits} unit(s) of ${pos.rawSymbol} but the local trade is closed/failed — the venue position is UNMANAGED`
+      : `${settings.broker} holds ${pos.netQtyUnits} unit(s) of ${pos.rawSymbol} with NO local trade — no stop, no square-off, no exposure accounting`;
+    const added = await activateRiskLatch(key, detail);
+    if (added) notes.push(`orphan scan: ${detail}`);
   }
   return notes;
 }
@@ -622,10 +750,10 @@ async function reconcileUnresolvedOrdersInner(): Promise<string[]> {
       const nextAttempt = order.reconcileAttempts + 1;
 
       // Terminal give-up: the order book read SUCCEEDED, the broker never
-      // issued an id, and the correlation tag matches nothing. After enough
-      // clean misses the order provably never reached the venue — stop
-      // reserving a daily slot + capital for a ghost. (Any order that DID
-      // reach Fyers/Dhan appears in the day's book immediately, even pending.)
+      // issued an id, and the correlation tag matches nothing. Order-book
+      // misses alone are NOT sufficient proof for a money decision (AT-004):
+      // before releasing the daily slot + capital, the POSITION book must
+      // corroborate. Paper is exempt — it fills synchronously and has no book.
       if (
         state == null &&
         order.brokerOrderId == null &&
@@ -633,7 +761,51 @@ async function reconcileUnresolvedOrdersInner(): Promise<string[]> {
         nextAttempt >= 5 &&
         ageMs >= 5 * 60_000
       ) {
-        const giveUp = `${order.error ? `${order.error}; ` : ''}never appeared in the broker order book after ${nextAttempt} checks — placement assumed failed`;
+        if (adapter.id !== 'paper') {
+          let read: BrokerPositionRead | null = null;
+          if (adapter.getNetPosition) {
+            try {
+              read = await adapter.getNetPosition({
+                symbol: trade.symbol,
+                optionType: trade.optionType,
+                strike: trade.strike,
+                expiryDate: trade.expiryDate,
+                optSecurityId: trade.optSecurityId,
+              });
+            } catch {
+              read = null;
+            }
+          }
+          if (read == null || read.kind !== 'verified') {
+            // Cannot verify the position book → the order stays quarantined
+            // (risk-bearing). "Unknown" is never converted into "failed".
+            notes.push(`${trade.symbol} ${order.side}: give-up deferred — position book unverifiable, order stays quarantined`);
+            continue;
+          }
+          if (order.side === 'BUY' && read.netQtyUnits > 0) {
+            // The order book has no trace but the venue HOLDS the contract —
+            // exactly the lost-fill/orphan scenario. Keep the row risk-bearing.
+            const detail = `${trade.symbol} BUY missing from the order book but the venue holds ${read.netQtyUnits} unit(s) — possible lost fill`;
+            alerts.manualReconciliation(trade.symbol, 'BUY', order.correlationId ?? String(order.id), detail);
+            await activateRiskLatch(`unresolved-buy-position-exists:trade-${trade.id}`, detail);
+            notes.push(`${trade.symbol} BUY: ${detail}`);
+            continue;
+          }
+          if (order.side === 'SELL' && read.netQtyUnits <= 0) {
+            // Position gone: this SELL (or the venue's own square-off) very
+            // likely executed unseen. Terminal WITHOUT enabling a fresh SELL —
+            // position-level reconcile closes the row from venue truth, and
+            // exitTrade's flat pre-check blocks any racing SELL.
+            const note = 'SELL missing from the order book but the position is flat at the venue — resolved position-level (no retry)';
+            await updateOrder(order.id, { status: 'cancelled', error: `${order.error ? `${order.error}; ` : ''}${note}` });
+            notes.push(`${trade.symbol} SELL: ${note}`);
+            continue;
+          }
+          // BUY + verified flat → the placement provably never took effect.
+          // SELL + position still held → the SELL never reached the venue; a
+          // fresh attempt is safe. Both fall through to the give-up below.
+        }
+        const giveUp = `${order.error ? `${order.error}; ` : ''}never appeared in the broker order book after ${nextAttempt} checks (position book corroborated) — placement assumed failed`;
         await updateOrder(order.id, { status: 'rejected', error: giveUp });
         console.error(`${TAG} ${trade.symbol} ${order.side} order ${order.id}: ${giveUp}`);
         if (order.side === 'BUY' && trade.status === 'placing') {
@@ -687,14 +859,16 @@ async function reconcileUnresolvedOrdersInner(): Promise<string[]> {
             trade,
             state,
             order.status !== 'unknown',
-            order.brokerOrderId ?? order.correlationId ?? String(order.id)
+            order.brokerOrderId ?? order.correlationId ?? String(order.id),
+            order.qtyUnits
           )
         : await applyExitState(
             order.id,
             trade,
             state,
             order.status !== 'unknown',
-            order.brokerOrderId ?? order.correlationId ?? String(order.id)
+            order.brokerOrderId ?? order.correlationId ?? String(order.id),
+            order.qtyUnits
           );
     if (outcome) notes.push(`${trade.symbol} ${order.side}: ${outcome.message}`);
   }

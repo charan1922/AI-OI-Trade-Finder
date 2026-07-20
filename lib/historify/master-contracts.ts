@@ -188,17 +188,27 @@ async function syncFromDhan(today: string): Promise<void> {
   }
 
   // Row-count sanity (C3, forensic audit): a truncated download / changed CSV
-  // format must never wipe a good table. Refuse to replace when the fresh parse
-  // is implausibly small — absolutely (<1000 rows) or relative to what we hold.
+  // format must never wipe a good table. Two guards:
+  //   1. Absolute floor — a near-empty parse is always a broken download.
+  //   2. Relative-drop guard applied to the STABLE instruments only
+  //      (EQUITY + FUTSTK + FUTIDX). The total row count is dominated by OPTSTK,
+  //      which churns heavily as monthly expiries roll — comparing the total
+  //      false-positived every expiry cycle (2026-07-20: 85k→~70k option
+  //      contracts over 22 days aborted every nightly sync and froze the whole
+  //      table 22 days stale). Equities + futures don't churn, so they are the
+  //      honest truncation signal.
+  const STABLE = new Set(['EQUITY', 'FUTSTK', 'FUTIDX']);
+  const parsedStable = entries.reduce((n, e) => (STABLE.has(e.instrument) ? n + 1 : n), 0);
   const existingCount = await prisma.masterContract.count();
-  if (entries.length < 1000) {
+  const existingStable = await prisma.masterContract.count({ where: { instrument: { in: [...STABLE] } } });
+  if (entries.length < 1000 || parsedStable < 1000) {
     throw new Error(
-      `master-contracts sync aborted: parsed only ${entries.length} rows (CSV truncated or format changed) — existing ${existingCount} rows kept`,
+      `master-contracts sync aborted: parsed ${entries.length} rows (${parsedStable} stable) — CSV truncated or format changed; existing ${existingCount} rows kept`,
     );
   }
-  if (existingCount > 0 && entries.length < existingCount * 0.9) {
+  if (existingStable > 0 && parsedStable < existingStable * 0.9) {
     throw new Error(
-      `master-contracts sync aborted: parsed ${entries.length} rows vs ${existingCount} existing (>10% drop) — refusing to replace; re-sync manually if the shrink is expected`,
+      `master-contracts sync aborted: stable instruments dropped ${existingStable}→${parsedStable} (>10%) — refusing to replace a good table; investigate the CSV before re-syncing`,
     );
   }
 

@@ -23,6 +23,44 @@ function webhookUrl(): string | null {
   return env.AUTO_TRADE_ALERT_WEBHOOK ?? null;
 }
 
+/** True when at least one alert channel exists. Approval/live mode refuses to
+ *  engage without one (critical incidents must be deliverable somewhere). */
+export function hasCriticalAlertChannel(): boolean {
+  return isTelegramConfigured() || webhookUrl() != null;
+}
+
+/**
+ * CRITICAL alert — safety incidents (unknown orders, position mismatches,
+ * orphan positions, guard blindness, loss halts). Unlike sendAlert, this
+ * IGNORES the telegramAlerts toggle: the operator may silence commentary and
+ * trade chatter, but never incident notifications (AT-008). With no channel at
+ * all it logs loudly — the mode preflight in settings.ts prevents approval/
+ * live from engaging in that state.
+ */
+export function sendCriticalAlert(message: string): void {
+  if (isTelegramConfigured()) {
+    sendMessage(message);
+    return;
+  }
+  const url = webhookUrl();
+  if (url) {
+    void fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: message }),
+      signal: AbortSignal.timeout(5_000),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`webhook HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
+      })
+      .catch((err) => {
+        console.error(`${TAG} CRITICAL alert delivery failed: ${(err as Error).message} — message was: ${message}`);
+      });
+    return;
+  }
+  console.error(`${TAG} CRITICAL (no alert channel configured): ${message}`);
+}
+
 /** Queue an alert without blocking the trading path. Delivery is checked and
  * logged by the Telegram/webhook client; a settings failure suppresses it. */
 export function sendAlert(message: string): void {
@@ -107,15 +145,22 @@ export const alerts = {
       });
   },
 
-  killSwitchActivated: () => sendAlert(`🚨 KILL SWITCH activated — no new orders`),
+  // ── CRITICAL class: never suppressed by the telegramAlerts toggle ──────────
 
-  dailyLossHalt: (loss: number) => sendAlert(`🛑 DAILY LOSS HALT: ₹${loss} — no new entries`),
+  killSwitchActivated: () => sendCriticalAlert(`🚨 KILL SWITCH activated — no new orders`),
+
+  dailyLossHalt: (loss: number) => sendCriticalAlert(`🛑 DAILY LOSS HALT: ₹${loss} — no new entries`),
 
   exitFailureEscalation: (symbol: string, failures: number) =>
-    sendAlert(`⚠️ ${symbol}: ${failures} consecutive exit failures — MANUAL INTERVENTION NEEDED`),
+    sendCriticalAlert(`⚠️ ${symbol}: ${failures} consecutive exit failures — MANUAL INTERVENTION NEEDED`),
 
   manualReconciliation: (symbol: string, side: 'BUY' | 'SELL', reference: string, detail: string) =>
-    sendAlert(`🚨 ${symbol} ${side} ORDER UNRESOLVED — verify at broker now. Ref ${reference}. ${detail}`),
+    sendCriticalAlert(`🚨 ${symbol} ${side} ORDER UNRESOLVED — verify at broker now. Ref ${reference}. ${detail}`),
+
+  positionMismatch: (symbol: string, detail: string) =>
+    sendCriticalAlert(`🚨 POSITION MISMATCH ${symbol}: ${detail} — verify at the broker now`),
+
+  guardBlind: (detail: string) => sendCriticalAlert(`🙈 GUARD BLIND: ${detail} — premium stops are NOT being checked`),
 
   eodSquareOff: (symbol: string) => sendAlert(`⏰ EOD square-off: ${symbol}`),
 };

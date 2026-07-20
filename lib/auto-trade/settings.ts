@@ -13,6 +13,8 @@
  */
 
 import { prisma } from '@/lib/db';
+import { env } from '@/lib/env';
+import { isTelegramConfigured } from '@/lib/telegram';
 import { DEFAULT_SETTINGS } from './config';
 import type { AiProvider, AutoTradeSettings, BrokerId, TradeMode } from './types';
 
@@ -236,6 +238,17 @@ export async function setAutoTradeSetting(key: string, value: string): Promise<A
   const def = defByKey.get(key as keyof AutoTradeSettings);
   if (!def) throw new Error(`unknown auto-trade setting: ${key}`);
   const parsed = def.parse(value); // throws on invalid
+  // Real-order modes need a channel critical incidents can actually reach
+  // (AT-008): unknown orders, position mismatches, and guard blindness must be
+  // deliverable, not silently dropped. Checked at WRITE time only — an env
+  // change never silently rewrites a stored mode.
+  if (def.key === 'mode' && (parsed === 'approval' || parsed === 'live')) {
+    if (!isTelegramConfigured() && !env.AUTO_TRADE_ALERT_WEBHOOK) {
+      throw new Error(
+        `${String(parsed)} mode requires a critical alert channel — configure Telegram (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID) or AUTO_TRADE_ALERT_WEBHOOK first`
+      );
+    }
+  }
   const candidate = await getAutoTradeSettings();
   (candidate as unknown as Record<string, unknown>)[def.key] = parsed;
   assertClockOrder(candidate);

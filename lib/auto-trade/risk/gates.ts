@@ -14,6 +14,14 @@ export interface EntryGateInput {
   /** Second key for live mode: env AUTO_TRADE_LIVE_ENABLED === 'true'. */
   liveEnvEnabled: boolean;
   marketOpen: boolean;
+  /** Fail-closed exchange-session verdict (lib/backtest/trading-calendar.ts
+   *  isVerifiedTradingDay): weekday+clock alone can never authorize an entry —
+   *  the NSE holiday calendar must positively verify the date (AT-007). */
+  sessionVerified: boolean;
+  /** Active risk-latch reasons (risk/latch.ts). ANY entry is blocked while the
+   *  latch holds an incident — orphan position, quantity mismatch, guard
+   *  blindness. Exits are never gated on this. */
+  riskLatchReasons: string[];
   minuteIST: number;
   /** Code-enforced no-new-entry cutoff shared with commentary. */
   entryCutoffMin?: number;
@@ -73,6 +81,12 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
     reasons.push('live mode selected but AUTO_TRADE_LIVE_ENABLED is not set in env (two-key rule)');
   }
   if (!x.marketOpen) reasons.push('market is closed');
+  if (!x.sessionVerified) {
+    reasons.push('exchange session not verified as a trading day (holiday calendar) — failing closed');
+  }
+  if (x.riskLatchReasons.length > 0) {
+    reasons.push(`risk latch active: ${x.riskLatchReasons.join('; ')} — clear it on /auto-trade after resolving`);
+  }
   // Window bounds come from settings (clamped in settings.ts); ?? keeps older
   // test fixtures without the fields on the long-standing defaults.
   const entryStart = s.entryStartMin ?? ENTRY_START_MIN;

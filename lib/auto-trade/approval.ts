@@ -15,6 +15,8 @@ import { minuteOfDayIST } from './config';
 import { placeEntryOrder, type ExecOutcome } from './execution';
 import { fetchOptionQuote } from './quotes';
 import { checkEntryGates } from './risk/gates';
+import { getRiskLatch } from './risk/latch';
+import { isVerifiedTradingDay } from '@/lib/backtest/trading-calendar';
 import {
   countEntriesToday,
   dailyRealizedPnl,
@@ -56,18 +58,22 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
 
   // Cap counts EXCLUDING this proposal (it already reserved its own slot).
   const adapter = getExecutionAdapter(settings, 'approval');
-  const [entriesToday, exposure, pnl, brokerFunds, entryCutoffMin] = await Promise.all([
+  const [entriesToday, exposure, pnl, brokerFunds, entryCutoffMin, latch, sessionVerified] = await Promise.all([
     countEntriesToday(date),
     getExposure(date),
     dailyRealizedPnl(date),
     adapter.getFunds(),
     getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
+    getRiskLatch(),
+    isVerifiedTradingDay(date),
   ]);
   const funds = brokerFunds.available;
   const verdict = checkEntryGates({
     settings,
     liveEnvEnabled: isAutoTradeLiveEnabled(),
     marketOpen: isMarketHours(),
+    sessionVerified,
+    riskLatchReasons: latch.blocked ? latch.reasons.map((r) => `${r.key} (${r.detail})`) : [],
     minuteIST: minuteOfDayIST(),
     entryCutoffMin,
     entriesToday: Math.max(0, entriesToday - 1),
