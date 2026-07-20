@@ -302,7 +302,13 @@ export async function getStats(days = 30): Promise<SuggestStats> {
   const hits = honestRows.filter(isHit).length;
   const avg = (vals: number[]) =>
     vals.length === 0 ? null : Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
-  const gradedR = honestRows.map((r) => Number(r.spotOutcomeR)).filter((n) => Number.isFinite(n));
+  // Filter nulls BEFORE Number() — `Number(null)` is 0 (finite), which would
+  // sneak a null R into the mean as a spurious 0 (PR#4 review). Resolved rows
+  // always carry an R today, but this keeps avgOutcomeR honest if that changes.
+  const gradedR = honestRows
+    .filter((r) => r.spotOutcomeR != null)
+    .map((r) => Number(r.spotOutcomeR))
+    .filter((n) => Number.isFinite(n));
 
   return {
     days,
