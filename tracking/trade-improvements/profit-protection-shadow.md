@@ -84,15 +84,19 @@ A pick can reach the +1R trigger yet still close below breakeven, be
 entry-ambiguous, or end negative, so `saved = 2` undercounts trigger-reached (we
 don't currently record a separate trigger count).
 
-What we *can* say precisely, and it's the more important point:
+The more important point, stated at the precision the data actually supports:
 
-> **Most losing picks never reached the +1R level these rules need.** You can't
-> protect a profit the trade never built. (That is narrower than "never got into
-> profit at all" — a pick could reach +0.3R and still not arm a +1R rule.)
+> **The results suggest many losing picks didn't produce enough favourable move
+> for the tested +1R rules to rescue them** — you can't protect a profit the trade
+> never built. But `saved`/`hurt`/ΔR alone do **not** prove exactly how many
+> reached +1R (a pick can reach +1R and still not be `saved`). The honest way to
+> state it is a dedicated trigger-count metric — `triggered`,
+> `resolved-after-trigger`, `entry-ambiguous`, `saved`, `hurt` — which the
+> simulator doesn't record yet (a clean follow-up on `profit-protect.ts`).
 
-That points the bigger lever at **entries** (picks going red before reaching +1R),
-not exits — the natural next investigation, though "entries > exits" is a
-direction this small sample suggests, not yet proves.
+That points the bigger lever at **entries** (picks going red before building a
+protectable profit), not exits — the natural next investigation, though
+"entries > exits" is a direction this small sample suggests, not yet proves.
 
 ## 4. Where you see it — the `/trade-suggest/history` panel (PR #6)
 

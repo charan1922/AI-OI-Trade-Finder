@@ -13,9 +13,11 @@ The trigger for this whole effort was the feedback in `../20-7.md`:
 That is a claim about **exits**. To answer it honestly we first had to stop the
 scorecard from lying to us (doc 1), then measure whether smarter exits would
 actually have helped (doc 2). The short answer: smarter exits show a small
-positive signal, but the bigger lever looks like **entries** — most losing picks
-never reached the +1R level where a "move the stop up" rule could have rescued
-them (which is different from saying they never got into profit at all).
+positive signal, but the bigger lever looks like **entries** — the results
+suggest many losing picks didn't produce enough favourable movement for the
+tested +1R protection rules to rescue them. (Pinning down *exactly* how many
+reached +1R needs a dedicated trigger-count metric we don't record yet — the
+`saved`/`hurt`/ΔR figures alone don't prove it.)
 
 | Doc | What it covers |
 | --- | --- |

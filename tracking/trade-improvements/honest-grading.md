@@ -94,7 +94,7 @@ Fyers 5-minute candles are retained for the newest **~20 sessions**
 retained history:
 
 ```bash
-npx tsx scripts/regrade-suggestions.ts
+pnpm exec tsx scripts/regrade-suggestions.ts
 ```
 
 This replays each retained date, re-writes the outcome columns, and prints the
@@ -119,7 +119,7 @@ are pruned — which is a deliberate storage limit, not a bug.
 
 ## 7. Verification
 
-- `npx tsx scripts/verify-quant-shadow.ts` — pure, DB-free checks incl.
+- `pnpm exec tsx scripts/verify-quant-shadow.ts` — pure, DB-free checks incl.
   stop-before-target = loss, both-in-one-candle = stop, blind-spot detection.
   Runs in GitHub CI (typecheck + lint + this).
 - The history page reads these stored grades directly, so the UI and the backend

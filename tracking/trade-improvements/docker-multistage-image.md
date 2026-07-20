@@ -44,9 +44,15 @@ run output: better-sqlite3 loads + runs without toolchain: {"c":1}
 
 i.e. in a compiler-free runtime on the same base OS, `better-sqlite3` loaded,
 created an in-memory DB, inserted and counted a row, and the Prisma adapter
-resolved. The `builder` stage is identical to the old single-stage (which CI
-already builds green), and the full image build runs on GitHub CI on the deploy
-push — where there's no Windows-mount slowness.
+resolved.
+
+**CI now builds + boots the full image on every PR** (PR#7 review). The build job
+runs on PRs and manual dispatch too — it builds the `runtime` target, then
+smoke-tests the exact image: asserts no `g++`, that `better-sqlite3` + the Prisma
+adapter load, and that the container **boots on a fresh DB (`prisma db push` →
+`next start`) and answers HTTP**. So the real container is proven to come up
+before any change can reach prod — no Windows-mount slowness on GitHub's runners.
+Only a real push to `prod` publishes; PRs/dispatch never push.
 
 `better-sqlite3` is the **only** trading-critical native module (the simulator
 does **not** use duckdb — backtest storage is SQLite via Prisma).
@@ -75,11 +81,26 @@ All CI-only, no app/runtime change:
   each run. `tsx` is now a pinned devDependency run via `pnpm exec tsx`
   (reproducible, no runtime fetch). Its transpiler `esbuild` is approved in
   `pnpm-workspace.yaml` (`esbuild: true`) so pnpm 10 builds it.
+- **Publish gating** — publishing (`login` + `push`) is gated on
+  `event == push && ref == refs/heads/prod`. Previously any `workflow_dispatch`
+  built with `push: true`, so a manual run on a non-prod branch could overwrite
+  production `latest`. Now only a real prod push publishes (PR#7 review).
 
 ## 6. Safety / rollback
 
 - Toggle-free change; behaviour identical at runtime.
-- The immutable `sha-<commit>` image tag is the exact rollback target (unchanged
-  from before) — if a multi-stage image ever misbehaved, redeploy the prior
-  `sha-*` tag. The box only ever pulls a **successfully built** image; a failed
-  CI build never reaches it.
+- The `sha-<commit>` image tag is the **commit-addressed** rollback target — if a
+  multi-stage image ever misbehaved, redeploy the prior `sha-*` tag. (It's a
+  rollback *identifier*, not registry-immutable unless the ghcr package enforces
+  no-overwrite — treat immutability as operational, not automatic.) The box only
+  ever pulls a **successfully built** image, and the image now has to pass the PR
+  boot smoke-test before it can be merged toward prod.
+
+## 7. Deferred (non-blocking, noted follow-ups)
+
+- **Pin the exact pnpm version** (via `packageManager` + Corepack) so a future
+  pnpm 10.x can't silently change the build — deferred to keep this PR focused and
+  because an exact pin needs npm-ecosystem Dependabot to avoid going stale.
+- **Pin the `node:24-bookworm-slim` base by digest** for full reproducibility.
+- **A `triggered` count** in the profit-protection aggregation (see
+  `profit-protection-shadow.md` §3) to state exactly how many losers reached +1R.
