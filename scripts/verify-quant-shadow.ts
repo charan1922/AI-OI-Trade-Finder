@@ -10,6 +10,7 @@
 import { runQuantShadowChecks } from './quant-shadow-checks';
 import { runConfigDriftChecks } from './config-drift-checks';
 import { runGradeChecks } from './grade-checks';
+import { runProfitProtectChecks } from './profit-protect-checks';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -18,10 +19,11 @@ function check(name: string, ok: boolean, detail = ''): void {
 }
 
 async function main(): Promise<void> {
-  console.log('=== Pure verification (no DB): quant-shadow math + config-drift + honest grader ===\n');
+  console.log('=== Pure verification (no DB): quant-shadow math + config-drift + honest grader + profit-protect ===\n');
   runQuantShadowChecks(check);
   await runConfigDriftChecks(check);
   runGradeChecks(check);
+  runProfitProtectChecks(check);
   console.log(`\n${failures === 0 ? '✅ all pure checks passed' : `❌ ${failures} check(s) FAILED`}`);
   process.exit(failures === 0 ? 0 : 1);
 }

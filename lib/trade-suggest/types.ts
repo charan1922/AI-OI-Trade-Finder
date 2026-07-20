@@ -197,6 +197,10 @@ export interface StoredSuggestion {
   /** Realised R against the plan's own risk (stop −1, target +RR, timeout
    *  close-based); null for the unresolvable outcomes and legacy rows. */
   spotOutcomeR: number | null;
+  /** Profit-protection SHADOW: JSON blob of counterfactual R per candidate rule
+   *  (profit-protect.ts), computed same-day. Measurement only — never changes a
+   *  live exit. Null when the baseline was unresolvable or on legacy rows. */
+  protectShadow: string | null;
   outcomeAt: string | null;
 }
 

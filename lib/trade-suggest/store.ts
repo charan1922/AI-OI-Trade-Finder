@@ -12,6 +12,7 @@
  */
 
 import { prisma } from '@/lib/db';
+import { PROTECT_PRESETS } from '@/lib/trade-suggest/profit-protect';
 import type { StoredSuggestion, TradeSuggestion } from '@/lib/trade-suggest/types';
 
 let tableReady = false;
@@ -65,7 +66,10 @@ export async function ensureSuggestionsTable(): Promise<void> {
   const cols = new Set(
     ((await prisma.$queryRawUnsafe(`PRAGMA table_info(trade_suggestions)`)) as { name: string }[]).map((c) => c.name),
   );
-  for (const col of ['spotOutcome TEXT', 'spotOutcomeR REAL']) {
+  // protectShadow: JSON blob of profit-protection counterfactual R per rule
+  // (profit-protect.ts), computed same-day while candles exist — MEASUREMENT
+  // ONLY, never changes a live exit. Nullable; legacy rows stay null.
+  for (const col of ['spotOutcome TEXT', 'spotOutcomeR REAL', 'protectShadow TEXT']) {
     if (!cols.has(col.split(' ')[0])) await prisma.$executeRawUnsafe(`ALTER TABLE trade_suggestions ADD COLUMN ${col}`);
   }
   tableReady = true;
@@ -156,6 +160,7 @@ function rowToStored(r: Record<string, unknown>): StoredSuggestion {
     closePct: toNumOrNull(r.closePct),
     spotOutcome: SPOT_OUTCOMES.has(r.spotOutcome as string) ? (r.spotOutcome as StoredSuggestion['spotOutcome']) : null,
     spotOutcomeR: toNumOrNull(r.spotOutcomeR),
+    protectShadow: r.protectShadow == null ? null : String(r.protectShadow),
     outcomeAt: r.outcomeAt == null ? null : String(r.outcomeAt),
   };
 }
@@ -316,9 +321,95 @@ export async function getStats(days = 30): Promise<SuggestStats> {
   };
 }
 
+export interface ProtectionRuleStat {
+  name: string;
+  /** Resolved rows this rule was scored over (same set its baseline uses). */
+  n: number;
+  /** Mean counterfactual R under the rule. */
+  avgR: number | null;
+  /** Mean BASELINE (fixed-plan) R over those SAME rows — apples-to-apples. */
+  baselineAvgR: number | null;
+  /** avgR − baselineAvgR: positive = the rule improved expectancy. */
+  deltaR: number | null;
+  /** Rows the rule rescued: baseline was a −1R stop, the rule exited ≥ 0R. */
+  savedStops: number;
+  /** Rows the rule made WORSE than baseline (e.g. scratched on a wick that
+   *  would have run to target) — the honest cost side. */
+  hurt: number;
+}
+
+export interface ProtectionStats {
+  days: number;
+  /** Resolved rows carrying a profit-protection shadow blob (the denominator). */
+  n: number;
+  /** Mean baseline R over those rows — the bar every rule must beat. */
+  baselineAvgR: number | null;
+  rules: ProtectionRuleStat[];
+}
+
+/**
+ * Profit-protection SHADOW calibration (profit-protect.ts). Over the resolved,
+ * path-graded rows that carry a same-day counterfactual blob, compares each
+ * candidate rule's mean realised R against the fixed-plan baseline. This is the
+ * evidence to decide whether a "move stop up once in profit" rule earns its
+ * place LIVE — never applied automatically. Rows are scarce until several live
+ * sessions accrue (candles clear daily, so only same-day grading fills the blob).
+ */
+export async function getProtectionStats(days = 30): Promise<ProtectionStats> {
+  await ensureSuggestionsTable();
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT spotOutcome, spotOutcomeR, protectShadow FROM trade_suggestions
+       WHERE date >= ? AND outcomeAt IS NOT NULL AND protectShadow IS NOT NULL`,
+    since,
+  );
+  // Only rows whose BASELINE is honestly resolved contribute — the counterfactual
+  // must be compared like-for-like against a real baseline R.
+  const usable = rows
+    .filter((r) => isResolved(r.spotOutcome) && r.spotOutcomeR != null)
+    .map((r) => ({ baseR: Number(r.spotOutcomeR), blob: safeParseBlob(r.protectShadow) }))
+    .filter((r) => Number.isFinite(r.baseR));
+
+  const avg = (vals: number[]) =>
+    vals.length === 0 ? null : Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
+
+  const rules: ProtectionRuleStat[] = PROTECT_PRESETS.map((rule) => {
+    const paired = usable.filter((r) => Number.isFinite(r.blob[rule.name]));
+    const ruleR = paired.map((r) => r.blob[rule.name]);
+    const baseR = paired.map((r) => r.baseR);
+    const avgR = avg(ruleR);
+    const baselineAvgR = avg(baseR);
+    return {
+      name: rule.name,
+      n: paired.length,
+      avgR,
+      baselineAvgR,
+      deltaR: avgR != null && baselineAvgR != null ? Math.round((avgR - baselineAvgR) * 100) / 100 : null,
+      savedStops: paired.filter((r) => r.baseR <= -1 && r.blob[rule.name] >= 0).length,
+      hurt: paired.filter((r) => r.blob[rule.name] < r.baseR).length,
+    };
+  });
+
+  return { days, n: usable.length, baselineAvgR: avg(usable.map((r) => r.baseR)), rules };
+}
+
+/** Parse the protectShadow JSON blob → { ruleName: R }. Never throws. */
+function safeParseBlob(v: unknown): Record<string, number> {
+  try {
+    const parsed = JSON.parse(String(v ?? '{}'));
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, number> = {};
+    for (const [k, val] of Object.entries(parsed)) if (typeof val === 'number') out[k] = val;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /** Fill outcome columns for one suggestion (same-day scorecard). spotOutcome /
  *  spotOutcomeR are the honest path-dependent grade (grade.ts); null when the
- *  plan lacked well-formed stop/target levels to grade against. */
+ *  plan lacked well-formed stop/target levels to grade against. protectShadow is
+ *  the profit-protection counterfactual blob (profit-protect.ts). */
 export async function recordOutcome(
   date: string,
   symbol: string,
@@ -329,19 +420,23 @@ export async function recordOutcome(
     closePct: number;
     spotOutcome?: StoredSuggestion['spotOutcome'];
     spotOutcomeR?: number | null;
+    /** JSON blob of profit-protection counterfactual R per rule (profit-protect.ts).
+     *  Same-day only (candles clear); null when the baseline was unresolvable. */
+    protectShadow?: string | null;
   },
   nowMs = Date.now(),
 ): Promise<void> {
   await ensureSuggestionsTable();
   await prisma.$executeRawUnsafe(
     `UPDATE trade_suggestions
-        SET maxUpPct = ?, maxDownPct = ?, closePct = ?, spotOutcome = ?, spotOutcomeR = ?, outcomeAt = ?
+        SET maxUpPct = ?, maxDownPct = ?, closePct = ?, spotOutcome = ?, spotOutcomeR = ?, protectShadow = ?, outcomeAt = ?
       WHERE date = ? AND symbol = ? AND optionType = ?`,
     outcome.maxUpPct,
     outcome.maxDownPct,
     outcome.closePct,
     outcome.spotOutcome ?? null,
     outcome.spotOutcomeR ?? null,
+    outcome.protectShadow ?? null,
     new Date(nowMs).toISOString(),
     date,
     symbol,

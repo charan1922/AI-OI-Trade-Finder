@@ -16,8 +16,13 @@
 import { todayIST } from '@/lib/dhan/market-feed';
 import { getFyersCandles } from '@/lib/fyers/candle-store';
 import { gradeSpotPath } from '@/lib/trade-suggest/grade';
+import { simulateAllPresets } from '@/lib/trade-suggest/profit-protect';
 import { getSuggestions, recordOutcome } from '@/lib/trade-suggest/store';
 import type { StoredSuggestion } from '@/lib/trade-suggest/types';
+
+/** Baseline outcomes that carry a real R — the only ones a profit-protection
+ *  counterfactual can be compared against like-for-like. */
+const RESOLVED = new Set(['target', 'stop', 'timeout']);
 
 const TAG = '[TradeSuggestReview]';
 
@@ -54,12 +59,21 @@ export async function reviewToday(): Promise<ReviewResult> {
     // and excluded from the win-rate). Null only when the plan lacked levels —
     // then the excursion figures are recorded, as before.
     const grade = gradeSpotPath(s.optionType, s.spotAtSuggest, s.slSpot, s.targetSpot, bars, sinceSec, expectedLastBucketSec);
+    // Profit-protection SHADOW (measurement only): only for a RESOLVED baseline,
+    // so the counterfactual is compared like-for-like against a real R. Computed
+    // now because fyers_candles clears at the next session — this is the sole
+    // chance to grade today's paths. Persisted as a JSON blob { ruleName: R }.
+    const protect =
+      grade && RESOLVED.has(grade.outcome)
+        ? simulateAllPresets(s.optionType, s.spotAtSuggest, s.slSpot, s.targetSpot, bars, sinceSec, expectedLastBucketSec)
+        : null;
     await recordOutcome(date, s.symbol, s.optionType, {
       maxUpPct: grade?.maxUpPct ?? pct(Math.max(...postBars.map((b) => b.high))),
       maxDownPct: grade?.maxDownPct ?? pct(Math.min(...postBars.map((b) => b.low))),
       closePct: grade?.closePct ?? pct(postBars[postBars.length - 1].close),
       spotOutcome: grade?.outcome ?? null,
       spotOutcomeR: grade?.outcomeR ?? null,
+      protectShadow: protect && Object.keys(protect).length > 0 ? JSON.stringify(protect) : null,
     });
     reviewed++;
   }
