@@ -57,7 +57,35 @@ async function ensureTables(): Promise<void> {
   // candles, display-only (see types.ts AutoTrade).
   const tradeColumns = (await prisma.$queryRawUnsafe(`PRAGMA table_info(auto_trades)`)) as { name: string }[];
   const existingTradeColumns = new Set(tradeColumns.map((c) => c.name));
-  for (const col of ['shadowEntryPremium REAL', 'shadowExitPremium REAL', 'shadowExitReason TEXT', 'shadowPnlRupees REAL']) {
+  for (const col of [
+    'shadowEntryPremium REAL',
+    'shadowExitPremium REAL',
+    'shadowExitReason TEXT',
+    'shadowPnlRupees REAL',
+    // Quant SHADOW metrics — recorded on real trades to MEASURE the entry/exit
+    // quality the doc calls out (late-chase, giveback, weak sector). Pure
+    // observation: nothing here gates or changes a live entry/exit. Calibrate
+    // thresholds from these on recorded days before any of them becomes a gate.
+    // The entry* metrics are captured at FILL confirmation (applyEntryFill), not
+    // at proposal — so approval-mode trades measure the moment the position
+    // actually opened, not when the AI first proposed it (AT-review 2026-07-20).
+    'entryObservedSpot REAL', // underlying spot at fill from the candle store (NOT a live tick — see age/fresh)
+    'entrySpotAgeMs INTEGER', // how old that candle close was at capture (staleness)
+    'entrySpotBucketTs INTEGER', // 5-min bucket start of the observed spot (audit: confirm it's the current bucket)
+    'entrySpotFresh INTEGER', // 1 if the observed spot passed the STRICT entry-metric age gate; R/chg metrics are null when 0
+    'entryChangePctOpen REAL', // % from the day's open at fill (late-chase signal)
+    'entryProgressR REAL', // PLAN progress: (observedSpot − plannedEntry)/plannedRisk, signed (late-entry detection)
+    'entryRemainingRewardR REAL', // (plannedTarget − observedSpot)/plannedRisk, signed
+    'entryForwardRR REAL', // (storedTarget − observedSpot)/(observedSpot − storedStop): <1 = late chase
+    'entryFreshSlSpot REAL', // stop a rebuild at fill would set (vs stored slSpot → drift)
+    'entryFreshTargetSpot REAL', // target a rebuild at fill would set
+    'entrySectorRank INTEGER', // pick's sector rank by OI-spurt RATE among scanned sectors (1 = most active); proposal-time
+    'entrySectorCount INTEGER', // how many sectors were ranked this scan
+    'entryInitialRiskPoints REAL', // PLANNED risk |plannedEntry − plannedStop| — the plan-progress denominator
+    'entryObservedRiskPoints REAL', // POST-ENTRY risk |observedSpot − plannedStop| — the MFE/MAE denominator (measures from where the position actually opened)
+    'shadowMfeR REAL', // max FAVORABLE excursion in R from the OBSERVED fill (candle high/low, observed risk)
+    'shadowMaeR REAL', // max ADVERSE excursion in R from the OBSERVED fill (candle high/low, observed risk)
+  ]) {
     if (!existingTradeColumns.has(col.split(' ')[0]))
       await prisma.$executeRawUnsafe(`ALTER TABLE auto_trades ADD COLUMN ${col}`);
   }
@@ -143,6 +171,10 @@ export interface NewTrade {
   slPremium: number;
   targetPremium: number;
   aiReasonEntry: string;
+  /** Proposal-time SHADOW context (sector activity rank among scanned sectors) —
+   *  written in the insert so it costs no extra round-trip before placement. */
+  entrySectorRank?: number | null;
+  entrySectorCount?: number | null;
 }
 
 export async function insertTrade(t: NewTrade): Promise<number | null> {
@@ -152,9 +184,10 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     `INSERT INTO auto_trades (
        date, symbol, direction, optionType, strike, expiryDate, lotSize, lots,
        optSecurityId, mode, broker, status, entrySpot, slSpot, targetSpot,
-       entryPremium, slPremium, targetPremium, aiReasonEntry, proposedAt, updatedAt
+       entryPremium, slPremium, targetPremium, aiReasonEntry,
+       entrySectorRank, entrySectorCount, proposedAt, updatedAt
      )
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM auto_trades
         WHERE date = ? AND symbol = ?
@@ -180,6 +213,8 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     t.slPremium,
     t.targetPremium,
     t.aiReasonEntry,
+    t.entrySectorRank ?? null,
+    t.entrySectorCount ?? null,
     now,
     now,
     t.date,
@@ -235,6 +270,81 @@ export async function updateTrade(
   );
 }
 
+/** Quant SHADOW columns writable after insert (allowlisted). Written best-effort
+ *  at FILL confirmation; a failure here must never affect the trade. Pure
+ *  measurement — none of these fields gates or alters a live entry/exit. */
+const ENTRY_QUANT_COLUMNS = new Set([
+  'entryObservedSpot',
+  'entrySpotAgeMs',
+  'entrySpotBucketTs',
+  'entrySpotFresh',
+  'entryChangePctOpen',
+  'entryProgressR',
+  'entryRemainingRewardR',
+  'entryForwardRR',
+  'entryFreshSlSpot',
+  'entryFreshTargetSpot',
+  'entrySectorRank',
+  'entrySectorCount',
+  'entryInitialRiskPoints',
+  'entryObservedRiskPoints',
+]);
+
+export async function recordEntryQuant(
+  id: number,
+  metrics: Partial<
+    Pick<
+      AutoTrade,
+      | 'entryObservedSpot'
+      | 'entrySpotAgeMs'
+      | 'entrySpotBucketTs'
+      | 'entrySpotFresh'
+      | 'entryChangePctOpen'
+      | 'entryProgressR'
+      | 'entryRemainingRewardR'
+      | 'entryForwardRR'
+      | 'entryFreshSlSpot'
+      | 'entryFreshTargetSpot'
+      | 'entrySectorRank'
+      | 'entrySectorCount'
+      | 'entryInitialRiskPoints'
+      | 'entryObservedRiskPoints'
+    >
+  >
+): Promise<void> {
+  await ensureTables();
+  const keys = Object.keys(metrics).filter(
+    (k) => ENTRY_QUANT_COLUMNS.has(k) && (metrics as Record<string, unknown>)[k] != null
+  );
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  // entrySpotFresh is a boolean in the type but an INTEGER column → coerce.
+  const values = keys.map((k) => {
+    const v = (metrics as Record<string, unknown>)[k];
+    return (typeof v === 'boolean' ? (v ? 1 : 0) : v) as number;
+  });
+  await prisma.$executeRawUnsafe(`UPDATE auto_trades SET ${sets} WHERE id = ?`, ...values, id);
+}
+
+/** Update the running max favorable / adverse excursion (in spot-R) for an open
+ *  trade. Monotonic: mfeR only rises, maeR only falls. Guard-driven SHADOW
+ *  measurement of giveback — never triggers an exit or moves a stop. */
+export async function updateShadowExcursion(id: number, mfeR: number | null, maeR: number | null): Promise<void> {
+  await ensureTables();
+  if (mfeR == null && maeR == null) return;
+  const parts: string[] = [];
+  const values: number[] = [];
+  if (mfeR != null) {
+    parts.push('shadowMfeR = MAX(COALESCE(shadowMfeR, -1e9), ?)');
+    values.push(mfeR);
+  }
+  if (maeR != null) {
+    parts.push('shadowMaeR = MIN(COALESCE(shadowMaeR, 1e9), ?)');
+    values.push(maeR);
+  }
+  await prisma.$executeRawUnsafe(`UPDATE auto_trades SET ${parts.join(', ')} WHERE id = ?`, ...values, id);
+}
+
 /** Atomic lifecycle transition. Exactly one concurrent caller can own a
  * pending approval or other state hand-off. */
 export async function transitionTradeStatus(
@@ -278,6 +388,22 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     shadowExitPremium: r.shadowExitPremium == null ? null : Number(r.shadowExitPremium),
     shadowExitReason: r.shadowExitReason == null ? null : String(r.shadowExitReason),
     shadowPnlRupees: r.shadowPnlRupees == null ? null : Number(r.shadowPnlRupees),
+    entryObservedSpot: r.entryObservedSpot == null ? null : Number(r.entryObservedSpot),
+    entrySpotAgeMs: r.entrySpotAgeMs == null ? null : Number(r.entrySpotAgeMs),
+    entrySpotBucketTs: r.entrySpotBucketTs == null ? null : Number(r.entrySpotBucketTs),
+    entrySpotFresh: r.entrySpotFresh == null ? null : Number(r.entrySpotFresh) === 1,
+    entryChangePctOpen: r.entryChangePctOpen == null ? null : Number(r.entryChangePctOpen),
+    entryProgressR: r.entryProgressR == null ? null : Number(r.entryProgressR),
+    entryRemainingRewardR: r.entryRemainingRewardR == null ? null : Number(r.entryRemainingRewardR),
+    entryForwardRR: r.entryForwardRR == null ? null : Number(r.entryForwardRR),
+    entryFreshSlSpot: r.entryFreshSlSpot == null ? null : Number(r.entryFreshSlSpot),
+    entryFreshTargetSpot: r.entryFreshTargetSpot == null ? null : Number(r.entryFreshTargetSpot),
+    entrySectorRank: r.entrySectorRank == null ? null : Number(r.entrySectorRank),
+    entrySectorCount: r.entrySectorCount == null ? null : Number(r.entrySectorCount),
+    entryInitialRiskPoints: r.entryInitialRiskPoints == null ? null : Number(r.entryInitialRiskPoints),
+    entryObservedRiskPoints: r.entryObservedRiskPoints == null ? null : Number(r.entryObservedRiskPoints),
+    shadowMfeR: r.shadowMfeR == null ? null : Number(r.shadowMfeR),
+    shadowMaeR: r.shadowMaeR == null ? null : Number(r.shadowMaeR),
   };
 }
 

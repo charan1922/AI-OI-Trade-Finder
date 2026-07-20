@@ -39,6 +39,7 @@ import { correlationIdForOrder } from '../lib/auto-trade/execution';
 import { chunkForTelegram, isNearDuplicateRead, markdownToTelegramHtml } from '../lib/telegram/commentary';
 import { isAdminOnlyPage, requiredPermission, roleForGoogleEmail } from '../lib/auth/rbac';
 import { computeGex } from '../lib/signals/gex';
+import { runQuantShadowChecks } from './quant-shadow-checks';
 import { todayIST } from '../lib/dhan/market-feed';
 import { hasRequiredEqBar } from '../lib/fyers/poller';
 
@@ -294,6 +295,13 @@ async function main(): Promise<void> {
     'gex: normalized display proxy uses call-minus-put convention',
     gex.balance === 'call-side-higher' && Math.abs(gex.netSharePct - 100 / 3) < 1e-9
   );
+
+  // ── 2c. Quant SHADOW math (measurement only — never gates) ─────────────────
+  // The full pure suite (re-anchor, excursion, observed-baseline MFE/MAE,
+  // entry-candle exclusion, chgOpen bucketing, sector-rate rank) lives in
+  // scripts/quant-shadow-checks.ts so the SAME assertions also run DB-free in
+  // CI (scripts/verify-quant-shadow.ts). Single source — no drift.
+  runQuantShadowChecks(check);
 
   // ── 3. Settings CRUD ───────────────────────────────────────────────────────
   const defaults = await getAutoTradeSettings();

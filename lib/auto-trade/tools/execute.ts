@@ -8,6 +8,7 @@
  */
 
 import { isMarketHours } from '@/lib/dhan/market-feed';
+import { rankSectorsByActivity } from '@/lib/trade-suggest/sector-rank';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
 import { getNumberSetting } from '@/lib/config/feature-toggles';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
@@ -275,6 +276,16 @@ async function buildGateInput(
   };
 }
 
+/** Pick's sector rank by OI-spurt activity among this scan's sectors (SHADOW,
+ *  proposal-time). Stored in the insert so it costs no extra round-trip before
+ *  placement. Returns nulls when the scan carried no sector flow. */
+function sectorRankForPick(rt: ToolRuntime, pick: TradeSuggestion): { rank: number | null; count: number | null } {
+  const flow = rt.scan?.sectorFlow;
+  if (!flow || flow.length === 0) return { rank: null, count: null };
+  const ranked = rankSectorsByActivity(flow).get(pick.sector);
+  return { rank: ranked?.rank ?? null, count: ranked?.total ?? flow.length };
+}
+
 /** Run one tool by name. Returns the data plus an audit trace entry. */
 export async function executeAutoTradeTool(
   rt: ToolRuntime,
@@ -462,6 +473,11 @@ export async function executeAutoTradeTool(
       }
       const entryPremium = freshPremium ?? pick.option.premium.ltp;
       const status = rt.settings.mode === 'approval' ? 'pending_approval' : 'placing';
+      // Proposal-time SHADOW context (in-memory only): the pick's sector rank.
+      // The fill-time metrics (spot/progress/re-anchor/MFE-MAE) are captured
+      // later at fill confirmation (execution.ts applyEntryFill), off the
+      // pre-submission path.
+      const { rank: entrySectorRank, count: entrySectorCount } = sectorRankForPick(rt, pick);
       const tradeId = await insertTrade({
         date: rt.date,
         symbol: pick.symbol,
@@ -482,6 +498,8 @@ export async function executeAutoTradeTool(
         slPremium: pick.option.premium.slPremium,
         targetPremium: pick.option.premium.targetPremium,
         aiReasonEntry: reason,
+        entrySectorRank,
+        entrySectorCount,
       });
       if (tradeId == null) {
         const result = {

@@ -21,12 +21,16 @@ name: build-image
 on:
   push:
     branches: [prod]
+  pull_request:
+    branches: [main] # run the validate gate on PRs (typecheck+lint) — no image build
   workflow_dispatch: {} # lets you trigger a build by hand from the Actions tab
 
 jobs:
   # Money-touching code must not ship unvalidated (AT-016): typecheck + lint
-  # gate the image build. (The auto-trade bench needs a populated SQLite DB, so
-  # it stays a box/laptop step: npx tsx scripts/verify-auto-trade.ts.)
+  # gate the image build. The FULL auto-trade bench needs a populated SQLite DB,
+  # so it stays a box/laptop step (npx tsx scripts/verify-auto-trade.ts) — but
+  # the PURE quant-shadow math has no DB dependency and runs here too, so its
+  # assertions are confirmed by CI, not only claimed (AT-review 2026-07-20).
   validate:
     runs-on: ubuntu-latest
     steps:
@@ -42,9 +46,17 @@ jobs:
       - run: pnpm db:generate
       - run: pnpm typecheck
       - run: pnpm lint
+      # DB-free pure-math checks (re-anchor, observed-baseline MFE/MAE,
+      # entry-candle exclusion, chgOpen bucketing, sector-rate rank). tsx is run
+      # via npx (the repo's standard runner) — no new dependency, no lockfile
+      # entry; it resolves the tsconfig @/ path aliases the same way the box does.
+      - run: npx --yes tsx scripts/verify-quant-shadow.ts
 
   build:
     needs: validate
+    # A PR to main only runs the validate gate above — it must never build or
+    # push an image (deploy stays prod-only). Prod pushes + manual dispatch build.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

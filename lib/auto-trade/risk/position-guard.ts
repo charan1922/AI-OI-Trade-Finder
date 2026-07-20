@@ -21,11 +21,12 @@ import { isPastSquareOff, istMinuteLabel, minuteOfDayIST } from '../config';
 import { exitTrade } from '../execution';
 import { fetchOptionQuotesWithHealth, latestSpotRead, type OptionQuote } from '../quotes';
 import { getAutoTradeSettings } from '../settings';
-import { getOpenTrades, getOrdersForTrade, updateTrade } from '../store';
+import { getOpenTrades, getOrdersForTrade, updateShadowExcursion, updateTrade } from '../store';
 import type { AutoTrade } from '../types';
 import { activateRiskLatch, clearRiskLatchReason } from './latch';
 import { supertrend } from '@/lib/signals/indicators';
-import { getFyersCandles } from '@/lib/fyers/candle-store';
+import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
+import { barsAfterEntryBucket, excursionR } from '../quant/reanchor';
 
 const TAG = '[PositionGuard]';
 
@@ -105,6 +106,56 @@ const EXIT_FAILURE_ESCALATE = 3;
 
 /** Trailing stop: once premium gains this %, move SL to entry (risk-free). */
 const TRAIL_STOP_TRIGGER_PCT = 30;
+
+/** SHADOW-only R level at which an R-based rule would protect near breakeven —
+ *  the doc's alternative to the +30%-premium rule. Used for MEASUREMENT logging,
+ *  it never moves a stop or exits. */
+const SHADOW_R_PROTECT_AT = 1;
+
+/**
+ * SHADOW measurement (never exits, never moves a stop): track the true spot-R
+ * excursion over the hold so R-based profit protection can be calibrated against
+ * the live +30%-premium breakeven rule. The doc's finding — a +30% premium move
+ * is an inconsistent proxy for spot-R — means a trade can reach a real R-gain
+ * and give it back before the premium rule ever arms (COLPAL 2026-07-20: peaked
+ * ~+0.8R, premium never near +30%, gave it all back to the cash stop).
+ *
+ * Correctness (AT-review 2026-07-20, round 2):
+ *  - baseline is entryObservedSpot (the underlying WHEN the fill confirmed) and
+ *    the denominator is entryObservedRiskPoints (|observed − stop|) — so a
+ *    pre-entry run-up is NOT booked as post-entry profit, and a later stop move
+ *    can't retroactively inflate a past R. Null observed → nothing recorded
+ *    (a stale fill has no honest post-entry baseline);
+ *  - MFE/MAE come from candle HIGH/LOW, but the ENTRY 5-min candle is EXCLUDED
+ *    (barsAfterEntryBucket): with only 5-min OHLC its extreme may have printed
+ *    before the fill, so counting it would fabricate excursion;
+ *  - runs after the protective exit checks (never delays a stop) — candles
+ *    persist after an exit, so the final excursion is still captured.
+ */
+async function recordShadowExcursion(trade: AutoTrade, date: string, actions: string[]): Promise<void> {
+  try {
+    const observedSpot = trade.entryObservedSpot;
+    const observedRisk = trade.entryObservedRiskPoints;
+    if (observedSpot == null || observedRisk == null || !(observedRisk > 0) || trade.openedAt == null) return;
+    const bars = await getFyersCandles(trade.symbol, date, 'EQ');
+    const entryBucket = fyersBucketFor(new Date(trade.openedAt).getTime());
+    const sinceEntry = barsAfterEntryBucket(bars, entryBucket);
+    const { mfeR, maeR } = excursionR(trade.direction, observedSpot, observedRisk, sinceEntry);
+    if (mfeR == null && maeR == null) return;
+    const prevMfe = trade.shadowMfeR;
+    await updateShadowExcursion(trade.id, mfeR, maeR);
+    // Transition note: first crossing of the R-protect level while the LIVE
+    // premium breakeven (needs +30% premium) has not armed — the giveback window.
+    const beArmed = trade.entryFillPremium != null && trade.slPremium >= trade.entryFillPremium;
+    if (mfeR != null && mfeR >= SHADOW_R_PROTECT_AT && (prevMfe == null || prevMfe < SHADOW_R_PROTECT_AT) && !beArmed) {
+      const line = `${trade.symbol}: [shadow] reached +${mfeR}R (candle high since entry) but premium breakeven not armed (live rule needs +30% premium) — an R-based rule would protect near breakeven here`;
+      actions.push(line);
+      console.log(`${TAG} ${line}`);
+    }
+  } catch (err) {
+    console.warn(`${TAG} shadow excursion failed for ${trade.symbol}: ${(err as Error).message}`);
+  }
+}
 
 interface PositionGuardCoreResult {
   actions: string[];
@@ -276,6 +327,13 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
           }
         }
       }
+
+      // SHADOW excursion — recorded LAST, after every protective check and any
+      // exit submission, so a shadow-only candle query + DB write can never add
+      // latency to a stop/target/square-off (AT-review 2026-07-20 finding 1).
+      // Candles persist after the exit, so the final excursion is still captured
+      // on the pass that closes the trade.
+      await recordShadowExcursion(trade, date, actions);
     } catch (err) {
       const line = `${trade.symbol} ${trade.optionType}: guard check failed (${(err as Error).message})`;
       actions.push(line);

@@ -10,7 +10,13 @@
  */
 
 import { alerts, sendCriticalAlert } from './alerts';
-import { FILL_POLL_ATTEMPTS, FILL_POLL_DELAY_MS, MAX_LOSS_PER_LOT_FALLBACK, TARGET_PER_LOT_FALLBACK } from './config';
+import {
+  ENTRY_METRIC_MAX_AGE_MS,
+  FILL_POLL_ATTEMPTS,
+  FILL_POLL_DELAY_MS,
+  MAX_LOSS_PER_LOT_FALLBACK,
+  TARGET_PER_LOT_FALLBACK,
+} from './config';
 import { getAdapterById, getExecutionAdapter } from './brokers';
 import type { BrokerAdapter, OrderTicket } from './brokers/adapter';
 import { ticketQtyUnits } from './brokers/adapter';
@@ -25,11 +31,15 @@ import {
   getTradesByDate,
   getUnresolvedOrders,
   markOrderReconciled,
+  recordEntryQuant,
   updateOrder,
   updateTrade,
 } from './store';
+import { latestSpotRead } from './quotes';
+import { computeReanchor } from './quant/reanchor';
 import type { AutoTrade, AutoTradeSettings, TradeMode } from './types';
 import { todayIST } from '@/lib/dhan/market-feed';
+import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
 
 const TAG = '[AutoTradeExec]';
 import { BrokerSubmissionError, correlationIdForOrder } from './brokers/adapter';
@@ -103,6 +113,102 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
     exitReason: null,
   });
   alerts.tradePlaced(trade.symbol, trade.optionType, fill);
+  // SHADOW measurement AFTER the fill is booked — off the pre-submission path,
+  // at the moment the position actually opened. Best-effort; never throws.
+  await captureEntryShadow(trade);
+}
+
+/**
+ * Fill-time quant SHADOW capture (AT-review 2026-07-20). Runs AFTER a fill is
+ * confirmed and the row is 'open', so it measures the moment the position
+ * actually opened — crucial for approval mode, where the human approves minutes
+ * after the AI proposed — and sits OFF the pre-submission critical path. Fully
+ * best-effort: any failure is swallowed so it can never disturb fill booking.
+ *
+ * Two distinct R systems are persisted (never conflated):
+ *  - PLAN progress (entryProgressR / entryForwardRR) — measured from the
+ *    scanner's planned entry against the PLANNED risk. Answers "how late is this
+ *    entry vs the plan?" (anti-chase). Denominator: entryInitialRiskPoints.
+ *  - POST-ENTRY excursion baseline (entryObservedSpot + entryObservedRiskPoints)
+ *    — the underlying spot WHEN the fill confirmed and |observed − stop|. The
+ *    guard measures MFE/MAE from HERE, so a pre-entry run-up can't be booked as
+ *    a post-entry gain (breakeven/trailing research needs the true entry).
+ *
+ * The spot source is the recorded 5-min candle close WITH its age (candle store,
+ * NOT a live tick). All R/chg metrics require a spot inside the STRICT
+ * ENTRY_METRIC_MAX_AGE_MS window (tighter than the guard's 15-min stop
+ * freshness) — a staler read is recorded as null, never fabricated evidence.
+ */
+async function captureEntryShadow(trade: AutoTrade): Promise<void> {
+  try {
+    const [spotRead, bars] = await Promise.all([
+      latestSpotRead(trade.symbol, trade.date),
+      getFyersCandles(trade.symbol, trade.date, 'EQ'),
+    ]);
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const { entrySpot, slSpot, targetSpot } = trade;
+    const plannedRisk = slSpot != null ? Math.abs(entrySpot - slSpot) : null; // plan-progress denominator
+    const dirSign = trade.direction === 'bullish' ? 1 : -1;
+    const observed = spotRead?.price ?? null;
+    const ageMs = spotRead?.ageMs ?? null;
+    const dayOpen = bars.find((b) => b.open > 0)?.open ?? null;
+    const havePlanRisk = plannedRisk != null && plannedRisk > 0;
+
+    // STRICT entry-metric freshness (finding 4): a 10–14-min-old candle passes
+    // the guard's 15-min stop-freshness check but is too stale to calibrate a
+    // fill. Gate every R/chg metric on this tighter window instead.
+    const metricFresh = observed != null && ageMs != null && ageMs <= ENTRY_METRIC_MAX_AGE_MS;
+
+    // POST-ENTRY risk from the OBSERVED fill (finding 2) — the MFE/MAE
+    // denominator; null when the fill spot was stale (no honest baseline).
+    const observedRisk = metricFresh && slSpot != null ? Math.abs(observed! - slSpot) : null;
+
+    // PLAN progress (from planned entry / planned risk) — the late-chase signal.
+    const progressR = metricFresh && havePlanRisk ? round2((dirSign * (observed! - entrySpot)) / plannedRisk!) : null;
+    const remainingRewardR =
+      metricFresh && targetSpot != null && havePlanRisk
+        ? round2((dirSign * (targetSpot - observed!)) / plannedRisk!)
+        : null;
+    const changePctOpen = metricFresh && dayOpen != null && dayOpen > 0 ? round2(((observed! - dayOpen) / dayOpen) * 100) : null;
+
+    let forwardRR: number | null = null;
+    let freshSlSpot: number | null = null;
+    let freshTargetSpot: number | null = null;
+    if (metricFresh && bars.length > 0) {
+      const reanchor = computeReanchor({
+        side: trade.optionType,
+        direction: trade.direction,
+        plannedSlSpot: slSpot,
+        plannedTargetSpot: targetSpot,
+        freshSpot: observed!,
+        bars,
+        nowBucketTs: fyersBucketFor(Date.now()),
+      });
+      forwardRR = reanchor.forwardRR;
+      freshSlSpot = reanchor.freshSlSpot;
+      freshTargetSpot = reanchor.freshTargetSpot;
+    }
+
+    await recordEntryQuant(trade.id, {
+      entryObservedSpot: observed,
+      entrySpotAgeMs: ageMs,
+      entrySpotBucketTs: spotRead?.bucketTs ?? null,
+      entrySpotFresh: metricFresh,
+      entryChangePctOpen: changePctOpen,
+      entryProgressR: progressR,
+      entryRemainingRewardR: remainingRewardR,
+      entryForwardRR: forwardRR,
+      entryFreshSlSpot: freshSlSpot,
+      entryFreshTargetSpot: freshTargetSpot,
+      entryInitialRiskPoints: plannedRisk,
+      entryObservedRiskPoints: observedRisk,
+    });
+    console.log(
+      `${TAG} [shadow] ${trade.symbol} fill: chgOpen ${changePctOpen ?? '—'}% · progressR ${progressR ?? '—'} · fwdRR ${forwardRR ?? '—'} · obsRisk ${observedRisk ?? '—'} · metricFresh ${metricFresh} (age ${ageMs ?? '—'}ms)`
+    );
+  } catch (err) {
+    console.warn(`${TAG} [shadow] entry capture failed for ${trade.symbol}: ${(err as Error).message}`);
+  }
 }
 
 async function applyExitFill(

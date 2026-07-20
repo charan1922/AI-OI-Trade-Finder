@@ -420,6 +420,18 @@ export async function runTradeSuggest(
     }))
     .sort((a, b) => (b.avgChgPct ?? 0) - (a.avgChgPct ?? 0));
 
+  // Sector ACTIVITY rank (SHADOW evidence, NOT a gate/score): order sectors by
+  // how many of their names sit on NSE's OI build-up list — the big-player-
+  // activity proxy the whole strategy keys on — tie-broken by the size of the
+  // sector's turnover move. Each pick is stamped with its sector's rank so we
+  // can later MEASURE whether picks from low-activity sectors underperform
+  // (the COLPAL/FMCG complaint, 2026-07-20) before sector strength ever gates.
+  // 1 = most active.
+  const sectorActivityRank = new Map<string, number>();
+  [...base.sectorFlow]
+    .sort((a, b) => b.oiSpurts - a.oiSpurts || Math.abs(b.avgChgPct ?? 0) - Math.abs(a.avgChgPct ?? 0))
+    .forEach((f, i) => sectorActivityRank.set(f.sector, i + 1));
+
   // Sector STRENGTH per the heatmap's own aggregation (turnover-weighted move
   // + advance/decline breadth — lib/sector/aggregate.ts), from the quote rows
   // already in hand. DISPLAY EVIDENCE on picks, deliberately not a gate or
@@ -842,6 +854,18 @@ export async function runTradeSuggest(
       sectorAligned,
     };
 
+    // SHADOW sector-activity evidence (not a gate/score): where this pick's
+    // sector ranks among all scanned sectors by OI activity. Evidence only.
+    const sectorRank = sectorActivityRank.get(s.sector) ?? null;
+    const sectorRankTotal = sectorActivityRank.size;
+    const sectorTopN = Math.min(5, sectorRankTotal);
+    const sectorActivityReason =
+      sectorRank != null && sectorRankTotal > 0
+        ? sectorRank <= sectorTopN
+          ? `sector activity (shadow): ${s.sector} is a top-${sectorTopN} sector by OI activity (#${sectorRank} of ${sectorRankTotal})`
+          : `⚠ sector activity (shadow): ${s.sector} ranks #${sectorRank} of ${sectorRankTotal} by OI activity — not a leading sector (evidence only, not gated)`
+        : null;
+
     const reasons = [
       ...(s.extended
         ? [
@@ -930,6 +954,7 @@ export async function runTradeSuggest(
       ...((breadth.get(`${s.sector}:${s.direction}`) ?? 1) > 1
         ? [`sector confirmation: ${breadth.get(`${s.sector}:${s.direction}`)} ${s.sector} names moving ${s.direction}`]
         : []),
+      ...(sectorActivityReason ? [sectorActivityReason] : []),
       ...s.setupReasons,
     ];
 
