@@ -32,6 +32,10 @@ interface StoredRow {
   maxUpPct: number | null;
   maxDownPct: number | null;
   closePct: number | null;
+  /** Honest path-dependent grade (grade.ts) — used directly so this page agrees
+   *  with the backend stats. Null on legacy rows (old max/min fallback below). */
+  spotOutcome: 'target' | 'stop' | 'timeout' | 'entry-ambiguous' | 'incomplete' | null;
+  spotOutcomeR: number | null;
   outcomeAt: string | null;
 }
 interface DayGroup {
@@ -91,7 +95,7 @@ function SymbolLink({ symbol }: { symbol: string }) {
   );
 }
 
-type Basis = 'TGT' | 'SL' | 'BOTH' | 'OPEN' | 'PENDING';
+type Basis = 'TGT' | 'SL' | 'BOTH' | 'OPEN' | 'PENDING' | 'UNRESOLVED';
 
 /** Lots to trade: capital ÷ per-lot cost, floored, ≥1, capped at MAX_LOTS. */
 function lotsFor(s: StoredRow): number {
@@ -101,18 +105,15 @@ function lotsFor(s: StoredRow): number {
 }
 
 /**
- * Plan outcome — did the SPOT reach the plan's Target or SL (tracked from Fyers
- * 5-min candles)? If so, the trade is marked at the plan's real Target/SL premium.
- * Both touched → conservatively counted as the stop (we can't know which hit first).
- * Neither → 'OPEN' (no clean exit; the option wasn't executed, so no ₹ is claimed).
+ * Plan outcome for the Trade Log row. Prefers the persisted HONEST path-dependent
+ * grade (grade.ts / spotOutcome) so this page agrees with the backend stats
+ * (PR#3 review): target/stop reflect which was reached FIRST; timeout = neither;
+ * entry-ambiguous / incomplete = 5-min blind spots (no ₹ claimed). Only legacy
+ * rows (graded before grade.ts, no spotOutcome) fall back to the old full-day
+ * max/min calc — which is path-INDEPENDENT and can disagree with reality.
  */
 function planOutcome(s: StoredRow): { basis: Basis; plPerShare: number | null } {
   if (s.outcomeAt == null) return { basis: 'PENDING', plPerShare: null };
-  const ce = s.optionType === 'CE';
-  const hi = s.maxUpPct == null ? null : s.spotAtSuggest * (1 + s.maxUpPct / 100);
-  const lo = s.maxDownPct == null ? null : s.spotAtSuggest * (1 + s.maxDownPct / 100);
-  const targetHit = s.targetSpot != null && (ce ? hi != null && hi >= s.targetSpot : lo != null && lo <= s.targetSpot);
-  const slHit = s.slSpot != null && (ce ? lo != null && lo <= s.slSpot : hi != null && hi >= s.slSpot);
   const tgtPL = s.premiumTarget != null && s.premiumAtSuggest != null ? s.premiumTarget - s.premiumAtSuggest : null;
   // Cap the modeled loss at the ₹ per-lot budget — a losing trade that hit the old
   // 40% stop necessarily passed through this tighter level first, so recomputing
@@ -120,6 +121,26 @@ function planOutcome(s: StoredRow): { basis: Basis; plPerShare: number | null } 
   const capPerShare = s.lotSize > 0 ? MAX_LOSS_PER_LOT_RUPEES / s.lotSize : null;
   const rawSlPL = s.premiumSl != null && s.premiumAtSuggest != null ? s.premiumSl - s.premiumAtSuggest : null;
   const slPL = rawSlPL == null ? null : capPerShare == null ? rawSlPL : Math.max(rawSlPL, -capPerShare);
+
+  if (s.spotOutcome != null) {
+    switch (s.spotOutcome) {
+      case 'target':
+        return { basis: 'TGT', plPerShare: tgtPL };
+      case 'stop':
+        return { basis: 'SL', plPerShare: slPL };
+      case 'timeout':
+        return { basis: 'OPEN', plPerShare: null }; // no clean exit at a level → no ₹ claimed
+      default:
+        return { basis: 'UNRESOLVED', plPerShare: null }; // entry-ambiguous / incomplete
+    }
+  }
+
+  // Legacy rows only: old path-INDEPENDENT full-day max/min.
+  const ce = s.optionType === 'CE';
+  const hi = s.maxUpPct == null ? null : s.spotAtSuggest * (1 + s.maxUpPct / 100);
+  const lo = s.maxDownPct == null ? null : s.spotAtSuggest * (1 + s.maxDownPct / 100);
+  const targetHit = s.targetSpot != null && (ce ? hi != null && hi >= s.targetSpot : lo != null && lo <= s.targetSpot);
+  const slHit = s.slSpot != null && (ce ? lo != null && lo <= s.slSpot : hi != null && hi >= s.slSpot);
   if (targetHit && slHit) return { basis: 'BOTH', plPerShare: slPL };
   if (targetHit) return { basis: 'TGT', plPerShare: tgtPL };
   if (slHit) return { basis: 'SL', plPerShare: slPL };
@@ -141,6 +162,7 @@ const BASIS_BADGE: Record<Basis, { label: string; cls: string }> = {
   BOTH: { label: '⚠ stop*', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' },
   OPEN: { label: 'open', cls: 'bg-muted text-muted-foreground' },
   PENDING: { label: 'pending', cls: 'bg-muted text-muted-foreground' },
+  UNRESOLVED: { label: '~ n/a', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' },
 };
 
 function DaySection({ day }: { day: DayGroup }) {
@@ -255,6 +277,15 @@ function DaySection({ day }: { day: DayGroup }) {
                           </>
                         ) : (
                           <span className="text-muted-foreground">—</span>
+                        )}
+                        {s.spotOutcomeR != null && (
+                          <div
+                            className={`text-[9px] ${pctCls(s.spotOutcomeR)}`}
+                            title="Realised spot-R vs the plan's risk (honest path-dependent grade)"
+                          >
+                            {s.spotOutcomeR >= 0 ? '+' : ''}
+                            {s.spotOutcomeR.toFixed(2)}R
+                          </div>
                         )}
                       </td>
                       <td

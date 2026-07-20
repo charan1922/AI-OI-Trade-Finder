@@ -16,6 +16,13 @@ import type { StoredSuggestion, TradeSuggestion } from '@/lib/trade-suggest/type
 
 let tableReady = false;
 
+/** All persisted spot-grade labels (grade.ts). */
+const SPOT_OUTCOMES = new Set(['target', 'stop', 'timeout', 'entry-ambiguous', 'incomplete']);
+/** RESOLVED = honestly gradeable (carries an R); the other two are unresolvable
+ *  and are excluded from the win-rate / expectancy (PR#3 review). */
+const RESOLVED_OUTCOMES = new Set(['target', 'stop', 'timeout']);
+const isResolved = (o: unknown): boolean => typeof o === 'string' && RESOLVED_OUTCOMES.has(o);
+
 export async function ensureSuggestionsTable(): Promise<void> {
   if (tableReady) return;
   await prisma.$executeRawUnsafe(`
@@ -52,6 +59,15 @@ export async function ensureSuggestionsTable(): Promise<void> {
     )
   `);
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_trade_suggestions_date ON trade_suggestions (date)`);
+  // Honest path-dependent grade (grade.ts) — added to the EXISTING table via
+  // ALTER (CREATE IF NOT EXISTS never adds columns to a table that already
+  // exists in prod). Mirrored in schema.prisma.
+  const cols = new Set(
+    ((await prisma.$queryRawUnsafe(`PRAGMA table_info(trade_suggestions)`)) as { name: string }[]).map((c) => c.name),
+  );
+  for (const col of ['spotOutcome TEXT', 'spotOutcomeR REAL']) {
+    if (!cols.has(col.split(' ')[0])) await prisma.$executeRawUnsafe(`ALTER TABLE trade_suggestions ADD COLUMN ${col}`);
+  }
   tableReady = true;
 }
 
@@ -138,6 +154,8 @@ function rowToStored(r: Record<string, unknown>): StoredSuggestion {
     maxUpPct: toNumOrNull(r.maxUpPct),
     maxDownPct: toNumOrNull(r.maxDownPct),
     closePct: toNumOrNull(r.closePct),
+    spotOutcome: SPOT_OUTCOMES.has(r.spotOutcome as string) ? (r.spotOutcome as StoredSuggestion['spotOutcome']) : null,
+    spotOutcomeR: toNumOrNull(r.spotOutcomeR),
     outcomeAt: r.outcomeAt == null ? null : String(r.outcomeAt),
   };
 }
@@ -183,6 +201,10 @@ export async function getSuggestionHistory(days = 30): Promise<SuggestionDay[]> 
   }
   const isHit = (s: StoredSuggestion) => {
     if (s.outcomeAt == null) return false;
+    // Honest grade when present: a win is TARGET-before-stop, not just any ≥1%
+    // spike (a stop-then-recover trade is a loss). Legacy rows (no spotOutcome)
+    // fall back to the old maxUp-based test.
+    if (s.spotOutcome != null) return s.spotOutcome === 'target';
     const favorable = s.optionType === 'PE' ? -(s.maxDownPct ?? 0) : (s.maxUpPct ?? 0);
     return favorable >= 1;
   };
@@ -206,12 +228,25 @@ function safeParseReasons(v: unknown): string[] {
 export interface SuggestStats {
   days: number;
   totalSuggestions: number;
+  /** All rows with an EOD outcome recorded (honest + legacy + unresolvable). */
   reviewed: number;
-  /** A "hit" = moved ≥1% in the suggested direction before close (CE up / PE down). */
+  // ── HONEST calibration window: path-graded RESOLVED rows only (target /
+  //    stop / timeout). THESE are the numbers to tune strategy on — legacy and
+  //    unresolvable rows are reported separately and never mixed in (PR#3 review).
+  /** Resolved, path-graded rows — the denominator for every honest figure below. */
+  honestReviewed: number;
+  /** A "hit" = the plan's TARGET was reached BEFORE its stop (honest rows only). */
   hits: number;
   hitRatePct: number | null;
+  /** Mean realised R over honest rows (stop −1, target +RR, timeout close-based). */
+  avgOutcomeR: number | null;
   avgFavorablePct: number | null;
   avgAdversePct: number | null;
+  // ── Excluded from the honest window ──
+  /** Entry-ambiguous + incomplete rows (5-min blind spots — not counted). */
+  unresolvable: number;
+  /** Old rows graded before grade.ts (maxUp-only) — NOT trustworthy for tuning. */
+  legacyReviewed: number;
   byRank: { rank: number; n: number; hits: number }[];
   byScoreBucket: { bucket: string; n: number; hits: number }[];
 }
@@ -225,21 +260,28 @@ export async function getStats(days = 30): Promise<SuggestStats> {
   await ensureSuggestionsTable();
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
-    `SELECT optionType, score, rank, maxUpPct, maxDownPct, closePct, outcomeAt
+    `SELECT optionType, score, rank, maxUpPct, maxDownPct, closePct, spotOutcome, spotOutcomeR, outcomeAt
        FROM trade_suggestions WHERE date >= ?`,
     since,
   );
 
   const reviewedRows = rows.filter((r) => r.outcomeAt != null);
+  // The HONEST window: only path-graded, RESOLVED rows drive the calibration
+  // numbers. Legacy rows (no spotOutcome) and unresolvable rows (entry-ambiguous
+  // / incomplete) are counted separately, NEVER mixed into hitRate (PR#3 review).
+  const honestRows = reviewedRows.filter((r) => isResolved(r.spotOutcome));
+  const legacyReviewed = reviewedRows.filter((r) => r.spotOutcome == null).length;
+  const unresolvable = reviewedRows.filter((r) => r.spotOutcome != null && !isResolved(r.spotOutcome)).length;
+
   const favorable = (r: Record<string, unknown>) =>
     r.optionType === 'PE' ? -Number(r.maxDownPct ?? 0) : Number(r.maxUpPct ?? 0);
   const adverse = (r: Record<string, unknown>) =>
     r.optionType === 'PE' ? Number(r.maxUpPct ?? 0) : -Number(r.maxDownPct ?? 0);
-  const isHit = (r: Record<string, unknown>) => favorable(r) >= 1;
+  const isHit = (r: Record<string, unknown>) => r.spotOutcome === 'target';
 
   const byRank = new Map<number, { n: number; hits: number }>();
   const byBucket = new Map<string, { n: number; hits: number }>();
-  for (const r of reviewedRows) {
+  for (const r of honestRows) {
     const rank = toNum(r.rank);
     const bucket = toNum(r.score) >= 0.55 ? '≥0.55' : toNum(r.score) >= 0.45 ? '0.45–0.55' : '<0.45';
     const br = byRank.get(rank) ?? { n: 0, hits: 0 };
@@ -252,38 +294,54 @@ export async function getStats(days = 30): Promise<SuggestStats> {
     byBucket.set(bucket, bb);
   }
 
-  const hits = reviewedRows.filter(isHit).length;
+  const hits = honestRows.filter(isHit).length;
   const avg = (vals: number[]) =>
     vals.length === 0 ? null : Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
+  const gradedR = honestRows.map((r) => Number(r.spotOutcomeR)).filter((n) => Number.isFinite(n));
 
   return {
     days,
     totalSuggestions: rows.length,
     reviewed: reviewedRows.length,
+    honestReviewed: honestRows.length,
     hits,
-    hitRatePct: reviewedRows.length === 0 ? null : Math.round((hits / reviewedRows.length) * 10000) / 100,
-    avgFavorablePct: avg(reviewedRows.map(favorable)),
-    avgAdversePct: avg(reviewedRows.map(adverse)),
+    hitRatePct: honestRows.length === 0 ? null : Math.round((hits / honestRows.length) * 10000) / 100,
+    avgOutcomeR: avg(gradedR),
+    avgFavorablePct: avg(honestRows.map(favorable)),
+    avgAdversePct: avg(honestRows.map(adverse)),
+    unresolvable,
+    legacyReviewed,
     byRank: [...byRank.entries()].sort((a, b) => a[0] - b[0]).map(([rank, v]) => ({ rank, ...v })),
     byScoreBucket: [...byBucket.entries()].map(([bucket, v]) => ({ bucket, ...v })),
   };
 }
 
-/** Fill outcome columns for one suggestion (same-day scorecard). */
+/** Fill outcome columns for one suggestion (same-day scorecard). spotOutcome /
+ *  spotOutcomeR are the honest path-dependent grade (grade.ts); null when the
+ *  plan lacked well-formed stop/target levels to grade against. */
 export async function recordOutcome(
   date: string,
   symbol: string,
   optionType: string,
-  outcome: { maxUpPct: number; maxDownPct: number; closePct: number },
+  outcome: {
+    maxUpPct: number;
+    maxDownPct: number;
+    closePct: number;
+    spotOutcome?: StoredSuggestion['spotOutcome'];
+    spotOutcomeR?: number | null;
+  },
   nowMs = Date.now(),
 ): Promise<void> {
   await ensureSuggestionsTable();
   await prisma.$executeRawUnsafe(
-    `UPDATE trade_suggestions SET maxUpPct = ?, maxDownPct = ?, closePct = ?, outcomeAt = ?
-     WHERE date = ? AND symbol = ? AND optionType = ?`,
+    `UPDATE trade_suggestions
+        SET maxUpPct = ?, maxDownPct = ?, closePct = ?, spotOutcome = ?, spotOutcomeR = ?, outcomeAt = ?
+      WHERE date = ? AND symbol = ? AND optionType = ?`,
     outcome.maxUpPct,
     outcome.maxDownPct,
     outcome.closePct,
+    outcome.spotOutcome ?? null,
+    outcome.spotOutcomeR ?? null,
     new Date(nowMs).toISOString(),
     date,
     symbol,
