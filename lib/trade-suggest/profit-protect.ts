@@ -63,6 +63,13 @@ export interface ProtectGrade {
   outcomeR: number | null;
 }
 
+/** Simulator version, stamped into each persisted blob as `_v` (PR#6 review).
+ *  Bump whenever the simulator's math changes meaning so a report can tell rows
+ *  graded by different versions apart (rule NAMES alone are ambiguous across
+ *  versions). v2 = PR#6: entry-candle trigger ambiguity, stop-can't-rest-above-
+ *  close, price-based target detection. */
+export const PROTECT_MODEL_VERSION = 2;
+
 /** Candidate rules the report compares against the fixed-plan baseline. Keep
  *  these executable (tighten-only stop moves) and few — every extra rule needs
  *  live days of data to calibrate. */
@@ -143,7 +150,12 @@ export function simulateProtected(
       // at/above 0R it's the protected exit (breakeven or a locked gain).
       return stopR <= -1 ? { outcome: 'stop', outcomeR: -1 } : { outcome: 'protected', outcomeR: round2(stopR) };
     }
-    if (favExc(b) >= plannedRR) return { outcome: 'target', outcomeR: plannedRR };
+    // Detect target by the stored PRICE (same predicate as grade.ts), NOT by
+    // `favExc >= plannedRR`: plannedRR is rounded, so a candle touching the exact
+    // target price can fail the R comparison (1.989… >= 1.99 is false) and
+    // disagree with the baseline grader on decimal plans (PR#6 review). Report
+    // plannedRR as the R, exactly like grade.ts.
+    if (touchesTarget(b)) return { outcome: 'target', outcomeR: plannedRR };
 
     // Ratchet the stop from THIS bar's favourable excursion, for the NEXT bar.
     mfePrior = Math.max(mfePrior, favExc(b));
@@ -188,7 +200,7 @@ export function simulateAllPresets(
   sinceSec: number,
   expectedLastBucketSec?: number,
 ): Record<string, number> {
-  const out: Record<string, number> = {};
+  const out: Record<string, number> = { _v: PROTECT_MODEL_VERSION };
   for (const rule of PROTECT_PRESETS) {
     const g = simulateProtected(optionType, entry, stop, target, bars, sinceSec, rule, expectedLastBucketSec);
     if (g && g.outcomeR != null) out[rule.name] = g.outcomeR;
@@ -197,14 +209,17 @@ export function simulateAllPresets(
 }
 
 /** Parse a persisted protectShadow JSON blob → { ruleName: R }. Never throws;
- *  drops any non-numeric entry. Shared by store.ts and the report so the parse
- *  is defined once and unit-testable. */
+ *  drops any non-numeric entry AND any `_`-prefixed metadata key (e.g. the `_v`
+ *  model-version stamp), so metadata is never mistaken for a rule. Shared by
+ *  store.ts and the report so the parse is defined once and unit-testable. */
 export function parseProtectBlob(v: unknown): Record<string, number> {
   try {
     const parsed = JSON.parse(String(v ?? '{}'));
     if (!parsed || typeof parsed !== 'object') return {};
     const out: Record<string, number> = {};
-    for (const [k, val] of Object.entries(parsed)) if (typeof val === 'number' && Number.isFinite(val)) out[k] = val;
+    for (const [k, val] of Object.entries(parsed)) {
+      if (!k.startsWith('_') && typeof val === 'number' && Number.isFinite(val)) out[k] = val;
+    }
     return out;
   } catch {
     return {};
@@ -252,7 +267,9 @@ const mean = (v: number[]): number | null =>
  * loads the rows and calls this, so the savedStops/hurt/ΔR math is unit-testable.
  */
 export function aggregateProtection(rows: ProtectAggRow[], rules: ProtectRule[] = PROTECT_PRESETS): ProtectAggregate {
-  const usable = rows.filter((r) => Number.isFinite(r.baseR));
+  // A row counts toward the overall n only if it has a finite baseline R AND at
+  // least one rule counterfactual (blobs are already `_v`-stripped by parse).
+  const usable = rows.filter((r) => Number.isFinite(r.baseR) && Object.keys(r.blob).length > 0);
   const ruleStats = rules.map<ProtectRuleStat>((rule) => {
     const paired = usable.filter((r) => Number.isFinite(r.blob[rule.name]));
     return {

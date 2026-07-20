@@ -96,7 +96,10 @@ export async function reviewDate(date: string): Promise<ReviewResult> {
       closePct: grade?.closePct ?? pct(fbBars[fbBars.length - 1].close),
       spotOutcome: grade?.outcome ?? null,
       spotOutcomeR: grade?.outcomeR ?? null,
-      protectShadow: protect && Object.keys(protect).length > 0 ? JSON.stringify(protect) : null,
+      // Persist only when at least one RULE resolved (the blob always carries a
+      // `_v` metadata stamp, so count non-`_` keys — never store a rules-less blob).
+      protectShadow:
+        protect && Object.keys(protect).some((k) => !k.startsWith('_')) ? JSON.stringify(protect) : null,
     });
     reviewed++;
   }

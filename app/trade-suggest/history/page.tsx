@@ -195,7 +195,7 @@ function DaySection({ day }: { day: DayGroup }) {
           <span>reviewed {day.reviewed}/{day.suggestions.length}</span>
           {hasRealized && (
             <span className="font-semibold">
-              Day P/L <span className={pctCls(dayPL)}>{fmtSignedRs(dayPL)}</span>
+              Modeled day P/L <span className={pctCls(dayPL)}>{fmtSignedRs(dayPL)}</span>
             </span>
           )}
         </span>
@@ -207,14 +207,14 @@ function DaySection({ day }: { day: DayGroup }) {
             <thead className="text-left text-muted-foreground">
               <tr className="border-b border-border/50">
                 <th className="px-2 py-1.5 font-medium">Entry</th>
-                <th className="px-2 py-1.5 font-medium">Exit</th>
+                <th className="px-2 py-1.5 font-medium">Outcome</th>
                 <th className="px-2 py-1.5 font-medium">Option</th>
                 <th className="px-2 py-1.5 font-medium">Strike</th>
                 <th className="px-2 py-1.5 text-right font-medium">Spot@call</th>
                 <th className="px-2 py-1.5 text-right font-medium">SL / Target</th>
                 <th className="px-2 py-1.5 text-right font-medium">Lots</th>
                 <th className="px-2 py-1.5 text-right font-medium">Cost</th>
-                <th className="px-2 py-1.5 text-right font-medium">P / L</th>
+                <th className="px-2 py-1.5 text-right font-medium">Modeled P/L</th>
                 <th className="px-2 py-1.5 text-right font-medium">Move</th>
                 <th className="px-2 py-1.5 text-right font-medium">R / Score</th>
                 <th className="px-2 py-1.5 font-medium">Why</th>
@@ -235,7 +235,11 @@ function DaySection({ day }: { day: DayGroup }) {
                       <td className="px-2 py-1 tabular-nums">{fmtIST(s.suggestedAt)}</td>
                       <td className="px-2 py-1 tabular-nums">
                         <span className={`rounded px-1 py-0.5 text-[9px] font-semibold ${badge.cls}`}>{badge.label}</span>
-                        {s.outcomeAt && <span className="ml-1 text-muted-foreground">{fmtIST(s.outcomeAt)}</span>}
+                        {s.outcomeAt && (
+                          <span className="ml-1 text-muted-foreground" title="EOD grade time — not the exact moment the level was hit">
+                            {fmtIST(s.outcomeAt)}
+                          </span>
+                        )}
                       </td>
                       <td className="px-2 py-1 font-mono font-medium">
                         <SymbolLink symbol={s.symbol} />
@@ -425,9 +429,10 @@ export default function TradeLogPage() {
 
       <p className="text-[10.5px] leading-relaxed text-muted-foreground">
         Every pick the <code className="rounded bg-muted px-1">/trade-suggest</code> scan persisted, grouped by trading day
-        (newest first). <b>Entry</b> = first call time · <b>Exit</b> = which level the spot hit (target / stop / open) at the
-        15:30 review. <b>Lots</b> sized to ₹{(CAPITAL_BUDGET / 1000).toFixed(0)}k capital, capped at {MAX_LOTS}. <b>P/L</b> is
-        the plan outcome — target hit → +₹5,000/lot; stop hit → loss capped at{' '}
+        (newest first). <b>Entry</b> = first call time · <b>Outcome</b> = which level the spot hit (target / stop / open); the
+        time shown is the EOD grade time, not the exact hit time. <b>Lots</b> sized to ₹{(CAPITAL_BUDGET / 1000).toFixed(0)}k
+        capital, capped at {MAX_LOTS}. <b>Modeled P/L</b> is the plan outcome (not real broker fills) — target hit →
+        +₹5,000/lot; stop hit → loss capped at{' '}
         <b>₹{MAX_LOSS_PER_LOT_RUPEES.toLocaleString('en-IN')}/lot</b> (the spot SL sits at the structure level — last
         candle / support — this only bounds the ₹ if it&apos;s wide); <b>open</b> = neither touched (no ₹ claimed).{' '}
         <b>Move</b> = best spot move in the suggested direction at close. <b>⚠ stop*</b> = both target and stop were touched

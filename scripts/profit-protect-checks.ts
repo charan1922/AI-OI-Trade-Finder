@@ -5,7 +5,8 @@
  * boundary, PE) AND the pure aggregation (savedStops / hurt / paired denominators
  * / missing-rule) + the blob parser. Run by the DB-free CI runner AND the box bench.
  */
-import { aggregateProtection, parseProtectBlob, PROTECT_PRESETS, simulateAllPresets, simulateProtected } from '../lib/trade-suggest/profit-protect';
+import { gradeSpotPath } from '../lib/trade-suggest/grade';
+import { aggregateProtection, parseProtectBlob, type ProtectRule, PROTECT_PRESETS, simulateAllPresets, simulateProtected } from '../lib/trade-suggest/profit-protect';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
@@ -111,6 +112,29 @@ export function runProfitProtectChecks(check: CheckFn): void {
   check('protect: final candle missing → incomplete (null)', s12b?.outcome === 'incomplete', `${s12b?.outcome}`);
   check('protect: missing stop → null', simulateProtected('CE', 100, null, 120, [bar(600, 105, 99)], MID, BE1) === null);
 
+  // ── Target detection by PRICE, matching grade.ts (PR#6 review blocker) ──────
+  //    Decimal plan where rounded plannedRR (1.99) < the exact target's R
+  //    (1.989…): a candle touching the exact target price must still be 'target'.
+  const dCE = simulateProtected('CE', 100.03, 99.12, 101.84, [bar(600, 100.5, 100), bar(900, 101.84, 100.5)], MID, BE1);
+  check('protect CE decimal: candle touches exact target price → target 1.99', dCE?.outcome === 'target' && dCE?.outcomeR === 1.99, `${dCE?.outcome} ${dCE?.outcomeR}`);
+  const dPE = simulateProtected('PE', 100.03, 100.94, 98.22, [bar(600, 100.2, 99.8), bar(900, 99, 98.22)], MID, BE1);
+  check('protect PE decimal: candle touches exact target price → target 1.99', dPE?.outcome === 'target' && dPE?.outcomeR === 1.99, `${dPE?.outcome} ${dPE?.outcomeR}`);
+  const dBoth = simulateProtected('CE', 100.03, 99.12, 101.84, [bar(600, 100.5, 100), bar(900, 101.84, 99.12)], MID, BE1);
+  check('protect CE decimal: exact target & stop in one candle → stop wins (−1R)', dBoth?.outcome === 'stop' && dBoth?.outcomeR === -1, `${dBoth?.outcome} ${dBoth?.outcomeR}`);
+
+  // Baseline agreement: a rule that NEVER arms (unreachable trigger) must resolve
+  // identically to grade.ts on target / stop / timeout — proves the protection
+  // walker and the baseline grader share their target/stop/timeout logic.
+  const NEVER: ProtectRule = { name: 'never', triggerR: 99, mode: 'breakeven' };
+  const agree = (label: string, opt: 'CE' | 'PE', e: number, sl: number, tg: number, bars: Parameters<typeof simulateProtected>[4], since: number, last?: number) => {
+    const g = gradeSpotPath(opt, e, sl, tg, bars, since, last);
+    const p = simulateProtected(opt, e, sl, tg, bars, since, NEVER, last);
+    check(`baseline agreement: ${label} — protect(never) == grade`, p?.outcome === g?.outcome && p?.outcomeR === g?.outcomeR, `grade ${g?.outcome}/${g?.outcomeR} vs protect ${p?.outcome}/${p?.outcomeR}`);
+  };
+  agree('target', 'CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 122, 110)], MID);
+  agree('stop-first', 'CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 101, 89), bar(1200, 125, 110)], MID);
+  agree('timeout', 'CE', 100, 90, 120, [bar(600, 105, 96), bar(900, 106, 97), bar(1200, 104, 101)], MID, 1200);
+
   // ── Pure aggregation (PR#5 #4): savedStops / hurt / paired denominators / a
   //    row missing one rule only shrinks THAT rule's n. ─────────────────────────
   const rows = [
@@ -129,6 +153,7 @@ export function runProfitProtectChecks(check: CheckFn): void {
 
   // ── Blob parser: drops non-numbers, never throws on garbage. ────────────────
   check('parseProtectBlob: drops non-numeric values', JSON.stringify(parseProtectBlob('{"a":1,"b":"x","c":2}')) === '{"a":1,"c":2}');
+  check('parseProtectBlob: strips _-prefixed metadata (e.g. _v version stamp)', JSON.stringify(parseProtectBlob('{"_v":2,"breakeven@1R":0}')) === '{"breakeven@1R":0}');
   check('parseProtectBlob: malformed JSON → {}', JSON.stringify(parseProtectBlob('{not json')) === '{}');
   check('parseProtectBlob: null → {}', JSON.stringify(parseProtectBlob(null)) === '{}');
 }
