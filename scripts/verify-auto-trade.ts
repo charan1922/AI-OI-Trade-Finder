@@ -42,6 +42,8 @@ import { computeGex } from '../lib/signals/gex';
 import { runQuantShadowChecks } from './quant-shadow-checks';
 import { runConfigDriftChecks } from './config-drift-checks';
 import { runGradeChecks } from './grade-checks';
+import { runProfitProtectChecks } from './profit-protect-checks';
+import { ensureSuggestionsTable, getSuggestions, recordOutcome } from '../lib/trade-suggest/store';
 import { todayIST } from '../lib/dhan/market-feed';
 import { hasRequiredEqBar } from '../lib/fyers/poller';
 
@@ -306,6 +308,36 @@ async function main(): Promise<void> {
   runQuantShadowChecks(check);
   await runConfigDriftChecks(check);
   runGradeChecks(check);
+  runProfitProtectChecks(check);
+
+  // ── 2b. trade_suggestions store: outcome persistence + regrade idempotency ──
+  //     Pure aggregation is covered DB-free above; this exercises the DB path
+  //     recordOutcome() → getSuggestions() that CI can't (PR#5 review #4/#5).
+  {
+    const sd = '2099-02-02'; // synthetic — cannot collide with real rows
+    const sym = 'TESTPROT';
+    await ensureSuggestionsTable();
+    await prisma.$executeRawUnsafe(`DELETE FROM trade_suggestions WHERE date = ?`, sd);
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO trade_suggestions (date, symbol, optionType, spotAtSuggest, slSpot, targetSpot, suggestedAt, lastSeenAt)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      sd, sym, 'CE', 100, 90, 120, `${sd}T10:00:00.000Z`, `${sd}T10:00:00.000Z`,
+    );
+    // First grading: a stop, blob present. outcomeAt should be pinned to T1.
+    const t1 = Date.parse('2099-02-02T10:05:00Z');
+    await recordOutcome(sd, sym, 'CE', { maxUpPct: 1.3, maxDownPct: -1, closePct: -1, spotOutcome: 'stop', spotOutcomeR: -1, protectShadow: '{"breakeven@1R":0}' }, t1);
+    const afterFirst = (await getSuggestions(sd)).find((s) => s.symbol === sym);
+    check('store: first grade persists stop + blob + outcomeAt', afterFirst?.spotOutcome === 'stop' && afterFirst?.spotOutcomeR === -1 && afterFirst?.protectShadow === '{"breakeven@1R":0}' && afterFirst?.outcomeAt != null, JSON.stringify(afterFirst?.outcomeAt));
+    const pinnedOutcomeAt = afterFirst?.outcomeAt;
+    // Regrade LATER (T2) with a corrected grade: grade + shadow overwrite, but
+    // outcomeAt (the UI "Outcome" grade time) is PRESERVED via COALESCE.
+    const t2 = Date.parse('2099-02-03T09:00:00Z');
+    await recordOutcome(sd, sym, 'CE', { maxUpPct: 2, maxDownPct: -0.2, closePct: 2, spotOutcome: 'target', spotOutcomeR: 2, protectShadow: '{"breakeven@1R":2}' }, t2);
+    const afterRegrade = (await getSuggestions(sd)).find((s) => s.symbol === sym);
+    check('store: regrade overwrites grade + shadow', afterRegrade?.spotOutcome === 'target' && afterRegrade?.spotOutcomeR === 2 && afterRegrade?.protectShadow === '{"breakeven@1R":2}', `${afterRegrade?.spotOutcome} ${afterRegrade?.spotOutcomeR}`);
+    check('store: regrade PRESERVES original outcomeAt (UI Outcome grade time)', afterRegrade?.outcomeAt === pinnedOutcomeAt, `${pinnedOutcomeAt} → ${afterRegrade?.outcomeAt}`);
+    await prisma.$executeRawUnsafe(`DELETE FROM trade_suggestions WHERE date = ?`, sd);
+  }
 
   // ── 3. Settings CRUD ───────────────────────────────────────────────────────
   const defaults = await getAutoTradeSettings();

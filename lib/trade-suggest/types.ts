@@ -198,8 +198,9 @@ export interface StoredSuggestion {
    *  close-based); null for the unresolvable outcomes and legacy rows. */
   spotOutcomeR: number | null;
   /** Profit-protection SHADOW: JSON blob of counterfactual R per candidate rule
-   *  (profit-protect.ts), computed same-day. Measurement only — never changes a
-   *  live exit. Null when the baseline was unresolvable or on legacy rows. */
+   *  (profit-protect.ts), computed at review time (today, or a regrade of any
+   *  retained session) — carries a `_v` model-version stamp. Measurement only —
+   *  never changes a live exit. Null when the baseline was unresolvable / legacy. */
   protectShadow: string | null;
   outcomeAt: string | null;
 }

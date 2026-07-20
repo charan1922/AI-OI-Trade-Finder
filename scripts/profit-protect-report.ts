@@ -13,7 +13,7 @@
  * On the box:  docker exec projectr npx tsx scripts/profit-protect-report.ts
  */
 import Database from 'better-sqlite3';
-import { PROTECT_PRESETS } from '../lib/trade-suggest/profit-protect';
+import { type ProtectAggRow, aggregateProtection, parseProtectBlob } from '../lib/trade-suggest/profit-protect';
 
 const args = process.argv.slice(2);
 const argVal = (flag: string): string | null => {
@@ -51,51 +51,38 @@ const rows = db
   )
   .all(since) as Row[];
 
-const parseBlob = (v: string | null): Record<string, number> => {
-  try {
-    const p = JSON.parse(v ?? '{}');
-    if (!p || typeof p !== 'object') return {};
-    const out: Record<string, number> = {};
-    for (const [k, val] of Object.entries(p)) if (typeof val === 'number') out[k] = val;
-    return out;
-  } catch {
-    return {};
-  }
-};
-
 // Only rows with a resolved baseline R contribute (like-for-like comparison).
-const usable = rows
+// Same PURE aggregation the app uses (aggregateProtection) — single source of math.
+const aggRows: ProtectAggRow[] = rows
   .filter((r) => r.spotOutcome != null && RESOLVED.has(r.spotOutcome) && r.spotOutcomeR != null)
-  .map((r) => ({ ...r, baseR: Number(r.spotOutcomeR), blob: parseBlob(r.protectShadow) }))
-  .filter((r) => Number.isFinite(r.baseR));
+  .map((r) => {
+    const { version, rules } = parseProtectBlob(r.protectShadow);
+    return { baseR: Number(r.spotOutcomeR as number), version, rules };
+  });
+const agg = aggregateProtection(aggRows);
 
-if (usable.length === 0) {
+if (agg.n === 0) {
   console.log(`No resolved scanner picks with a profit-protection blob on or after ${since} (db: ${dbPath}).`);
-  console.log('These accrue same-day only (candles clear nightly) — expect this empty until a live session grades picks.');
+  console.log('These accrue at review time — expect this empty until a session (or a regrade) grades picks.');
   process.exit(0);
 }
 
-const avg = (v: number[]) => (v.length === 0 ? null : v.reduce((a, b) => a + b, 0) / v.length);
-const baselineAvg = avg(usable.map((r) => r.baseR));
-
-console.log(`\n=== Profit-protection SHADOW report — ${usable.length} resolved pick(s) since ${since} (db: ${dbPath}) ===`);
-console.log('Each rule is a TIGHTEN-ONLY stop move; measurement only — nothing here is live.');
-console.log(`Baseline (fixed plan) mean R over these picks: ${f(baselineAvg)}\n`);
+console.log(`\n=== Profit-protection SHADOW report — ${agg.n} resolved pick(s) since ${since} (db: ${dbPath}) ===`);
+console.log('Each rule is a TIGHTEN-ONLY stop move; measurement only. R is THEORETICAL (level-fill), matched to');
+console.log(`the baseline grader — gap slippage ignored on both sides. Model _v${agg.version}. Baseline mean R: ${f(agg.baselineAvgR)}`);
+if (agg.excludedLegacy > 0 || agg.excludedOtherVersion > 0) {
+  console.log(
+    `Excluded to avoid mixing versions: ${agg.excludedLegacy} unversioned (pre-_v) + ${agg.excludedOtherVersion} other-version row(s). ` +
+      'Regrade a retained session to refresh those to the current version.',
+  );
+}
+console.log('');
 
 console.log(['rule', 'n', 'avgR', 'baseR', 'ΔR', 'savedStops', 'hurt'].map((h) => h.padEnd(18)).join(''));
-for (const rule of PROTECT_PRESETS) {
-  const paired = usable.filter((r) => Number.isFinite(r.blob[rule.name]));
-  if (paired.length === 0) {
-    console.log([rule.name, '0', '—', '—', '—', '—', '—'].map((c) => String(c).padEnd(18)).join(''));
-    continue;
-  }
-  const ruleAvg = avg(paired.map((r) => r.blob[rule.name]));
-  const baseAvg = avg(paired.map((r) => r.baseR));
-  const delta = ruleAvg != null && baseAvg != null ? ruleAvg - baseAvg : null;
-  const saved = paired.filter((r) => r.baseR <= -1 && r.blob[rule.name] >= 0).length;
-  const hurt = paired.filter((r) => r.blob[rule.name] < r.baseR).length;
+for (const r of agg.rules) {
+  const d = r.deltaR;
   console.log(
-    [rule.name, paired.length, f(ruleAvg), f(baseAvg), (delta != null && delta >= 0 ? '+' : '') + f(delta), saved, hurt]
+    [r.name, r.n, f(r.avgR), f(r.baselineAvgR), (d != null && d >= 0 ? '+' : '') + f(d), r.savedStops, r.hurt]
       .map((c) => String(c).padEnd(18))
       .join(''),
   );
