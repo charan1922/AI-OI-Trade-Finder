@@ -303,7 +303,7 @@ async function main(): Promise<void> {
   // scripts/quant-shadow-checks.ts so the SAME assertions also run DB-free in
   // CI (scripts/verify-quant-shadow.ts). Single source — no drift.
   runQuantShadowChecks(check);
-  runConfigDriftChecks(check);
+  await runConfigDriftChecks(check);
 
   // ── 3. Settings CRUD ───────────────────────────────────────────────────────
   const defaults = await getAutoTradeSettings();

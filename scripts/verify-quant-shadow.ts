@@ -16,8 +16,11 @@ function check(name: string, ok: boolean, detail = ''): void {
   if (!ok) failures++;
 }
 
-console.log('=== Pure verification (no DB): quant-shadow math + config-drift detector ===\n');
-runQuantShadowChecks(check);
-runConfigDriftChecks(check);
-console.log(`\n${failures === 0 ? '✅ all pure checks passed' : `❌ ${failures} check(s) FAILED`}`);
-process.exit(failures === 0 ? 0 : 1);
+async function main(): Promise<void> {
+  console.log('=== Pure verification (no DB): quant-shadow math + config-drift detector ===\n');
+  runQuantShadowChecks(check);
+  await runConfigDriftChecks(check);
+  console.log(`\n${failures === 0 ? '✅ all pure checks passed' : `❌ ${failures} check(s) FAILED`}`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+void main();

@@ -27,6 +27,7 @@ import { EOD_PUBLISH_HOUR_IST, isMarketHours, todayIST } from '@/lib/dhan/market
 import { prisma } from '@/lib/db';
 import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 import { markToday, wasMarkedToday } from '@/lib/runtime/daily-marker';
+import { inDriftReminderWindow, runConfigDriftReminderCore } from '@/lib/config/config-drift-reminder';
 import { FyersAuthError, getFyersAccessToken, getFyersTokenStatus, hasFyersAuth } from '@/lib/fyers/auth';
 import { fetchFutDepth, fetchHistory5m, type FyersBar } from '@/lib/fyers/client';
 import { attachFutDepth, fyersBucketFor, pruneCandleHistory, upsertCandles } from '@/lib/fyers/candle-store';
@@ -934,21 +935,8 @@ export async function runTokenWarmup(): Promise<void> {
   await warmPreOpenTokens(getState(), true);
 }
 
-/** Config-drift reminder window (IST minutes): from the pre-open warm-up start
- *  (08:40) through the end of the proven entry window (11:00). Firing anywhere
- *  in here — not only pre-09:15 — means a LATE server start (e.g. 09:20) still
- *  gets the reminder before the trading day's decisions matter (PR#2 review). */
-const DRIFT_REMINDER_START_MIN = WARM_START_MIN; // 08:40
-const DRIFT_REMINDER_END_MIN = 11 * 60; // 11:00
 const DRIFT_MARKER = 'config-drift-reminder';
 const DRIFT_LEASE = 'config-drift-reminder';
-
-function inDriftReminderWindow(ist: Date): boolean {
-  const day = ist.getDay();
-  if (day === 0 || day === 6) return false;
-  const minute = ist.getHours() * 60 + ist.getMinutes();
-  return minute >= DRIFT_REMINDER_START_MIN && minute < DRIFT_REMINDER_END_MIN;
-}
 
 /**
  * Config-drift reminder (AT-review 2026-07-20 op-fix; hardened per PR#2 review).
@@ -958,18 +946,21 @@ function inDriftReminderWindow(ist: Date): boolean {
  * day so a forgotten override keeps nagging instead of going silent. Complements
  * the immediate on-change alert in setToggle/setNumberSetting.
  *
- * Correctness (PR#2 review):
+ * This is the THIN wrapper: cheap gates (autonomous, window, in-memory cache,
+ * holiday) + real deps → runConfigDriftReminderCore (the pure, unit-tested
+ * decide-and-act in lib/config/config-drift-reminder.ts). Correctness (PR#2
+ * review):
  *  - once-per-day is a PERSISTENT marker (runtime_daily_markers), so a restart
- *    mid-window can't resend; the in-memory field is only a fast-path cache;
- *  - a dedicated runtime LEASE serialises the send, so overlapping processes
- *    during a rolling deploy can't both fire (the market-closed branch runs
- *    BEFORE the poller's own lease is acquired);
- *  - the marker is set ONLY after CONFIRMED delivery (sendMessageAsync().ok),
- *    so a failed DB read or Telegram send is retried next tick, never lost;
- *  - runs across 08:40–11:00 (not just pre-09:15), so a late start still alerts.
- *  Autonomous-server only (an ops signal), like the sibling EOD jobs. Callable
- *  from both the market-closed and market-open paths — the guards make it
- *  idempotent. Never throws to the poller.
+ *    mid-session can't resend; the in-memory field is only a fast-path cache;
+ *  - a dedicated runtime LEASE serialises the send (this path can run BEFORE the
+ *    poller's own POLLER_LEASE), so overlapping deploy processes can't both fire;
+ *  - the marker is set ONLY after CONFIRMED delivery, and markToday reports
+ *    whether it actually persisted — a failed read/send/write retries next tick;
+ *  - the window spans 08:40–15:30 (market close), so a late start with
+ *    SCAN_OUTSIDE_WINDOW ON (which can trade past 11:00) still gets alerted.
+ *  Autonomous-server only, like the sibling EOD jobs. Callable from both the
+ *  market-closed and market-open paths — the guards make it idempotent. Never
+ *  throws to the poller.
  */
 async function runConfigDriftReminder(state: PollerState): Promise<void> {
   if (!isAutonomousServer()) return;
@@ -977,37 +968,28 @@ async function runConfigDriftReminder(state: PollerState): Promise<void> {
   const today = todayIST();
   if (state.lastConfigDriftAlertDate === today) return; // fast in-memory path
   if (await isMarketHoliday(today)) return;
-  // Persistent dedup: survives restart / rolling deploy within the day.
-  if (await wasMarkedToday(DRIFT_MARKER, today)) {
-    state.lastConfigDriftAlertDate = today;
-    return;
-  }
-  // Serialise the send across concurrent processes (this path is pre-POLLER_LEASE).
-  if (!(await tryAcquireRuntimeLease(DRIFT_LEASE, 120_000))) return;
-  try {
-    const { tradeSuggestConfigOverrideSummary } = await import('@/lib/config/feature-toggles');
-    const overrides = await tradeSuggestConfigOverrideSummary();
-    if (overrides.length === 0) {
-      // Nothing drifted — safe to mark done immediately (no delivery to confirm).
-      await markToday(DRIFT_MARKER, today);
-      state.lastConfigDriftAlertDate = today;
-      return;
-    }
-    const { sendMessageAsync } = await import('@/lib/telegram');
-    const result = await sendMessageAsync(
-      `⚠️ Trade-Suggest scanner has ${overrides.length} setting(s) off their safe default today:\n${overrides.map((o) => `• ${o}`).join('\n')}\n\nCheck /config if this wasn't intentional.`
-    );
-    if (result.ok) {
-      await markToday(DRIFT_MARKER, today); // mark done ONLY after confirmed delivery
-      state.lastConfigDriftAlertDate = today;
-    } else {
-      console.warn(`${TAG} config-drift reminder delivery failed (will retry next tick): ${result.error ?? 'unknown'}`);
-    }
-  } catch (err) {
-    console.warn(`${TAG} config-drift reminder failed (will retry next tick): ${(err as Error).message}`);
-  } finally {
-    await releaseRuntimeLease(DRIFT_LEASE);
-  }
+
+  const { tradeSuggestConfigOverrideSummary } = await import('@/lib/config/feature-toggles');
+  const { sendMessageAsync } = await import('@/lib/telegram');
+  const outcome = await runConfigDriftReminderCore({
+    wasMarked: () => wasMarkedToday(DRIFT_MARKER, today),
+    acquireLease: () => tryAcquireRuntimeLease(DRIFT_LEASE, 120_000),
+    releaseLease: () => releaseRuntimeLease(DRIFT_LEASE),
+    getOverrides: tradeSuggestConfigOverrideSummary,
+    send: async (message) => {
+      const r = await sendMessageAsync(message);
+      return { ok: r.ok, error: r.error };
+    },
+    mark: () => markToday(DRIFT_MARKER, today),
+  });
+
+  if (outcome.completedToday) state.lastConfigDriftAlertDate = today;
+  if (outcome.status === 'sent' && !outcome.markedPersisted)
+    console.warn(`${TAG} config-drift reminder delivered but marker not persisted — a restart today could resend once`);
+  else if (outcome.status === 'send-failed')
+    console.warn(`${TAG} config-drift reminder delivery failed (will retry next tick): ${outcome.message ?? 'unknown'}`);
+  else if (outcome.status === 'error')
+    console.warn(`${TAG} config-drift reminder failed (will retry next tick): ${outcome.message}`);
 }
 
 function scheduleNextTick(): void {

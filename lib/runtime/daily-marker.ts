@@ -40,8 +40,11 @@ export async function wasMarkedToday(name: string, day: string): Promise<boolean
 }
 
 /** Mark `name` done for `day`. Call only AFTER the side-effect succeeded, so a
- *  failed attempt is retried on the next tick. */
-export async function markToday(name: string, day: string): Promise<void> {
+ *  failed attempt is retried on the next tick. Returns TRUE only when the write
+ *  actually persisted — a caller relying on cross-restart dedup must check this
+ *  (PR#2 review): a swallowed DB error used to let the caller believe the
+ *  "survives restart" guarantee held when it did not. */
+export async function markToday(name: string, day: string): Promise<boolean> {
   try {
     await ensureTable();
     await prisma.$executeRawUnsafe(
@@ -51,7 +54,9 @@ export async function markToday(name: string, day: string): Promise<void> {
       day,
       new Date().toISOString()
     );
+    return true;
   } catch (err) {
     console.warn(`[DailyMarker] ${name} write failed: ${(err as Error).message}`);
+    return false;
   }
 }
