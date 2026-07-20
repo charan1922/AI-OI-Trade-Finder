@@ -45,26 +45,31 @@ It is deliberately **honest and conservative**:
 - **A stop can't sit above the market.** If the arming candle already *closed*
   beyond where the new stop would rest, the exit is taken at the observable close,
   not at an impossible level.
-- **Theoretical level-fill R.** Exits are credited at the stop level — the exact
-  same assumption the baseline grader makes. Real gaps are ignored on *both*
-  sides. Sharing that assumption keeps the baseline-vs-rule comparison
-  *consistent*, but real gap slippage can hit the two differently and may not
-  cancel exactly. These numbers are a *decision metric*, not a promise of live fills.
-- **Target detected by price**, using the identical check as the grader, so the
-  shadow and the baseline can never disagree on whether the target was hit.
-- **One indivisible lot.** No partial exits (we trade one lot, so half-booking
-  isn't real).
+- **Exit prices are assumed, not real fills.** When a stop is hit we credit the
+  exact stop price — the same assumption the honest grader already uses for the
+  baseline. We ignore price *gaps* (where the market jumps past a level) on both
+  sides. Because the plan and the rules make the **same** assumption, the
+  *comparison* between them is fair — but real gaps could affect the two
+  differently, so treat these as decision numbers, not a promise of what you'd
+  actually get filled at.
+- **The target is checked by price**, using the exact same test as the grader, so
+  the what-if and the baseline can never disagree on whether the target was hit.
+- **One lot, all-or-nothing.** No partial exits (we trade a single lot, so
+  booking half isn't a real option).
 
-The output per rule is its **ΔR vs the fixed plan** — the average of the per-pick
-differences `(rule result − plan result)` over the same picks. Positive ΔR means
-the rule would have improved expectancy.
+The headline number per rule is **ΔR vs the plan** ("delta-R" = the *change* in
+R). For each pick we take `(rule's result) − (plan's result)`, then average those
+differences. A **positive** ΔR means the rule would have made the average trade
+better.
 
 ## 3. What it found (tiny, directional)
 
-Honest baseline scorecard: **10% win / −0.47R** over 30 resolved picks. Each rule
-is then compared to the plan over **its own paired picks** — the `n` differs per
-rule because entry-ambiguous picks drop out for the rule whose trigger they
-touched (so the ΔRs are *not* all measured over the same set):
+Honest baseline scorecard: **10% win / −0.47R** over 30 graded picks. Each rule is
+then compared to the plan over **its own set of picks** — the count (`n`) differs
+per rule because some picks are a 5-minute blind spot for that rule (an
+"entry-ambiguous" case the grader refuses to guess on — see
+[`honest-grading.md`](honest-grading.md)) and drop out. So the ΔRs are **not** all
+measured over the same picks:
 
 ```
 Rule                n     ΔR vs plan    saved    hurt
@@ -113,14 +118,16 @@ It's fed by `GET /api/trade-suggest?view=history` (a `protection` field from
 
 ## 5. Model versioning — so numbers never silently mix (PR #6 review)
 
-Each stored shadow result carries a version stamp (`_v`, currently **2**). This
-matters because a session that ages out of the ~20-day candle window can **never
-be regraded**, so its old-version numbers would otherwise linger forever. The
-aggregator now **only averages rows written by the current version** and *counts*
-the rest (`excludedLegacy` / `excludedOtherVersion`) so a shrinking sample is
-visible, never hidden. If we ever change the simulator's math, old and new
-numbers cannot be blended into one misleading average. We regraded all 4 retained
-sessions, so today **29/29 stored blobs are `_v:2`** and nothing is excluded.
+Each saved what-if result carries a **version stamp** (`_v`, currently `2`). Why
+it matters: if a trading day ages out of the ~20-day candle window, we can never
+re-run its numbers — so an old version's numbers would otherwise stick around
+forever. So the summary now **only averages results from the current version**,
+and *counts* the rest separately (`excludedLegacy` = results saved before the
+stamp existed; `excludedOtherVersion` = a different version). That way, if the
+usable sample shrinks, you can **see** it — it's never hidden. And if we ever
+change the what-if math, old and new numbers can't be silently blended into one
+misleading average. We re-ran all 4 saved sessions, so today all **29 of 29**
+stored results are version 2 and nothing is excluded.
 
 ## 6. Honest caveats (read before trusting any of this)
 

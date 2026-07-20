@@ -97,9 +97,10 @@ retained history:
 pnpm exec tsx scripts/regrade-suggestions.ts
 ```
 
-This replays each retained date, re-writes the outcome columns, and prints the
-honest scorecard. It is idempotent and **preserves the original grade time** (a
-regrade refreshes the verdict but not the "when we first graded it" stamp).
+This replays each saved date, re-writes the outcome columns, and prints the honest
+scorecard. It is **safe to run repeatedly** (running it again just refreshes the
+grades) and **keeps the original grade time** (a re-run refreshes the verdict but
+not the "when we first graded it" stamp).
 
 Dates older than the retention window can no longer be regraded — their candles
 are pruned — which is a deliberate storage limit, not a bug.
