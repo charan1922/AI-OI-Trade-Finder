@@ -31,13 +31,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: 24 # match the Dockerfile base (node:24-bookworm-slim)
+      # Provide pnpm exactly as the Docker image does (npm global install of the
+      # same major). Avoids pnpm/action-setup, whose Node 20 runtime GitHub is
+      # deprecating, and keeps CI on the pnpm major the lockfile + image use.
+      - run: npm install -g pnpm@10
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:generate
       - run: pnpm typecheck
