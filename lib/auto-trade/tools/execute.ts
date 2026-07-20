@@ -8,8 +8,7 @@
  */
 
 import { isMarketHours } from '@/lib/dhan/market-feed';
-import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
-import { computeReanchor } from '@/lib/auto-trade/quant/reanchor';
+import { rankSectorsByActivity } from '@/lib/trade-suggest/sector-rank';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
 import { getNumberSetting } from '@/lib/config/feature-toggles';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
@@ -31,7 +30,6 @@ import {
   getPendingApprovals,
   getTrade,
   insertTrade,
-  recordEntryQuant,
   symbolTradedToday,
   updateTrade,
 } from '../store';
@@ -278,94 +276,14 @@ async function buildGateInput(
   };
 }
 
-/**
- * Record the entry-time quant SHADOW snapshot for a just-inserted trade. Pure
- * MEASUREMENT — it never gates or alters the entry (it runs AFTER the trade row
- * exists) and is fully best-effort: any failure is swallowed so a shadow miss
- * can never disturb a live order. Captures, against the freshest spot at the
- * placement moment:
- *   - how far the stock had already run from the day's open (late-chase signal),
- *   - forward reward left in R vs the scanner plan at the real entry,
- *   - whether the pick sits in a market-leading (by OI activity) sector.
- * These accrue on real trades so the anti-chase / R-target / sector-strength
- * thresholds can be calibrated on recorded days before any becomes a gate.
- */
-async function recordEntryQuantSnapshot(rt: ToolRuntime, pick: TradeSuggestion, tradeId: number): Promise<void> {
-  try {
-    const freshSpot = await latestSpot(pick.symbol, rt.date);
-    const entrySpot = pick.plan.entrySpot;
-    const slSpot = pick.plan.slSpot;
-    const targetSpot = pick.plan.targetSpot;
-    const dirSign = pick.direction === 'bullish' ? 1 : -1;
-    const risk = slSpot != null ? Math.abs(entrySpot - slSpot) : null;
-
-    const round2 = (n: number) => Math.round(n * 100) / 100;
-    const progressR = freshSpot != null && risk != null && risk > 0 ? round2((dirSign * (freshSpot - entrySpot)) / risk) : null;
-    const remainingRewardR =
-      freshSpot != null && targetSpot != null && risk != null && risk > 0
-        ? round2((dirSign * (targetSpot - freshSpot)) / risk)
-        : null;
-
-    // Sector activity rank: order the scan's sectors by OI-spurt count (the
-    // big-player-activity proxy the whole strategy keys on), tie-broken by the
-    // magnitude of the sector's turnover move. 1 = most active.
-    let sectorRank: number | null = null;
-    let sectorCount: number | null = null;
-    const flow = rt.scan?.sectorFlow;
-    if (flow && flow.length > 0) {
-      const ranked = [...flow].sort(
-        (a, b) => b.oiSpurts - a.oiSpurts || Math.abs(b.avgChgPct ?? 0) - Math.abs(a.avgChgPct ?? 0)
-      );
-      const idx = ranked.findIndex((f) => f.sector === pick.sector);
-      sectorCount = ranked.length;
-      sectorRank = idx >= 0 ? idx + 1 : null;
-    }
-
-    // Re-anchor-at-placement (doc §7/§14): rebuild the plan from the locally
-    // recorded 5-min candles (no broker call) and measure the forward R:R to the
-    // stored target at the fresh entry. Only runs when we have a fresh spot.
-    let forwardRR: number | null = null;
-    let freshSlSpot: number | null = null;
-    let freshTargetSpot: number | null = null;
-    if (freshSpot != null) {
-      try {
-        const bars = await getFyersCandles(pick.symbol, rt.date, 'EQ');
-        if (bars.length > 0) {
-          const reanchor = computeReanchor({
-            side: pick.option?.optionType ?? (pick.direction === 'bullish' ? 'CE' : 'PE'),
-            direction: pick.direction,
-            plannedSlSpot: slSpot,
-            plannedTargetSpot: targetSpot,
-            freshSpot,
-            bars,
-            nowBucketTs: fyersBucketFor(Date.now()),
-          });
-          forwardRR = reanchor.forwardRR;
-          freshSlSpot = reanchor.freshSlSpot;
-          freshTargetSpot = reanchor.freshTargetSpot;
-        }
-      } catch {
-        // candle read / rebuild is best-effort — a miss must not affect the trade
-      }
-    }
-
-    await recordEntryQuant(tradeId, {
-      entryFreshSpot: freshSpot,
-      entryChangePctOpen: pick.changePctOpen,
-      entryProgressR: progressR,
-      entryRemainingRewardR: remainingRewardR,
-      entrySectorRank: sectorRank,
-      entrySectorCount: sectorCount,
-      entryForwardRR: forwardRR,
-      entryFreshSlSpot: freshSlSpot,
-      entryFreshTargetSpot: freshTargetSpot,
-    });
-    console.log(
-      `[AutoTrade][shadow] ${pick.symbol} entry: chgFromOpen ${pick.changePctOpen ?? '—'}% · progressR ${progressR ?? '—'} · remainingRewardR ${remainingRewardR ?? '—'} · forwardRR ${forwardRR ?? '—'} · sector ${pick.sector} rank ${sectorRank ?? '—'}/${sectorCount ?? '—'}`
-    );
-  } catch (err) {
-    console.warn(`[AutoTrade][shadow] entry quant snapshot failed for ${pick.symbol}: ${(err as Error).message}`);
-  }
+/** Pick's sector rank by OI-spurt activity among this scan's sectors (SHADOW,
+ *  proposal-time). Stored in the insert so it costs no extra round-trip before
+ *  placement. Returns nulls when the scan carried no sector flow. */
+function sectorRankForPick(rt: ToolRuntime, pick: TradeSuggestion): { rank: number | null; count: number | null } {
+  const flow = rt.scan?.sectorFlow;
+  if (!flow || flow.length === 0) return { rank: null, count: null };
+  const ranked = rankSectorsByActivity(flow).get(pick.sector);
+  return { rank: ranked?.rank ?? null, count: ranked?.total ?? flow.length };
 }
 
 /** Run one tool by name. Returns the data plus an audit trace entry. */
@@ -555,6 +473,11 @@ export async function executeAutoTradeTool(
       }
       const entryPremium = freshPremium ?? pick.option.premium.ltp;
       const status = rt.settings.mode === 'approval' ? 'pending_approval' : 'placing';
+      // Proposal-time SHADOW context (in-memory only): the pick's sector rank.
+      // The fill-time metrics (spot/progress/re-anchor/MFE-MAE) are captured
+      // later at fill confirmation (execution.ts applyEntryFill), off the
+      // pre-submission path.
+      const { rank: entrySectorRank, count: entrySectorCount } = sectorRankForPick(rt, pick);
       const tradeId = await insertTrade({
         date: rt.date,
         symbol: pick.symbol,
@@ -575,6 +498,8 @@ export async function executeAutoTradeTool(
         slPremium: pick.option.premium.slPremium,
         targetPremium: pick.option.premium.targetPremium,
         aiReasonEntry: reason,
+        entrySectorRank,
+        entrySectorCount,
       });
       if (tradeId == null) {
         const result = {
@@ -591,8 +516,6 @@ export async function executeAutoTradeTool(
           },
         };
       }
-      // SHADOW measurement (never gates): stamp entry-quality metrics on the row.
-      await recordEntryQuantSnapshot(rt, pick, tradeId);
       if (rt.settings.mode === 'approval') {
         // Push approval alert with Approve/Reject buttons to Telegram
         alerts.approvalRequested(

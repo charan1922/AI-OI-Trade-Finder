@@ -93,22 +93,30 @@ export interface AutoTrade {
   /** Quant SHADOW metrics — recorded on real trades purely to MEASURE entry/exit
    *  quality (late-chase, giveback, weak-sector). None of these gates or alters a
    *  live entry/exit; they exist so thresholds can be calibrated on recorded days
-   *  before anything here becomes a gate. */
-  entryFreshSpot: number | null;
-  entryChangePctOpen: number | null;
-  entryProgressR: number | null;
-  entryRemainingRewardR: number | null;
-  entrySectorRank: number | null;
-  entrySectorCount: number | null;
-  /** Max favorable / adverse spot excursion in R over the hold (giveback view). */
-  shadowMfeR: number | null;
-  shadowMaeR: number | null;
+   *  before anything here becomes a gate. The entry* fields are captured at FILL
+   *  confirmation (not at proposal), so approval-mode trades reflect the moment
+   *  the position actually opened. */
+  entryObservedSpot: number | null; // candle-store spot at fill (NOT a live tick — see age/fresh)
+  entrySpotAgeMs: number | null; // age of that candle close at capture
+  entrySpotFresh: boolean | null; // false → the R metrics below are left null
+  entryChangePctOpen: number | null; // % from the day's open at fill
+  entryProgressR: number | null; // (observedSpot − plannedEntry)/initialRisk, signed
+  entryRemainingRewardR: number | null; // (plannedTarget − observedSpot)/initialRisk, signed
   /** Re-anchor-at-placement shadow (doc §7/§14): forward reward:risk to the
    *  stored target at the fresh entry, and the stop/target a rebuild at the fill
    *  moment would produce. Measurement only — never changes the order. */
   entryForwardRR: number | null;
   entryFreshSlSpot: number | null;
   entryFreshTargetSpot: number | null;
+  /** Pick's sector rank by OI-spurt rate among scanned sectors (proposal-time). */
+  entrySectorRank: number | null;
+  entrySectorCount: number | null;
+  /** |entrySpot − stop| AT ENTRY — the IMMUTABLE denominator for MFE/MAE R, so a
+   *  later stop tightening can never retroactively inflate a past excursion. */
+  entryInitialRiskPoints: number | null;
+  /** Max favorable / adverse excursion in R over the hold (candle high/low). */
+  shadowMfeR: number | null;
+  shadowMaeR: number | null;
   aiReasonEntry: string;
   aiReasonExit: string | null;
   /** (exitFill − entryFill) × lotSize × lots, set at close when both known. */

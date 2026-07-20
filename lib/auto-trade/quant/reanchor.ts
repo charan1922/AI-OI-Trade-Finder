@@ -60,9 +60,14 @@ export function computeReanchor(input: ReanchorInput): ReanchorShadow {
     forwardRR = fwdRisk > 0 ? round2(fwdReward / fwdRisk) : null;
   }
 
-  const or = deriveSessionContext(bars);
-  const a14 = atr(bars);
-  const fresh = buildSpotPlan(side, freshSpot, bars, or, nowBucketTs, {
+  // No-lookahead: exclude bars at/after the current bucket (still forming live,
+  // or the future in replay) from the OR and the ATR just as buildSpotPlan does
+  // for the structural stop. Without this the ATR floor (when SL_ATR_MULT > 0)
+  // would be computed from a partial/future candle.
+  const completedBars = bars.filter((b) => b.bucketTs < nowBucketTs);
+  const or = deriveSessionContext(completedBars);
+  const a14 = atr(completedBars);
+  const fresh = buildSpotPlan(side, freshSpot, completedBars, or, nowBucketTs, {
     atr: a14,
     atrMult: SL_ATR_MULT,
     minRiskPct: MIN_RISK_PCT,
@@ -74,5 +79,44 @@ export function computeReanchor(input: ReanchorInput): ReanchorShadow {
     freshSlSpot: fresh.slSpot,
     freshTargetSpot: fresh.targetSpot,
     freshSlBasis: fresh.slBasis,
+  };
+}
+
+/**
+ * True max favorable / adverse excursion in R over a hold, from candle
+ * highs/lows — NOT close samples — measured against an IMMUTABLE initial risk.
+ *
+ * Both fixes the review raised (AT-review 2026-07-20):
+ *  - the denominator is the risk AT ENTRY (entrySpot − initial stop), passed in
+ *    by the caller and never the live trailing stop, so tightening the stop can
+ *    never retroactively inflate a past R; and
+ *  - favourable/adverse use the period high/low (the price genuinely traded
+ *    there), so a close-sampled series can't understate the real excursion.
+ *
+ * Pure: the caller supplies the bars already scoped to "since entry".
+ */
+export interface ExcursionR {
+  mfeR: number | null;
+  maeR: number | null;
+}
+
+export function excursionR(
+  direction: 'bullish' | 'bearish',
+  entrySpot: number,
+  initialRiskPoints: number,
+  bars: Pick<StoredFyersBar, 'high' | 'low'>[]
+): ExcursionR {
+  if (!(initialRiskPoints > 0)) return { mfeR: null, maeR: null };
+  const valid = bars.filter((b) => b.high > 0 && b.low > 0);
+  if (valid.length === 0) return { mfeR: null, maeR: null };
+  const maxHigh = Math.max(...valid.map((b) => b.high));
+  const minLow = Math.min(...valid.map((b) => b.low));
+  const bull = direction === 'bullish';
+  const favSpot = bull ? maxHigh : minLow; // best price the trade saw
+  const advSpot = bull ? minLow : maxHigh; // worst price the trade saw
+  const dirSign = bull ? 1 : -1;
+  return {
+    mfeR: round2((dirSign * (favSpot - entrySpot)) / initialRiskPoints),
+    maeR: round2((dirSign * (advSpot - entrySpot)) / initialRiskPoints),
   };
 }

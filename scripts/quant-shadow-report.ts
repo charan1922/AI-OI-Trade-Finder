@@ -71,16 +71,20 @@ if (rows.length === 0) {
 }
 
 const f = (n: number | null, d = 2) => (n == null ? '—' : n.toFixed(d));
-const realizedR = (r: Row) => (r.realizedPnlRupees == null ? null : r.realizedPnlRupees / CASH_RISK_PER_LOT);
+// ROUGH gross cash-R only: realized ₹ ÷ a flat per-lot risk. It ignores lots,
+// the tighter 40% premium stop, fees/taxes, partial fills and slippage — so it
+// is a directional yardstick, NOT the true realized R. Named grossR~ to say so.
+const roughGrossCashR = (r: Row) => (r.realizedPnlRupees == null ? null : r.realizedPnlRupees / CASH_RISK_PER_LOT);
 
-console.log(`\n=== Quant SHADOW report — ${rows.length} trade(s) since ${since} (db: ${dbPath}) ===\n`);
+console.log(`\n=== Quant SHADOW report — ${rows.length} trade(s) since ${since} (db: ${dbPath}) ===`);
+console.log(`(grossR~ = realized ₹ ÷ ₹${CASH_RISK_PER_LOT}/lot — ROUGH; ignores fees, lots, actual risk, slippage)\n`);
 console.log(
-  ['date', 'symbol', 'dir', 'chgOpen%', 'progR', 'remRewR', 'fwdRR', 'sector#', 'mfeR', 'maeR', '₹pnl', 'realR', 'giveback?']
+  ['date', 'symbol', 'dir', 'chgOpen%', 'progR', 'remRewR', 'fwdRR', 'sector#', 'mfeR', 'maeR', '₹pnl', 'grossR~', 'giveback?']
     .map((h) => h.padEnd(10))
     .join('')
 );
 for (const r of rows) {
-  const rr = realizedR(r);
+  const rr = roughGrossCashR(r);
   // "Giveback": reached a real favorable R but still closed at a loss — the
   // exact pattern the R-based profit-protection shadow is measuring.
   const giveback = r.shadowMfeR != null && r.shadowMfeR >= 0.75 && (r.realizedPnlRupees ?? 0) < 0 ? 'YES' : '';
@@ -111,8 +115,8 @@ const closed = rows.filter((r) => r.status === 'closed' && r.realizedPnlRupees !
 const summarize = (label: string, subset: Row[]) => {
   if (subset.length === 0) return;
   const wins = subset.filter((r) => (r.realizedPnlRupees ?? 0) > 0).length;
-  const avgR = subset.reduce((s, r) => s + (realizedR(r) ?? 0), 0) / subset.length;
-  console.log(`  ${label.padEnd(34)} n=${subset.length}  win ${wins}/${subset.length}  avg realR ${avgR.toFixed(2)}`);
+  const avgR = subset.reduce((s, r) => s + (roughGrossCashR(r) ?? 0), 0) / subset.length;
+  console.log(`  ${label.padEnd(34)} n=${subset.length}  win ${wins}/${subset.length}  avg grossR~ ${avgR.toFixed(2)}`);
 };
 
 console.log(`\n— Late-chase buckets (by % from open at entry) —`);

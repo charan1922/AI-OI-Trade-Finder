@@ -25,7 +25,8 @@ import { getOpenTrades, getOrdersForTrade, updateShadowExcursion, updateTrade } 
 import type { AutoTrade } from '../types';
 import { activateRiskLatch, clearRiskLatchReason } from './latch';
 import { supertrend } from '@/lib/signals/indicators';
-import { getFyersCandles } from '@/lib/fyers/candle-store';
+import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
+import { excursionR } from '../quant/reanchor';
 
 const TAG = '[PositionGuard]';
 
@@ -112,27 +113,36 @@ const TRAIL_STOP_TRIGGER_PCT = 30;
 const SHADOW_R_PROTECT_AT = 1;
 
 /**
- * SHADOW measurement (never exits, never moves a stop): track the spot-R
+ * SHADOW measurement (never exits, never moves a stop): track the true spot-R
  * excursion over the hold so R-based profit protection can be calibrated against
  * the live +30%-premium breakeven rule. The doc's finding — a +30% premium move
  * is an inconsistent proxy for spot-R — means a trade can reach a real R-gain
  * and give it back before the premium rule ever arms (COLPAL 2026-07-20: peaked
  * ~+0.8R, premium never near +30%, gave it all back to the cash stop).
+ *
+ * Correctness (AT-review 2026-07-20):
+ *  - the denominator is the IMMUTABLE initial risk recorded at entry, never the
+ *    live (tightenable) slSpot — a stop move can't retroactively inflate a past R;
+ *  - MFE/MAE come from candle HIGH/LOW since entry (via excursionR), not sampled
+ *    closes; and this runs UNCONDITIONALLY every pass (before any exit check), so
+ *    a premium-stop pass can't drop the final adverse excursion.
  */
-async function recordShadowExcursion(trade: AutoTrade, spot: number, actions: string[]): Promise<void> {
+async function recordShadowExcursion(trade: AutoTrade, date: string, actions: string[]): Promise<void> {
   try {
-    if (trade.slSpot == null) return;
-    const risk = Math.abs(trade.entrySpot - trade.slSpot);
-    if (!(risk > 0)) return;
-    const dirSign = trade.direction === 'bullish' ? 1 : -1;
-    const spotR = Math.round(((dirSign * (spot - trade.entrySpot)) / risk) * 100) / 100;
+    const initialRisk = trade.entryInitialRiskPoints;
+    if (initialRisk == null || !(initialRisk > 0) || trade.openedAt == null) return;
+    const bars = await getFyersCandles(trade.symbol, date, 'EQ');
+    const entryBucket = fyersBucketFor(new Date(trade.openedAt).getTime());
+    const sinceEntry = bars.filter((b) => b.bucketTs >= entryBucket);
+    const { mfeR, maeR } = excursionR(trade.direction, trade.entrySpot, initialRisk, sinceEntry);
+    if (mfeR == null && maeR == null) return;
     const prevMfe = trade.shadowMfeR;
-    await updateShadowExcursion(trade.id, spotR > 0 ? spotR : null, spotR < 0 ? spotR : null);
+    await updateShadowExcursion(trade.id, mfeR, maeR);
     // Transition note: first crossing of the R-protect level while the LIVE
     // premium breakeven (needs +30% premium) has not armed — the giveback window.
     const beArmed = trade.entryFillPremium != null && trade.slPremium >= trade.entryFillPremium;
-    if (spotR >= SHADOW_R_PROTECT_AT && (prevMfe == null || prevMfe < SHADOW_R_PROTECT_AT) && !beArmed) {
-      const line = `${trade.symbol}: [shadow] reached +${spotR}R on spot but premium breakeven not armed (live rule needs +30% premium) — an R-based rule would protect near breakeven here`;
+    if (mfeR != null && mfeR >= SHADOW_R_PROTECT_AT && (prevMfe == null || prevMfe < SHADOW_R_PROTECT_AT) && !beArmed) {
+      const line = `${trade.symbol}: [shadow] reached +${mfeR}R (candle high since entry) but premium breakeven not armed (live rule needs +30% premium) — an R-based rule would protect near breakeven here`;
       actions.push(line);
       console.log(`${TAG} ${line}`);
     }
@@ -212,6 +222,10 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
         continue;
       }
 
+      // SHADOW excursion — recorded UNCONDITIONALLY, before any exit check, so
+      // the final adverse/favorable move is captured even on a pass that exits.
+      await recordShadowExcursion(trade, date, actions);
+
       let reason: string | null = null;
 
       if (squareOff) {
@@ -282,7 +296,6 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
             console.warn(`${TAG} ${line}`);
           } else if (spotRead != null) {
             reason = spotExitReason(trade, spotRead.price);
-            await recordShadowExcursion(trade, spotRead.price, actions);
           }
         }
       }

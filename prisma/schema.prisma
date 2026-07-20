@@ -372,17 +372,21 @@ model AutoTrade {
   shadowPnlRupees    Float?
   // Quant SHADOW metrics — recorded on real trades to MEASURE entry/exit quality
   // (late-chase, giveback, weak-sector). None gates or alters a live entry/exit.
-  entryFreshSpot        Float?
-  entryChangePctOpen    Float?
-  entryProgressR        Float?
-  entryRemainingRewardR Float?
-  entrySectorRank       Int?
-  entrySectorCount      Int?
-  shadowMfeR            Float?
-  shadowMaeR            Float?
-  entryForwardRR        Float?
-  entryFreshSlSpot      Float?
-  entryFreshTargetSpot  Float?
+  // Captured at FILL confirmation (not proposal); R metrics null when spot stale.
+  entryObservedSpot      Float?
+  entrySpotAgeMs         Int?
+  entrySpotFresh         Int?
+  entryChangePctOpen     Float?
+  entryProgressR         Float?
+  entryRemainingRewardR  Float?
+  entryForwardRR         Float?
+  entryFreshSlSpot       Float?
+  entryFreshTargetSpot   Float?
+  entrySectorRank        Int?
+  entrySectorCount       Int?
+  entryInitialRiskPoints Float?
+  shadowMfeR             Float?
+  shadowMaeR             Float?
   proposedAt        String
   openedAt          String?
   closedAt          String?

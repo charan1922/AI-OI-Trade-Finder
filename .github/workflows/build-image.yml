@@ -21,6 +21,8 @@ name: build-image
 on:
   push:
     branches: [prod]
+  pull_request:
+    branches: [main] # run the validate gate on PRs (typecheck+lint) — no image build
   workflow_dispatch: {} # lets you trigger a build by hand from the Actions tab
 
 jobs:
@@ -45,6 +47,9 @@ jobs:
 
   build:
     needs: validate
+    # A PR to main only runs the validate gate above — it must never build or
+    # push an image (deploy stays prod-only). Prod pushes + manual dispatch build.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

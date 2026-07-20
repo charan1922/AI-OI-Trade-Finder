@@ -66,20 +66,23 @@ async function ensureTables(): Promise<void> {
     // quality the doc calls out (late-chase, giveback, weak sector). Pure
     // observation: nothing here gates or changes a live entry/exit. Calibrate
     // thresholds from these on recorded days before any of them becomes a gate.
-    'entryFreshSpot REAL', // underlying spot at the placement moment
-    'entryChangePctOpen REAL', // how far the stock had run from the day's open at entry (late-chase signal)
-    'entryProgressR REAL', // (freshSpot − plannedEntry)/plannedRisk, signed for direction (intra-cycle drift)
-    'entryRemainingRewardR REAL', // (plannedTarget − freshSpot)/plannedRisk, signed (forward reward left at real entry)
-    'entrySectorRank INTEGER', // pick's sector rank by OI activity among all scanned sectors (1 = most active)
+    // The entry* metrics are captured at FILL confirmation (applyEntryFill), not
+    // at proposal — so approval-mode trades measure the moment the position
+    // actually opened, not when the AI first proposed it (AT-review 2026-07-20).
+    'entryObservedSpot REAL', // spot at fill from the candle store (NOT a live tick — see age/fresh)
+    'entrySpotAgeMs INTEGER', // how old that candle close was at capture (staleness)
+    'entrySpotFresh INTEGER', // 1 if the candle passed the freshness check; R metrics are null when 0
+    'entryChangePctOpen REAL', // % from the day's open at fill (late-chase signal)
+    'entryProgressR REAL', // (observedSpot − plannedEntry)/initialRisk, signed for direction
+    'entryRemainingRewardR REAL', // (plannedTarget − observedSpot)/initialRisk, signed
+    'entryForwardRR REAL', // (storedTarget − observedSpot)/(observedSpot − storedStop): <1 = late chase
+    'entryFreshSlSpot REAL', // stop a rebuild at fill would set (vs stored slSpot → drift)
+    'entryFreshTargetSpot REAL', // target a rebuild at fill would set
+    'entrySectorRank INTEGER', // pick's sector rank by OI-spurt RATE among scanned sectors (1 = most active); proposal-time
     'entrySectorCount INTEGER', // how many sectors were ranked this scan
-    'shadowMfeR REAL', // max FAVORABLE spot excursion in R over the hold (giveback measurement)
-    'shadowMaeR REAL', // max ADVERSE spot excursion in R over the hold
-    // Re-anchor-at-placement shadow (lib/auto-trade/quant/reanchor.ts): what a
-    // plan rebuilt from fresh candles at the fill moment WOULD look like, and the
-    // forward reward:risk to the STORED target at the fresh entry (doc §7/§14).
-    'entryForwardRR REAL', // (storedTarget − freshSpot)/(freshSpot − storedStop): <1 = late chase
-    'entryFreshSlSpot REAL', // stop a rebuild at placement would set (vs stored slSpot → drift)
-    'entryFreshTargetSpot REAL', // target a rebuild at placement would set
+    'entryInitialRiskPoints REAL', // |entrySpot − stop| AT ENTRY — the IMMUTABLE MFE/MAE denominator
+    'shadowMfeR REAL', // max FAVORABLE excursion in R over the hold (candle high/low, immutable risk)
+    'shadowMaeR REAL', // max ADVERSE excursion in R over the hold (candle high/low, immutable risk)
   ]) {
     if (!existingTradeColumns.has(col.split(' ')[0]))
       await prisma.$executeRawUnsafe(`ALTER TABLE auto_trades ADD COLUMN ${col}`);
@@ -166,6 +169,10 @@ export interface NewTrade {
   slPremium: number;
   targetPremium: number;
   aiReasonEntry: string;
+  /** Proposal-time SHADOW context (sector activity rank among scanned sectors) —
+   *  written in the insert so it costs no extra round-trip before placement. */
+  entrySectorRank?: number | null;
+  entrySectorCount?: number | null;
 }
 
 export async function insertTrade(t: NewTrade): Promise<number | null> {
@@ -175,9 +182,10 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     `INSERT INTO auto_trades (
        date, symbol, direction, optionType, strike, expiryDate, lotSize, lots,
        optSecurityId, mode, broker, status, entrySpot, slSpot, targetSpot,
-       entryPremium, slPremium, targetPremium, aiReasonEntry, proposedAt, updatedAt
+       entryPremium, slPremium, targetPremium, aiReasonEntry,
+       entrySectorRank, entrySectorCount, proposedAt, updatedAt
      )
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM auto_trades
         WHERE date = ? AND symbol = ?
@@ -203,6 +211,8 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     t.slPremium,
     t.targetPremium,
     t.aiReasonEntry,
+    t.entrySectorRank ?? null,
+    t.entrySectorCount ?? null,
     now,
     now,
     t.date,
@@ -258,19 +268,22 @@ export async function updateTrade(
   );
 }
 
-/** Entry-time quant SHADOW snapshot (allowlisted columns). Written best-effort
- *  right after a trade is inserted; a failure here must never affect the trade.
- *  Pure measurement — none of these fields gates or alters a live entry. */
+/** Quant SHADOW columns writable after insert (allowlisted). Written best-effort
+ *  at FILL confirmation; a failure here must never affect the trade. Pure
+ *  measurement — none of these fields gates or alters a live entry/exit. */
 const ENTRY_QUANT_COLUMNS = new Set([
-  'entryFreshSpot',
+  'entryObservedSpot',
+  'entrySpotAgeMs',
+  'entrySpotFresh',
   'entryChangePctOpen',
   'entryProgressR',
   'entryRemainingRewardR',
-  'entrySectorRank',
-  'entrySectorCount',
   'entryForwardRR',
   'entryFreshSlSpot',
   'entryFreshTargetSpot',
+  'entrySectorRank',
+  'entrySectorCount',
+  'entryInitialRiskPoints',
 ]);
 
 export async function recordEntryQuant(
@@ -278,15 +291,18 @@ export async function recordEntryQuant(
   metrics: Partial<
     Pick<
       AutoTrade,
-      | 'entryFreshSpot'
+      | 'entryObservedSpot'
+      | 'entrySpotAgeMs'
+      | 'entrySpotFresh'
       | 'entryChangePctOpen'
       | 'entryProgressR'
       | 'entryRemainingRewardR'
-      | 'entrySectorRank'
-      | 'entrySectorCount'
       | 'entryForwardRR'
       | 'entryFreshSlSpot'
       | 'entryFreshTargetSpot'
+      | 'entrySectorRank'
+      | 'entrySectorCount'
+      | 'entryInitialRiskPoints'
     >
   >
 ): Promise<void> {
@@ -296,7 +312,11 @@ export async function recordEntryQuant(
   );
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
-  const values = keys.map((k) => (metrics as Record<string, unknown>)[k] as number);
+  // entrySpotFresh is a boolean in the type but an INTEGER column → coerce.
+  const values = keys.map((k) => {
+    const v = (metrics as Record<string, unknown>)[k];
+    return (typeof v === 'boolean' ? (v ? 1 : 0) : v) as number;
+  });
   await prisma.$executeRawUnsafe(`UPDATE auto_trades SET ${sets} WHERE id = ?`, ...values, id);
 }
 
@@ -362,17 +382,20 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     shadowExitPremium: r.shadowExitPremium == null ? null : Number(r.shadowExitPremium),
     shadowExitReason: r.shadowExitReason == null ? null : String(r.shadowExitReason),
     shadowPnlRupees: r.shadowPnlRupees == null ? null : Number(r.shadowPnlRupees),
-    entryFreshSpot: r.entryFreshSpot == null ? null : Number(r.entryFreshSpot),
+    entryObservedSpot: r.entryObservedSpot == null ? null : Number(r.entryObservedSpot),
+    entrySpotAgeMs: r.entrySpotAgeMs == null ? null : Number(r.entrySpotAgeMs),
+    entrySpotFresh: r.entrySpotFresh == null ? null : Number(r.entrySpotFresh) === 1,
     entryChangePctOpen: r.entryChangePctOpen == null ? null : Number(r.entryChangePctOpen),
     entryProgressR: r.entryProgressR == null ? null : Number(r.entryProgressR),
     entryRemainingRewardR: r.entryRemainingRewardR == null ? null : Number(r.entryRemainingRewardR),
-    entrySectorRank: r.entrySectorRank == null ? null : Number(r.entrySectorRank),
-    entrySectorCount: r.entrySectorCount == null ? null : Number(r.entrySectorCount),
-    shadowMfeR: r.shadowMfeR == null ? null : Number(r.shadowMfeR),
-    shadowMaeR: r.shadowMaeR == null ? null : Number(r.shadowMaeR),
     entryForwardRR: r.entryForwardRR == null ? null : Number(r.entryForwardRR),
     entryFreshSlSpot: r.entryFreshSlSpot == null ? null : Number(r.entryFreshSlSpot),
     entryFreshTargetSpot: r.entryFreshTargetSpot == null ? null : Number(r.entryFreshTargetSpot),
+    entrySectorRank: r.entrySectorRank == null ? null : Number(r.entrySectorRank),
+    entrySectorCount: r.entrySectorCount == null ? null : Number(r.entrySectorCount),
+    entryInitialRiskPoints: r.entryInitialRiskPoints == null ? null : Number(r.entryInitialRiskPoints),
+    shadowMfeR: r.shadowMfeR == null ? null : Number(r.shadowMfeR),
+    shadowMaeR: r.shadowMaeR == null ? null : Number(r.shadowMaeR),
   };
 }
 
