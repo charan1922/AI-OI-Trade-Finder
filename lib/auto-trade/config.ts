@@ -107,6 +107,20 @@ export const FAST_GUARD_TICK_MS = 10_000;
  *  prompt-enforced). Placement still re-runs every gate regardless. */
 export const CHECK_ORDER_TTL_MS = 2 * 60_000;
 
+/**
+ * Freshness ceiling for the fill-time entry SHADOW metrics (AT-review
+ * 2026-07-20). The generic SPOT_FRESH_MAX_AGE_MS (15 min) exists so a stalled
+ * recorder can't drive a live stop — it is deliberately loose. Entry
+ * calibration (change-from-open, progressR, forwardRR, re-anchor) needs a much
+ * tighter window: the recorder ticks every 5 min, so a healthy just-completed
+ * candle is 5–10 min old (age = now − bucketStart). 11 minutes accepts that
+ * healthy window with a minute of jitter but REJECTS a read that is already a
+ * full recorder interval behind (~14 min = one missed candle) — that stale a
+ * sample must not masquerade as the entry observation. Measurement only; when a
+ * fill's spot is older than this the R/chg metrics are recorded null, never
+ * fabricated. */
+export const ENTRY_METRIC_MAX_AGE_MS = 11 * 60_000;
+
 export { nowIST, minuteOfDayIST, nowISTClock };
 
 export function isEntryWindow(minute = minuteOfDayIST(), startMin = ENTRY_START_MIN, endMin = ENTRY_END_MIN): boolean {

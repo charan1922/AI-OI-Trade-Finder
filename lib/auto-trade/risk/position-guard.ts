@@ -26,7 +26,7 @@ import type { AutoTrade } from '../types';
 import { activateRiskLatch, clearRiskLatchReason } from './latch';
 import { supertrend } from '@/lib/signals/indicators';
 import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
-import { excursionR } from '../quant/reanchor';
+import { barsAfterEntryBucket, excursionR } from '../quant/reanchor';
 
 const TAG = '[PositionGuard]';
 
@@ -120,21 +120,27 @@ const SHADOW_R_PROTECT_AT = 1;
  * and give it back before the premium rule ever arms (COLPAL 2026-07-20: peaked
  * ~+0.8R, premium never near +30%, gave it all back to the cash stop).
  *
- * Correctness (AT-review 2026-07-20):
- *  - the denominator is the IMMUTABLE initial risk recorded at entry, never the
- *    live (tightenable) slSpot — a stop move can't retroactively inflate a past R;
- *  - MFE/MAE come from candle HIGH/LOW since entry (via excursionR), not sampled
- *    closes; and this runs UNCONDITIONALLY every pass (before any exit check), so
- *    a premium-stop pass can't drop the final adverse excursion.
+ * Correctness (AT-review 2026-07-20, round 2):
+ *  - baseline is entryObservedSpot (the underlying WHEN the fill confirmed) and
+ *    the denominator is entryObservedRiskPoints (|observed − stop|) — so a
+ *    pre-entry run-up is NOT booked as post-entry profit, and a later stop move
+ *    can't retroactively inflate a past R. Null observed → nothing recorded
+ *    (a stale fill has no honest post-entry baseline);
+ *  - MFE/MAE come from candle HIGH/LOW, but the ENTRY 5-min candle is EXCLUDED
+ *    (barsAfterEntryBucket): with only 5-min OHLC its extreme may have printed
+ *    before the fill, so counting it would fabricate excursion;
+ *  - runs after the protective exit checks (never delays a stop) — candles
+ *    persist after an exit, so the final excursion is still captured.
  */
 async function recordShadowExcursion(trade: AutoTrade, date: string, actions: string[]): Promise<void> {
   try {
-    const initialRisk = trade.entryInitialRiskPoints;
-    if (initialRisk == null || !(initialRisk > 0) || trade.openedAt == null) return;
+    const observedSpot = trade.entryObservedSpot;
+    const observedRisk = trade.entryObservedRiskPoints;
+    if (observedSpot == null || observedRisk == null || !(observedRisk > 0) || trade.openedAt == null) return;
     const bars = await getFyersCandles(trade.symbol, date, 'EQ');
     const entryBucket = fyersBucketFor(new Date(trade.openedAt).getTime());
-    const sinceEntry = bars.filter((b) => b.bucketTs >= entryBucket);
-    const { mfeR, maeR } = excursionR(trade.direction, trade.entrySpot, initialRisk, sinceEntry);
+    const sinceEntry = barsAfterEntryBucket(bars, entryBucket);
+    const { mfeR, maeR } = excursionR(trade.direction, observedSpot, observedRisk, sinceEntry);
     if (mfeR == null && maeR == null) return;
     const prevMfe = trade.shadowMfeR;
     await updateShadowExcursion(trade.id, mfeR, maeR);
@@ -221,10 +227,6 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
         console.warn(`${TAG} ${line}`);
         continue;
       }
-
-      // SHADOW excursion — recorded UNCONDITIONALLY, before any exit check, so
-      // the final adverse/favorable move is captured even on a pass that exits.
-      await recordShadowExcursion(trade, date, actions);
 
       let reason: string | null = null;
 
@@ -325,6 +327,13 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
           }
         }
       }
+
+      // SHADOW excursion — recorded LAST, after every protective check and any
+      // exit submission, so a shadow-only candle query + DB write can never add
+      // latency to a stop/target/square-off (AT-review 2026-07-20 finding 1).
+      // Candles persist after the exit, so the final excursion is still captured
+      // on the pass that closes the trade.
+      await recordShadowExcursion(trade, date, actions);
     } catch (err) {
       const line = `${trade.symbol} ${trade.optionType}: guard check failed (${(err as Error).message})`;
       actions.push(line);

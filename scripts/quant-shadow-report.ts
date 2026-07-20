@@ -11,6 +11,7 @@
  * On the box:  docker exec projectr npx tsx scripts/quant-shadow-report.ts
  */
 import Database from 'better-sqlite3';
+import { chgOpenBucket } from '../lib/auto-trade/quant/shadow-report';
 
 const args = process.argv.slice(2);
 const argVal = (flag: string): string | null => {
@@ -120,9 +121,15 @@ const summarize = (label: string, subset: Row[]) => {
 };
 
 console.log(`\n— Late-chase buckets (by % from open at entry) —`);
-summarize('|chgOpen| < 1.5%', closed.filter((r) => Math.abs(r.entryChangePctOpen ?? 0) < 1.5));
-summarize('|chgOpen| 1.5–3%', closed.filter((r) => Math.abs(r.entryChangePctOpen ?? 0) >= 1.5 && Math.abs(r.entryChangePctOpen ?? 0) < 3));
-summarize('|chgOpen| ≥ 3% (extended)', closed.filter((r) => Math.abs(r.entryChangePctOpen ?? 0) >= 3));
+// A MISSING metric (null — e.g. the fill spot was too stale to calibrate) is
+// its OWN bucket, never folded into "< 1.5%" (which would fake a calm early
+// entry and bias the safe bucket). chgOpenBucket is the shared, unit-tested
+// classifier (lib/auto-trade/quant/shadow-report).
+summarize('|chgOpen| < 1.5%', closed.filter((r) => chgOpenBucket(r.entryChangePctOpen) === 'small'));
+summarize('|chgOpen| 1.5–3%', closed.filter((r) => chgOpenBucket(r.entryChangePctOpen) === 'mid'));
+summarize('|chgOpen| ≥ 3% (extended)', closed.filter((r) => chgOpenBucket(r.entryChangePctOpen) === 'extended'));
+const chgOpenMissing = closed.filter((r) => chgOpenBucket(r.entryChangePctOpen) === 'missing');
+console.log(`  Missing/invalid entry metrics (excluded from the buckets above): ${chgOpenMissing.length} of ${closed.length}`);
 
 console.log(`\n— Sector-strength buckets (rank at entry) —`);
 summarize('sector rank ≤ 3', closed.filter((r) => r.entrySectorRank != null && r.entrySectorRank <= 3));

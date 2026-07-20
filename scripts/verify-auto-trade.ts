@@ -39,9 +39,7 @@ import { correlationIdForOrder } from '../lib/auto-trade/execution';
 import { chunkForTelegram, isNearDuplicateRead, markdownToTelegramHtml } from '../lib/telegram/commentary';
 import { isAdminOnlyPage, requiredPermission, roleForGoogleEmail } from '../lib/auth/rbac';
 import { computeGex } from '../lib/signals/gex';
-import { computeReanchor, excursionR } from '../lib/auto-trade/quant/reanchor';
-import { rankSectorsByActivity } from '../lib/trade-suggest/sector-rank';
-import type { StoredFyersBar } from '../lib/fyers/candle-store';
+import { runQuantShadowChecks } from './quant-shadow-checks';
 import { todayIST } from '../lib/dhan/market-feed';
 import { hasRequiredEqBar } from '../lib/fyers/poller';
 
@@ -299,63 +297,11 @@ async function main(): Promise<void> {
   );
 
   // ── 2c. Quant SHADOW math (measurement only — never gates) ─────────────────
-  // Synthetic completed bars; the last completed candle (bucketTs 900) drives
-  // the rebuilt stop, and bucketTs 1000+ is excluded as "still forming".
-  const bar = (bucketTs: number, high: number, low: number): StoredFyersBar => ({
-    bucketTs,
-    open: (high + low) / 2,
-    high,
-    low,
-    close: (high + low) / 2,
-    volume: 0,
-    oi: 0,
-  });
-  const NOW = 1000;
-  const upBars = [bar(700, 104, 96), bar(800, 106, 97), bar(900, 108, 95), bar(NOW, 90, 80)]; // last completed low 95
-  // Fresh entry == planned entry, target = entry + 2R → forward R:R ≈ 2.
-  const rFresh = computeReanchor({
-    side: 'CE',
-    direction: 'bullish',
-    plannedSlSpot: 90,
-    plannedTargetSpot: 120,
-    freshSpot: 100,
-    bars: upBars,
-    nowBucketTs: NOW,
-  });
-  check('reanchor: bullish fresh entry ≈ 2R', Math.abs((rFresh.forwardRR ?? 0) - 2) < 1e-9, `forwardRR ${rFresh.forwardRR}`);
-  check('reanchor: rebuilt stop uses last COMPLETED candle low, not the forming bar', rFresh.freshSlSpot === 95);
-  // Late entry: price already ran to 108 → reward shrinks, risk grows → RR < 2.
-  const rLate = computeReanchor({ side: 'CE', direction: 'bullish', plannedSlSpot: 90, plannedTargetSpot: 120, freshSpot: 108, bars: upBars, nowBucketTs: NOW });
-  check('reanchor: late bullish entry reduces forward R:R', (rLate.forwardRR ?? 9) < 1, `forwardRR ${rLate.forwardRR}`);
-  // Entry beyond target → no reward left (≤ 0).
-  const rPast = computeReanchor({ side: 'CE', direction: 'bullish', plannedSlSpot: 90, plannedTargetSpot: 120, freshSpot: 121, bars: upBars, nowBucketTs: NOW });
-  check('reanchor: entry beyond target → forward R:R ≤ 0', (rPast.forwardRR ?? 9) <= 0, `forwardRR ${rPast.forwardRR}`);
-  // Entry at/through the stop → undefined forward R:R (null, never negative-noise).
-  const rStop = computeReanchor({ side: 'CE', direction: 'bullish', plannedSlSpot: 90, plannedTargetSpot: 120, freshSpot: 89, bars: upBars, nowBucketTs: NOW });
-  check('reanchor: entry through stop → forward R:R null', rStop.forwardRR === null);
-  // Bearish symmetry: entry == plan, target below → RR ≈ 2.
-  const downBars = [bar(700, 104, 96), bar(800, 103, 94), bar(900, 105, 92), bar(NOW, 120, 110)];
-  const rBear = computeReanchor({ side: 'PE', direction: 'bearish', plannedSlSpot: 110, plannedTargetSpot: 80, freshSpot: 100, bars: downBars, nowBucketTs: NOW });
-  check('reanchor: bearish fresh entry ≈ 2R', Math.abs((rBear.forwardRR ?? 0) - 2) < 1e-9, `forwardRR ${rBear.forwardRR}`);
-
-  // excursionR: candle high/low against an IMMUTABLE risk passed by the caller.
-  const exBull = excursionR('bullish', 100, 2, [bar(1, 105, 99), bar(2, 108, 101)]); // maxHigh 108, minLow 99
-  check('excursion: bullish MFE from high, MAE from low', exBull.mfeR === 4 && exBull.maeR === -0.5, `mfe ${exBull.mfeR} mae ${exBull.maeR}`);
-  // Same bars, a DIFFERENT (immutable) risk → the denominator is the passed risk,
-  // proving a later stop move can't retroactively change a past excursion.
-  const exWide = excursionR('bullish', 100, 4, [bar(1, 105, 99), bar(2, 108, 101)]);
-  check('excursion: denominator is the passed initial risk, not a live stop', exWide.mfeR === 2 && exWide.maeR === -0.25);
-  const exBear = excursionR('bearish', 100, 2, [bar(1, 101, 92), bar(2, 103, 95)]); // favorable = minLow 92
-  check('excursion: bearish MFE from low, MAE from high', exBear.mfeR === 4 && exBear.maeR === -1.5, `mfe ${exBear.mfeR} mae ${exBear.maeR}`);
-  check('excursion: zero risk → null (no divide-by-zero)', excursionR('bullish', 100, 0, [bar(1, 110, 90)]).mfeR === null);
-
-  // sector rank: OI-spurt RATE, not raw count — a big sector with a low rate
-  // must not out-rank a small sector with a high rate.
-  const sr = rankSectorsByActivity([
-    { sector: 'BIG', names: 20, avgChgPct: 0.1, oiSpurts: 3 }, // rate 0.15
-    { sector: 'SMALL', names: 4, avgChgPct: 0.1, oiSpurts: 3 }, // rate 0.75
-  ]);
-  check('sector-rank: ranks by OI-spurt RATE, not raw count', sr.get('SMALL')?.rank === 1 && sr.get('BIG')?.rank === 2);
+  // The full pure suite (re-anchor, excursion, observed-baseline MFE/MAE,
+  // entry-candle exclusion, chgOpen bucketing, sector-rate rank) lives in
+  // scripts/quant-shadow-checks.ts so the SAME assertions also run DB-free in
+  // CI (scripts/verify-quant-shadow.ts). Single source — no drift.
+  runQuantShadowChecks(check);
 
   // ── 3. Settings CRUD ───────────────────────────────────────────────────────
   const defaults = await getAutoTradeSettings();

@@ -100,6 +100,18 @@ export interface ExcursionR {
   maeR: number | null;
 }
 
+/**
+ * Bars STRICTLY AFTER the entry 5-min bucket (AT-review 2026-07-20, finding 3).
+ * The entry candle itself is excluded: with only 5-min OHLC the intra-candle
+ * timing is unknowable, so that candle's high/low may have printed BEFORE the
+ * fill (a stock that spiked pre-entry and pulled back afterward would otherwise
+ * record a fake post-entry MFE). Conservative on purpose — it undercounts the
+ * tail of the entry candle but never fabricates pre-entry excursion. Pure.
+ */
+export function barsAfterEntryBucket<T extends { bucketTs: number }>(bars: T[], entryBucketTs: number): T[] {
+  return bars.filter((b) => b.bucketTs > entryBucketTs);
+}
+
 export function excursionR(
   direction: 'bullish' | 'bearish',
   entrySpot: number,

@@ -98,10 +98,11 @@ export interface AutoTrade {
    *  the position actually opened. */
   entryObservedSpot: number | null; // candle-store spot at fill (NOT a live tick — see age/fresh)
   entrySpotAgeMs: number | null; // age of that candle close at capture
-  entrySpotFresh: boolean | null; // false → the R metrics below are left null
+  entrySpotBucketTs: number | null; // 5-min bucket start of the observed spot (audit trail)
+  entrySpotFresh: boolean | null; // false → the R/chg metrics below are left null (STRICT entry-metric age gate)
   entryChangePctOpen: number | null; // % from the day's open at fill
-  entryProgressR: number | null; // (observedSpot − plannedEntry)/initialRisk, signed
-  entryRemainingRewardR: number | null; // (plannedTarget − observedSpot)/initialRisk, signed
+  entryProgressR: number | null; // PLAN progress: (observedSpot − plannedEntry)/plannedRisk, signed
+  entryRemainingRewardR: number | null; // (plannedTarget − observedSpot)/plannedRisk, signed
   /** Re-anchor-at-placement shadow (doc §7/§14): forward reward:risk to the
    *  stored target at the fresh entry, and the stop/target a rebuild at the fill
    *  moment would produce. Measurement only — never changes the order. */
@@ -111,10 +112,15 @@ export interface AutoTrade {
   /** Pick's sector rank by OI-spurt rate among scanned sectors (proposal-time). */
   entrySectorRank: number | null;
   entrySectorCount: number | null;
-  /** |entrySpot − stop| AT ENTRY — the IMMUTABLE denominator for MFE/MAE R, so a
-   *  later stop tightening can never retroactively inflate a past excursion. */
+  /** PLANNED risk |plannedEntry − plannedStop| — the plan-progress denominator
+   *  (entryProgressR / forwardRR context). Immutable at entry. */
   entryInitialRiskPoints: number | null;
-  /** Max favorable / adverse excursion in R over the hold (candle high/low). */
+  /** POST-ENTRY risk |observedSpot − plannedStop| — the MFE/MAE denominator, so
+   *  excursion is measured from where the position ACTUALLY opened, not the
+   *  scanner plan (AT-review 2026-07-20). Null when the fill spot was stale. */
+  entryObservedRiskPoints: number | null;
+  /** Max favorable / adverse excursion in R over the hold (candle high/low),
+   *  measured from entryObservedSpot against entryObservedRiskPoints. */
   shadowMfeR: number | null;
   shadowMaeR: number | null;
   aiReasonEntry: string;

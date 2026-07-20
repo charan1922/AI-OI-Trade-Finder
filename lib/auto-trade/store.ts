@@ -69,20 +69,22 @@ async function ensureTables(): Promise<void> {
     // The entry* metrics are captured at FILL confirmation (applyEntryFill), not
     // at proposal — so approval-mode trades measure the moment the position
     // actually opened, not when the AI first proposed it (AT-review 2026-07-20).
-    'entryObservedSpot REAL', // spot at fill from the candle store (NOT a live tick — see age/fresh)
+    'entryObservedSpot REAL', // underlying spot at fill from the candle store (NOT a live tick — see age/fresh)
     'entrySpotAgeMs INTEGER', // how old that candle close was at capture (staleness)
-    'entrySpotFresh INTEGER', // 1 if the candle passed the freshness check; R metrics are null when 0
+    'entrySpotBucketTs INTEGER', // 5-min bucket start of the observed spot (audit: confirm it's the current bucket)
+    'entrySpotFresh INTEGER', // 1 if the observed spot passed the STRICT entry-metric age gate; R/chg metrics are null when 0
     'entryChangePctOpen REAL', // % from the day's open at fill (late-chase signal)
-    'entryProgressR REAL', // (observedSpot − plannedEntry)/initialRisk, signed for direction
-    'entryRemainingRewardR REAL', // (plannedTarget − observedSpot)/initialRisk, signed
+    'entryProgressR REAL', // PLAN progress: (observedSpot − plannedEntry)/plannedRisk, signed (late-entry detection)
+    'entryRemainingRewardR REAL', // (plannedTarget − observedSpot)/plannedRisk, signed
     'entryForwardRR REAL', // (storedTarget − observedSpot)/(observedSpot − storedStop): <1 = late chase
     'entryFreshSlSpot REAL', // stop a rebuild at fill would set (vs stored slSpot → drift)
     'entryFreshTargetSpot REAL', // target a rebuild at fill would set
     'entrySectorRank INTEGER', // pick's sector rank by OI-spurt RATE among scanned sectors (1 = most active); proposal-time
     'entrySectorCount INTEGER', // how many sectors were ranked this scan
-    'entryInitialRiskPoints REAL', // |entrySpot − stop| AT ENTRY — the IMMUTABLE MFE/MAE denominator
-    'shadowMfeR REAL', // max FAVORABLE excursion in R over the hold (candle high/low, immutable risk)
-    'shadowMaeR REAL', // max ADVERSE excursion in R over the hold (candle high/low, immutable risk)
+    'entryInitialRiskPoints REAL', // PLANNED risk |plannedEntry − plannedStop| — the plan-progress denominator
+    'entryObservedRiskPoints REAL', // POST-ENTRY risk |observedSpot − plannedStop| — the MFE/MAE denominator (measures from where the position actually opened)
+    'shadowMfeR REAL', // max FAVORABLE excursion in R from the OBSERVED fill (candle high/low, observed risk)
+    'shadowMaeR REAL', // max ADVERSE excursion in R from the OBSERVED fill (candle high/low, observed risk)
   ]) {
     if (!existingTradeColumns.has(col.split(' ')[0]))
       await prisma.$executeRawUnsafe(`ALTER TABLE auto_trades ADD COLUMN ${col}`);
@@ -274,6 +276,7 @@ export async function updateTrade(
 const ENTRY_QUANT_COLUMNS = new Set([
   'entryObservedSpot',
   'entrySpotAgeMs',
+  'entrySpotBucketTs',
   'entrySpotFresh',
   'entryChangePctOpen',
   'entryProgressR',
@@ -284,6 +287,7 @@ const ENTRY_QUANT_COLUMNS = new Set([
   'entrySectorRank',
   'entrySectorCount',
   'entryInitialRiskPoints',
+  'entryObservedRiskPoints',
 ]);
 
 export async function recordEntryQuant(
@@ -293,6 +297,7 @@ export async function recordEntryQuant(
       AutoTrade,
       | 'entryObservedSpot'
       | 'entrySpotAgeMs'
+      | 'entrySpotBucketTs'
       | 'entrySpotFresh'
       | 'entryChangePctOpen'
       | 'entryProgressR'
@@ -303,6 +308,7 @@ export async function recordEntryQuant(
       | 'entrySectorRank'
       | 'entrySectorCount'
       | 'entryInitialRiskPoints'
+      | 'entryObservedRiskPoints'
     >
   >
 ): Promise<void> {
@@ -384,6 +390,7 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     shadowPnlRupees: r.shadowPnlRupees == null ? null : Number(r.shadowPnlRupees),
     entryObservedSpot: r.entryObservedSpot == null ? null : Number(r.entryObservedSpot),
     entrySpotAgeMs: r.entrySpotAgeMs == null ? null : Number(r.entrySpotAgeMs),
+    entrySpotBucketTs: r.entrySpotBucketTs == null ? null : Number(r.entrySpotBucketTs),
     entrySpotFresh: r.entrySpotFresh == null ? null : Number(r.entrySpotFresh) === 1,
     entryChangePctOpen: r.entryChangePctOpen == null ? null : Number(r.entryChangePctOpen),
     entryProgressR: r.entryProgressR == null ? null : Number(r.entryProgressR),
@@ -394,6 +401,7 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     entrySectorRank: r.entrySectorRank == null ? null : Number(r.entrySectorRank),
     entrySectorCount: r.entrySectorCount == null ? null : Number(r.entrySectorCount),
     entryInitialRiskPoints: r.entryInitialRiskPoints == null ? null : Number(r.entryInitialRiskPoints),
+    entryObservedRiskPoints: r.entryObservedRiskPoints == null ? null : Number(r.entryObservedRiskPoints),
     shadowMfeR: r.shadowMfeR == null ? null : Number(r.shadowMfeR),
     shadowMaeR: r.shadowMaeR == null ? null : Number(r.shadowMaeR),
   };

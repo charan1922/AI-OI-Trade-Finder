@@ -10,7 +10,13 @@
  */
 
 import { alerts, sendCriticalAlert } from './alerts';
-import { FILL_POLL_ATTEMPTS, FILL_POLL_DELAY_MS, MAX_LOSS_PER_LOT_FALLBACK, TARGET_PER_LOT_FALLBACK } from './config';
+import {
+  ENTRY_METRIC_MAX_AGE_MS,
+  FILL_POLL_ATTEMPTS,
+  FILL_POLL_DELAY_MS,
+  MAX_LOSS_PER_LOT_FALLBACK,
+  TARGET_PER_LOT_FALLBACK,
+} from './config';
 import { getAdapterById, getExecutionAdapter } from './brokers';
 import type { BrokerAdapter, OrderTicket } from './brokers/adapter';
 import { ticketQtyUnits } from './brokers/adapter';
@@ -119,10 +125,19 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
  * after the AI proposed — and sits OFF the pre-submission critical path. Fully
  * best-effort: any failure is swallowed so it can never disturb fill booking.
  *
- * Uses the freshest recorded 5-min candle close WITH its age/freshness (the
- * source is the candle store, NOT a live tick — recorded honestly), and leaves
- * the R metrics null when that read is stale rather than recording bad evidence.
- * The initial risk is |entry − stop| AT ENTRY, the IMMUTABLE MFE/MAE denominator.
+ * Two distinct R systems are persisted (never conflated):
+ *  - PLAN progress (entryProgressR / entryForwardRR) — measured from the
+ *    scanner's planned entry against the PLANNED risk. Answers "how late is this
+ *    entry vs the plan?" (anti-chase). Denominator: entryInitialRiskPoints.
+ *  - POST-ENTRY excursion baseline (entryObservedSpot + entryObservedRiskPoints)
+ *    — the underlying spot WHEN the fill confirmed and |observed − stop|. The
+ *    guard measures MFE/MAE from HERE, so a pre-entry run-up can't be booked as
+ *    a post-entry gain (breakeven/trailing research needs the true entry).
+ *
+ * The spot source is the recorded 5-min candle close WITH its age (candle store,
+ * NOT a live tick). All R/chg metrics require a spot inside the STRICT
+ * ENTRY_METRIC_MAX_AGE_MS window (tighter than the guard's 15-min stop
+ * freshness) — a staler read is recorded as null, never fabricated evidence.
  */
 async function captureEntryShadow(trade: AutoTrade): Promise<void> {
   try {
@@ -132,33 +147,40 @@ async function captureEntryShadow(trade: AutoTrade): Promise<void> {
     ]);
     const round2 = (n: number) => Math.round(n * 100) / 100;
     const { entrySpot, slSpot, targetSpot } = trade;
-    const initialRisk = slSpot != null ? Math.abs(entrySpot - slSpot) : null;
+    const plannedRisk = slSpot != null ? Math.abs(entrySpot - slSpot) : null; // plan-progress denominator
     const dirSign = trade.direction === 'bullish' ? 1 : -1;
     const observed = spotRead?.price ?? null;
-    const fresh = spotRead?.fresh ?? false;
+    const ageMs = spotRead?.ageMs ?? null;
     const dayOpen = bars.find((b) => b.open > 0)?.open ?? null;
-    const haveRisk = initialRisk != null && initialRisk > 0;
+    const havePlanRisk = plannedRisk != null && plannedRisk > 0;
 
-    // R / change metrics are recorded ONLY off a fresh spot — a stale candle
-    // close must never masquerade as entry evidence.
-    const progressR = fresh && observed != null && haveRisk ? round2((dirSign * (observed - entrySpot)) / initialRisk!) : null;
+    // STRICT entry-metric freshness (finding 4): a 10–14-min-old candle passes
+    // the guard's 15-min stop-freshness check but is too stale to calibrate a
+    // fill. Gate every R/chg metric on this tighter window instead.
+    const metricFresh = observed != null && ageMs != null && ageMs <= ENTRY_METRIC_MAX_AGE_MS;
+
+    // POST-ENTRY risk from the OBSERVED fill (finding 2) — the MFE/MAE
+    // denominator; null when the fill spot was stale (no honest baseline).
+    const observedRisk = metricFresh && slSpot != null ? Math.abs(observed! - slSpot) : null;
+
+    // PLAN progress (from planned entry / planned risk) — the late-chase signal.
+    const progressR = metricFresh && havePlanRisk ? round2((dirSign * (observed! - entrySpot)) / plannedRisk!) : null;
     const remainingRewardR =
-      fresh && observed != null && targetSpot != null && haveRisk
-        ? round2((dirSign * (targetSpot - observed)) / initialRisk!)
+      metricFresh && targetSpot != null && havePlanRisk
+        ? round2((dirSign * (targetSpot - observed!)) / plannedRisk!)
         : null;
-    const changePctOpen =
-      fresh && observed != null && dayOpen != null && dayOpen > 0 ? round2(((observed - dayOpen) / dayOpen) * 100) : null;
+    const changePctOpen = metricFresh && dayOpen != null && dayOpen > 0 ? round2(((observed! - dayOpen) / dayOpen) * 100) : null;
 
     let forwardRR: number | null = null;
     let freshSlSpot: number | null = null;
     let freshTargetSpot: number | null = null;
-    if (fresh && observed != null && bars.length > 0) {
+    if (metricFresh && bars.length > 0) {
       const reanchor = computeReanchor({
         side: trade.optionType,
         direction: trade.direction,
         plannedSlSpot: slSpot,
         plannedTargetSpot: targetSpot,
-        freshSpot: observed,
+        freshSpot: observed!,
         bars,
         nowBucketTs: fyersBucketFor(Date.now()),
       });
@@ -169,18 +191,20 @@ async function captureEntryShadow(trade: AutoTrade): Promise<void> {
 
     await recordEntryQuant(trade.id, {
       entryObservedSpot: observed,
-      entrySpotAgeMs: spotRead?.ageMs ?? null,
-      entrySpotFresh: fresh,
+      entrySpotAgeMs: ageMs,
+      entrySpotBucketTs: spotRead?.bucketTs ?? null,
+      entrySpotFresh: metricFresh,
       entryChangePctOpen: changePctOpen,
       entryProgressR: progressR,
       entryRemainingRewardR: remainingRewardR,
       entryForwardRR: forwardRR,
       entryFreshSlSpot: freshSlSpot,
       entryFreshTargetSpot: freshTargetSpot,
-      entryInitialRiskPoints: initialRisk,
+      entryInitialRiskPoints: plannedRisk,
+      entryObservedRiskPoints: observedRisk,
     });
     console.log(
-      `${TAG} [shadow] ${trade.symbol} fill: chgOpen ${changePctOpen ?? '—'}% · progressR ${progressR ?? '—'} · fwdRR ${forwardRR ?? '—'} · spotFresh ${fresh}`
+      `${TAG} [shadow] ${trade.symbol} fill: chgOpen ${changePctOpen ?? '—'}% · progressR ${progressR ?? '—'} · fwdRR ${forwardRR ?? '—'} · obsRisk ${observedRisk ?? '—'} · metricFresh ${metricFresh} (age ${ageMs ?? '—'}ms)`
     );
   } catch (err) {
     console.warn(`${TAG} [shadow] entry capture failed for ${trade.symbol}: ${(err as Error).message}`);
