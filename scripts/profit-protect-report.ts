@@ -55,7 +55,10 @@ const rows = db
 // Same PURE aggregation the app uses (aggregateProtection) — single source of math.
 const aggRows: ProtectAggRow[] = rows
   .filter((r) => r.spotOutcome != null && RESOLVED.has(r.spotOutcome) && r.spotOutcomeR != null)
-  .map((r) => ({ baseR: Number(r.spotOutcomeR as number), blob: parseProtectBlob(r.protectShadow) }));
+  .map((r) => {
+    const { version, rules } = parseProtectBlob(r.protectShadow);
+    return { baseR: Number(r.spotOutcomeR as number), version, rules };
+  });
 const agg = aggregateProtection(aggRows);
 
 if (agg.n === 0) {
@@ -66,7 +69,14 @@ if (agg.n === 0) {
 
 console.log(`\n=== Profit-protection SHADOW report — ${agg.n} resolved pick(s) since ${since} (db: ${dbPath}) ===`);
 console.log('Each rule is a TIGHTEN-ONLY stop move; measurement only. R is THEORETICAL (level-fill), matched to');
-console.log(`the baseline grader — gap slippage ignored on both sides. Baseline mean R: ${f(agg.baselineAvgR)}\n`);
+console.log(`the baseline grader — gap slippage ignored on both sides. Model _v${agg.version}. Baseline mean R: ${f(agg.baselineAvgR)}`);
+if (agg.excludedLegacy > 0 || agg.excludedOtherVersion > 0) {
+  console.log(
+    `Excluded to avoid mixing versions: ${agg.excludedLegacy} unversioned (pre-_v) + ${agg.excludedOtherVersion} other-version row(s). ` +
+      'Regrade a retained session to refresh those to the current version.',
+  );
+}
+console.log('');
 
 console.log(['rule', 'n', 'avgR', 'baseR', 'ΔR', 'savedStops', 'hurt'].map((h) => h.padEnd(18)).join(''));
 for (const r of agg.rules) {

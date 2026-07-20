@@ -44,11 +44,33 @@ interface DayGroup {
   reviewed: number;
   hits: number;
 }
+/** One candidate stop rule's shadow result — mirrors ProtectRuleStat
+ *  (lib/trade-suggest/profit-protect.ts). */
+interface ProtectRuleStat {
+  name: string;
+  n: number;
+  avgR: number | null;
+  baselineAvgR: number | null;
+  deltaR: number | null;
+  savedStops: number;
+  hurt: number;
+}
+/** Profit-protection SHADOW calibration — mirrors ProtectionStats (store.ts). */
+interface ProtectionStats {
+  days: number;
+  version: number;
+  n: number;
+  baselineAvgR: number | null;
+  excludedLegacy: number;
+  excludedOtherVersion: number;
+  rules: ProtectRuleStat[];
+}
 interface HistoryResp {
   success: boolean;
   days: number;
   days_returned: number;
   board: DayGroup[];
+  protection?: ProtectionStats;
   error?: string;
 }
 
@@ -357,6 +379,94 @@ function DaySection({ day }: { day: DayGroup }) {
   );
 }
 
+/** Signed R (e.g. +1.30R / −0.47R / —). */
+const fmtR = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}R`);
+
+/**
+ * Profit-protection SHADOW panel — read-only MEASUREMENT. Simulates what the
+ * SAME graded picks would have realised if the stop were moved up once in profit
+ * (breakeven / trailing), vs the fixed plan, over the retained window. It never
+ * changes a live exit; it is decision evidence only, and only rows graded by the
+ * current simulator version (`_v`) are counted so numbers can't mix across
+ * versions. Deliberately loud about the tiny sample.
+ */
+function ProtectionPanel({ p }: { p: ProtectionStats }) {
+  const excluded = p.excludedLegacy + p.excludedOtherVersion;
+  return (
+    <div className="rounded-lg border border-border bg-card">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-3 py-2">
+        <span className="text-[12px] font-semibold">Profit-protection (shadow)</span>
+        <span className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-semibold text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
+          measurement only · never changes a live exit
+        </span>
+        <span className="ml-auto text-[10px] text-muted-foreground">
+          {p.n} resolved pick{p.n === 1 ? '' : 's'} · baseline {fmtR(p.baselineAvgR)} · model v{p.version}
+        </span>
+      </div>
+
+      {p.n === 0 ? (
+        <div className="border-t border-border/60 px-3 py-4 text-[10.5px] text-muted-foreground">
+          No resolved picks with a shadow result in this window yet. These fill in after picks are graded (EOD, or a
+          regrade of a retained session).
+          {excluded > 0 && (
+            <>
+              {' '}
+              {excluded} row{excluded === 1 ? ' was' : 's were'} excluded to avoid mixing simulator versions.
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="overflow-x-auto border-t border-border/60">
+          <table className="w-full text-[10.5px]">
+            <thead className="text-left text-muted-foreground">
+              <tr className="border-b border-border/50">
+                <th className="px-2 py-1.5 font-medium">Stop rule (tighten-only)</th>
+                <th className="px-2 py-1.5 text-right font-medium">Picks</th>
+                <th className="px-2 py-1.5 text-right font-medium">Avg R</th>
+                <th className="px-2 py-1.5 text-right font-medium">vs plan</th>
+                <th className="px-2 py-1.5 text-right font-medium" title="Losing plans this rule rescued to ≥ 0R">
+                  Saved
+                </th>
+                <th className="px-2 py-1.5 text-right font-medium" title="Picks this rule made worse than the plan (scratched a wick that would have run)">
+                  Hurt
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {p.rules.map((r) => (
+                <tr key={r.name} className="border-b border-border/30">
+                  <td className="px-2 py-1 font-mono">{r.name}</td>
+                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">{r.n}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtR(r.avgR)}</td>
+                  <td className={`px-2 py-1 text-right font-semibold tabular-nums ${pctCls(r.deltaR)}`}>{fmtR(r.deltaR)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{r.savedStops || '—'}</td>
+                  <td className="px-2 py-1 text-right tabular-nums text-red-600 dark:text-red-400">{r.hurt || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="border-t border-border/60 px-3 py-1.5 text-[9.5px] leading-relaxed text-muted-foreground">
+        <b>vs plan</b> = mean R under the rule minus the fixed plan&apos;s R over the SAME picks (paired). Positive = the
+        rule would have improved expectancy. R is theoretical (fills at the stop level, like the baseline grade — real
+        gaps ignored on both sides). This is a small, directional sample — it is <b>not</b> a live setting and no stop is
+        moved automatically.
+        {excluded > 0 && (
+          <>
+            {' '}
+            {p.excludedLegacy > 0 && `${p.excludedLegacy} unversioned`}
+            {p.excludedLegacy > 0 && p.excludedOtherVersion > 0 && ' + '}
+            {p.excludedOtherVersion > 0 && `${p.excludedOtherVersion} other-version`} row{excluded === 1 ? '' : 's'}{' '}
+            excluded so simulator versions are never averaged together.
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 export default function TradeLogPage() {
   const [days, setDays] = useState<number>(30);
   const [data, setData] = useState<HistoryResp | null>(null);
@@ -452,6 +562,7 @@ export default function TradeLogPage() {
             {totalTrades} {totalTrades === 1 ? 'trade' : 'trades'} across {data.board.length}{' '}
             {data.board.length === 1 ? 'day' : 'days'} (last {data.days}d)
           </div>
+          {data.protection && <ProtectionPanel p={data.protection} />}
           {data.board.length === 0 ? (
             <div className="rounded-lg border border-border bg-card px-3 py-6 text-center text-[11px] text-muted-foreground">
               No suggestions persisted in this window yet. Run <code className="rounded bg-muted px-1">/trade-suggest</code>{' '}

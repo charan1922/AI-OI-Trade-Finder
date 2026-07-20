@@ -6,7 +6,7 @@
  * / missing-rule) + the blob parser. Run by the DB-free CI runner AND the box bench.
  */
 import { gradeSpotPath } from '../lib/trade-suggest/grade';
-import { aggregateProtection, parseProtectBlob, type ProtectRule, PROTECT_PRESETS, simulateAllPresets, simulateProtected } from '../lib/trade-suggest/profit-protect';
+import { aggregateProtection, parseProtectBlob, type ProtectRule, PROTECT_MODEL_VERSION, PROTECT_PRESETS, simulateAllPresets, simulateProtected } from '../lib/trade-suggest/profit-protect';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
@@ -136,11 +136,13 @@ export function runProfitProtectChecks(check: CheckFn): void {
   agree('timeout', 'CE', 100, 90, 120, [bar(600, 105, 96), bar(900, 106, 97), bar(1200, 104, 101)], MID, 1200);
 
   // ── Pure aggregation (PR#5 #4): savedStops / hurt / paired denominators / a
-  //    row missing one rule only shrinks THAT rule's n. ─────────────────────────
+  //    row missing one rule only shrinks THAT rule's n. All at the CURRENT
+  //    version, so all are counted. ─────────────────────────────────────────────
+  const V = PROTECT_MODEL_VERSION;
   const rows = [
-    { baseR: -1, blob: { 'breakeven@1R': 0, 'breakeven@1.5R': -1, 'trail@1R-lock0.5': 0.8 } },
-    { baseR: 2, blob: { 'breakeven@1R': 0, 'breakeven@1.5R': 2, 'trail@1R-lock0.5': 2 } },
-    { baseR: -0.5, blob: { 'breakeven@1.5R': -0.5 } }, // BE@1R & trail were entry-ambiguous here
+    { baseR: -1, version: V, rules: { 'breakeven@1R': 0, 'breakeven@1.5R': -1, 'trail@1R-lock0.5': 0.8 } },
+    { baseR: 2, version: V, rules: { 'breakeven@1R': 0, 'breakeven@1.5R': 2, 'trail@1R-lock0.5': 2 } },
+    { baseR: -0.5, version: V, rules: { 'breakeven@1.5R': -0.5 } }, // BE@1R & trail were entry-ambiguous here
   ];
   const agg = aggregateProtection(rows);
   const be1 = agg.rules.find((r) => r.name === 'breakeven@1R')!;
@@ -151,9 +153,46 @@ export function runProfitProtectChecks(check: CheckFn): void {
   check('agg BE@1.5R: missing-rule handling → n=3 (only rule present on row 3)', be15.n === 3 && be15.savedStops === 0 && be15.hurt === 0, JSON.stringify(be15));
   check('agg trail: paired n=2, ΔR=+0.9, savedStops=1', trail.n === 2 && trail.deltaR === 0.9 && trail.savedStops === 1, JSON.stringify(trail));
 
-  // ── Blob parser: drops non-numbers, never throws on garbage. ────────────────
-  check('parseProtectBlob: drops non-numeric values', JSON.stringify(parseProtectBlob('{"a":1,"b":"x","c":2}')) === '{"a":1,"c":2}');
-  check('parseProtectBlob: strips _-prefixed metadata (e.g. _v version stamp)', JSON.stringify(parseProtectBlob('{"_v":2,"breakeven@1R":0}')) === '{"breakeven@1R":0}');
-  check('parseProtectBlob: malformed JSON → {}', JSON.stringify(parseProtectBlob('{not json')) === '{}');
-  check('parseProtectBlob: null → {}', JSON.stringify(parseProtectBlob(null)) === '{}');
+  // ── Version enforcement (PR#6 review): the aggregator MUST NOT mix simulator
+  //    versions. Only rows whose `_v` equals the current model version are
+  //    averaged; unversioned (pre-_v / PR#5) and other-version rows are excluded
+  //    and merely counted, so a shrunk denominator is visible not silent. ───────
+  const mixed = [
+    { baseR: -1, version: V, rules: { 'breakeven@1R': 0 } }, // current → counted
+    { baseR: 2, version: null, rules: { 'breakeven@1R': 0 } }, // unversioned → excludedLegacy
+    { baseR: 2, version: 1, rules: { 'breakeven@1R': 2 } }, // old version → excludedOtherVersion
+    { baseR: 2, version: V + 1, rules: { 'breakeven@1R': 2 } }, // future version → excludedOtherVersion
+  ];
+  const magg = aggregateProtection(mixed);
+  const mbe1 = magg.rules.find((r) => r.name === 'breakeven@1R')!;
+  check(
+    'agg version: only current-version row averaged (n=1), others excluded & counted',
+    magg.n === 1 && magg.version === V && magg.excludedLegacy === 1 && magg.excludedOtherVersion === 2,
+    JSON.stringify({ n: magg.n, v: magg.version, legacy: magg.excludedLegacy, other: magg.excludedOtherVersion }),
+  );
+  check(
+    'agg version: the rule stat reflects ONLY the current-version row (baseR −1, saved 1) — never mixed',
+    mbe1.n === 1 && mbe1.baselineAvgR === -1 && mbe1.avgR === 0 && mbe1.savedStops === 1,
+    JSON.stringify(mbe1),
+  );
+  // An explicit target version arg excludes even "current" rows written by a
+  // different build — the guard is about the version, not "now".
+  const asV1 = aggregateProtection(mixed, PROTECT_PRESETS, 1);
+  check('agg version: explicit version=1 selects only the _v:1 row', asV1.n === 1 && asV1.version === 1 && asV1.rules.find((r) => r.name === 'breakeven@1R')!.avgR === 2, `n=${asV1.n}`);
+
+  // ── Blob parser: returns { version, rules }; drops non-numbers + `_`-metadata,
+  //    reads `_v` SEPARATELY, never throws on garbage. ─────────────────────────
+  const pA = parseProtectBlob('{"a":1,"b":"x","c":2}');
+  check('parseProtectBlob: drops non-numeric values, version null when no _v', pA.version === null && JSON.stringify(pA.rules) === '{"a":1,"c":2}', JSON.stringify(pA));
+  const pB = parseProtectBlob('{"_v":2,"breakeven@1R":0}');
+  check('parseProtectBlob: reads _v version stamp, strips it from rules', pB.version === 2 && JSON.stringify(pB.rules) === '{"breakeven@1R":0}', JSON.stringify(pB));
+  const pC = parseProtectBlob('{not json');
+  check('parseProtectBlob: malformed JSON → {version:null, rules:{}}', pC.version === null && JSON.stringify(pC.rules) === '{}');
+  const pD = parseProtectBlob(null);
+  check('parseProtectBlob: null → {version:null, rules:{}}', pD.version === null && JSON.stringify(pD.rules) === '{}');
+
+  // Round-trip: what simulateAllPresets WRITES carries the current _v and parses
+  // back to that version — so freshly-written rows are never excluded as legacy.
+  const written = parseProtectBlob(JSON.stringify(simulateAllPresets('CE', 100, 90, 120, [bar(600, 105, 99), bar(900, 122, 110)], MID)));
+  check('parseProtectBlob: round-trips simulateAllPresets _v stamp', written.version === PROTECT_MODEL_VERSION && written.rules['breakeven@1R'] === 2, JSON.stringify(written));
 }

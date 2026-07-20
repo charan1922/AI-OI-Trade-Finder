@@ -356,7 +356,10 @@ export async function getProtectionStats(days = 30): Promise<ProtectionStats> {
   // must be compared like-for-like against a real baseline R.
   const aggRows: ProtectAggRow[] = rows
     .filter((r) => isResolved(r.spotOutcome) && r.spotOutcomeR != null)
-    .map((r) => ({ baseR: Number(r.spotOutcomeR), blob: parseProtectBlob(r.protectShadow) }));
+    .map((r) => {
+      const { version, rules } = parseProtectBlob(r.protectShadow);
+      return { baseR: Number(r.spotOutcomeR), version, rules };
+    });
   return { days, ...aggregateProtection(aggRows) };
 }
 
@@ -368,7 +371,8 @@ export async function getProtectionStats(days = 30): Promise<ProtectionStats> {
  *  IDEMPOTENT re-grade safe: `outcomeAt` is set only on the FIRST grading via
  *  COALESCE — a later regrade (scripts/regrade-suggestions.ts, applying a grader
  *  fix to retained history) refreshes the grade + shadow but PRESERVES the
- *  original grading time, which the history UI shows as "Exit" (PR#5 review #5).
+ *  original grading time, shown next to the "Outcome" column in the history UI
+ *  (labelled the EOD grade time, not the exact hit time — PR#5/#6 review).
  *  The grade/shadow columns always overwrite, so fixes do take effect. */
 export async function recordOutcome(
   date: string,

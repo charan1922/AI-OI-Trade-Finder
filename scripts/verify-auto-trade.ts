@@ -330,12 +330,12 @@ async function main(): Promise<void> {
     check('store: first grade persists stop + blob + outcomeAt', afterFirst?.spotOutcome === 'stop' && afterFirst?.spotOutcomeR === -1 && afterFirst?.protectShadow === '{"breakeven@1R":0}' && afterFirst?.outcomeAt != null, JSON.stringify(afterFirst?.outcomeAt));
     const pinnedOutcomeAt = afterFirst?.outcomeAt;
     // Regrade LATER (T2) with a corrected grade: grade + shadow overwrite, but
-    // outcomeAt (the UI "Exit" time) is PRESERVED via COALESCE.
+    // outcomeAt (the UI "Outcome" grade time) is PRESERVED via COALESCE.
     const t2 = Date.parse('2099-02-03T09:00:00Z');
     await recordOutcome(sd, sym, 'CE', { maxUpPct: 2, maxDownPct: -0.2, closePct: 2, spotOutcome: 'target', spotOutcomeR: 2, protectShadow: '{"breakeven@1R":2}' }, t2);
     const afterRegrade = (await getSuggestions(sd)).find((s) => s.symbol === sym);
     check('store: regrade overwrites grade + shadow', afterRegrade?.spotOutcome === 'target' && afterRegrade?.spotOutcomeR === 2 && afterRegrade?.protectShadow === '{"breakeven@1R":2}', `${afterRegrade?.spotOutcome} ${afterRegrade?.spotOutcomeR}`);
-    check('store: regrade PRESERVES original outcomeAt (UI Exit time)', afterRegrade?.outcomeAt === pinnedOutcomeAt, `${pinnedOutcomeAt} → ${afterRegrade?.outcomeAt}`);
+    check('store: regrade PRESERVES original outcomeAt (UI Outcome grade time)', afterRegrade?.outcomeAt === pinnedOutcomeAt, `${pinnedOutcomeAt} → ${afterRegrade?.outcomeAt}`);
     await prisma.$executeRawUnsafe(`DELETE FROM trade_suggestions WHERE date = ?`, sd);
   }
 

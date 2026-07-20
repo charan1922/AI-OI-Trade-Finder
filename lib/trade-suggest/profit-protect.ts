@@ -208,28 +208,45 @@ export function simulateAllPresets(
   return out;
 }
 
-/** Parse a persisted protectShadow JSON blob → { ruleName: R }. Never throws;
- *  drops any non-numeric entry AND any `_`-prefixed metadata key (e.g. the `_v`
- *  model-version stamp), so metadata is never mistaken for a rule. Shared by
- *  store.ts and the report so the parse is defined once and unit-testable. */
-export function parseProtectBlob(v: unknown): Record<string, number> {
+/** A persisted protectShadow blob, parsed into its model version + rule Rs. */
+export interface ParsedProtectBlob {
+  /** The `_v` model-version stamp that WROTE this blob, or null for a
+   *  pre-versioning (PR#5) blob that carried no `_v`. The aggregator uses this
+   *  to REFUSE to average rows written by different simulator versions. */
+  version: number | null;
+  /** { ruleName: theoretical R } — `_`-prefixed metadata (incl. `_v`) and
+   *  non-finite values dropped, so metadata is never mistaken for a rule. */
+  rules: Record<string, number>;
+}
+
+/** Parse a persisted protectShadow JSON blob → { version, rules }. Never throws.
+ *  Reads the `_v` stamp SEPARATELY (so the version isn't lost when metadata is
+ *  stripped) and drops any non-numeric entry AND any `_`-prefixed key from the
+ *  rules. Shared by store.ts and the report so the parse is defined once and
+ *  unit-testable. */
+export function parseProtectBlob(v: unknown): ParsedProtectBlob {
   try {
     const parsed = JSON.parse(String(v ?? '{}'));
-    if (!parsed || typeof parsed !== 'object') return {};
-    const out: Record<string, number> = {};
+    if (!parsed || typeof parsed !== 'object') return { version: null, rules: {} };
+    const rules: Record<string, number> = {};
     for (const [k, val] of Object.entries(parsed)) {
-      if (!k.startsWith('_') && typeof val === 'number' && Number.isFinite(val)) out[k] = val;
+      if (!k.startsWith('_') && typeof val === 'number' && Number.isFinite(val)) rules[k] = val;
     }
-    return out;
+    const rawV = (parsed as Record<string, unknown>)._v;
+    const version = typeof rawV === 'number' && Number.isFinite(rawV) ? rawV : null;
+    return { version, rules };
   } catch {
-    return {};
+    return { version: null, rules: {} };
   }
 }
 
-/** One resolved pick's inputs to the aggregation: its baseline R + parsed blob. */
+/** One resolved pick's inputs to the aggregation: its baseline R + parsed blob
+ *  (version + rule Rs). The version rides along so the aggregator can exclude
+ *  rows written by a different simulator version. */
 export interface ProtectAggRow {
   baseR: number;
-  blob: Record<string, number>;
+  version: number | null;
+  rules: Record<string, number>;
 }
 
 export interface ProtectRuleStat {
@@ -250,10 +267,18 @@ export interface ProtectRuleStat {
 }
 
 export interface ProtectAggregate {
-  /** Resolved rows carrying any protection blob (the overall denominator). */
+  /** The model version these stats are FOR. Only rows whose blob carried this
+   *  `_v` are averaged; every other row is excluded (never silently mixed). */
+  version: number;
+  /** Current-version resolved rows carrying a protection blob (the denominator). */
   n: number;
   /** Mean baseline R over those rows — the bar every rule must beat. */
   baselineAvgR: number | null;
+  /** Rows dropped to avoid mixing versions: `legacy` = a pre-`_v` (PR#5) blob;
+   *  `otherVersion` = a DIFFERENT `_v` than `version`. Surfaced so a shrinking
+   *  denominator is visible, not silent. */
+  excludedLegacy: number;
+  excludedOtherVersion: number;
   rules: ProtectRuleStat[];
 }
 
@@ -265,25 +290,48 @@ const mean = (v: number[]): number | null =>
  * resolved rows' baseline R + parsed blobs, compare each rule against the
  * baseline over the SAME paired rows. No DB — store.getProtectionStats() just
  * loads the rows and calls this, so the savedStops/hurt/ΔR math is unit-testable.
+ *
+ * VERSION-ENFORCED (PR#6 review): only rows whose blob carried `_v === version`
+ * are averaged. A simulator-math change bumps PROTECT_MODEL_VERSION, so numbers
+ * from an OLD version (e.g. a session that aged out of candle retention and can
+ * never be regraded) can no longer silently pollute the current stats — they are
+ * counted under excludedLegacy / excludedOtherVersion instead. These numbers may
+ * one day inform a real-money exit rule, so mixing versions is disallowed.
  */
-export function aggregateProtection(rows: ProtectAggRow[], rules: ProtectRule[] = PROTECT_PRESETS): ProtectAggregate {
-  // A row counts toward the overall n only if it has a finite baseline R AND at
-  // least one rule counterfactual (blobs are already `_v`-stripped by parse).
-  const usable = rows.filter((r) => Number.isFinite(r.baseR) && Object.keys(r.blob).length > 0);
+export function aggregateProtection(
+  rows: ProtectAggRow[],
+  rules: ProtectRule[] = PROTECT_PRESETS,
+  version: number = PROTECT_MODEL_VERSION,
+): ProtectAggregate {
+  // A row can contribute only if it has a finite baseline R AND at least one rule
+  // counterfactual (rules are already `_v`-stripped by parse).
+  const hasData = rows.filter((r) => Number.isFinite(r.baseR) && Object.keys(r.rules).length > 0);
+  // Of those, only the CURRENT model version is averaged; the rest are excluded
+  // (never mixed) and merely COUNTED, so a shrunk denominator is visible.
+  const usable = hasData.filter((r) => r.version === version);
+  const excludedLegacy = hasData.filter((r) => r.version == null).length;
+  const excludedOtherVersion = hasData.filter((r) => r.version != null && r.version !== version).length;
   const ruleStats = rules.map<ProtectRuleStat>((rule) => {
-    const paired = usable.filter((r) => Number.isFinite(r.blob[rule.name]));
+    const paired = usable.filter((r) => Number.isFinite(r.rules[rule.name]));
     return {
       name: rule.name,
       n: paired.length,
-      avgR: mean(paired.map((r) => r.blob[rule.name])),
+      avgR: mean(paired.map((r) => r.rules[rule.name])),
       baselineAvgR: mean(paired.map((r) => r.baseR)),
       // ΔR from the PAIRED per-row differences, rounded ONCE — not the difference
       // of two already-rounded means (double-rounding could shift a ±0.1R signal;
       // PR#6 review). Mathematically the mean of (rule − base) over the same rows.
-      deltaR: mean(paired.map((r) => r.blob[rule.name] - r.baseR)),
-      savedStops: paired.filter((r) => r.baseR <= -1 && r.blob[rule.name] >= 0).length,
-      hurt: paired.filter((r) => r.blob[rule.name] < r.baseR).length,
+      deltaR: mean(paired.map((r) => r.rules[rule.name] - r.baseR)),
+      savedStops: paired.filter((r) => r.baseR <= -1 && r.rules[rule.name] >= 0).length,
+      hurt: paired.filter((r) => r.rules[rule.name] < r.baseR).length,
     };
   });
-  return { n: usable.length, baselineAvgR: mean(usable.map((r) => r.baseR)), rules: ruleStats };
+  return {
+    version,
+    n: usable.length,
+    baselineAvgR: mean(usable.map((r) => r.baseR)),
+    excludedLegacy,
+    excludedOtherVersion,
+    rules: ruleStats,
+  };
 }

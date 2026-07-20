@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
 import { computeEodLeaderboard } from '@/lib/trade-suggest/eod-leaderboard';
 import { reviewToday } from '@/lib/trade-suggest/review';
-import { getStats, getSuggestionHistory } from '@/lib/trade-suggest/store';
+import { getProtectionStats, getStats, getSuggestionHistory } from '@/lib/trade-suggest/store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,7 +37,10 @@ export async function GET(req: Request) {
       const daysParam = Number(url.searchParams.get('days'));
       const days = Number.isFinite(daysParam) && daysParam > 0 ? Math.min(daysParam, 365) : 30;
       const board = await getSuggestionHistory(days);
-      return NextResponse.json({ success: true, days, days_returned: board.length, board });
+      // Profit-protection SHADOW calibration over the SAME window (measurement
+      // only — never changes a live exit). Surfaced read-only on the Trade Log.
+      const protection = await getProtectionStats(days);
+      return NextResponse.json({ success: true, days, days_returned: board.length, board, protection });
     }
     const force = url.searchParams.get('force') === '1';
     const result = await runTradeSuggest(url.origin, { force });
