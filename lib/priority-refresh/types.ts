@@ -40,8 +40,14 @@ export interface RankedFeedPick {
   sector: string;
   source: PriorityFeed;
   eligibleRank: number;
-  /** Feed % move (price for movers; used as the direction signal). Null if unknown. */
-  retPct: number | null;
+  /** This feed's own headline %: OI change for `nse-oi`, PRICE move for the
+   *  gainers/losers/active feeds. Telemetry — NOT a direction signal by itself
+   *  (an OI build can be +12% while price is −2%). */
+  feedMetricPct: number | null;
+  /** Signed PRICE move %, or null when the feed can't convey price direction
+   *  (`nse-oi` reports OI change, not price). The ONLY field sector-direction
+   *  agreement (§11) is allowed to read. */
+  priceDirectionPct: number | null;
 }
 
 /** Feed → its ranked, eligibility-filtered picks for one cycle. */

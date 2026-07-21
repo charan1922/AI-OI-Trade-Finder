@@ -83,12 +83,18 @@ export async function discoverCandidateSnapshot(): Promise<CandidateSnapshot> {
       const picks = (body.picks ?? []).filter((p) => p.symbol);
       // Ranked, eligibility-filtered slice for the priority planner (rank = the
       // order NSE returned, already F&O/non-avoid/live-future gated by the route).
+      // `retPct` from this route is the feed's headline %: for nse-oi it is the
+      // OI-CHANGE %, for gainers/losers/active it is the PRICE move %. Keep them
+      // separate — only price direction may drive sector-direction agreement, so
+      // nse-oi contributes no price direction (it can still enter via round-robin).
+      const metric = (p: (typeof picks)[number]) => (Number.isFinite(p.retPct) ? p.retPct : null);
       feedPicks[source as PriorityFeed] = picks.map((pick, index) => ({
         symbol: pick.symbol,
         sector: pick.sector ?? '',
         source: source as PriorityFeed,
         eligibleRank: index + 1,
-        retPct: Number.isFinite(pick.retPct) ? pick.retPct : null,
+        feedMetricPct: metric(pick),
+        priceDirectionPct: source === 'nse-oi' ? null : metric(pick),
       }));
       for (const pick of picks) {
         prioritySymbols.add(pick.symbol);

@@ -7,7 +7,16 @@
  * turnover and (b) promote feed candidates that AGREE with a selected sector —
  * never adding a stock that isn't already in one of the five feeds.
  */
-import type { ActiveSectorSignal, RankedFeedPick } from './types';
+import type { ActiveSectorSignal } from './types';
+
+/** A feed candidate considered for sector promotion — carries only the PRICE
+ *  direction (never OI change), so nse-oi-only names arrive with null and are
+ *  not promotable on direction. */
+export interface SectorPromotionCandidate {
+  symbol: string;
+  sector: string;
+  priceDirectionPct: number | null;
+}
 
 /**
  * Qualify a sector's direction from its aggregate stats (plan §10). Returns
@@ -23,8 +32,11 @@ export function qualifySectorDirection(
   const bearPct = opts.bearPct ?? -0.5;
   const bearAdvance = opts.bearAdvance ?? 0.4;
   const ar = s.advanceRatio;
-  if (s.weightedPct >= bullPct && (ar === null || ar >= bullAdvance)) return 'bullish';
-  if (s.weightedPct <= bearPct && (ar === null || ar <= bearAdvance)) return 'bearish';
+  // Unknown breadth fails CLOSED (PR#9 review): missing sector evidence must
+  // fall back to ordinary round-robin, never qualify on the % move alone.
+  if (ar === null) return null;
+  if (s.weightedPct >= bullPct && ar >= bullAdvance) return 'bullish';
+  if (s.weightedPct <= bearPct && ar <= bearAdvance) return 'bearish';
   return null;
 }
 
@@ -62,10 +74,11 @@ export function selectActiveSectors(input: {
  * the active sectors, and its own move agrees with the sector's direction.
  * `existingSymbols` (Tier 0 + base Tier 1) are never re-added. Candidates are
  * consumed in the caller's order (best feed rank first). A stock with unknown
- * direction (retPct null) is skipped — it can still arrive via round-robin.
+ * PRICE direction (priceDirectionPct null — e.g. present only on nse-oi) is
+ * skipped; it can still arrive via ordinary round-robin.
  */
 export function selectSectorPromotions(input: {
-  remainingFeedCandidates: RankedFeedPick[];
+  remainingFeedCandidates: SectorPromotionCandidate[];
   activeSectors: ActiveSectorSignal[];
   existingSymbols: ReadonlySet<string>;
   maxPromotions: number;
@@ -81,9 +94,9 @@ export function selectSectorPromotions(input: {
     if (!pick.symbol || seen.has(pick.symbol)) continue;
     const dir = dirBySector.get(pick.sector);
     if (!dir) continue;
-    const ret = pick.retPct;
-    if (ret === null) continue;
-    if ((dir === 'bullish' && ret > 0) || (dir === 'bearish' && ret < 0)) {
+    const move = pick.priceDirectionPct;
+    if (move === null) continue; // unknown price direction → never sector-promote
+    if ((dir === 'bullish' && move > 0) || (dir === 'bearish' && move < 0)) {
       seen.add(pick.symbol);
       out.push(pick.symbol);
     }
