@@ -985,6 +985,9 @@ export async function runTradeSuggest(
   if (skippedUnaffordable > 0) gated.unaffordableLot = skippedUnaffordable;
   base.gated = gated;
   base.suggestions = picks;
+  // Expose the per-sector aggregation (already computed above) so the poller's
+  // priority-refresh shadow can store a sector snapshot without any new call.
+  base.sectorAggregates = [...sectorAgg.values()];
   // 7. Persist (first sighting keeps its original spot/time; repeats bump timesSeen)
   try {
     await upsertSuggestions(date, picks);

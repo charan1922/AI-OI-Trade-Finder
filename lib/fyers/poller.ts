@@ -37,6 +37,10 @@ import { startCycleTimeline } from '@/lib/ops/cycle-timeline';
 import { pruneRankSnapshots, recordRankSnapshot } from '@/lib/signals/rank-tracker';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import { reviewToday } from '@/lib/trade-suggest/review';
+import { buildActiveSectorSignals } from '@/lib/priority-refresh/sector-producer';
+import { pruneSectorSnapshots, recordSectorSnapshot } from '@/lib/priority-refresh/sector-snapshot-store';
+import { buildShadowCycleContext, recordShadowCycle, type ShadowCycleContext } from '@/lib/priority-refresh/shadow';
+import { prunePriorityCycles } from '@/lib/priority-refresh/telemetry-store';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
@@ -359,12 +363,44 @@ export async function runFyersCycle(
     // discovery. Run off-path; Fyers downloads can proceed while SQLite stores
     // the rank rows.
     if (attachOi) void recordRankSnapshot(today, Date.now(), candidateSnapshot?.fullUniverse ?? null).catch(() => {});
-    const priority = captureEligible ? await getPrioritySymbols(today, candidateSnapshot) : new Set<string>();
-    const ordered =
-      priority.size > 0
-        ? [...universe.filter((s) => priority.has(s)), ...universe.filter((s) => !priority.has(s))]
-        : universe;
-    const priorityCount = ordered.length - universe.filter((s) => !priority.has(s)).length;
+    const priorityInfo = captureEligible
+      ? await getPrioritySymbols(today, candidateSnapshot)
+      : { symbols: new Set<string>(), riskBearing: [] as string[], earlierSuggestions: [] as string[] };
+    const priority = priorityInfo.symbols;
+
+    // SHADOW priority-refresh plan (measurement only — lib/priority-refresh/shadow.ts).
+    // It NEVER changes what the poller waits for in this PR: the capture still
+    // fires only after the FULL priority set lands. It records the reduced plan
+    // and the time it could have saved. Best-effort → null on any issue.
+    let shadowCtx: ShadowCycleContext | null = null;
+    if (captureEligible && candidateSnapshot) {
+      shadowCtx = await buildShadowCycleContext({
+        today,
+        bucketTs: fyersBucketFor(startedMs),
+        candidateSnapshot,
+        riskBearing: priorityInfo.riskBearing,
+        earlierSuggestions: priorityInfo.earlierSuggestions,
+        fullPriority: [...priority],
+        universe,
+      });
+    }
+
+    // Priority download order. When a shadow plan exists, refresh its capped-wait
+    // subset (Tier 0 + Tier 1) FIRST so we can measure when it WOULD have been
+    // ready — but the capture still fires only after the whole priority set below,
+    // so nothing about when we trade changes. Without a shadow plan the order is
+    // byte-identical to before.
+    const cappedWaitSet = shadowCtx ? new Set(shadowCtx.plan.cappedWaitSymbols) : null;
+    const priorityMembers = universe.filter((s) => priority.has(s));
+    const orderedPriority =
+      cappedWaitSet && cappedWaitSet.size > 0
+        ? [
+            ...priorityMembers.filter((s) => cappedWaitSet.has(s)),
+            ...priorityMembers.filter((s) => !cappedWaitSet.has(s)),
+          ]
+        : priorityMembers;
+    const ordered = priority.size > 0 ? [...orderedPriority, ...universe.filter((s) => !priority.has(s))] : universe;
+    const priorityCount = orderedPriority.length;
     summary.prioritySymbols = priorityCount;
     let captureFired = false;
 
@@ -435,25 +471,37 @@ export async function runFyersCycle(
     // and adaptive 429 cooldown while removing response-time head-of-line
     // blocking from the decision path.
     let priorityFreshCount = 0;
+    // Shadow timing: record when the capped-wait subset finished downloading. The
+    // whole priority set is still awaited before the capture fires below.
+    const cappedDownload = new Set(ordered.slice(0, priorityCount).filter((s) => cappedWaitSet?.has(s)));
+    let cappedRemaining = cappedDownload.size;
+    let shadowReleaseMs: number | null = null;
     await mapBounded(ordered.slice(0, priorityCount), PRIORITY_HISTORY_CONCURRENCY, async (symbol) => {
       if (!cycleAborted && (await downloadEq(symbol, true))) priorityFreshCount += 1;
+      if (cappedDownload.has(symbol)) {
+        cappedRemaining -= 1;
+        if (cappedRemaining === 0) shadowReleaseMs = Date.now() - startedMs;
+      }
     });
     summary.priorityFreshSymbols = priorityFreshCount;
+    if (shadowCtx) shadowCtx.shadowReleaseMs = shadowReleaseMs;
 
     if (!cycleAborted && captureEligible && priorityCount > 0) {
       captureFired = true;
       summary.captureReleaseMs = Date.now() - startedMs;
+      if (shadowCtx) shadowCtx.actualReleaseMs = summary.captureReleaseMs;
       console.log(
         `${TAG} priority EQ refresh ${priorityFreshCount}/${priorityCount} fresh — capture fired; ${priorityCount - priorityFreshCount} use last stored candle context, FUT/depth and ${ordered.length - priorityCount} more symbols continue in background`
       );
-      void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
+      void runAutonomousCapture(today, state, candidateSnapshot, startedMs, shadowCtx);
     } else if (!cycleAborted && captureEligible && priorityCount === 0) {
       // Feeds down / no current candidates: position management and the live
       // scan still use last-cycle candles plus fresh Dhan/NSE snapshots.
       captureFired = true;
       summary.captureReleaseMs = Date.now() - startedMs;
+      if (shadowCtx) shadowCtx.actualReleaseMs = summary.captureReleaseMs;
       console.log(`${TAG} no priority symbols — capture fired immediately`);
-      void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
+      void runAutonomousCapture(today, state, candidateSnapshot, startedMs, shadowCtx);
     }
 
     // Recorder-only work starts after the decision path is released.
@@ -520,6 +568,8 @@ export async function runFyersCycle(
     if (!opts.dateOverride) {
       await pruneCandleHistory();
       await pruneRankSnapshots();
+      await pruneSectorSnapshots();
+      await prunePriorityCycles();
     }
 
     state.cycles += 1;
@@ -535,7 +585,8 @@ export async function runFyersCycle(
     // market hours today; never blocks/breaks the poller (fire-and-forget).
     if (!captureFired && captureEligible) {
       summary.captureReleaseMs = Date.now() - startedMs;
-      void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
+      if (shadowCtx) shadowCtx.actualReleaseMs = summary.captureReleaseMs;
+      void runAutonomousCapture(today, state, candidateSnapshot, startedMs, shadowCtx);
     }
     return finish();
   } finally {
@@ -559,22 +610,33 @@ export async function runFyersCycle(
  * empty set means the capture fires immediately on last-cycle candle context
  * rather than waiting for unrelated recorder work.
  */
-async function getPrioritySymbols(today: string, candidateSnapshot: CandidateSnapshot | null): Promise<Set<string>> {
-  const out = new Set<string>();
-  for (const symbol of candidateSnapshot?.prioritySymbols ?? []) out.add(symbol);
+async function getPrioritySymbols(
+  today: string,
+  candidateSnapshot: CandidateSnapshot | null
+): Promise<{ symbols: Set<string>; riskBearing: string[]; earlierSuggestions: string[] }> {
+  const symbols = new Set<string>();
+  const riskBearing: string[] = [];
+  const earlierSuggestions: string[] = [];
+  for (const symbol of candidateSnapshot?.prioritySymbols ?? []) symbols.add(symbol);
   try {
     const { getRiskBearingTrades } = await import('@/lib/auto-trade/store');
-    for (const t of await getRiskBearingTrades()) out.add(t.symbol);
+    for (const t of await getRiskBearingTrades()) {
+      symbols.add(t.symbol);
+      riskBearing.push(t.symbol);
+    }
   } catch (err) {
     console.warn(`${TAG} priority: open trades unavailable: ${(err as Error).message}`);
   }
   try {
     const { getSuggestions } = await import('@/lib/trade-suggest/store');
-    for (const s of await getSuggestions(today)) out.add(s.symbol);
+    for (const s of await getSuggestions(today)) {
+      symbols.add(s.symbol);
+      earlierSuggestions.push(s.symbol);
+    }
   } catch (err) {
     console.warn(`${TAG} priority: suggestions unavailable: ${(err as Error).message}`);
   }
-  return out;
+  return { symbols, riskBearing, earlierSuggestions };
 }
 
 /**
@@ -588,7 +650,8 @@ async function runAutonomousCapture(
   today: string,
   state: PollerState,
   candidateSnapshot: CandidateSnapshot | null = null,
-  cycleStartedMs: number | null = null
+  cycleStartedMs: number | null = null,
+  shadowCtx: ShadowCycleContext | null = null
 ): Promise<void> {
   // Never let a slow capture overlap the next cycle's — this serializes the
   // scan's Dhan/NSE calls (rate-limit safety). A skipped pass self-heals next
@@ -650,6 +713,17 @@ async function runAutonomousCapture(
       console.log(
         `${TAG} latency: tick→scan ${scanReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (capture→scan ${scanReadyMs - captureStartedMs}ms)`
       );
+      // SHADOW telemetry (best-effort, measurement only): record the reduced-plan
+      // membership + timing + which suggestions fell outside the cap, and store
+      // this cycle's sector snapshot for the NEXT cycle's shadow plan. A failure
+      // here never affects the scan or the AI pass below.
+      if (shadowCtx) {
+        void recordShadowCycle(shadowCtx, result.suggestions ?? []).catch(() => {});
+        if (shadowCtx.settings.sectorShadowEnabled && result.sectorAggregates && result.sectorAggregates.length > 0) {
+          const signals = buildActiveSectorSignals(result.sectorAggregates, Date.now());
+          void recordSectorSnapshot(today, fyersBucketFor(Date.now()), signals).catch(() => {});
+        }
+      }
       // ONE AI analysis per cycle. The auto-trade pass runs FIRST (lib/auto-trade:
       // deterministic guard, then the decision loop over the SAME scan result);
       // when its read was stored as this cycle's commentary, the standalone MiMo

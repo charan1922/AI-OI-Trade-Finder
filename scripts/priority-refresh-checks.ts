@@ -7,9 +7,11 @@
  * database, no I/O — runs in GitHub CI via scripts/verify-priority-refresh.ts.
  */
 import { assertPriorityNumberCombo, assertPriorityToggleCombo } from '../lib/config/feature-toggles';
+import type { SectorAggregate } from '../lib/sector/aggregate';
 import { FEED_ORDER } from '../lib/priority-refresh/config';
 import { buildPriorityPlan } from '../lib/priority-refresh/build-plan';
 import { selectRoundRobinCandidates } from '../lib/priority-refresh/round-robin';
+import { buildActiveSectorSignals } from '../lib/priority-refresh/sector-producer';
 import { qualifySectorDirection, selectActiveSectors, selectSectorPromotions } from '../lib/priority-refresh/sector-signal';
 import type { ActiveSectorSignal, FeedPicks, PriorityFeed, RankedFeedPick } from '../lib/priority-refresh/types';
 
@@ -302,4 +304,29 @@ export function runPriorityRefreshChecks(check: Check): void {
   check('guard: reserved slots > max unique → rejected', throws(() => assertPriorityNumberCombo('PRIORITY_SECTOR_RESERVED_SLOTS', 41, { maxUnique: 40, reserved: 10 })));
   check('guard: reserved slots ≤ max unique → allowed', !throws(() => assertPriorityNumberCombo('PRIORITY_SECTOR_RESERVED_SLOTS', 10, { maxUnique: 40, reserved: 10 })));
   check('guard: max unique < reserved slots → rejected', throws(() => assertPriorityNumberCombo('PRIORITY_MAX_UNIQUE', 5, { maxUnique: 40, reserved: 10 })));
+
+  // ── Sector producer (pure): SectorAggregate[] → ActiveSectorSignal[] ───────
+  const agg = (sector: string, weightedPct: number, totalTurnover: number, advanceRatio: number | null): SectorAggregate => ({
+    sector,
+    stocks: 10,
+    totalTurnover,
+    weightedPct,
+    simplePct: weightedPct,
+    advancers: advanceRatio == null ? 0 : Math.round(advanceRatio * 10),
+    decliners: advanceRatio == null ? 0 : 10 - Math.round(advanceRatio * 10),
+    unchanged: 0,
+    advanceRatio,
+  });
+  {
+    const signals = buildActiveSectorSignals([agg('PSU Bank', 1.2, 1000, 0.8), agg('Realty', -1.2, 800, 0.2), agg('IT', 0.1, 900, 0.5)], NOW);
+    check('producer: qualifying sectors become directional signals', signals.some((s) => s.sector === 'PSU Bank' && s.direction === 'bullish') && signals.some((s) => s.sector === 'Realty' && s.direction === 'bearish'));
+    check('producer: flat sector (no direction) is omitted', !signals.some((s) => s.sector === 'IT'));
+    check('producer: turnoverRank is by turnover desc (PSU Bank #1)', signals.find((s) => s.sector === 'PSU Bank')?.turnoverRank === 1);
+  }
+  {
+    // Top-turnover restriction: a qualifying sector outside the top-N is excluded.
+    const aggs = Array.from({ length: 8 }, (_, i) => agg(`S${i}`, 1.2, 1000 - i, 0.8));
+    const signals = buildActiveSectorSignals(aggs, NOW, { topTurnover: 6 });
+    check('producer: sector below the top-turnover group is excluded', signals.length === 6 && !signals.some((s) => s.sector === 'S6' || s.sector === 'S7'));
+  }
 }

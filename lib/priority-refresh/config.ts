@@ -36,6 +36,11 @@ export const PRIORITY_SECTOR_RESERVED_SLOTS = 10;
 export const PRIORITY_TOP_SECTORS_PER_SIDE = 2;
 /** Max age of a stored sector snapshot before sector promotion is skipped (s). */
 export const PRIORITY_SECTOR_MAX_AGE_SEC = 120;
+/** Only sectors within the top-N by turnover are eligible to qualify as active
+ *  (plan §10 "rank sectors by total turnover"). Internal — not a /config knob. */
+export const PRIORITY_HIGH_TURNOVER_SECTORS = 6;
+/** Retain this many trading sessions of sector snapshots + cycle telemetry. */
+export const PRIORITY_RETENTION_SESSIONS = 20;
 
 /**
  * Fair round-robin order. OI first (the strongest institutional signal), then
