@@ -151,6 +151,10 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
   if (futIds.length) securities.NSE_FNO = futIds;
 
   const quotes = await dhanMarketFeed('quote', securities);
+  // Canonical market-data observation time: capture it immediately after the
+  // Dhan snapshot returns, before baseline/SQLite/context work adds latency.
+  const quoteObservedAtMs = Date.now();
+  const quoteObservedAt = new Date(quoteObservedAtMs);
   const eqSeg = quotes.NSE_EQ ?? {};
   const futSeg = quotes.NSE_FNO ?? {};
 
@@ -160,7 +164,7 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
   const baselines = await loadRFactorBaselines(allowed);
 
   const today = todayIST();
-  const now = new Date();
+  const now = quoteObservedAt;
   // NSE's combined (fut+opt) OI % per symbol — recorded per 5-min FUT bar by the
   // Fyers poller from the oi-spurts feed. DB-only, one batched query; names not
   // in that feed are simply absent (shown as "—", never faked).
@@ -343,7 +347,7 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
   return {
     success: true,
     marketOpen: true,
-    asOf: new Date().toISOString(),
+    asOf: quoteObservedAt.toISOString(),
     date: today,
     rows,
     symbols: allowed,

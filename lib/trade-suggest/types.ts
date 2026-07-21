@@ -3,6 +3,8 @@
  */
 
 import type { BreakoutSignal } from '@/lib/breakout';
+import type { PriorityFeed, PriorityReason, PriorityTier } from '@/lib/priority-refresh/types';
+import type { SectorAggregate } from '@/lib/sector/aggregate';
 
 export type OptionSide = 'CE' | 'PE';
 
@@ -93,6 +95,26 @@ export interface PickFactors {
   sectorAligned: boolean | null;
 }
 
+/**
+ * Candle-freshness + (later) priority-plan metadata stamped on a suggestion at
+ * scan time (see plan §24). Freshness comes from an extra per-symbol point-read.
+ * It is best-effort informational metadata that fails closed and is never the
+ * source of truth for placement. Priority/sector fields are populated once the
+ * priority-refresh planner is wired into the scanner (a later PR); until then
+ * they carry safe empties.
+ */
+export interface SuggestionCandleContext {
+  requiredBucketTs: number;
+  latestBucketTs: number | null;
+  fresh: boolean;
+
+  priorityTier: PriorityTier | null;
+  priorityReasons: PriorityReason[];
+  feedRanks: Partial<Record<PriorityFeed, number>>;
+  sectorPromoted: boolean;
+  sectorDirection: 'bullish' | 'bearish' | null;
+}
+
 /** One suggestion, fully assembled. */
 export interface TradeSuggestion {
   rank: number;
@@ -121,6 +143,10 @@ export interface TradeSuggestion {
   extended: boolean;
   factors: PickFactors | null;
   reasons: string[];
+  /** Candle-freshness (+ later priority) context, stamped at scan time. Optional
+   *  because a suggestion rehydrated from the DB may predate it; the auto-trade
+   *  gate recomputes freshness from the store at placement time regardless. */
+  candleContext?: SuggestionCandleContext;
 }
 
 /** Market breadth among the scanned candidates — context, never a gate
@@ -225,6 +251,12 @@ export interface SuggestResponse {
   tilt?: MarketTilt;
   /** Sector inflow/outflow read among the candidates, strongest first. */
   sectorFlow?: SectorFlow[];
+  /** Per-sector turnover-weighted move + breadth among the scanned candidates —
+   *  the input the priority-refresh shadow producer turns into a stored sector
+   *  snapshot for the next cycle's plan (measurement only). */
+  sectorAggregates?: SectorAggregate[];
+  /** Dhan quote observation time, captured before scanner-side DB/candle work. */
+  marketDataAsOfMs?: number;
   /** Everything persisted earlier today (continuity across loop iterations). */
   earlierToday: StoredSuggestion[];
   /** Earlier calls + live price — the position-management feed (see TrackedPosition). */

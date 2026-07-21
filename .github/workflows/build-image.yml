@@ -70,6 +70,20 @@ jobs:
       # downloads an unpinned tsx each run) — reproducible + no runtime fetch
       # (PR#6 review). It resolves the tsconfig @/ path aliases like the box does.
       - run: pnpm exec tsx scripts/verify-quant-shadow.ts
+      # DB-free pure checks for the capped priority-refresh planner (round-robin
+      # fairness, Tier 0/1/2 tiering, the 40-unique cap, sector promotion inside
+      # the cap). Same reproducible `pnpm exec tsx` runner as above.
+      - run: pnpm exec tsx scripts/verify-priority-refresh.ts
+      # DB-free pure checks for the candle-freshness rule + the auto-trade
+      # stale-candle ENTRY gate (fresh→allow, stale/missing→reject, block OFF→
+      # existing gates decide). Same reproducible `pnpm exec tsx` runner.
+      - run: pnpm exec tsx scripts/verify-freshness-gate.ts
+      # Priority-refresh STORE round-trip against an isolated throwaway SQLite DB
+      # (chdir to a temp dir first): proves the tables create, the Prisma
+      # transaction + SQL param counts work, timestamps round-trip, and the
+      # empty-batch / atomic-replace semantics hold — DB behaviour the pure checks
+      # and the container smoke test don't exercise (PR#11 re-review).
+      - run: pnpm exec tsx scripts/verify-priority-refresh-store.ts
 
   build:
     needs: validate

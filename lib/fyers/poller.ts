@@ -31,12 +31,16 @@ import { inDriftReminderWindow, runConfigDriftReminderCore } from '@/lib/config/
 import { FyersAuthError, getFyersAccessToken, getFyersTokenStatus, hasFyersAuth } from '@/lib/fyers/auth';
 import { fetchFutDepth, fetchHistory5m, type FyersBar } from '@/lib/fyers/client';
 import { attachFutDepth, fyersBucketFor, pruneCandleHistory, upsertCandles } from '@/lib/fyers/candle-store';
+import { runLiveDecisionPath } from '@/lib/fyers/live-decision-path';
 import { getTrackedUniverse, peekUniverse, resolveFutSymbol, toEqSymbol } from '@/lib/fyers/symbols';
 import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 import { startCycleTimeline } from '@/lib/ops/cycle-timeline';
 import { pruneRankSnapshots, recordRankSnapshot } from '@/lib/signals/rank-tracker';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import { reviewToday } from '@/lib/trade-suggest/review';
+import { pruneSectorSnapshots } from '@/lib/priority-refresh/sector-snapshot-store';
+import { runPostDecisionShadow, type ShadowCycleInput } from '@/lib/priority-refresh/shadow';
+import { prunePriorityCycles } from '@/lib/priority-refresh/telemetry-store';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
@@ -113,6 +117,12 @@ export interface CaptureTiming {
   tickToDecisionMs: number | null;
   redundantReadTools: number | null;
   detail: string | null;
+}
+
+interface AutonomousDecisionResult {
+  commentaryHandled: boolean;
+  /** True only when this process owned and completed the Auto Trade pass. */
+  shadowSafe: boolean;
 }
 
 interface PollerState {
@@ -359,7 +369,31 @@ export async function runFyersCycle(
     // discovery. Run off-path; Fyers downloads can proceed while SQLite stores
     // the rank rows.
     if (attachOi) void recordRankSnapshot(today, Date.now(), candidateSnapshot?.fullUniverse ?? null).catch(() => {});
-    const priority = captureEligible ? await getPrioritySymbols(today, candidateSnapshot) : new Set<string>();
+    const priorityInfo = captureEligible
+      ? await getPrioritySymbols(today, candidateSnapshot)
+      : { symbols: new Set<string>(), riskBearing: [] as string[], earlierSuggestions: [] as string[] };
+    const priority = priorityInfo.symbols;
+
+    // Freeze only the data needed by the measurement. The settings/sector reads,
+    // plan build, and persistence are queued after the live decision completes.
+    const shadowInput: ShadowCycleInput | null =
+      captureEligible && candidateSnapshot
+        ? {
+            today,
+            bucketTs: fyersBucketFor(startedMs),
+            candidateSnapshot,
+            riskBearing: priorityInfo.riskBearing,
+            earlierSuggestions: priorityInfo.earlierSuggestions,
+            fullPriority: [...priority],
+            universe,
+          }
+        : null;
+
+    // Priority download order is UNCHANGED from before the shadow work — the
+    // shadow is membership + coverage only, so it does NOT reorder network
+    // requests (reordering could shift the final priority request's completion
+    // time; PR#11 review B6). Faithful capped-first timing is measured in the
+    // capped-live PR, where the reorder is the actual behaviour.
     const ordered =
       priority.size > 0
         ? [...universe.filter((s) => priority.has(s)), ...universe.filter((s) => !priority.has(s))]
@@ -446,14 +480,14 @@ export async function runFyersCycle(
       console.log(
         `${TAG} priority EQ refresh ${priorityFreshCount}/${priorityCount} fresh — capture fired; ${priorityCount - priorityFreshCount} use last stored candle context, FUT/depth and ${ordered.length - priorityCount} more symbols continue in background`
       );
-      void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
+      void runAutonomousCapture(today, state, candidateSnapshot, startedMs, shadowInput);
     } else if (!cycleAborted && captureEligible && priorityCount === 0) {
       // Feeds down / no current candidates: position management and the live
       // scan still use last-cycle candles plus fresh Dhan/NSE snapshots.
       captureFired = true;
       summary.captureReleaseMs = Date.now() - startedMs;
       console.log(`${TAG} no priority symbols — capture fired immediately`);
-      void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
+      void runAutonomousCapture(today, state, candidateSnapshot, startedMs, shadowInput);
     }
 
     // Recorder-only work starts after the decision path is released.
@@ -520,6 +554,13 @@ export async function runFyersCycle(
     if (!opts.dateOverride) {
       await pruneCandleHistory();
       await pruneRankSnapshots();
+      // The priority-refresh retention tables can be read or written by the
+      // asynchronous Auto Trade pass. Do not contend with its money-touching
+      // SQLite work; a later recorder cycle will perform this best-effort cleanup.
+      if (!state.captureRunning) {
+        await pruneSectorSnapshots();
+        await prunePriorityCycles();
+      }
     }
 
     state.cycles += 1;
@@ -535,7 +576,7 @@ export async function runFyersCycle(
     // market hours today; never blocks/breaks the poller (fire-and-forget).
     if (!captureFired && captureEligible) {
       summary.captureReleaseMs = Date.now() - startedMs;
-      void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
+      void runAutonomousCapture(today, state, candidateSnapshot, startedMs, shadowInput);
     }
     return finish();
   } finally {
@@ -559,22 +600,33 @@ export async function runFyersCycle(
  * empty set means the capture fires immediately on last-cycle candle context
  * rather than waiting for unrelated recorder work.
  */
-async function getPrioritySymbols(today: string, candidateSnapshot: CandidateSnapshot | null): Promise<Set<string>> {
-  const out = new Set<string>();
-  for (const symbol of candidateSnapshot?.prioritySymbols ?? []) out.add(symbol);
+async function getPrioritySymbols(
+  today: string,
+  candidateSnapshot: CandidateSnapshot | null
+): Promise<{ symbols: Set<string>; riskBearing: string[]; earlierSuggestions: string[] }> {
+  const symbols = new Set<string>();
+  const riskBearing: string[] = [];
+  const earlierSuggestions: string[] = [];
+  for (const symbol of candidateSnapshot?.prioritySymbols ?? []) symbols.add(symbol);
   try {
     const { getRiskBearingTrades } = await import('@/lib/auto-trade/store');
-    for (const t of await getRiskBearingTrades()) out.add(t.symbol);
+    for (const t of await getRiskBearingTrades()) {
+      symbols.add(t.symbol);
+      riskBearing.push(t.symbol);
+    }
   } catch (err) {
     console.warn(`${TAG} priority: open trades unavailable: ${(err as Error).message}`);
   }
   try {
     const { getSuggestions } = await import('@/lib/trade-suggest/store');
-    for (const s of await getSuggestions(today)) out.add(s.symbol);
+    for (const s of await getSuggestions(today)) {
+      symbols.add(s.symbol);
+      earlierSuggestions.push(s.symbol);
+    }
   } catch (err) {
     console.warn(`${TAG} priority: suggestions unavailable: ${(err as Error).message}`);
   }
-  return out;
+  return { symbols, riskBearing, earlierSuggestions };
 }
 
 /**
@@ -588,7 +640,8 @@ async function runAutonomousCapture(
   today: string,
   state: PollerState,
   candidateSnapshot: CandidateSnapshot | null = null,
-  cycleStartedMs: number | null = null
+  cycleStartedMs: number | null = null,
+  shadowInput: ShadowCycleInput | null = null
 ): Promise<void> {
   // Never let a slow capture overlap the next cycle's — this serializes the
   // scan's Dhan/NSE calls (rate-limit safety). A skipped pass self-heals next
@@ -640,51 +693,68 @@ async function runAutonomousCapture(
   try {
     try {
       const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
-      const result = await timeline.step(
-        'scan (trade-suggest)',
-        () => runTradeSuggest(origin, { candidateSnapshot: candidateSnapshot ?? undefined }),
-        (r) => `${r.scanned ?? 0} scanned · ${r.suggestions?.length ?? 0} pick(s)`
-      );
-      const scanReadyMs = Date.now();
-      timing.tickToScanMs = scanReadyMs - cycleStart;
-      console.log(
-        `${TAG} latency: tick→scan ${scanReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (capture→scan ${scanReadyMs - captureStartedMs}ms)`
-      );
-      // ONE AI analysis per cycle. The auto-trade pass runs FIRST (lib/auto-trade:
-      // deterministic guard, then the decision loop over the SAME scan result);
-      // when its read was stored as this cycle's commentary, the standalone MiMo
-      // narration is SKIPPED — it only runs as the fallback (auto-trade off /
-      // kill switch / nothing to decide / AI failed). Both blocks are isolated:
-      // a failure never affects the scan or the recorder.
-      let commentaryHandled = false;
-      try {
-        const { runAutoTradePass } = await import('@/lib/auto-trade/engine');
-        const outcome = await runAutoTradePass(result, timeline);
-        const decisionReadyMs = Date.now();
-        timing.status = outcome.ran ? (outcome.error ? 'decision-failed' : 'completed') : 'skipped-overlap';
-        timing.scanToDecisionMs = decisionReadyMs - scanReadyMs;
-        timing.tickToDecisionMs = decisionReadyMs - cycleStart;
-        timing.redundantReadTools = outcome.redundantReadTools ?? 0;
-        timing.detail = outcome.reason ?? null;
-        // Only this process may spend the low-priority Dhan option-chain call
-        // after it actually owned and completed the engine pass. If another
-        // process owns the pass, its quote lane must remain uncontested.
-        allowDisplayRefresh = outcome.ran;
-        console.log(
-          `${TAG} latency: tick→auto-pass ${decisionReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (scan→decision ${decisionReadyMs - scanReadyMs}ms; ${outcome.reason ?? (outcome.ran ? 'pass ran — action taken' : 'pass skipped')})`
-        );
-        // A non-running outcome means another in-process/distributed pass owns
-        // this cycle. Do not start a second standalone model call alongside it.
-        commentaryHandled = outcome.commentaryStored || !outcome.ran;
-        if (outcome.ran && (outcome.guardActions.length > 0 || outcome.aiSummary)) {
-          console.log(`${TAG} auto-trade: ${outcome.aiSummary?.slice(0, 120) ?? outcome.guardActions.join(' · ')}`);
-        }
-      } catch (err) {
-        timing.status = 'decision-failed';
-        timing.detail = (err as Error).message;
-        console.warn(`${TAG} auto-trade failed: ${(err as Error).message}`);
-      }
-      if (!commentaryHandled) {
+      let scanReadyMs = 0;
+      const { scan: result, decision } = await runLiveDecisionPath({
+        scan: async () => {
+          const result = await timeline.step(
+            'scan (trade-suggest)',
+            () => runTradeSuggest(origin, { candidateSnapshot: candidateSnapshot ?? undefined }),
+            (r) => `${r.scanned ?? 0} scanned · ${r.suggestions?.length ?? 0} pick(s)`
+          );
+          scanReadyMs = Date.now();
+          timing.tickToScanMs = scanReadyMs - cycleStart;
+          console.log(
+            `${TAG} latency: tick→scan ${scanReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (capture→scan ${scanReadyMs - captureStartedMs}ms)`
+          );
+          return result;
+        },
+        decide: async (result) => {
+          // ONE AI analysis per cycle. The auto-trade pass runs FIRST (lib/auto-trade:
+          // deterministic guard, then the decision loop over the SAME scan result);
+          // when its read was stored as this cycle's commentary, the standalone MiMo
+          // narration is SKIPPED — it only runs as the fallback (auto-trade off /
+          // kill switch / nothing to decide / AI failed). Both blocks are isolated:
+          // a failure never affects the scan or the recorder.
+          let commentaryHandled = false;
+          let shadowSafe = false;
+          try {
+            const { runAutoTradePass } = await import('@/lib/auto-trade/engine');
+            const outcome = await runAutoTradePass(result, timeline);
+            shadowSafe = outcome.ran;
+            const decisionReadyMs = Date.now();
+            timing.status = outcome.ran ? (outcome.error ? 'decision-failed' : 'completed') : 'skipped-overlap';
+            timing.scanToDecisionMs = decisionReadyMs - scanReadyMs;
+            timing.tickToDecisionMs = decisionReadyMs - cycleStart;
+            timing.redundantReadTools = outcome.redundantReadTools ?? 0;
+            timing.detail = outcome.reason ?? null;
+            // Only this process may spend the low-priority Dhan option-chain call
+            // after it actually owned and completed the engine pass. If another
+            // process owns the pass, its quote lane must remain uncontested.
+            allowDisplayRefresh = outcome.ran;
+            console.log(
+              `${TAG} latency: tick→auto-pass ${decisionReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (scan→decision ${decisionReadyMs - scanReadyMs}ms; ${outcome.reason ?? (outcome.ran ? 'pass ran — action taken' : 'pass skipped')})`
+            );
+            // A non-running outcome means another in-process/distributed pass owns
+            // this cycle. Do not start a second standalone model call alongside it.
+            commentaryHandled = outcome.commentaryStored || !outcome.ran;
+            if (outcome.ran && (outcome.guardActions.length > 0 || outcome.aiSummary)) {
+              console.log(`${TAG} auto-trade: ${outcome.aiSummary?.slice(0, 120) ?? outcome.guardActions.join(' · ')}`);
+            }
+          } catch (err) {
+            timing.status = 'decision-failed';
+            timing.detail = (err as Error).message;
+            console.warn(`${TAG} auto-trade failed: ${(err as Error).message}`);
+          }
+          return { commentaryHandled, shadowSafe } satisfies AutonomousDecisionResult;
+        },
+        afterDecision: (result, decision) => {
+          // Queue every shadow read/build/write only after scan + Auto Trade.
+          // If another process owns the pass, skip this measurement cycle rather
+          // than contend with its money-touching database work.
+          if (shadowInput && decision.shadowSafe) void runPostDecisionShadow(shadowInput, result);
+        },
+      });
+      if (!decision.commentaryHandled) {
         try {
           const { runAndStoreCommentary } = await import('@/lib/ai-commentary/run');
           const outcome = await runAndStoreCommentary(result, timeline);

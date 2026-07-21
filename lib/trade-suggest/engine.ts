@@ -25,7 +25,8 @@ import { setupScore } from '@/app/live/_lib/setup-score';
 import type { LiveQuoteResponse, LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
-import { getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
+import { getEqBucketStatus, getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
+import { evaluateFreshnessBestEffort, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
@@ -345,6 +346,8 @@ export async function runTradeSuggest(
 
   // 2. One batched live snapshot
   const quotes = await fetchQuotes(origin, symbols);
+  const marketDataAsOfMs = Date.parse(quotes.asOf ?? '');
+  base.marketDataAsOfMs = Number.isFinite(marketDataAsOfMs) ? marketDataAsOfMs : undefined;
   if (!quotes.success || quotes.rows.length === 0) {
     base.note = `Live quote path returned no rows${quotes.error ? ` (${quotes.error})` : ''} — check /api/dhan/token.`;
     return base;
@@ -782,6 +785,9 @@ export async function runTradeSuggest(
 
   const picks: TradeSuggestion[] = [];
   let skippedUnaffordable = 0;
+  // One informational requirement for the whole scan, so picks cannot receive
+  // different bucket stamps if construction crosses a five-minute boundary.
+  const informationalRequiredBucketTs = requiredCompletedBucket(Date.now());
   for (const s of shortlist) {
     if (picks.length >= maxPicks) break;
     const r = s.row;
@@ -958,6 +964,20 @@ export async function runTradeSuggest(
       ...s.setupReasons,
     ];
 
+    // Candle freshness stamp: prove the REQUIRED completed bucket was FINALIZED
+    // (written after it closed), matching the placement-time gate — the forming
+    // bar being present is not proof. Informational here (the auto-trade gate
+    // re-checks from the store at placement); priority/sector fields stay empty
+    // until the priority-refresh planner is wired into the scanner.
+    const freshness = await evaluateFreshnessBestEffort(
+      informationalRequiredBucketTs,
+      () => getEqBucketStatus(r.symbol, date, informationalRequiredBucketTs),
+      (error) =>
+        console.warn(
+          `${TAG} candle freshness metadata failed for ${r.symbol}: ${error instanceof Error ? error.message : String(error)}`
+        )
+    );
+
     picks.push({
       rank: picks.length + 1,
       symbol: r.symbol,
@@ -979,12 +999,25 @@ export async function runTradeSuggest(
       extended: s.extended,
       factors,
       reasons,
+      candleContext: {
+        requiredBucketTs: freshness.requiredBucketTs,
+        latestBucketTs: freshness.latestBucketTs,
+        fresh: freshness.fresh,
+        priorityTier: null,
+        priorityReasons: [],
+        feedRanks: {},
+        sectorPromoted: false,
+        sectorDirection: null,
+      },
     });
   }
 
   if (skippedUnaffordable > 0) gated.unaffordableLot = skippedUnaffordable;
   base.gated = gated;
   base.suggestions = picks;
+  // Expose the per-sector aggregation (already computed above) so the poller's
+  // priority-refresh shadow can store a sector snapshot without any new call.
+  base.sectorAggregates = [...sectorAgg.values()];
   // 7. Persist (first sighting keeps its original spot/time; repeats bump timesSeen)
   try {
     await upsertSuggestions(date, picks);
