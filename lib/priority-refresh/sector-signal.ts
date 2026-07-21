@@ -54,7 +54,12 @@ export function selectActiveSectors(input: {
 }): { bullish: ActiveSectorSignal[]; bearish: ActiveSectorSignal[] } {
   const { snapshots, topPerSide, nowMs, maxAgeSec } = input;
   if (topPerSide <= 0) return { bullish: [], bearish: [] };
-  const fresh = snapshots.filter((s) => (nowMs - s.asOfMs) / 1000 <= maxAgeSec);
+  // Age must be finite, NON-NEGATIVE (a future timestamp from a bad clock is not
+  // "fresh"), and within maxAgeSec — fail-closed on anything else (PR#11 re-review B3).
+  const fresh = snapshots.filter((s) => {
+    const ageSec = (nowMs - s.asOfMs) / 1000;
+    return Number.isFinite(ageSec) && ageSec >= 0 && ageSec <= maxAgeSec;
+  });
   const byTurnover = (a: ActiveSectorSignal, b: ActiveSectorSignal) => a.turnoverRank - b.turnoverRank;
   return {
     bullish: fresh

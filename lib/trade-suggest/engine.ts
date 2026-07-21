@@ -346,6 +346,8 @@ export async function runTradeSuggest(
 
   // 2. One batched live snapshot
   const quotes = await fetchQuotes(origin, symbols);
+  const marketDataAsOfMs = Date.parse(quotes.asOf ?? '');
+  base.marketDataAsOfMs = Number.isFinite(marketDataAsOfMs) ? marketDataAsOfMs : undefined;
   if (!quotes.success || quotes.rows.length === 0) {
     base.note = `Live quote path returned no rows${quotes.error ? ` (${quotes.error})` : ''} — check /api/dhan/token.`;
     return base;
@@ -1004,6 +1006,9 @@ export async function runTradeSuggest(
   if (skippedUnaffordable > 0) gated.unaffordableLot = skippedUnaffordable;
   base.gated = gated;
   base.suggestions = picks;
+  // Expose the per-sector aggregation (already computed above) so the poller's
+  // priority-refresh shadow can store a sector snapshot without any new call.
+  base.sectorAggregates = [...sectorAgg.values()];
   // 7. Persist (first sighting keeps its original spot/time; repeats bump timesSeen)
   try {
     await upsertSuggestions(date, picks);

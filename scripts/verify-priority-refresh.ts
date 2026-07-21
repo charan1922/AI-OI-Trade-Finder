@@ -4,7 +4,7 @@
  *
  * Run:  pnpm exec tsx scripts/verify-priority-refresh.ts   (exit 1 on any failure)
  */
-import { runPriorityRefreshChecks } from './priority-refresh-checks';
+import { runPriorityRefreshChecks, runPriorityRefreshOrchestrationChecks } from './priority-refresh-checks';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -14,5 +14,6 @@ function check(name: string, ok: boolean, detail = ''): void {
 
 console.log('=== Pure verification (no DB): capped priority-refresh planner ===\n');
 runPriorityRefreshChecks(check);
+await runPriorityRefreshOrchestrationChecks(check);
 console.log(`\n${failures === 0 ? '✅ all priority-refresh checks passed' : `❌ ${failures} check(s) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

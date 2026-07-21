@@ -6,10 +6,15 @@
  * promotion respects PRIORITY_PER_FEED; unknown breadth fails closed). No
  * database, no I/O — runs in GitHub CI via scripts/verify-priority-refresh.ts.
  */
+import { assertPriorityNumberCombo } from '../lib/config/feature-toggles';
+import { runLiveDecisionPath } from '../lib/fyers/live-decision-path';
+import type { SectorAggregate } from '../lib/sector/aggregate';
 import { FEED_ORDER } from '../lib/priority-refresh/config';
 import { buildPriorityPlan } from '../lib/priority-refresh/build-plan';
 import { selectRoundRobinCandidates } from '../lib/priority-refresh/round-robin';
+import { buildActiveSectorSignals, prepareSectorSnapshotWrite } from '../lib/priority-refresh/sector-producer';
 import { qualifySectorDirection, selectActiveSectors, selectSectorPromotions } from '../lib/priority-refresh/sector-signal';
+import { runPostDecisionShadowCore, type ShadowSettings } from '../lib/priority-refresh/shadow-orchestration';
 import type { ActiveSectorSignal, FeedPicks, PriorityFeed, RankedFeedPick } from '../lib/priority-refresh/types';
 
 type Check = (name: string, ok: boolean, detail?: string) => void;
@@ -217,6 +222,39 @@ export function runPriorityRefreshChecks(check: Check): void {
     check('plan: no active sectors → ordinary selection, no promotions', plan.sectorPromotedSymbols.length === 0);
   }
   {
+    // The REAL next-cycle workflow: a snapshot produced by the previous 5-min
+    // cycle is ~4–5 min old; under the corrected 420s default it must be ACCEPTED
+    // (PR#11 review B3). The old 120s default would have rejected every read.
+    const accepted = selectActiveSectors({
+      snapshots: [sector('PSU Bank', 'bullish', { asOfMs: NOW - 270_000 })], // 4.5 min old
+      topPerSide: 2,
+      nowMs: NOW,
+      maxAgeSec: 420,
+    });
+    check('sector: previous-cycle snapshot (270s old) accepted under 420s maxAge', accepted.bullish.length === 1);
+    const rejected = selectActiveSectors({
+      snapshots: [sector('PSU Bank', 'bullish', { asOfMs: NOW - 500_000 })], // > 420s
+      topPerSide: 2,
+      nowMs: NOW,
+      maxAgeSec: 420,
+    });
+    check('sector: snapshot older than maxAge is still rejected', rejected.bullish.length === 0);
+    const future = selectActiveSectors({
+      snapshots: [sector('PSU Bank', 'bullish', { asOfMs: NOW + 1_000 })], // 1s in the future
+      topPerSide: 2,
+      nowMs: NOW,
+      maxAgeSec: 420,
+    });
+    check('sector: future-timestamped snapshot rejected (negative age)', future.bullish.length === 0);
+    const nan = selectActiveSectors({
+      snapshots: [sector('PSU Bank', 'bullish', { asOfMs: Number.NaN })],
+      topPerSide: 2,
+      nowMs: NOW,
+      maxAgeSec: 420,
+    });
+    check('sector: NaN-timestamped snapshot rejected', nan.bullish.length === 0);
+  }
+  {
     // PR#9 review Blocker 3: sector promotion must respect PRIORITY_PER_FEED. A
     // rank-11 stock in the strongest active sector must NOT be promoted.
     const f = emptyFeeds();
@@ -284,4 +322,215 @@ export function runPriorityRefreshChecks(check: Check): void {
     'sector: no active sectors → no promotions',
     selectSectorPromotions({ remainingFeedCandidates: [{ symbol: 'X', sector: 'Y', priceDirectionPct: 1 }], activeSectors: [], existingSymbols: new Set(), maxPromotions: 10 }).length === 0
   );
+
+  // ── Config unsafe-combo guard (§30, pure) ──────────────────────────────────
+  const throws = (fn: () => void): boolean => {
+    try {
+      fn();
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  check('guard: reserved slots > max unique → rejected', throws(() => assertPriorityNumberCombo('PRIORITY_SECTOR_RESERVED_SLOTS', 41, { maxUnique: 40, reserved: 10 })));
+  check('guard: reserved slots ≤ max unique → allowed', !throws(() => assertPriorityNumberCombo('PRIORITY_SECTOR_RESERVED_SLOTS', 10, { maxUnique: 40, reserved: 10 })));
+  check('guard: max unique < reserved slots → rejected', throws(() => assertPriorityNumberCombo('PRIORITY_MAX_UNIQUE', 5, { maxUnique: 40, reserved: 10 })));
+
+  // ── Sector producer (pure): SectorAggregate[] → ActiveSectorSignal[] ───────
+  const agg = (sector: string, weightedPct: number, totalTurnover: number, advanceRatio: number | null): SectorAggregate => ({
+    sector,
+    stocks: 10,
+    totalTurnover,
+    weightedPct,
+    simplePct: weightedPct,
+    advancers: advanceRatio == null ? 0 : Math.round(advanceRatio * 10),
+    decliners: advanceRatio == null ? 0 : 10 - Math.round(advanceRatio * 10),
+    unchanged: 0,
+    advanceRatio,
+  });
+  {
+    const signals = buildActiveSectorSignals([agg('PSU Bank', 1.2, 1000, 0.8), agg('Realty', -1.2, 800, 0.2), agg('IT', 0.1, 900, 0.5)], NOW);
+    check('producer: qualifying sectors become directional signals', signals.some((s) => s.sector === 'PSU Bank' && s.direction === 'bullish') && signals.some((s) => s.sector === 'Realty' && s.direction === 'bearish'));
+    check('producer: flat sector (no direction) is omitted', !signals.some((s) => s.sector === 'IT'));
+    check('producer: turnoverRank is by turnover desc (PSU Bank #1)', signals.find((s) => s.sector === 'PSU Bank')?.turnoverRank === 1);
+  }
+  {
+    // Top-turnover restriction: a qualifying sector outside the top-N is excluded.
+    const aggs = Array.from({ length: 8 }, (_, i) => agg(`S${i}`, 1.2, 1000 - i, 0.8));
+    const signals = buildActiveSectorSignals(aggs, NOW, { topTurnover: 6 });
+    check('producer: sector below the top-turnover group is excluded', signals.length === 6 && !signals.some((s) => s.sector === 'S6' || s.sector === 'S7'));
+  }
+  {
+    const observedAtMs = 1_800_000_025_000;
+    const scannerFinishedAtMs = observedAtMs + 105_000;
+    const databaseWriteAtMs = scannerFinishedAtMs + 50_000;
+    const write = prepareSectorSnapshotWrite({
+      aggregates: [agg('PSU Bank', 1.2, 1000, 0.8)],
+      marketDataAsOfMs: observedAtMs,
+      currentCycleBucketTs: 1_800_000_000,
+      nowMs: databaseWriteAtMs,
+    });
+    check('producer: delayed scan/write preserves Dhan observation timestamp', write.asOfMs === observedAtMs && write.signals.every((s) => s.asOfMs === observedAtMs));
+    check('producer: sector bucket comes from Dhan observation time', write.bucketTs === 1_800_000_000, `bucket=${write.bucketTs}`);
+
+    const invalid = prepareSectorSnapshotWrite({
+      aggregates: [agg('PSU Bank', 1.2, 1000, 0.8)],
+      marketDataAsOfMs: Number.NaN,
+      currentCycleBucketTs: 1_800_000_300,
+      nowMs: databaseWriteAtMs,
+    });
+    check('producer: invalid quote timestamp fails closed to current-cycle empty marker', invalid.bucketTs === 1_800_000_300 && invalid.asOfMs === 0 && invalid.signals.length === 0);
+    const future = prepareSectorSnapshotWrite({
+      aggregates: [agg('PSU Bank', 1.2, 1000, 0.8)],
+      marketDataAsOfMs: databaseWriteAtMs + 1,
+      currentCycleBucketTs: 1_800_000_300,
+      nowMs: databaseWriteAtMs,
+    });
+    check('producer: future quote timestamp fails closed to current-cycle empty marker', future.asOfMs === 0 && future.signals.length === 0);
+  }
+}
+
+export async function runPriorityRefreshOrchestrationChecks(check: Check): Promise<void> {
+  const candidateSnapshot = {
+    discoveredAt: NOW,
+    fullUniverse: false,
+    sectorEntries: [['SBIN', 'PSU Bank']] as [string, string][],
+    oiSpurtSymbols: ['SBIN'],
+    prioritySymbols: ['SBIN'],
+    feedPicks: emptyFeeds(),
+  };
+  const input = {
+    today: '2099-05-05',
+    bucketTs: 1_800_000_300,
+    candidateSnapshot,
+    riskBearing: [],
+    earlierSuggestions: [],
+    fullPriority: ['SBIN'],
+    universe: ['SBIN'],
+  };
+  const settings: ShadowSettings = {
+    shadowEnabled: true,
+    cappedLiveEnabled: false,
+    blockStaleEntry: true,
+    sectorShadowEnabled: true,
+    sectorLiveEnabled: false,
+    perFeedLimit: 10,
+    maxUniqueTier1: 40,
+    sectorReservedSlots: 10,
+    topSectorsPerSide: 2,
+    sectorMaxAgeSec: 420,
+  };
+
+  const events: string[] = ['candidate discovery', 'priority refresh starts'];
+  await runLiveDecisionPath({
+    scan: async () => {
+      events.push('scan');
+      return { suggestions: [], sectorAggregates: [], marketDataAsOfMs: 1_800_000_025_000 };
+    },
+    decide: async () => {
+      events.push('Auto Trade decision');
+      return { commentaryHandled: true, shadowSafe: true };
+    },
+    afterDecision: async (result, decision) => {
+      if (!decision.shadowSafe) return;
+      await runPostDecisionShadowCore(input, result, {
+        readSettings: async () => {
+          events.push('shadow settings read');
+          return settings;
+        },
+        readPreviousSectors: async () => {
+          events.push('shadow sector read');
+          return [];
+        },
+        selectSectors: selectActiveSectors,
+        buildPlan: (planInput) => {
+          events.push('shadow plan build');
+          return buildPriorityPlan(planInput);
+        },
+        prepareSectorWrite: prepareSectorSnapshotWrite,
+        recordCycle: async () => {
+          events.push('shadow telemetry persistence');
+        },
+        recordSectors: async () => {
+          events.push('shadow sector persistence');
+        },
+        nowMs: () => 1_800_000_180_000,
+      });
+    },
+  });
+  const expected = [
+    'candidate discovery',
+    'priority refresh starts',
+    'scan',
+    'Auto Trade decision',
+    'shadow settings read',
+    'shadow sector read',
+    'shadow plan build',
+    'shadow telemetry persistence',
+    'shadow sector persistence',
+  ];
+  check('orchestration: all shadow work is after refresh, scan, and Auto Trade decision', events.join('|') === expected.join('|'), events.join(' → '));
+
+  const notOwnerEvents: string[] = [];
+  await runLiveDecisionPath({
+    scan: async () => ({ suggestions: [] }),
+    decide: async () => ({ commentaryHandled: true, shadowSafe: false }),
+    afterDecision: async (result, decision) => {
+      if (!decision.shadowSafe) return;
+      await runPostDecisionShadowCore(input, result, {
+        readSettings: async () => {
+          notOwnerEvents.push('settings read');
+          return settings;
+        },
+        readPreviousSectors: async () => {
+          notOwnerEvents.push('sector read');
+          return [];
+        },
+        selectSectors: selectActiveSectors,
+        buildPlan: (planInput) => {
+          notOwnerEvents.push('planner build');
+          return buildPriorityPlan(planInput);
+        },
+        prepareSectorWrite: prepareSectorSnapshotWrite,
+        recordCycle: async () => {
+          notOwnerEvents.push('telemetry write');
+        },
+        recordSectors: async () => {
+          notOwnerEvents.push('sector write');
+        },
+        nowMs: () => NOW,
+      });
+    },
+  });
+  check(
+    'orchestration: non-owner Auto Trade result skips every shadow read/build/write',
+    notOwnerEvents.length === 0,
+    notOwnerEvents.join(' → ')
+  );
+
+  const disabledEvents: string[] = [];
+  await runPostDecisionShadowCore(input, { suggestions: [] }, {
+    readSettings: async () => {
+      disabledEvents.push('master toggle read');
+      return null;
+    },
+    readPreviousSectors: async () => {
+      disabledEvents.push('sector read');
+      return [];
+    },
+    selectSectors: selectActiveSectors,
+    buildPlan: (planInput) => {
+      disabledEvents.push('planner build');
+      return buildPriorityPlan(planInput);
+    },
+    prepareSectorWrite: prepareSectorSnapshotWrite,
+    recordCycle: async () => {
+      disabledEvents.push('telemetry write');
+    },
+    recordSectors: async () => {
+      disabledEvents.push('sector write');
+    },
+    nowMs: () => NOW,
+  });
+  check('orchestration: shadow OFF performs no sector read, planner build, or write', disabledEvents.join('|') === 'master toggle read', disabledEvents.join(' → '));
 }

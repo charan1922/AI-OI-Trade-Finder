@@ -24,7 +24,7 @@ import type { FyersBar } from '@/lib/fyers/client';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 
 /** Bars sit on this grid (seconds) — 5-minute candles, bar-START stamps. */
-export const FYERS_BUCKET_SEC = 300;
+export { FYERS_BUCKET_SEC, fyersBucketFor } from './bucket';
 
 export type FyersInstrument = 'EQ' | 'FUT';
 
@@ -78,10 +78,6 @@ export async function ensureFyersCandlesTable(): Promise<void> {
 }
 
 /** Floor an epoch-ms wall clock to the 5-min bar-start (epoch seconds). */
-export function fyersBucketFor(nowMs: number): number {
-  return Math.floor(nowMs / 1000 / FYERS_BUCKET_SEC) * FYERS_BUCKET_SEC;
-}
-
 /**
  * Upsert one symbol+instrument's full-day bar set. Idempotent: the PK dedupes,
  * completed bars overwrite with identical values, and the still-forming current

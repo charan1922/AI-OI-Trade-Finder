@@ -4,6 +4,7 @@
 
 import type { BreakoutSignal } from '@/lib/breakout';
 import type { PriorityFeed, PriorityReason, PriorityTier } from '@/lib/priority-refresh/types';
+import type { SectorAggregate } from '@/lib/sector/aggregate';
 
 export type OptionSide = 'CE' | 'PE';
 
@@ -249,6 +250,12 @@ export interface SuggestResponse {
   tilt?: MarketTilt;
   /** Sector inflow/outflow read among the candidates, strongest first. */
   sectorFlow?: SectorFlow[];
+  /** Per-sector turnover-weighted move + breadth among the scanned candidates —
+   *  the input the priority-refresh shadow producer turns into a stored sector
+   *  snapshot for the next cycle's plan (measurement only). */
+  sectorAggregates?: SectorAggregate[];
+  /** Dhan quote observation time, captured before scanner-side DB/candle work. */
+  marketDataAsOfMs?: number;
   /** Everything persisted earlier today (continuity across loop iterations). */
   earlierToday: StoredSuggestion[];
   /** Earlier calls + live price — the position-management feed (see TrackedPosition). */
