@@ -44,6 +44,9 @@ import { runConfigDriftChecks } from './config-drift-checks';
 import { runGradeChecks } from './grade-checks';
 import { runProfitProtectChecks } from './profit-protect-checks';
 import { ensureSuggestionsTable, getSuggestions, recordOutcome } from '../lib/trade-suggest/store';
+import { getLatestPriorityCycle, getPriorityCyclesForDate, recordPriorityCycle } from '../lib/priority-refresh/telemetry-store';
+import { getLatestSectorSnapshot, recordSectorSnapshot } from '../lib/priority-refresh/sector-snapshot-store';
+import type { ActiveSectorSignal } from '../lib/priority-refresh/types';
 import { todayIST } from '../lib/dhan/market-feed';
 import { hasRequiredEqBar } from '../lib/fyers/poller';
 
@@ -337,6 +340,65 @@ async function main(): Promise<void> {
     check('store: regrade overwrites grade + shadow', afterRegrade?.spotOutcome === 'target' && afterRegrade?.spotOutcomeR === 2 && afterRegrade?.protectShadow === '{"breakeven@1R":2}', `${afterRegrade?.spotOutcome} ${afterRegrade?.spotOutcomeR}`);
     check('store: regrade PRESERVES original outcomeAt (UI Outcome grade time)', afterRegrade?.outcomeAt === pinnedOutcomeAt, `${pinnedOutcomeAt} → ${afterRegrade?.outcomeAt}`);
     await prisma.$executeRawUnsafe(`DELETE FROM trade_suggestions WHERE date = ?`, sd);
+  }
+
+  // ── 2d. Priority-refresh stores: telemetry round-trip + sector batch semantics ──
+  //     DB path the CI pure checks can't cover (PR#11 review): cycle telemetry
+  //     write/read + same-bucket upsert; sector snapshot batches — empty latest
+  //     returns [] (no stale carryover), and a rerun atomically drops sectors
+  //     that disappeared.
+  {
+    const pd = '2099-05-05'; // synthetic — cannot collide with real rows
+    const cleanup = async () => {
+      // Tolerant: the tables are created lazily on first write, so a pre-test
+      // cleanup runs before they exist.
+      for (const tbl of ['priority_refresh_cycles', 'priority_sector_snapshots', 'priority_sector_batches']) {
+        try {
+          await prisma.$executeRawUnsafe(`DELETE FROM ${tbl} WHERE date = ?`, pd);
+        } catch {
+          // table not created yet — nothing to clean
+        }
+      }
+    };
+    await cleanup();
+
+    const baseRow = {
+      date: pd, bucketTs: 1000, shadowEnabled: true, cappedLiveEnabled: false, blockStaleEntry: true,
+      sectorShadowEnabled: true, sectorLiveEnabled: false, perFeedLimit: 10, maxUniqueTier1: 40, sectorReservedSlots: 10,
+      universeCount: 166, scanPoolCount: 60, fullPriorityCount: 55, tier0Count: 2, baseTier1Count: 30,
+      sectorPromotedCount: 5, cappedWaitCount: 42, suggestionCount: 4, suggestionsOutsideCap: 1,
+      outsideCapSymbols: ['ZZZ'], activeBullishSectors: ['PSU Bank'], activeBearishSectors: [] as string[],
+    };
+    await recordPriorityCycle(baseRow);
+    const c1 = await getLatestPriorityCycle(pd);
+    check(
+      'priority-store: cycle telemetry round-trips',
+      c1?.cappedWaitCount === 42 && c1?.suggestionsOutsideCap === 1 && c1?.outsideCapSymbols.join(',') === 'ZZZ'
+    );
+    await recordPriorityCycle({ ...baseRow, suggestionCount: 7 });
+    const rows = await getPriorityCyclesForDate(pd);
+    check('priority-store: same-bucket upsert does not duplicate', rows.length === 1 && rows[0].suggestionCount === 7);
+
+    const sig = (s: string, dir: 'bullish' | 'bearish', asOfMs: number): ActiveSectorSignal => ({
+      sector: s, direction: dir, weightedPct: dir === 'bullish' ? 1 : -1, totalTurnover: 9, turnoverRank: 1,
+      advanceRatio: dir === 'bullish' ? 0.8 : 0.2, stocks: 5, officialNsePct: null, asOfMs,
+    });
+    await recordSectorSnapshot(pd, 1000, 1_000_000, [sig('PSU Bank', 'bullish', 1_000_000), sig('Realty', 'bearish', 1_000_000)]);
+    const snap1 = await getLatestSectorSnapshot(pd);
+    check('priority-store: non-empty sector snapshot reads back', snap1.length === 2 && snap1.some((s) => s.sector === 'PSU Bank'));
+
+    // Newer bucket qualifies NOTHING → latest read is [] (not the old PSU rows).
+    await recordSectorSnapshot(pd, 1300, 1_000_300, []);
+    const snap2 = await getLatestSectorSnapshot(pd);
+    check('priority-store: empty latest batch returns [] (no stale carryover)', snap2.length === 0);
+
+    // Rerun the same bucket with a sector dropped → atomic replace removes it.
+    await recordSectorSnapshot(pd, 1600, 1_000_600, [sig('PSU Bank', 'bullish', 1_000_600), sig('IT', 'bullish', 1_000_600)]);
+    await recordSectorSnapshot(pd, 1600, 1_000_650, [sig('PSU Bank', 'bullish', 1_000_650)]);
+    const snap3 = await getLatestSectorSnapshot(pd);
+    check('priority-store: rerun removes disappeared sectors (atomic replace)', snap3.length === 1 && snap3[0].sector === 'PSU Bank');
+
+    await cleanup();
   }
 
   // ── 3. Settings CRUD ───────────────────────────────────────────────────────

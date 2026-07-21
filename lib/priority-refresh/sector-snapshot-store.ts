@@ -1,21 +1,39 @@
 /**
- * priority_sector_snapshots — the newest healthy per-cycle sector snapshot, so
- * the shadow plan can read a fresh sector read WITHOUT any Dhan call on the
- * critical path (plan §12-13, §31). Written after the scan/AI are released;
+ * Per-cycle sector snapshot for the shadow plan — read WITHOUT any Dhan call on
+ * the critical path (plan §12-13, §31). Written after the scan/AI are released;
  * read at the start of the NEXT cycle's shadow plan.
  *
- * Derived-table convention (raw CREATE TABLE IF NOT EXISTS, lazy) mirrored by the
- * PrioritySectorSnapshot model in schema.prisma. Reads are cheap; writes are
+ * Two tables (derived-table convention, mirrored in schema.prisma):
+ *  - priority_sector_batches: ONE marker row per (date, bucketTs), written EVERY
+ *    production even when zero sectors qualify. This is what "latest snapshot"
+ *    means — so a cycle that qualifies nothing correctly reads as "no active
+ *    sectors this cycle", never falling back to an older cycle's rows (PR#11
+ *    review B4).
+ *  - priority_sector_snapshots: the qualified signal rows for that batch.
+ *
+ * Each production REPLACES the bucket atomically (delete rows → write marker →
+ * insert rows, in ONE transaction), so a partial write is never read as complete
+ * and sectors that dropped out don't linger (PR#11 review B5). Writes are
  * best-effort — a failure NEVER propagates into the poller.
  */
 import { prisma } from '@/lib/db';
 import { PRIORITY_RETENTION_SESSIONS } from './config';
 import type { ActiveSectorSignal } from './types';
 
-let tableReady = false;
+let tablesReady = false;
 
-async function ensureTable(): Promise<void> {
-  if (tableReady) return;
+async function ensureTables(): Promise<void> {
+  if (tablesReady) return;
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS priority_sector_batches (
+      date        TEXT    NOT NULL,
+      bucketTs    INTEGER NOT NULL,
+      asOfMs      INTEGER NOT NULL,
+      signalCount INTEGER NOT NULL,
+      createdAt   TEXT    NOT NULL,
+      PRIMARY KEY (date, bucketTs)
+    )
+  `);
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS priority_sector_snapshots (
       date           TEXT    NOT NULL,
@@ -36,54 +54,81 @@ async function ensureTable(): Promise<void> {
   await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS idx_priority_sector_snapshots_latest ON priority_sector_snapshots (date, bucketTs DESC)`
   );
-  tableReady = true;
+  tablesReady = true;
 }
 
-/** Persist one cycle's qualified sector signals. Best-effort (never throws). */
-export async function recordSectorSnapshot(date: string, bucketTs: number, signals: ActiveSectorSignal[]): Promise<void> {
-  if (signals.length === 0) return;
+/**
+ * Persist one cycle's sector snapshot — ALWAYS writes the batch marker (even for
+ * zero signals) and replaces the bucket atomically. `asOfMs` is when the snapshot
+ * was produced (the reader ages the signals against it). Best-effort.
+ */
+export async function recordSectorSnapshot(
+  date: string,
+  bucketTs: number,
+  asOfMs: number,
+  signals: ActiveSectorSignal[]
+): Promise<void> {
   try {
-    await ensureTable();
+    await ensureTables();
     const now = new Date().toISOString();
-    for (const s of signals) {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO priority_sector_snapshots
-           (date, bucketTs, sector, direction, weightedPct, totalTurnover, turnoverRank, advanceRatio, stocks, officialNsePct, asOfMs, createdAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(date, bucketTs, sector) DO UPDATE SET
-           direction = excluded.direction, weightedPct = excluded.weightedPct, totalTurnover = excluded.totalTurnover,
-           turnoverRank = excluded.turnoverRank, advanceRatio = excluded.advanceRatio, stocks = excluded.stocks,
-           officialNsePct = excluded.officialNsePct, asOfMs = excluded.asOfMs`,
+    const ops = [
+      prisma.$executeRawUnsafe(`DELETE FROM priority_sector_snapshots WHERE date = ? AND bucketTs = ?`, date, bucketTs),
+      prisma.$executeRawUnsafe(
+        `INSERT INTO priority_sector_batches (date, bucketTs, asOfMs, signalCount, createdAt) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(date, bucketTs) DO UPDATE SET asOfMs = excluded.asOfMs, signalCount = excluded.signalCount, createdAt = excluded.createdAt`,
         date,
         bucketTs,
-        s.sector,
-        s.direction,
-        s.weightedPct,
-        s.totalTurnover,
-        s.turnoverRank,
-        s.advanceRatio,
-        s.stocks,
-        s.officialNsePct,
-        s.asOfMs,
+        asOfMs,
+        signals.length,
         now
-      );
-    }
+      ),
+      ...signals.map((s) =>
+        prisma.$executeRawUnsafe(
+          `INSERT INTO priority_sector_snapshots
+             (date, bucketTs, sector, direction, weightedPct, totalTurnover, turnoverRank, advanceRatio, stocks, officialNsePct, asOfMs, createdAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          date,
+          bucketTs,
+          s.sector,
+          s.direction,
+          s.weightedPct,
+          s.totalTurnover,
+          s.turnoverRank,
+          s.advanceRatio,
+          s.stocks,
+          s.officialNsePct,
+          asOfMs,
+          now
+        )
+      ),
+    ];
+    await prisma.$transaction(ops);
   } catch (err) {
     console.warn(`[priority-refresh] sector snapshot write failed: ${(err as Error).message}`);
   }
 }
 
-/** The most recent stored sector signals for `date` (the latest bucketTs), or []
- *  when none / on any error. Best-effort — never throws into the poller. */
+/**
+ * The signals of the NEWEST batch for `date` (may be [] when the latest cycle
+ * qualified nothing — distinct from "no batch at all", which returns []). Reads
+ * the latest BATCH, then that batch's rows, so an empty newest cycle never
+ * surfaces an older cycle's signals. Best-effort ([] on any error).
+ */
 export async function getLatestSectorSnapshot(date: string): Promise<ActiveSectorSignal[]> {
   try {
-    await ensureTable();
+    await ensureTables();
+    const batch = (
+      await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT bucketTs FROM priority_sector_batches WHERE date = ? ORDER BY bucketTs DESC LIMIT 1`,
+        date
+      )
+    )[0];
+    if (!batch) return [];
     const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
       `SELECT sector, direction, weightedPct, totalTurnover, turnoverRank, advanceRatio, stocks, officialNsePct, asOfMs
-         FROM priority_sector_snapshots
-        WHERE date = ? AND bucketTs = (SELECT MAX(bucketTs) FROM priority_sector_snapshots WHERE date = ?)`,
+         FROM priority_sector_snapshots WHERE date = ? AND bucketTs = ?`,
       date,
-      date
+      Number(batch.bucketTs)
     );
     return rows.map((r) => ({
       sector: String(r.sector),
@@ -105,12 +150,12 @@ export async function getLatestSectorSnapshot(date: string): Promise<ActiveSecto
 /** Keep only the newest PRIORITY_RETENTION_SESSIONS dates. Best-effort. */
 export async function pruneSectorSnapshots(): Promise<void> {
   try {
-    await ensureTable();
-    await prisma.$executeRawUnsafe(
-      `DELETE FROM priority_sector_snapshots WHERE date NOT IN
-         (SELECT DISTINCT date FROM priority_sector_snapshots ORDER BY date DESC LIMIT ?)`,
-      PRIORITY_RETENTION_SESSIONS
-    );
+    await ensureTables();
+    const keep = `(SELECT DISTINCT date FROM priority_sector_batches ORDER BY date DESC LIMIT ?)`;
+    await prisma.$transaction([
+      prisma.$executeRawUnsafe(`DELETE FROM priority_sector_snapshots WHERE date NOT IN ${keep}`, PRIORITY_RETENTION_SESSIONS),
+      prisma.$executeRawUnsafe(`DELETE FROM priority_sector_batches WHERE date NOT IN ${keep}`, PRIORITY_RETENTION_SESSIONS),
+    ]);
   } catch {
     // best-effort retention — never blocks the poller
   }

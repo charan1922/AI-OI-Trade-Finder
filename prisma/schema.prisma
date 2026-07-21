@@ -525,6 +525,21 @@ model RuntimeDailyMarker {
 /// aggregation and read by the NEXT cycle's shadow plan (created at runtime via
 /// raw SQL in lib/priority-refresh/sector-snapshot-store.ts; declared here so
 /// `db push` keeps it). Measurement only — never changes trading.
+/// Priority-refresh SHADOW: one marker row per (date, bucketTs) sector-snapshot
+/// production — written EVERY cycle, even when zero sectors qualify, so the
+/// reader's "latest snapshot" is the latest CYCLE, not the latest cycle that
+/// happened to have rows (created at runtime in sector-snapshot-store.ts).
+model PrioritySectorBatch {
+  date        String
+  bucketTs    Int
+  asOfMs      Int
+  signalCount Int
+  createdAt   String
+
+  @@id([date, bucketTs])
+  @@map("priority_sector_batches")
+}
+
 model PrioritySectorSnapshot {
   date           String
   bucketTs       Int
@@ -568,9 +583,6 @@ model PriorityRefreshCycle {
   baseTier1Count        Int
   sectorPromotedCount   Int
   cappedWaitCount       Int
-  actualReleaseMs       Int?
-  shadowReleaseMs       Int?
-  estimatedSavedMs      Int?
   suggestionCount       Int     @default(0)
   suggestionsOutsideCap Int     @default(0)
   outsideCapSymbolsJson String?

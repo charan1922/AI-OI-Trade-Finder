@@ -29,9 +29,6 @@ export interface PriorityCycleRow {
   baseTier1Count: number;
   sectorPromotedCount: number;
   cappedWaitCount: number;
-  actualReleaseMs: number | null;
-  shadowReleaseMs: number | null;
-  estimatedSavedMs: number | null;
   suggestionCount: number;
   suggestionsOutsideCap: number;
   outsideCapSymbols: string[];
@@ -68,9 +65,6 @@ async function ensureTable(): Promise<void> {
       baseTier1Count        INTEGER NOT NULL,
       sectorPromotedCount   INTEGER NOT NULL,
       cappedWaitCount       INTEGER NOT NULL,
-      actualReleaseMs       INTEGER,
-      shadowReleaseMs       INTEGER,
-      estimatedSavedMs      INTEGER,
       suggestionCount       INTEGER NOT NULL DEFAULT 0,
       suggestionsOutsideCap INTEGER NOT NULL DEFAULT 0,
       outsideCapSymbolsJson TEXT,
@@ -93,17 +87,16 @@ export async function recordPriorityCycle(row: PriorityCycleRow): Promise<void> 
       `INSERT INTO priority_refresh_cycles
          (date, bucketTs, shadowEnabled, cappedLiveEnabled, blockStaleEntry, sectorShadowEnabled, sectorLiveEnabled,
           perFeedLimit, maxUniqueTier1, sectorReservedSlots, universeCount, scanPoolCount, fullPriorityCount,
-          tier0Count, baseTier1Count, sectorPromotedCount, cappedWaitCount, actualReleaseMs, shadowReleaseMs, estimatedSavedMs,
+          tier0Count, baseTier1Count, sectorPromotedCount, cappedWaitCount,
           suggestionCount, suggestionsOutsideCap, outsideCapSymbolsJson, activeBullishJson, activeBearishJson, createdAt)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(date, bucketTs) DO UPDATE SET
          shadowEnabled=excluded.shadowEnabled, cappedLiveEnabled=excluded.cappedLiveEnabled, blockStaleEntry=excluded.blockStaleEntry,
          sectorShadowEnabled=excluded.sectorShadowEnabled, sectorLiveEnabled=excluded.sectorLiveEnabled,
          perFeedLimit=excluded.perFeedLimit, maxUniqueTier1=excluded.maxUniqueTier1, sectorReservedSlots=excluded.sectorReservedSlots,
          universeCount=excluded.universeCount, scanPoolCount=excluded.scanPoolCount, fullPriorityCount=excluded.fullPriorityCount,
          tier0Count=excluded.tier0Count, baseTier1Count=excluded.baseTier1Count, sectorPromotedCount=excluded.sectorPromotedCount,
-         cappedWaitCount=excluded.cappedWaitCount, actualReleaseMs=excluded.actualReleaseMs, shadowReleaseMs=excluded.shadowReleaseMs,
-         estimatedSavedMs=excluded.estimatedSavedMs, suggestionCount=excluded.suggestionCount,
+         cappedWaitCount=excluded.cappedWaitCount, suggestionCount=excluded.suggestionCount,
          suggestionsOutsideCap=excluded.suggestionsOutsideCap, outsideCapSymbolsJson=excluded.outsideCapSymbolsJson,
          activeBullishJson=excluded.activeBullishJson, activeBearishJson=excluded.activeBearishJson`,
       row.date,
@@ -123,9 +116,6 @@ export async function recordPriorityCycle(row: PriorityCycleRow): Promise<void> 
       row.baseTier1Count,
       row.sectorPromotedCount,
       row.cappedWaitCount,
-      row.actualReleaseMs,
-      row.shadowReleaseMs,
-      row.estimatedSavedMs,
       row.suggestionCount,
       row.suggestionsOutsideCap,
       JSON.stringify(row.outsideCapSymbols),
@@ -151,7 +141,6 @@ function parseArr(v: unknown): string[] {
 function toStored(r: Record<string, unknown>): StoredPriorityCycle {
   const n = (k: string) => Number(r[k]);
   const bool = (k: string) => Number(r[k]) === 1;
-  const nOrNull = (k: string) => (r[k] == null ? null : Number(r[k]));
   return {
     date: String(r.date),
     bucketTs: n('bucketTs'),
@@ -170,9 +159,6 @@ function toStored(r: Record<string, unknown>): StoredPriorityCycle {
     baseTier1Count: n('baseTier1Count'),
     sectorPromotedCount: n('sectorPromotedCount'),
     cappedWaitCount: n('cappedWaitCount'),
-    actualReleaseMs: nOrNull('actualReleaseMs'),
-    shadowReleaseMs: nOrNull('shadowReleaseMs'),
-    estimatedSavedMs: nOrNull('estimatedSavedMs'),
     suggestionCount: n('suggestionCount'),
     suggestionsOutsideCap: n('suggestionsOutsideCap'),
     outsideCapSymbols: parseArr(r.outsideCapSymbolsJson),

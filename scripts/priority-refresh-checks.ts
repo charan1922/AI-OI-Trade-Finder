@@ -6,7 +6,7 @@
  * promotion respects PRIORITY_PER_FEED; unknown breadth fails closed). No
  * database, no I/O — runs in GitHub CI via scripts/verify-priority-refresh.ts.
  */
-import { assertPriorityNumberCombo, assertPriorityToggleCombo } from '../lib/config/feature-toggles';
+import { assertPriorityNumberCombo } from '../lib/config/feature-toggles';
 import type { SectorAggregate } from '../lib/sector/aggregate';
 import { FEED_ORDER } from '../lib/priority-refresh/config';
 import { buildPriorityPlan } from '../lib/priority-refresh/build-plan';
@@ -220,6 +220,25 @@ export function runPriorityRefreshChecks(check: Check): void {
     check('plan: no active sectors → ordinary selection, no promotions', plan.sectorPromotedSymbols.length === 0);
   }
   {
+    // The REAL next-cycle workflow: a snapshot produced by the previous 5-min
+    // cycle is ~4–5 min old; under the corrected 420s default it must be ACCEPTED
+    // (PR#11 review B3). The old 120s default would have rejected every read.
+    const accepted = selectActiveSectors({
+      snapshots: [sector('PSU Bank', 'bullish', { asOfMs: NOW - 270_000 })], // 4.5 min old
+      topPerSide: 2,
+      nowMs: NOW,
+      maxAgeSec: 420,
+    });
+    check('sector: previous-cycle snapshot (270s old) accepted under 420s maxAge', accepted.bullish.length === 1);
+    const rejected = selectActiveSectors({
+      snapshots: [sector('PSU Bank', 'bullish', { asOfMs: NOW - 500_000 })], // > 420s
+      topPerSide: 2,
+      nowMs: NOW,
+      maxAgeSec: 420,
+    });
+    check('sector: snapshot older than maxAge is still rejected', rejected.bullish.length === 0);
+  }
+  {
     // PR#9 review Blocker 3: sector promotion must respect PRIORITY_PER_FEED. A
     // rank-11 stock in the strongest active sector must NOT be promoted.
     const f = emptyFeeds();
@@ -297,10 +316,6 @@ export function runPriorityRefreshChecks(check: Check): void {
       return true;
     }
   };
-  check('guard: capped ON while stale-block OFF → rejected', throws(() => assertPriorityToggleCombo('USE_CAPPED_PRIORITY_REFRESH', true, { blockStale: false, capped: false })));
-  check('guard: capped ON while stale-block ON → allowed', !throws(() => assertPriorityToggleCombo('USE_CAPPED_PRIORITY_REFRESH', true, { blockStale: true, capped: false })));
-  check('guard: disabling stale-block while capped ON → rejected', throws(() => assertPriorityToggleCombo('BLOCK_STALE_AUTO_ENTRY', false, { blockStale: true, capped: true })));
-  check('guard: disabling stale-block while capped OFF → allowed', !throws(() => assertPriorityToggleCombo('BLOCK_STALE_AUTO_ENTRY', false, { blockStale: true, capped: false })));
   check('guard: reserved slots > max unique → rejected', throws(() => assertPriorityNumberCombo('PRIORITY_SECTOR_RESERVED_SLOTS', 41, { maxUnique: 40, reserved: 10 })));
   check('guard: reserved slots ≤ max unique → allowed', !throws(() => assertPriorityNumberCombo('PRIORITY_SECTOR_RESERVED_SLOTS', 10, { maxUnique: 40, reserved: 10 })));
   check('guard: max unique < reserved slots → rejected', throws(() => assertPriorityNumberCombo('PRIORITY_MAX_UNIQUE', 5, { maxUnique: 40, reserved: 10 })));

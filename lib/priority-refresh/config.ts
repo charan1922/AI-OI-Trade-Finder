@@ -34,8 +34,12 @@ export const PRIORITY_MAX_UNIQUE = 40;
 export const PRIORITY_SECTOR_RESERVED_SLOTS = 10;
 /** Active sectors selected per side (bullish / bearish). */
 export const PRIORITY_TOP_SECTORS_PER_SIDE = 2;
-/** Max age of a stored sector snapshot before sector promotion is skipped (s). */
-export const PRIORITY_SECTOR_MAX_AGE_SEC = 120;
+/** Max age of a stored sector snapshot before sector promotion is skipped (s).
+ *  MUST exceed one 5-min poller cycle: the snapshot is produced by the PREVIOUS
+ *  cycle, so a next-cycle read is ~4–5 min old. 420s = one cycle + grace. (The
+ *  plan §2 said 120s, but at a 5-min cadence that rejects every read — PR#11
+ *  review.) */
+export const PRIORITY_SECTOR_MAX_AGE_SEC = 420;
 /** Only sectors within the top-N by turnover are eligible to qualify as active
  *  (plan §10 "rank sectors by total turnover"). Internal — not a /config knob. */
 export const PRIORITY_HIGH_TURNOVER_SECTORS = 6;

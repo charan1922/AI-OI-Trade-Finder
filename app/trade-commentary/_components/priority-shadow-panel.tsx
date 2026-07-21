@@ -9,8 +9,6 @@ interface LatestCycle {
   baseTier1Count: number;
   sectorPromotedCount: number;
   cappedWaitCount: number;
-  shadowReleaseMs: number | null;
-  actualReleaseMs: number | null;
   activeBullishSectors: string[];
   activeBearishSectors: string[];
   cappedLiveEnabled: boolean;
@@ -20,21 +18,17 @@ interface ShadowSummary {
   success: boolean;
   cycles: number;
   latest: LatestCycle | null;
-  p50SavedMs: number | null;
-  p95SavedMs: number | null;
-  measuredCycles: number;
   totalSuggestions: number;
   totalOutsideCap: number;
   outsideCapPct: number;
   outsideCapSymbols: string[];
 }
 
-const secs = (ms: number | null): string => (ms == null ? '—' : `${(ms / 1000).toFixed(1)}s`);
-
 /**
- * Read-only priority-refresh SHADOW summary (measurement only — it never changes
- * what the poller waits for or how it trades). Self-fetches so it's decoupled
- * from the main commentary data. Renders nothing until there is data.
+ * Read-only priority-refresh SHADOW summary (MEASUREMENT ONLY — it never changes
+ * what the poller waits for or how it trades, and it does not reorder anything).
+ * Shows the proposed reduced-plan membership + how often a suggestion fell
+ * OUTSIDE the proposed cap. Self-fetches; renders nothing until there is data.
  */
 export function PriorityShadowPanel() {
   const [data, setData] = useState<ShadowSummary | null>(null);
@@ -75,19 +69,10 @@ export function PriorityShadowPanel() {
         <div>Tier 0: <span className="font-medium">{c.tier0Count}</span></div>
         <div>Base Tier 1: <span className="font-medium">{c.baseTier1Count}</span></div>
         <div>Sector promoted: <span className="font-medium">{c.sectorPromotedCount}</span></div>
-        <div>Wait group: <span className="font-medium">{c.cappedWaitCount}</span></div>
-        <div>
-          Est. saving p50: <span className="font-medium">{secs(data.p50SavedMs)}</span>
-          {data.p95SavedMs != null && <span className="text-muted-foreground"> · p95 {secs(data.p95SavedMs)}</span>}
-        </div>
+        <div>Proposed wait group: <span className="font-medium">{c.cappedWaitCount}</span></div>
       </div>
 
-      <div className="mt-2 text-xs text-muted-foreground">
-        latest cycle: shadow release {secs(c.shadowReleaseMs)} vs actual {secs(c.actualReleaseMs)} ·{' '}
-        measured over {data.measuredCycles} cycle(s)
-      </div>
-
-      <div className="mt-1 text-xs">
+      <div className="mt-2 text-xs">
         Suggestions outside the proposed cap:{' '}
         <span className={data.totalOutsideCap > 0 ? 'font-medium text-amber-600 dark:text-amber-400' : 'font-medium'}>
           {data.totalOutsideCap} of {data.totalSuggestions} ({data.outsideCapPct}%)
@@ -99,10 +84,15 @@ export function PriorityShadowPanel() {
 
       {(c.activeBullishSectors.length > 0 || c.activeBearishSectors.length > 0) && (
         <div className="mt-1 text-xs text-muted-foreground">
-          active sectors — bullish: {c.activeBullishSectors.join(', ') || '—'} · bearish:{' '}
+          candidate-pool active sectors — bullish: {c.activeBullishSectors.join(', ') || '—'} · bearish:{' '}
           {c.activeBearishSectors.join(', ') || '—'}
         </div>
       )}
+      <div className="mt-2 text-[11px] text-muted-foreground">
+        Sector activity is read from the scan’s candidate pool (mover feeds), not the full F&amp;O heatmap — a
+        first-cut shadow signal; a full-universe source lands with sector-live. Timing (“how much sooner”) is not
+        measured here because this PR does not reorder the download.
+      </div>
     </section>
   );
 }

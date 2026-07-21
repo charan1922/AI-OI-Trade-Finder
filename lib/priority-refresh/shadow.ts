@@ -78,8 +78,9 @@ export async function readShadowSettings(): Promise<ShadowSettings> {
   };
 }
 
-/** Assembled shadow context for one cycle. Timing is filled in by the poller
- *  after the priority download completes; suggestions after the scan. */
+/** Assembled shadow context for one cycle (membership + coverage only — this PR
+ *  measures no timing; the reorder needed for a faithful timing read ships with
+ *  the capped-live PR). Suggestions are supplied after the scan. */
 export interface ShadowCycleContext {
   plan: PriorityPlan;
   settings: ShadowSettings;
@@ -90,8 +91,6 @@ export interface ShadowCycleContext {
   fullPriorityCount: number;
   activeBullish: string[];
   activeBearish: string[];
-  shadowReleaseMs: number | null;
-  actualReleaseMs: number | null;
 }
 
 /**
@@ -153,8 +152,6 @@ export async function buildShadowCycleContext(input: {
       fullPriorityCount: input.fullPriority.length,
       activeBullish,
       activeBearish,
-      shadowReleaseMs: null,
-      actualReleaseMs: null,
     };
   } catch (err) {
     console.warn(`[priority-refresh] shadow plan build failed: ${(err as Error).message}`);
@@ -170,14 +167,7 @@ export async function buildShadowCycleContext(input: {
 export async function recordShadowCycle(ctx: ShadowCycleContext, suggestions: TradeSuggestion[]): Promise<void> {
   const cappedSet = new Set(ctx.plan.cappedWaitSymbols);
   const outside = suggestions.filter((s) => !cappedSet.has(s.symbol)).map((s) => s.symbol);
-  const estimatedSavedMs =
-    ctx.actualReleaseMs != null && ctx.shadowReleaseMs != null ? Math.max(0, ctx.actualReleaseMs - ctx.shadowReleaseMs) : null;
-  await recordPriorityCycle(toRow(ctx, suggestions.length, outside, estimatedSavedMs));
-}
-
-/** Shape the persisted row from the context. */
-function toRow(ctx: ShadowCycleContext, suggestionCount: number, outside: string[], estimatedSavedMs: number | null) {
-  return {
+  await recordPriorityCycle({
     date: ctx.today,
     bucketTs: ctx.bucketTs,
     shadowEnabled: ctx.settings.shadowEnabled,
@@ -195,13 +185,10 @@ function toRow(ctx: ShadowCycleContext, suggestionCount: number, outside: string
     baseTier1Count: ctx.plan.baseTier1Symbols.length,
     sectorPromotedCount: ctx.plan.sectorPromotedSymbols.length,
     cappedWaitCount: ctx.plan.cappedWaitSymbols.length,
-    actualReleaseMs: ctx.actualReleaseMs,
-    shadowReleaseMs: ctx.shadowReleaseMs,
-    estimatedSavedMs,
-    suggestionCount,
+    suggestionCount: suggestions.length,
     suggestionsOutsideCap: outside.length,
     outsideCapSymbols: outside,
     activeBullishSectors: ctx.activeBullish,
     activeBearishSectors: ctx.activeBearish,
-  };
+  });
 }

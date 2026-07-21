@@ -6,6 +6,13 @@
  * already been released, and the NEXT cycle's shadow plan reads it (plan §12-13).
  *
  * `buildActiveSectorSignals` is pure — unit-tested in scripts/priority-refresh-checks.ts.
+ *
+ * SCOPE CAVEAT (PR#11 review B9): the aggregates come from the SCAN's candidate
+ * pool (the mover feeds), NOT the full F&O heatmap. So this is "candidate-pool
+ * sector activity" — a first-cut shadow signal with selection bias (sectors with
+ * more mover-list representation look more active, and the same feeds pick both
+ * the stocks and the sectors). A full-universe sector snapshot is deferred to the
+ * sector-live PR; until then treat these as directional-only evidence.
  */
 import type { SectorAggregate } from '@/lib/sector/aggregate';
 import { PRIORITY_HIGH_TURNOVER_SECTORS } from './config';
