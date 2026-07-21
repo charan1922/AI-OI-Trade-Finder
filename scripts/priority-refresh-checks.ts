@@ -429,9 +429,10 @@ export async function runPriorityRefreshOrchestrationChecks(check: Check): Promi
     },
     decide: async () => {
       events.push('Auto Trade decision');
-      return undefined;
+      return { commentaryHandled: true, shadowSafe: true };
     },
-    afterDecision: async (result) => {
+    afterDecision: async (result, decision) => {
+      if (!decision.shadowSafe) return;
       await runPostDecisionShadowCore(input, result, {
         readSettings: async () => {
           events.push('shadow settings read');
@@ -469,6 +470,43 @@ export async function runPriorityRefreshOrchestrationChecks(check: Check): Promi
     'shadow sector persistence',
   ];
   check('orchestration: all shadow work is after refresh, scan, and Auto Trade decision', events.join('|') === expected.join('|'), events.join(' → '));
+
+  const notOwnerEvents: string[] = [];
+  await runLiveDecisionPath({
+    scan: async () => ({ suggestions: [] }),
+    decide: async () => ({ commentaryHandled: true, shadowSafe: false }),
+    afterDecision: async (result, decision) => {
+      if (!decision.shadowSafe) return;
+      await runPostDecisionShadowCore(input, result, {
+        readSettings: async () => {
+          notOwnerEvents.push('settings read');
+          return settings;
+        },
+        readPreviousSectors: async () => {
+          notOwnerEvents.push('sector read');
+          return [];
+        },
+        selectSectors: selectActiveSectors,
+        buildPlan: (planInput) => {
+          notOwnerEvents.push('planner build');
+          return buildPriorityPlan(planInput);
+        },
+        prepareSectorWrite: prepareSectorSnapshotWrite,
+        recordCycle: async () => {
+          notOwnerEvents.push('telemetry write');
+        },
+        recordSectors: async () => {
+          notOwnerEvents.push('sector write');
+        },
+        nowMs: () => NOW,
+      });
+    },
+  });
+  check(
+    'orchestration: non-owner Auto Trade result skips every shadow read/build/write',
+    notOwnerEvents.length === 0,
+    notOwnerEvents.join(' → ')
+  );
 
   const disabledEvents: string[] = [];
   await runPostDecisionShadowCore(input, { suggestions: [] }, {

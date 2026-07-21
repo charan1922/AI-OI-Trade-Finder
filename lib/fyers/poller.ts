@@ -119,6 +119,12 @@ export interface CaptureTiming {
   detail: string | null;
 }
 
+interface AutonomousDecisionResult {
+  commentaryHandled: boolean;
+  /** True only when this process owned and completed the Auto Trade pass. */
+  shadowSafe: boolean;
+}
+
 interface PollerState {
   started: boolean;
   paused: boolean;
@@ -683,7 +689,7 @@ async function runAutonomousCapture(
     try {
       const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
       let scanReadyMs = 0;
-      const { scan: result, decision: commentaryHandled } = await runLiveDecisionPath({
+      const { scan: result, decision } = await runLiveDecisionPath({
         scan: async () => {
           const result = await timeline.step(
             'scan (trade-suggest)',
@@ -705,9 +711,11 @@ async function runAutonomousCapture(
           // kill switch / nothing to decide / AI failed). Both blocks are isolated:
           // a failure never affects the scan or the recorder.
           let commentaryHandled = false;
+          let shadowSafe = false;
           try {
             const { runAutoTradePass } = await import('@/lib/auto-trade/engine');
             const outcome = await runAutoTradePass(result, timeline);
+            shadowSafe = outcome.ran;
             const decisionReadyMs = Date.now();
             timing.status = outcome.ran ? (outcome.error ? 'decision-failed' : 'completed') : 'skipped-overlap';
             timing.scanToDecisionMs = decisionReadyMs - scanReadyMs;
@@ -732,15 +740,16 @@ async function runAutonomousCapture(
             timing.detail = (err as Error).message;
             console.warn(`${TAG} auto-trade failed: ${(err as Error).message}`);
           }
-          return commentaryHandled;
+          return { commentaryHandled, shadowSafe } satisfies AutonomousDecisionResult;
         },
-        afterDecision: (result) => {
+        afterDecision: (result, decision) => {
           // Queue every shadow read/build/write only after scan + Auto Trade.
-          // The frozen input itself was the only shadow-related critical-path work.
-          if (shadowInput) void runPostDecisionShadow(shadowInput, result);
+          // If another process owns the pass, skip this measurement cycle rather
+          // than contend with its money-touching database work.
+          if (shadowInput && decision.shadowSafe) void runPostDecisionShadow(shadowInput, result);
         },
       });
-      if (!commentaryHandled) {
+      if (!decision.commentaryHandled) {
         try {
           const { runAndStoreCommentary } = await import('@/lib/ai-commentary/run');
           const outcome = await runAndStoreCommentary(result, timeline);
