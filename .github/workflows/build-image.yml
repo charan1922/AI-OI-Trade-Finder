@@ -74,6 +74,10 @@ jobs:
       # fairness, Tier 0/1/2 tiering, the 40-unique cap, sector promotion inside
       # the cap). Same reproducible `pnpm exec tsx` runner as above.
       - run: pnpm exec tsx scripts/verify-priority-refresh.ts
+      # DB-free pure checks for the candle-freshness rule + the auto-trade
+      # stale-candle ENTRY gate (fresh→allow, stale/missing→reject, block OFF→
+      # existing gates decide). Same reproducible `pnpm exec tsx` runner.
+      - run: pnpm exec tsx scripts/verify-freshness-gate.ts
 
   build:
     needs: validate

@@ -8,7 +8,10 @@
 
 import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
-import { getNumberSetting } from '@/lib/config/feature-toggles';
+import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
+import { getLatestEqBucket } from '@/lib/fyers/candle-store';
+import { BLOCK_STALE_AUTO_ENTRY } from '@/lib/priority-refresh/config';
+import { computeCandleFreshness } from '@/lib/priority-refresh/freshness';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
 import { getExecutionAdapter } from './brokers';
 import { minuteOfDayIST } from './config';
@@ -58,16 +61,22 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
 
   // Cap counts EXCLUDING this proposal (it already reserved its own slot).
   const adapter = getExecutionAdapter(settings, 'approval');
-  const [entriesToday, exposure, pnl, brokerFunds, entryCutoffMin, latch, sessionVerified] = await Promise.all([
-    countEntriesToday(date),
-    getExposure(date),
-    dailyRealizedPnl(date),
-    adapter.getFunds(),
-    getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
-    getRiskLatch(),
-    isVerifiedTradingDay(date),
-  ]);
+  const [entriesToday, exposure, pnl, brokerFunds, entryCutoffMin, latch, sessionVerified, blockStaleAutoEntry, latestEqBucket] =
+    await Promise.all([
+      countEntriesToday(date),
+      getExposure(date),
+      dailyRealizedPnl(date),
+      adapter.getFunds(),
+      getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
+      getRiskLatch(),
+      isVerifiedTradingDay(date),
+      getToggle('BLOCK_STALE_AUTO_ENTRY', BLOCK_STALE_AUTO_ENTRY),
+      getLatestEqBucket(trade.symbol, date),
+    ]);
   const funds = brokerFunds.available;
+  // Re-check candle freshness at approval/placement time (plan §26) — the same
+  // stale-entry block the AI path enforces. Exits/guards are never gated here.
+  const freshness = computeCandleFreshness(latestEqBucket, Date.now());
   const verdict = checkEntryGates({
     settings,
     liveEnvEnabled: isAutoTradeLiveEnabled(),
@@ -87,6 +96,10 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     spreadPct: fresh?.spreadPct ?? null,
     hasSlSpot: trade.slSpot != null,
     brokerFundsAvailable: funds,
+    blockStaleAutoEntry,
+    candleLatestBucketTs: freshness.latestBucketTs,
+    candleRequiredBucketTs: freshness.requiredBucketTs,
+    candleFresh: freshness.fresh,
   });
   if (!verdict.allow) {
     await insertDecision({

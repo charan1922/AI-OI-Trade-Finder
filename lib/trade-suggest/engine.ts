@@ -26,6 +26,7 @@ import type { LiveQuoteResponse, LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
+import { computeCandleFreshness } from '@/lib/priority-refresh/freshness';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
@@ -958,6 +959,13 @@ export async function runTradeSuggest(
       ...s.setupReasons,
     ];
 
+    // Candle freshness from the EQ bars already loaded for this pick — no extra
+    // query. Auto-trade will refuse a NEW entry on a stale completed candle
+    // (enforced in code at placement, not here). Priority/sector fields stay
+    // empty until the priority-refresh planner is wired into the scanner.
+    const latestEqBucket = s.bars.length > 0 ? s.bars[s.bars.length - 1].bucketTs : null;
+    const freshness = computeCandleFreshness(latestEqBucket, Date.now());
+
     picks.push({
       rank: picks.length + 1,
       symbol: r.symbol,
@@ -979,6 +987,17 @@ export async function runTradeSuggest(
       extended: s.extended,
       factors,
       reasons,
+      candleContext: {
+        requiredBucketTs: freshness.requiredBucketTs,
+        latestBucketTs: freshness.latestBucketTs,
+        fresh: freshness.fresh,
+        ageBuckets: freshness.ageBuckets,
+        priorityTier: null,
+        priorityReasons: [],
+        feedRanks: {},
+        sectorPromoted: false,
+        sectorDirection: null,
+      },
     });
   }
 
