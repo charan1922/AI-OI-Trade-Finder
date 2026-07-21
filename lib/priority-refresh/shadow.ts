@@ -1,10 +1,12 @@
 /**
  * Shadow orchestration for the poller (plan §20-22). Builds the reduced
- * priority plan each cycle and records what it WOULD have done — membership +
- * the measured "how much sooner could we have fired". It NEVER changes what the
- * poller waits for or how it trades in this PR: capped-live and sector-live are
- * separate, evidence-gated follow-ups. Everything here is best-effort; a failure
- * is swallowed so the poller/scan are never affected.
+ * priority plan each cycle and records what it WOULD have done — the proposed
+ * Tier 0/Tier 1 membership + which of that cycle's suggestions fell OUTSIDE the
+ * proposed cap (coverage). It does NOT reorder the download and does NOT measure
+ * timing (that ships with the capped-live PR, where the reorder is the real
+ * behaviour), so it NEVER changes what the poller waits for or how it trades.
+ * Everything here is best-effort; a failure is swallowed so the poller/scan are
+ * never affected.
  */
 import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
@@ -13,14 +15,12 @@ import { buildPriorityPlan } from './build-plan';
 import {
   BLOCK_STALE_AUTO_ENTRY,
   PRIORITY_ACTIVE_SECTORS_SHADOW,
-  PRIORITY_INCLUDE_ACTIVE_SECTORS,
   PRIORITY_MAX_UNIQUE,
   PRIORITY_PER_FEED,
   PRIORITY_REFRESH_SHADOW,
   PRIORITY_SECTOR_MAX_AGE_SEC,
   PRIORITY_SECTOR_RESERVED_SLOTS,
   PRIORITY_TOP_SECTORS_PER_SIDE,
-  USE_CAPPED_PRIORITY_REFRESH,
 } from './config';
 import { selectActiveSectors } from './sector-signal';
 import { getLatestSectorSnapshot } from './sector-snapshot-store';
@@ -43,10 +43,8 @@ export interface ShadowSettings {
 export async function readShadowSettings(): Promise<ShadowSettings> {
   const [
     shadowEnabled,
-    cappedLiveEnabled,
     blockStaleEntry,
     sectorShadowEnabled,
-    sectorLiveEnabled,
     perFeedLimit,
     maxUniqueTier1,
     sectorReservedSlots,
@@ -54,10 +52,8 @@ export async function readShadowSettings(): Promise<ShadowSettings> {
     sectorMaxAgeSec,
   ] = await Promise.all([
     getToggle('PRIORITY_REFRESH_SHADOW', PRIORITY_REFRESH_SHADOW),
-    getToggle('USE_CAPPED_PRIORITY_REFRESH', USE_CAPPED_PRIORITY_REFRESH),
     getToggle('BLOCK_STALE_AUTO_ENTRY', BLOCK_STALE_AUTO_ENTRY),
     getToggle('PRIORITY_ACTIVE_SECTORS_SHADOW', PRIORITY_ACTIVE_SECTORS_SHADOW),
-    getToggle('PRIORITY_INCLUDE_ACTIVE_SECTORS', PRIORITY_INCLUDE_ACTIVE_SECTORS),
     getNumberSetting('PRIORITY_PER_FEED', PRIORITY_PER_FEED),
     getNumberSetting('PRIORITY_MAX_UNIQUE', PRIORITY_MAX_UNIQUE),
     getNumberSetting('PRIORITY_SECTOR_RESERVED_SLOTS', PRIORITY_SECTOR_RESERVED_SLOTS),
@@ -66,10 +62,14 @@ export async function readShadowSettings(): Promise<ShadowSettings> {
   ]);
   return {
     shadowEnabled,
-    cappedLiveEnabled,
+    // Capped-live and sector-live are NOT implemented or registered in this
+    // measurement PR — hardcode false so a stale hidden SQLite row can never make
+    // the operator panel claim "LIVE mode on" (PR#11 re-review B1b). The future
+    // live PRs register those toggles with their real behaviour + guard.
+    cappedLiveEnabled: false,
     blockStaleEntry,
     sectorShadowEnabled,
-    sectorLiveEnabled,
+    sectorLiveEnabled: false,
     perFeedLimit,
     maxUniqueTier1,
     sectorReservedSlots,

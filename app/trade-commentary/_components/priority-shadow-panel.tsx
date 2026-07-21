@@ -11,8 +11,6 @@ interface LatestCycle {
   cappedWaitCount: number;
   activeBullishSectors: string[];
   activeBearishSectors: string[];
-  cappedLiveEnabled: boolean;
-  sectorLiveEnabled: boolean;
 }
 interface ShadowSummary {
   success: boolean;
@@ -52,14 +50,13 @@ export function PriorityShadowPanel() {
 
   if (!data || data.cycles === 0 || !data.latest) return null;
   const c = data.latest;
-  const live = c.cappedLiveEnabled || c.sectorLiveEnabled;
 
   return (
     <section className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="font-semibold">Priority Refresh (shadow)</span>
         <span className="rounded-full border border-amber-500/40 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">
-          {live ? 'LIVE mode on' : 'measurement only · never changes trading'}
+          measurement only · never changes trading
         </span>
         <span className="text-xs text-muted-foreground">{data.cycles} cycles today</span>
       </div>

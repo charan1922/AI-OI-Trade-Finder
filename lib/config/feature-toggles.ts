@@ -14,6 +14,7 @@
  */
 import { prisma } from '@/lib/db';
 import {
+  BLOCK_STALE_AUTO_ENTRY,
   PRIORITY_ACTIVE_SECTORS_SHADOW,
   PRIORITY_MAX_UNIQUE,
   PRIORITY_PER_FEED,
@@ -127,7 +128,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Priority Refresh',
     default: PRIORITY_REFRESH_SHADOW,
     description:
-      'MEASUREMENT ONLY — never changes trading. Each 5-minute cycle the app also works out a SMALLER “refresh first” list (your open positions + earlier picks, plus a fair top-40 drawn evenly from the five NSE mover feeds) and records how much sooner the scan/AI could have started. The poller still waits for the full ~50–80 name list exactly as today; this only measures the potential time saving so we can judge it before enabling it. ON (default) to collect that evidence; OFF to stop the extra bookkeeping.',
+      'MEASUREMENT ONLY — never changes trading. Each 5-minute cycle the app also works out a SMALLER “refresh first” list (your open positions + earlier picks, plus a fair top-40 drawn evenly from the five NSE mover feeds) and records its membership plus how many of that cycle’s suggestions fell OUTSIDE the proposed cap (the coverage evidence). It does NOT reorder anything and does NOT measure timing — the poller waits for the full ~50–80 name list in the exact same order as today. ON (default) to collect that evidence; OFF to stop the extra bookkeeping.',
   },
   {
     key: 'PRIORITY_ACTIVE_SECTORS_SHADOW',
@@ -137,13 +138,24 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     description:
       'MEASUREMENT ONLY. Inside the shadow plan above, also try promoting a few stocks from the day’s strongest sectors — but only names already on a mover feed, and only when the stock’s own price move agrees with the sector’s direction. It records what WOULD have been promoted so we can judge whether it improves picks; it does not touch the live list. ON (default) to gather the evidence.',
   },
+  {
+    // Registered now that the stale-candle gate it controls is on `main` (PR #10
+    // merged). Exposing it is REQUIRED: the gate reads this key from SQLite every
+    // entry check, so a hidden stored `false` (e.g. from an earlier build) would
+    // silently disable the protection if it weren't visible/manageable here
+    // (PR#11 re-review B1). SAFETY toggle → drift-reported like Trade Suggest.
+    key: 'BLOCK_STALE_AUTO_ENTRY',
+    label: 'Block stale-candle Auto-Trade entries',
+    category: 'Priority Refresh',
+    default: BLOCK_STALE_AUTO_ENTRY,
+    description:
+      'SAFETY — ON by default. An Auto-Trade NEW entry is refused unless the stock’s latest COMPLETED 5-minute candle was refreshed after it closed this cycle: the scanner builds its stop and target from that candle, so entering on a stale/still-forming one means acting on an old picture. Exits, stop-moves and the 15:12 square-off are NEVER affected. Leave ON unless you are deliberately debugging.',
+  },
   // NOTE: the LIVE controls (USE_CAPPED_PRIORITY_REFRESH,
-  // PRIORITY_INCLUDE_ACTIVE_SECTORS) and the safety switch BLOCK_STALE_AUTO_ENTRY
-  // are deliberately NOT registered here. A /config switch must never appear
-  // before the behaviour it controls exists (PR#11 review): the two live toggles
-  // ship in the capped-live / sector-live PRs with their real behaviour + the
-  // unsafe-combo guard; BLOCK_STALE_AUTO_ENTRY ships with the stale-candle gate
-  // (PR #10). This PR is measurement-only.
+  // PRIORITY_INCLUDE_ACTIVE_SECTORS) are still NOT registered here — a /config
+  // switch must never appear before the behaviour it controls exists (PR#11
+  // review). They ship in the capped-live / sector-live PRs with their real
+  // behaviour + the unsafe-combo guard. This PR is measurement-only.
   {
     key: 'AUTO_SHUTDOWN',
     label: 'Auto power-off (save cost)',
@@ -328,6 +340,10 @@ export async function getToggle(key: string, fallback: boolean): Promise<boolean
  *  too (PR#2 review 2026-07-20). 'Entry & Exit Times' holds the scan-window
  *  open/close + the commentary entry cutoff. */
 const DRIFT_NUMBER_CATEGORIES = new Set(['Trade Suggest', 'Entry & Exit Times', 'Priority Refresh']);
+/** Toggle categories whose off-default state is drift-reported + Telegram-alerted.
+ *  'Priority Refresh' is included so the BLOCK_STALE_AUTO_ENTRY safety switch
+ *  turned OFF is surfaced immediately + in the pre-open reminder (PR#11 re-review). */
+const DRIFT_TOGGLE_CATEGORIES = new Set(['Trade Suggest', 'Priority Refresh']);
 
 /** IST clock-style number setting (minutes-from-midnight) → render as HH:MM in
  *  the summary. Mirrors the /config page heuristic (key ends _MIN, ≥ 06:00). */
@@ -351,7 +367,7 @@ export function buildConfigOverrideSummary(
 ): string[] {
   const out: string[] = [];
   for (const t of toggles) {
-    if (t.category === 'Trade Suggest' && t.value !== t.default)
+    if (DRIFT_TOGGLE_CATEGORIES.has(t.category) && t.value !== t.default)
       out.push(`${t.label}: ${t.value ? 'ON' : 'OFF'} (safe default ${t.default ? 'ON' : 'OFF'})`);
   }
   for (const n of numbers) {
@@ -406,7 +422,7 @@ export async function setToggle(key: string, value: boolean): Promise<void> {
     value ? 1 : 0,
     new Date().toISOString()
   );
-  if (def.category === 'Trade Suggest' && value !== def.default) {
+  if (DRIFT_TOGGLE_CATEGORIES.has(def.category) && value !== def.default) {
     try {
       const { sendMessage } = await import('@/lib/telegram');
       sendMessage(

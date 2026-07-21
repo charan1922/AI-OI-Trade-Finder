@@ -746,9 +746,13 @@ async function runAutonomousCapture(
       if (shadowCtx) {
         void recordShadowCycle(shadowCtx, result.suggestions ?? []).catch(() => {});
         if (shadowCtx.settings.sectorShadowEnabled) {
-          const asOfMs = Date.now();
-          const signals = buildActiveSectorSignals(result.sectorAggregates ?? [], asOfMs);
-          void recordSectorSnapshot(today, fyersBucketFor(asOfMs), asOfMs, signals).catch(() => {});
+          // Timestamp/bucket the sector snapshot by when the data was OBSERVED
+          // (the scan's quote snapshot = scanReadyMs), NOT this later persistence
+          // moment after the AI/commentary — otherwise the snapshot would read
+          // minutes fresher than the data it holds (PR#11 re-review B2). The DB
+          // write staying here (post-decision) is fine; only the stamp matters.
+          const signals = buildActiveSectorSignals(result.sectorAggregates ?? [], scanReadyMs);
+          void recordSectorSnapshot(today, fyersBucketFor(scanReadyMs), scanReadyMs, signals).catch(() => {});
         }
       }
     } catch (err) {

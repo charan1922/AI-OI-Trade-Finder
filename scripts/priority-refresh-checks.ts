@@ -237,6 +237,20 @@ export function runPriorityRefreshChecks(check: Check): void {
       maxAgeSec: 420,
     });
     check('sector: snapshot older than maxAge is still rejected', rejected.bullish.length === 0);
+    const future = selectActiveSectors({
+      snapshots: [sector('PSU Bank', 'bullish', { asOfMs: NOW + 1_000 })], // 1s in the future
+      topPerSide: 2,
+      nowMs: NOW,
+      maxAgeSec: 420,
+    });
+    check('sector: future-timestamped snapshot rejected (negative age)', future.bullish.length === 0);
+    const nan = selectActiveSectors({
+      snapshots: [sector('PSU Bank', 'bullish', { asOfMs: Number.NaN })],
+      topPerSide: 2,
+      nowMs: NOW,
+      maxAgeSec: 420,
+    });
+    check('sector: NaN-timestamped snapshot rejected', nan.bullish.length === 0);
   }
   {
     // PR#9 review Blocker 3: sector promotion must respect PRIORITY_PER_FEED. A

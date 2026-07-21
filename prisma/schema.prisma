@@ -560,9 +560,10 @@ model PrioritySectorSnapshot {
 }
 
 /// Priority-refresh SHADOW telemetry: one row per poller cycle recording the
-/// reduced-plan membership, the measured time it could have saved, and which
-/// suggestions fell outside the proposed cap (created at runtime via raw SQL in
-/// lib/priority-refresh/telemetry-store.ts; declared here so `db push` keeps it).
+/// reduced-plan membership and which suggestions fell outside the proposed cap
+/// (no timing — this PR does not reorder the download). Created at runtime via
+/// raw SQL in lib/priority-refresh/telemetry-store.ts; declared here so `db push`
+/// keeps it.
 model PriorityRefreshCycle {
   id                    Int     @id @default(autoincrement())
   date                  String

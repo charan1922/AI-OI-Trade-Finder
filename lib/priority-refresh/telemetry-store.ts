@@ -1,8 +1,9 @@
 /**
  * priority_refresh_cycles — one row per poller cycle recording the SHADOW plan:
- * membership counts, the measured "how much sooner could we have fired"
- * (shadowReleaseMs vs actualReleaseMs), and which of that cycle's suggestions
- * fell OUTSIDE the proposed cap (the key coverage evidence, plan §32/§38).
+ * the proposed Tier 0/Tier 1 membership counts and which of that cycle's
+ * suggestions fell OUTSIDE the proposed cap (the coverage evidence, plan §32/§38).
+ * No timing is recorded — this PR does not reorder the download, so there is no
+ * release-time saving to measure (that ships with the capped-live PR).
  *
  * Derived-table convention, mirrored by PriorityRefreshCycle in schema.prisma.
  * ALL writes are best-effort — telemetry failure NEVER affects a scan or the
