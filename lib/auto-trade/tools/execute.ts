@@ -11,9 +11,9 @@ import { isMarketHours } from '@/lib/dhan/market-feed';
 import { rankSectorsByActivity } from '@/lib/trade-suggest/sector-rank';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
 import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
-import { getLatestEqBucket } from '@/lib/fyers/candle-store';
+import { getEqBucketStatus } from '@/lib/fyers/candle-store';
 import { BLOCK_STALE_AUTO_ENTRY } from '@/lib/priority-refresh/config';
-import { computeCandleFreshness } from '@/lib/priority-refresh/freshness';
+import { evaluateFreshness, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
 import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types';
 import { alerts } from '../alerts';
@@ -240,20 +240,22 @@ async function buildGateInput(
   pick: TradeSuggestion
 ): Promise<{ input: EntryGateInput; freshPremium: number | null }> {
   const scanPremium = pick.option?.premium?.ltp ?? null;
-  const [state, fresh, tradedToday, entryCutoffMin, latch, sessionVerified, blockStaleAutoEntry, latestEqBucket] =
-    await Promise.all([
-      buildAccountState(rt, { includeBrokerFunds: true }),
-      pick.option ? fetchOptionQuote(pick.option.optSecurityId) : null,
-      symbolTradedToday(rt.date, pick.symbol),
-      getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
-      getRiskLatch(),
-      isVerifiedTradingDay(rt.date),
-      getToggle('BLOCK_STALE_AUTO_ENTRY', BLOCK_STALE_AUTO_ENTRY),
-      getLatestEqBucket(pick.symbol, rt.date),
-    ]);
-  // Recompute freshness at PLACEMENT time (plan §26) — the scanner's stamp can
-  // go stale if the AI took long enough to cross a new 5-min bucket boundary.
-  const freshness = computeCandleFreshness(latestEqBucket, Date.now());
+  const [state, fresh, tradedToday, entryCutoffMin, latch, sessionVerified, blockStaleAutoEntry] = await Promise.all([
+    buildAccountState(rt, { includeBrokerFunds: true }),
+    pick.option ? fetchOptionQuote(pick.option.optSecurityId) : null,
+    symbolTradedToday(rt.date, pick.symbol),
+    getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
+    getRiskLatch(),
+    isVerifiedTradingDay(rt.date),
+    getToggle('BLOCK_STALE_AUTO_ENTRY', BLOCK_STALE_AUTO_ENTRY),
+  ]);
+  // Freshness is read LAST, after the slower gate inputs above, so it reflects
+  // the closest possible moment to placement (plan §26, PR#10 review). Prove the
+  // REQUIRED completed bucket was FINALIZED (fetched after it closed), not merely
+  // present — a still-forming bucket has an earlier write time and reads stale.
+  const requiredBucketTs = requiredCompletedBucket(Date.now());
+  const bucketStatus = await getEqBucketStatus(pick.symbol, rt.date, requiredBucketTs);
+  const freshness = evaluateFreshness(bucketStatus, requiredBucketTs);
   const freshPremium = fresh?.ltp ?? null;
   const slippagePct =
     scanPremium != null && scanPremium > 0 && freshPremium != null

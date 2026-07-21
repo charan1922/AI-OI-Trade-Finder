@@ -1,20 +1,21 @@
 /**
  * Pure, DB-free checks for the candle-freshness rule (lib/priority-refresh/freshness.ts)
  * and the auto-trade stale-candle ENTRY gate (lib/auto-trade/risk/gates.ts).
- * Mirrors final-capped-priority-sector-plan.md §35 (Freshness + the pure
- * Entry-Gate cases). No DB / I/O — runs in GitHub CI.
+ * Freshness now proves FINALIZATION (the required completed bucket was written
+ * AT/AFTER its close time), so a still-forming bucket reads stale (PR#10 review).
+ * No DB / I/O — runs in GitHub CI.
  */
 import { DEFAULT_SETTINGS } from '../lib/auto-trade/config';
 import { checkEntryGates, type EntryGateInput } from '../lib/auto-trade/risk/gates';
 import { FYERS_BUCKET_SEC } from '../lib/fyers/candle-store';
-import { computeCandleFreshness, requiredCompletedBucket } from '../lib/priority-refresh/freshness';
+import { evaluateFreshness, requiredCompletedBucket, type EqBucketStatus } from '../lib/priority-refresh/freshness';
 
 type Check = (name: string, ok: boolean, detail?: string) => void;
 
 const BUCKET = FYERS_BUCKET_SEC; // 300s
-const CUR = 1_800_000; // a bucket-start (divisible by 300)
-const NOW = (CUR + 100) * 1000; // 100s into the still-forming bucket CUR
-const REQUIRED = CUR - BUCKET; // latest completed bucket = 1_799_700
+const REQUIRED = 1_800_000; // a bucket-start (divisible by 300)
+const CLOSE_MS = (REQUIRED + BUCKET) * 1000; // when the REQUIRED bucket closes
+const row = (bucketTs: number, updatedAtMs: number): EqBucketStatus => ({ bucketTs, updatedAtMs });
 
 /** A fresh, otherwise-clean gate input (paper mode, inside the window). */
 const gbase: EntryGateInput = {
@@ -42,30 +43,33 @@ const gbase: EntryGateInput = {
 };
 
 export function runFreshnessGateChecks(check: Check): void {
-  // ── Freshness rule ─────────────────────────────────────────────────────────
+  // ── Freshness rule (finalization) ──────────────────────────────────────────
+  check('freshness: required bucket written AT close → fresh', evaluateFreshness(row(REQUIRED, CLOSE_MS), REQUIRED).fresh);
+  check('freshness: required bucket written AFTER close → fresh', evaluateFreshness(row(REQUIRED, CLOSE_MS + 12_000), REQUIRED).fresh);
+  check(
+    'freshness: required bucket written BEFORE close (still forming) → STALE',
+    !evaluateFreshness(row(REQUIRED, CLOSE_MS - 10_000), REQUIRED).fresh
+  );
+  check('freshness: missing required bucket → stale', !evaluateFreshness(null, REQUIRED).fresh);
+  check(
+    'freshness: a stored OLDER bucket (wrong start) → stale',
+    !evaluateFreshness(row(REQUIRED - BUCKET, CLOSE_MS), REQUIRED).fresh
+  );
+  check('freshness: NaN required bucket fails closed', !evaluateFreshness(row(REQUIRED, CLOSE_MS), Number.NaN).fresh);
+  check(
+    'freshness: off-grid required bucket fails closed',
+    !evaluateFreshness(row(REQUIRED + 1, CLOSE_MS), REQUIRED + 1).fresh
+  );
+  check(
+    'freshness: future/off-grid stored bucket never matches required → stale',
+    !evaluateFreshness(row(REQUIRED + 5 * BUCKET, CLOSE_MS + 999_999), REQUIRED).fresh
+  );
+  check('freshness: non-finite write time → stale', !evaluateFreshness(row(REQUIRED, Number.NaN), REQUIRED).fresh);
   {
-    const f = computeCandleFreshness(REQUIRED, NOW);
-    check('freshness: latest == required → fresh, age 0', f.fresh && f.ageBuckets === 0, `req=${f.requiredBucketTs}`);
-  }
-  check('freshness: latest ahead (forming bucket) → fresh', computeCandleFreshness(CUR, NOW).fresh);
-  {
-    const f = computeCandleFreshness(REQUIRED - BUCKET, NOW);
-    check('freshness: one bucket behind → stale, age 1', !f.fresh && f.ageBuckets === 1);
-  }
-  {
-    const f = computeCandleFreshness(REQUIRED - 2 * BUCKET, NOW);
-    check('freshness: two buckets behind → stale, age 2', !f.fresh && f.ageBuckets === 2);
-  }
-  {
-    const f = computeCandleFreshness(null, NOW);
-    check('freshness: missing candle → stale, age null', !f.fresh && f.ageBuckets === null && f.latestBucketTs === null);
-  }
-  check('freshness: requiredCompletedBucket = current bucket − one period', requiredCompletedBucket(NOW) === REQUIRED, `${requiredCompletedBucket(NOW)}`);
-  check('freshness: NaN clock fails closed (stale)', !computeCandleFreshness(REQUIRED, Number.NaN).fresh);
-  {
-    // Exactly on a 5-min boundary: now = start of CUR → required = CUR − period.
-    const f = computeCandleFreshness(CUR - BUCKET, CUR * 1000);
-    check('freshness: exact 5-min boundary handled', f.fresh && f.requiredBucketTs === CUR - BUCKET);
+    // requiredCompletedBucket = current forming bucket − one 5-min period.
+    const cur = 1_800_300;
+    const now = (cur + 100) * 1000;
+    check('freshness: requiredCompletedBucket = current bucket − one period', requiredCompletedBucket(now) === REQUIRED, `${requiredCompletedBucket(now)}`);
   }
 
   // ── Stale-candle entry gate (pure) ──────────────────────────────────────────

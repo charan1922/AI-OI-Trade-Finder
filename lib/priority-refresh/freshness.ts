@@ -1,44 +1,59 @@
 /**
  * Canonical 5-minute candle-freshness rule (see plan §23) — pure, no I/O.
  *
- * The scanner builds its setup score, opening range, VWAP, Supertrend, ATR,
- * breakout, stop and target from Fyers 5-min EQ candles. So a NEW auto-trade
- * entry must not be taken on an OUTDATED completed candle. This module defines
- * exactly what "fresh" means; the auto-trade entry gate (risk/gates.ts) enforces
- * it in CODE, and it is re-checked at placement time (tools/execute.ts,
- * approval.ts). It NEVER affects exits or position guards.
+ * The scanner builds its setup/stop/target from Fyers 5-min EQ candles, so a NEW
+ * auto-trade entry must not be taken on an OUTDATED completed candle. The candle
+ * store deliberately keeps the CURRENTLY FORMING bar and rewrites it each cycle,
+ * so "the required bucket exists" is NOT proof it is complete: a bucket fetched
+ * mid-formation carries only partial data (PR#10 review). We therefore prove
+ * FINALIZATION — the required completed bucket was written (updatedAt) at or
+ * AFTER its close time.
+ *
+ * The gate (risk/gates.ts) enforces this in CODE and re-checks it at placement
+ * (tools/execute.ts, approval.ts). It NEVER affects exits or position guards.
  */
 import { FYERS_BUCKET_SEC, fyersBucketFor } from '@/lib/fyers/candle-store';
 
+/** The stored EQ bucket the gate queries: its start + when it was last written. */
+export interface EqBucketStatus {
+  bucketTs: number;
+  /** Epoch ms of the last write to this bucket (candle-store `updatedAt`). */
+  updatedAtMs: number;
+}
+
 export interface CandleFreshness {
-  /** Latest FULLY COMPLETED 5-min bucket-start (epoch seconds) at `nowMs`. */
+  /** The latest FULLY COMPLETED 5-min bucket-start (epoch s) at `nowMs`. */
   requiredBucketTs: number;
-  /** Latest stored EQ bucket-start for the symbol, or null when none. */
+  /** The stored bucket-start the gate looked at, or null when absent. */
   latestBucketTs: number | null;
-  /** latestBucketTs >= requiredBucketTs (fail-closed: false when latest is null). */
+  /** True only when the required bucket exists AND was fetched after it closed. */
   fresh: boolean;
-  /** How many 5-min buckets behind `required` the stored candle is (0 = fresh). */
-  ageBuckets: number | null;
 }
 
 /**
- * The latest FULLY COMPLETED 5-min bucket at wall-clock `nowMs`. The current
- * (still-forming) bucket is `fyersBucketFor(nowMs)`; the last completed one is a
- * single 5-min period before it — the same rule the poller uses to decide a
- * priority EQ refresh reached "this cycle's" candle.
+ * The latest FULLY COMPLETED 5-min bucket at wall-clock `nowMs` (bar-start, s).
+ * The current (forming) bucket is `fyersBucketFor(nowMs)`; the last completed one
+ * is a single 5-min period before it.
  */
 export function requiredCompletedBucket(nowMs: number): number {
   return fyersBucketFor(nowMs) - FYERS_BUCKET_SEC;
 }
 
 /**
- * Freshness for a symbol given its latest stored EQ bucket (or null) and now.
- * Fail-closed: a missing candle, or a NaN clock, is STALE — never fresh.
+ * Evaluate freshness for the REQUIRED completed bucket. Fail-closed: a missing
+ * bucket, a bucket written BEFORE it closed (still forming when fetched), a
+ * bucket at the wrong start, a NaN/off-grid required bucket, or a non-finite
+ * write time all read STALE.
  */
-export function computeCandleFreshness(latestBucketTs: number | null, nowMs: number): CandleFreshness {
-  const requiredBucketTs = requiredCompletedBucket(nowMs);
-  const hasLatest = latestBucketTs != null && Number.isFinite(latestBucketTs);
-  const fresh = hasLatest && Number.isFinite(requiredBucketTs) && latestBucketTs >= requiredBucketTs;
-  const ageBuckets = hasLatest ? Math.max(0, Math.round((requiredBucketTs - latestBucketTs) / FYERS_BUCKET_SEC)) : null;
-  return { requiredBucketTs, latestBucketTs: hasLatest ? latestBucketTs : null, fresh, ageBuckets };
+export function evaluateFreshness(row: EqBucketStatus | null, requiredBucketTs: number): CandleFreshness {
+  const validRequired =
+    Number.isInteger(requiredBucketTs) && requiredBucketTs > 0 && requiredBucketTs % FYERS_BUCKET_SEC === 0;
+  const closeMs = (requiredBucketTs + FYERS_BUCKET_SEC) * 1000;
+  const fresh =
+    validRequired &&
+    row != null &&
+    row.bucketTs === requiredBucketTs &&
+    Number.isFinite(row.updatedAtMs) &&
+    row.updatedAtMs >= closeMs;
+  return { requiredBucketTs, latestBucketTs: row?.bucketTs ?? null, fresh };
 }

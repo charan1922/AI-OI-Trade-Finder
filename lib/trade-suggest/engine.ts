@@ -25,8 +25,8 @@ import { setupScore } from '@/app/live/_lib/setup-score';
 import type { LiveQuoteResponse, LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
-import { getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
-import { computeCandleFreshness } from '@/lib/priority-refresh/freshness';
+import { getEqBucketStatus, getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
+import { evaluateFreshness, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
@@ -959,12 +959,13 @@ export async function runTradeSuggest(
       ...s.setupReasons,
     ];
 
-    // Candle freshness from the EQ bars already loaded for this pick — no extra
-    // query. Auto-trade will refuse a NEW entry on a stale completed candle
-    // (enforced in code at placement, not here). Priority/sector fields stay
-    // empty until the priority-refresh planner is wired into the scanner.
-    const latestEqBucket = s.bars.length > 0 ? s.bars[s.bars.length - 1].bucketTs : null;
-    const freshness = computeCandleFreshness(latestEqBucket, Date.now());
+    // Candle freshness stamp: prove the REQUIRED completed bucket was FINALIZED
+    // (written after it closed), matching the placement-time gate — the forming
+    // bar being present is not proof. Informational here (the auto-trade gate
+    // re-checks from the store at placement); priority/sector fields stay empty
+    // until the priority-refresh planner is wired into the scanner.
+    const requiredBucketTs = requiredCompletedBucket(Date.now());
+    const freshness = evaluateFreshness(await getEqBucketStatus(r.symbol, date, requiredBucketTs), requiredBucketTs);
 
     picks.push({
       rank: picks.length + 1,
@@ -991,7 +992,6 @@ export async function runTradeSuggest(
         requiredBucketTs: freshness.requiredBucketTs,
         latestBucketTs: freshness.latestBucketTs,
         fresh: freshness.fresh,
-        ageBuckets: freshness.ageBuckets,
         priorityTier: null,
         priorityReasons: [],
         feedRanks: {},

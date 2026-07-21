@@ -105,7 +105,6 @@ export interface SuggestionCandleContext {
   requiredBucketTs: number;
   latestBucketTs: number | null;
   fresh: boolean;
-  ageBuckets: number | null;
 
   priorityTier: PriorityTier | null;
   priorityReasons: PriorityReason[];

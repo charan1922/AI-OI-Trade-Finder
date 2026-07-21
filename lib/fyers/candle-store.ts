@@ -242,21 +242,31 @@ export async function getFyersCandles(
 }
 
 /**
- * Latest stored, USABLE (open > 0) EQ bucket-start for a symbol on `date`, or
- * null when none. Cheap MAX() read for the auto-trade candle-freshness gate
- * (lib/priority-refresh/freshness.ts) — avoids pulling the whole day's bars just
- * to read the last completed bucket at placement time.
+ * Status of ONE specific EQ bucket for a symbol on `date`: its start + the epoch
+ * ms it was last written (`updatedAt`), or null when that bucket isn't stored.
+ * The auto-trade freshness gate (lib/priority-refresh/freshness.ts) asks for the
+ * REQUIRED completed bucket and proves it was written AT/AFTER its close time —
+ * a bucket fetched while still forming has an earlier write time and reads stale.
+ * Cheap PK point-read (no full-day scan).
  */
-export async function getLatestEqBucket(symbol: string, date: string): Promise<number | null> {
+export async function getEqBucketStatus(
+  symbol: string,
+  date: string,
+  bucketTs: number
+): Promise<{ bucketTs: number; updatedAtMs: number } | null> {
   await ensureFyersCandlesTable();
   const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
-    `SELECT MAX(bucketTs) AS latest FROM fyers_candles
-      WHERE symbol = ? AND instrument = 'EQ' AND date = ? AND open > 0`,
+    `SELECT bucketTs, updatedAt FROM fyers_candles
+      WHERE symbol = ? AND instrument = 'EQ' AND date = ? AND bucketTs = ? AND open > 0`,
     symbol,
-    date
+    date,
+    bucketTs
   );
-  const latest = rows[0]?.latest;
-  return latest == null ? null : toNum(latest);
+  const r = rows[0];
+  if (!r) return null;
+  const updatedAtMs = Date.parse(String(r.updatedAt));
+  if (!Number.isFinite(updatedAtMs)) return null;
+  return { bucketTs: toNum(r.bucketTs), updatedAtMs };
 }
 
 /** One symbol's per-5-min NSE combined OI %-change series for `date` (FUT
