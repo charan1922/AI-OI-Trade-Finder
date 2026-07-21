@@ -98,6 +98,31 @@ export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
   );
   check('config-drift: mixed set counts only drifted+relevant', s8.length === 2, `got ${s8.length}: ${JSON.stringify(s8)}`);
 
+  const staleOff = buildConfigOverrideSummary(
+    [toggle('Block stale-candle auto entry', 'Priority Refresh', false, true)],
+    []
+  );
+  check(
+    'config-drift: BLOCK_STALE_AUTO_ENTRY OFF is reported with safe default ON',
+    staleOff.length === 1 && staleOff[0].includes('Block stale-candle auto entry') && staleOff[0].includes('OFF') && staleOff[0].includes('safe default ON'),
+    staleOff[0]
+  );
+  const staleOn = buildConfigOverrideSummary(
+    [toggle('Block stale-candle auto entry', 'Priority Refresh', true, true)],
+    []
+  );
+  check('config-drift: BLOCK_STALE_AUTO_ENTRY ON is excluded', staleOn.length === 0);
+
+  const priorityCap = buildConfigOverrideSummary(
+    [],
+    [number('PRIORITY_MAX_UNIQUE', 'Max unique Tier 1', 'Priority Refresh', 30, 40, 1)]
+  );
+  check(
+    'config-drift: PRIORITY_MAX_UNIQUE numeric override is reported',
+    priorityCap.length === 1 && priorityCap[0].includes('30') && priorityCap[0].includes('safe default 40'),
+    priorityCap[0]
+  );
+
   // ── Reminder WINDOW (PR#2 review: must span the whole session, not stop 11:00) ──
   check('window: pre-open 08:45 weekday → in window', inDriftReminderWindow(istAt(8, 45)) === true);
   check('window: 12:00 weekday (SCAN_OUTSIDE_WINDOW late-restart case) → in window', inDriftReminderWindow(istAt(12, 0)) === true);

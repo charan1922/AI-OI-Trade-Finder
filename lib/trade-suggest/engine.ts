@@ -346,6 +346,8 @@ export async function runTradeSuggest(
 
   // 2. One batched live snapshot
   const quotes = await fetchQuotes(origin, symbols);
+  const marketDataAsOfMs = Date.parse(quotes.asOf ?? '');
+  base.marketDataAsOfMs = Number.isFinite(marketDataAsOfMs) ? marketDataAsOfMs : undefined;
   if (!quotes.success || quotes.rows.length === 0) {
     base.note = `Live quote path returned no rows${quotes.error ? ` (${quotes.error})` : ''} — check /api/dhan/token.`;
     return base;

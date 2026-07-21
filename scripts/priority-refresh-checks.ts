@@ -7,12 +7,14 @@
  * database, no I/O — runs in GitHub CI via scripts/verify-priority-refresh.ts.
  */
 import { assertPriorityNumberCombo } from '../lib/config/feature-toggles';
+import { runLiveDecisionPath } from '../lib/fyers/live-decision-path';
 import type { SectorAggregate } from '../lib/sector/aggregate';
 import { FEED_ORDER } from '../lib/priority-refresh/config';
 import { buildPriorityPlan } from '../lib/priority-refresh/build-plan';
 import { selectRoundRobinCandidates } from '../lib/priority-refresh/round-robin';
-import { buildActiveSectorSignals } from '../lib/priority-refresh/sector-producer';
+import { buildActiveSectorSignals, prepareSectorSnapshotWrite } from '../lib/priority-refresh/sector-producer';
 import { qualifySectorDirection, selectActiveSectors, selectSectorPromotions } from '../lib/priority-refresh/sector-signal';
+import { runPostDecisionShadowCore, type ShadowSettings } from '../lib/priority-refresh/shadow-orchestration';
 import type { ActiveSectorSignal, FeedPicks, PriorityFeed, RankedFeedPick } from '../lib/priority-refresh/types';
 
 type Check = (name: string, ok: boolean, detail?: string) => void;
@@ -358,4 +360,139 @@ export function runPriorityRefreshChecks(check: Check): void {
     const signals = buildActiveSectorSignals(aggs, NOW, { topTurnover: 6 });
     check('producer: sector below the top-turnover group is excluded', signals.length === 6 && !signals.some((s) => s.sector === 'S6' || s.sector === 'S7'));
   }
+  {
+    const observedAtMs = 1_800_000_025_000;
+    const scannerFinishedAtMs = observedAtMs + 105_000;
+    const databaseWriteAtMs = scannerFinishedAtMs + 50_000;
+    const write = prepareSectorSnapshotWrite({
+      aggregates: [agg('PSU Bank', 1.2, 1000, 0.8)],
+      marketDataAsOfMs: observedAtMs,
+      currentCycleBucketTs: 1_800_000_000,
+      nowMs: databaseWriteAtMs,
+    });
+    check('producer: delayed scan/write preserves Dhan observation timestamp', write.asOfMs === observedAtMs && write.signals.every((s) => s.asOfMs === observedAtMs));
+    check('producer: sector bucket comes from Dhan observation time', write.bucketTs === 1_800_000_000, `bucket=${write.bucketTs}`);
+
+    const invalid = prepareSectorSnapshotWrite({
+      aggregates: [agg('PSU Bank', 1.2, 1000, 0.8)],
+      marketDataAsOfMs: Number.NaN,
+      currentCycleBucketTs: 1_800_000_300,
+      nowMs: databaseWriteAtMs,
+    });
+    check('producer: invalid quote timestamp fails closed to current-cycle empty marker', invalid.bucketTs === 1_800_000_300 && invalid.asOfMs === 0 && invalid.signals.length === 0);
+    const future = prepareSectorSnapshotWrite({
+      aggregates: [agg('PSU Bank', 1.2, 1000, 0.8)],
+      marketDataAsOfMs: databaseWriteAtMs + 1,
+      currentCycleBucketTs: 1_800_000_300,
+      nowMs: databaseWriteAtMs,
+    });
+    check('producer: future quote timestamp fails closed to current-cycle empty marker', future.asOfMs === 0 && future.signals.length === 0);
+  }
+}
+
+export async function runPriorityRefreshOrchestrationChecks(check: Check): Promise<void> {
+  const candidateSnapshot = {
+    discoveredAt: NOW,
+    fullUniverse: false,
+    sectorEntries: [['SBIN', 'PSU Bank']] as [string, string][],
+    oiSpurtSymbols: ['SBIN'],
+    prioritySymbols: ['SBIN'],
+    feedPicks: emptyFeeds(),
+  };
+  const input = {
+    today: '2099-05-05',
+    bucketTs: 1_800_000_300,
+    candidateSnapshot,
+    riskBearing: [],
+    earlierSuggestions: [],
+    fullPriority: ['SBIN'],
+    universe: ['SBIN'],
+  };
+  const settings: ShadowSettings = {
+    shadowEnabled: true,
+    cappedLiveEnabled: false,
+    blockStaleEntry: true,
+    sectorShadowEnabled: true,
+    sectorLiveEnabled: false,
+    perFeedLimit: 10,
+    maxUniqueTier1: 40,
+    sectorReservedSlots: 10,
+    topSectorsPerSide: 2,
+    sectorMaxAgeSec: 420,
+  };
+
+  const events: string[] = ['candidate discovery', 'priority refresh starts'];
+  await runLiveDecisionPath({
+    scan: async () => {
+      events.push('scan');
+      return { suggestions: [], sectorAggregates: [], marketDataAsOfMs: 1_800_000_025_000 };
+    },
+    decide: async () => {
+      events.push('Auto Trade decision');
+      return undefined;
+    },
+    afterDecision: async (result) => {
+      await runPostDecisionShadowCore(input, result, {
+        readSettings: async () => {
+          events.push('shadow settings read');
+          return settings;
+        },
+        readPreviousSectors: async () => {
+          events.push('shadow sector read');
+          return [];
+        },
+        selectSectors: selectActiveSectors,
+        buildPlan: (planInput) => {
+          events.push('shadow plan build');
+          return buildPriorityPlan(planInput);
+        },
+        prepareSectorWrite: prepareSectorSnapshotWrite,
+        recordCycle: async () => {
+          events.push('shadow telemetry persistence');
+        },
+        recordSectors: async () => {
+          events.push('shadow sector persistence');
+        },
+        nowMs: () => 1_800_000_180_000,
+      });
+    },
+  });
+  const expected = [
+    'candidate discovery',
+    'priority refresh starts',
+    'scan',
+    'Auto Trade decision',
+    'shadow settings read',
+    'shadow sector read',
+    'shadow plan build',
+    'shadow telemetry persistence',
+    'shadow sector persistence',
+  ];
+  check('orchestration: all shadow work is after refresh, scan, and Auto Trade decision', events.join('|') === expected.join('|'), events.join(' → '));
+
+  const disabledEvents: string[] = [];
+  await runPostDecisionShadowCore(input, { suggestions: [] }, {
+    readSettings: async () => {
+      disabledEvents.push('master toggle read');
+      return null;
+    },
+    readPreviousSectors: async () => {
+      disabledEvents.push('sector read');
+      return [];
+    },
+    selectSectors: selectActiveSectors,
+    buildPlan: (planInput) => {
+      disabledEvents.push('planner build');
+      return buildPriorityPlan(planInput);
+    },
+    prepareSectorWrite: prepareSectorSnapshotWrite,
+    recordCycle: async () => {
+      disabledEvents.push('telemetry write');
+    },
+    recordSectors: async () => {
+      disabledEvents.push('sector write');
+    },
+    nowMs: () => NOW,
+  });
+  check('orchestration: shadow OFF performs no sector read, planner build, or write', disabledEvents.join('|') === 'master toggle read', disabledEvents.join(' → '));
 }

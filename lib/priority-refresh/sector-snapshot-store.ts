@@ -147,6 +147,52 @@ export async function getLatestSectorSnapshot(date: string): Promise<ActiveSecto
   }
 }
 
+/**
+ * The newest completed batch strictly before `beforeBucketTs`. The explicit
+ * boundary prevents a delayed post-decision writer or same-bucket rerun from
+ * leaking the current cycle into the plan that is meant to use prior evidence.
+ */
+export async function getLatestSectorSnapshotBefore(
+  date: string,
+  beforeBucketTs: number
+): Promise<ActiveSectorSignal[]> {
+  try {
+    await ensureTables();
+    const batch = (
+      await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT bucketTs
+           FROM priority_sector_batches
+          WHERE date = ? AND bucketTs < ?
+          ORDER BY bucketTs DESC
+          LIMIT 1`,
+        date,
+        beforeBucketTs
+      )
+    )[0];
+    if (!batch) return [];
+    const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+      `SELECT sector, direction, weightedPct, totalTurnover, turnoverRank, advanceRatio, stocks, officialNsePct, asOfMs
+         FROM priority_sector_snapshots WHERE date = ? AND bucketTs = ?`,
+      date,
+      Number(batch.bucketTs)
+    );
+    return rows.map((r) => ({
+      sector: String(r.sector),
+      direction: r.direction === 'bearish' ? 'bearish' : 'bullish',
+      weightedPct: Number(r.weightedPct),
+      totalTurnover: Number(r.totalTurnover),
+      turnoverRank: Number(r.turnoverRank),
+      advanceRatio: r.advanceRatio == null ? null : Number(r.advanceRatio),
+      stocks: Number(r.stocks),
+      officialNsePct: r.officialNsePct == null ? null : Number(r.officialNsePct),
+      asOfMs: Number(r.asOfMs),
+    }));
+  } catch (err) {
+    console.warn(`[priority-refresh] bounded sector snapshot read failed: ${(err as Error).message}`);
+    return [];
+  }
+}
+
 /** Keep only the newest PRIORITY_RETENTION_SESSIONS dates. Best-effort. */
 export async function pruneSectorSnapshots(): Promise<void> {
   try {

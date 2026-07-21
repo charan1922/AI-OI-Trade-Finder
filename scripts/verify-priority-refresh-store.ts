@@ -36,7 +36,10 @@ async function main(): Promise<void> {
   const { recordPriorityCycle, getLatestPriorityCycle, getPriorityCyclesForDate } = await import(
     '../lib/priority-refresh/telemetry-store'
   );
-  const { recordSectorSnapshot, getLatestSectorSnapshot } = await import('../lib/priority-refresh/sector-snapshot-store');
+  const { recordSectorSnapshot, getLatestSectorSnapshot, getLatestSectorSnapshotBefore } = await import(
+    '../lib/priority-refresh/sector-snapshot-store'
+  );
+  const { prepareSectorSnapshotWrite } = await import('../lib/priority-refresh/sector-producer');
   const { prisma } = await import('../lib/db');
 
   const pd = '2099-05-05';
@@ -66,21 +69,48 @@ async function main(): Promise<void> {
 
   // Non-empty snapshot + faithful asOf round-trip (delayed persistence must NOT
   // make the signal look newer — PR#11 re-review B2).
-  await recordSectorSnapshot(pd, 1000, 1_000_000, [sig('PSU Bank', 'bullish', 1_000_000), sig('Realty', 'bearish', 1_000_000)]);
+  const observedAtMs = 1_800_000_025_000;
+  const observedBucketTs = 1_800_000_000;
+  const prepared = prepareSectorSnapshotWrite({
+    aggregates: [{
+      sector: 'PSU Bank', stocks: 5, totalTurnover: 9, weightedPct: 1, simplePct: 1,
+      advancers: 4, decliners: 1, unchanged: 0, advanceRatio: 0.8,
+    }],
+    marketDataAsOfMs: observedAtMs,
+    currentCycleBucketTs: observedBucketTs,
+    nowMs: observedAtMs + 155_000,
+  });
+  await recordSectorSnapshot(pd, prepared.bucketTs, prepared.asOfMs, prepared.signals);
   const snap1 = await getLatestSectorSnapshot(pd);
-  check('non-empty sector snapshot reads back', snap1.length === 2 && snap1.some((s) => s.sector === 'PSU Bank'));
-  check('sector signal asOfMs round-trips exactly (observation time preserved)', snap1.every((s) => s.asOfMs === 1_000_000));
+  check('non-empty sector snapshot reads back', snap1.length === 1 && snap1.some((s) => s.sector === 'PSU Bank'));
+  check('13-digit sector asOfMs round-trips exactly (observation time preserved)', snap1.every((s) => s.asOfMs === observedAtMs));
+  check('stored sector bucket comes from quote observation time', prepared.bucketTs === observedBucketTs);
 
   // Newer bucket qualifies NOTHING → latest read is [] (no stale carryover).
-  await recordSectorSnapshot(pd, 1300, 1_000_300, []);
+  await recordSectorSnapshot(pd, observedBucketTs + 300, observedAtMs + 300_000, []);
   const snap2 = await getLatestSectorSnapshot(pd);
   check('empty latest batch returns [] (no stale carryover)', snap2.length === 0);
+  const prior = await getLatestSectorSnapshotBefore(pd, observedBucketTs + 300);
+  check('bounded read uses newest batch strictly before current cycle', prior.length === 1 && prior[0].asOfMs === observedAtMs);
 
   // Rerun the same bucket with a sector dropped → atomic replace removes it.
-  await recordSectorSnapshot(pd, 1600, 1_000_600, [sig('PSU Bank', 'bullish', 1_000_600), sig('IT', 'bullish', 1_000_600)]);
-  await recordSectorSnapshot(pd, 1600, 1_000_650, [sig('PSU Bank', 'bullish', 1_000_650)]);
+  await recordSectorSnapshot(pd, observedBucketTs + 600, observedAtMs + 600_000, [sig('PSU Bank', 'bullish', observedAtMs + 600_000), sig('IT', 'bullish', observedAtMs + 600_000)]);
+  await recordSectorSnapshot(pd, observedBucketTs + 600, observedAtMs + 650_000, [sig('PSU Bank', 'bullish', observedAtMs + 650_000)]);
   const snap3 = await getLatestSectorSnapshot(pd);
   check('rerun removes disappeared sectors (atomic replace)', snap3.length === 1 && snap3[0].sector === 'PSU Bank');
+
+  const invalid = prepareSectorSnapshotWrite({
+    aggregates: [{
+      sector: 'PSU Bank', stocks: 5, totalTurnover: 9, weightedPct: 1, simplePct: 1,
+      advancers: 4, decliners: 1, unchanged: 0, advanceRatio: 0.8,
+    }],
+    marketDataAsOfMs: Number.NaN,
+    currentCycleBucketTs: observedBucketTs + 900,
+    nowMs: observedAtMs + 900_000,
+  });
+  await recordSectorSnapshot(pd, invalid.bucketTs, invalid.asOfMs, invalid.signals);
+  const snap4 = await getLatestSectorSnapshot(pd);
+  check('invalid quote asOf stores an empty latest cycle (no old signal reuse)', snap4.length === 0 && invalid.asOfMs === 0);
 
   try {
     await prisma.$disconnect();

@@ -15,6 +15,7 @@
  * sector-live PR; until then treat these as directional-only evidence.
  */
 import type { SectorAggregate } from '@/lib/sector/aggregate';
+import { fyersBucketFor } from '@/lib/fyers/bucket';
 import { PRIORITY_HIGH_TURNOVER_SECTORS } from './config';
 import { qualifySectorDirection } from './sector-signal';
 import type { ActiveSectorSignal } from './types';
@@ -51,4 +52,37 @@ export function buildActiveSectorSignals(
     });
   });
   return signals;
+}
+
+export interface PreparedSectorSnapshotWrite {
+  bucketTs: number;
+  asOfMs: number;
+  signals: ActiveSectorSignal[];
+}
+
+/**
+ * Convert scanner output into one store write without inventing freshness.
+ * A missing, invalid, or future observation time produces a zero-signal marker
+ * for the current cycle. `asOfMs = 0` is an explicit invalid sentinel, not a
+ * substitute scan-completion or persistence timestamp.
+ */
+export function prepareSectorSnapshotWrite(input: {
+  aggregates: SectorAggregate[];
+  marketDataAsOfMs: number | undefined;
+  currentCycleBucketTs: number;
+  nowMs: number;
+}): PreparedSectorSnapshotWrite {
+  const observedAtMs = input.marketDataAsOfMs;
+  const validObservation =
+    Number.isFinite(observedAtMs) && (observedAtMs as number) > 0 && (observedAtMs as number) <= input.nowMs;
+
+  if (!validObservation) {
+    return { bucketTs: input.currentCycleBucketTs, asOfMs: 0, signals: [] };
+  }
+
+  return {
+    bucketTs: fyersBucketFor(observedAtMs as number),
+    asOfMs: observedAtMs as number,
+    signals: buildActiveSectorSignals(input.aggregates, observedAtMs as number),
+  };
 }

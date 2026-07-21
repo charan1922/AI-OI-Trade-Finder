@@ -1,15 +1,8 @@
 /**
- * Shadow orchestration for the poller (plan §20-22). Builds the reduced
- * priority plan each cycle and records what it WOULD have done — the proposed
- * Tier 0/Tier 1 membership + which of that cycle's suggestions fell OUTSIDE the
- * proposed cap (coverage). It does NOT reorder the download and does NOT measure
- * timing (that ships with the capped-live PR, where the reorder is the real
- * behaviour), so it NEVER changes what the poller waits for or how it trades.
- * Everything here is best-effort; a failure is swallowed so the poller/scan are
- * never affected.
+ * Post-decision shadow orchestration. No settings, sector, planner, or store
+ * work from this module is allowed on the live refresh/decision path.
  */
 import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
-import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import type { TradeSuggestion } from '@/lib/trade-suggest/types';
 import { buildPriorityPlan } from './build-plan';
 import {
@@ -22,27 +15,26 @@ import {
   PRIORITY_SECTOR_RESERVED_SLOTS,
   PRIORITY_TOP_SECTORS_PER_SIDE,
 } from './config';
+import { prepareSectorSnapshotWrite } from './sector-producer';
 import { selectActiveSectors } from './sector-signal';
-import { getLatestSectorSnapshot } from './sector-snapshot-store';
+import { getLatestSectorSnapshotBefore, recordSectorSnapshot } from './sector-snapshot-store';
+import {
+  runPostDecisionShadowCore,
+  type ShadowCycleContext,
+  type ShadowCycleInput,
+  type ShadowScanResult,
+  type ShadowSettings,
+} from './shadow-orchestration';
 import { recordPriorityCycle } from './telemetry-store';
-import type { PriorityPlan } from './types';
 
-export interface ShadowSettings {
-  shadowEnabled: boolean;
-  cappedLiveEnabled: boolean;
-  blockStaleEntry: boolean;
-  sectorShadowEnabled: boolean;
-  sectorLiveEnabled: boolean;
-  perFeedLimit: number;
-  maxUniqueTier1: number;
-  sectorReservedSlots: number;
-  topSectorsPerSide: number;
-  sectorMaxAgeSec: number;
-}
+export type { ShadowCycleContext, ShadowCycleInput, ShadowSettings } from './shadow-orchestration';
 
-export async function readShadowSettings(): Promise<ShadowSettings> {
+/** Read the master toggle alone first so OFF performs no other shadow work. */
+export async function readShadowSettings(): Promise<ShadowSettings | null> {
+  const shadowEnabled = await getToggle('PRIORITY_REFRESH_SHADOW', PRIORITY_REFRESH_SHADOW);
+  if (!shadowEnabled) return null;
+
   const [
-    shadowEnabled,
     blockStaleEntry,
     sectorShadowEnabled,
     perFeedLimit,
@@ -51,7 +43,6 @@ export async function readShadowSettings(): Promise<ShadowSettings> {
     topSectorsPerSide,
     sectorMaxAgeSec,
   ] = await Promise.all([
-    getToggle('PRIORITY_REFRESH_SHADOW', PRIORITY_REFRESH_SHADOW),
     getToggle('BLOCK_STALE_AUTO_ENTRY', BLOCK_STALE_AUTO_ENTRY),
     getToggle('PRIORITY_ACTIVE_SECTORS_SHADOW', PRIORITY_ACTIVE_SECTORS_SHADOW),
     getNumberSetting('PRIORITY_PER_FEED', PRIORITY_PER_FEED),
@@ -60,12 +51,9 @@ export async function readShadowSettings(): Promise<ShadowSettings> {
     getNumberSetting('PRIORITY_TOP_SECTORS_PER_SIDE', PRIORITY_TOP_SECTORS_PER_SIDE),
     getNumberSetting('PRIORITY_SECTOR_MAX_AGE_SEC', PRIORITY_SECTOR_MAX_AGE_SEC),
   ]);
+
   return {
-    shadowEnabled,
-    // Capped-live and sector-live are NOT implemented or registered in this
-    // measurement PR — hardcode false so a stale hidden SQLite row can never make
-    // the operator panel claim "LIVE mode on" (PR#11 re-review B1b). The future
-    // live PRs register those toggles with their real behaviour + guard.
+    shadowEnabled: true,
     cappedLiveEnabled: false,
     blockStaleEntry,
     sectorShadowEnabled,
@@ -78,92 +66,7 @@ export async function readShadowSettings(): Promise<ShadowSettings> {
   };
 }
 
-/** Assembled shadow context for one cycle (membership + coverage only — this PR
- *  measures no timing; the reorder needed for a faithful timing read ships with
- *  the capped-live PR). Suggestions are supplied after the scan. */
-export interface ShadowCycleContext {
-  plan: PriorityPlan;
-  settings: ShadowSettings;
-  today: string;
-  bucketTs: number;
-  universeCount: number;
-  scanPoolCount: number;
-  fullPriorityCount: number;
-  activeBullish: string[];
-  activeBearish: string[];
-}
-
-/**
- * Build the reduced plan for this cycle from the candidate snapshot + positions
- * + earlier picks, using the stored (previous-cycle) sector snapshot. Returns
- * null when shadow is disabled or there is nothing to plan. Best-effort: any
- * failure logs and returns null so the poller proceeds exactly as today.
- */
-export async function buildShadowCycleContext(input: {
-  today: string;
-  bucketTs: number;
-  candidateSnapshot: CandidateSnapshot;
-  riskBearing: string[];
-  earlierSuggestions: string[];
-  fullPriority: string[];
-  universe: string[];
-}): Promise<ShadowCycleContext | null> {
-  try {
-    const settings = await readShadowSettings();
-    if (!settings.shadowEnabled) return null;
-
-    let activeBullish: string[] = [];
-    let activeBearish: string[] = [];
-    let activeSectors: Awaited<ReturnType<typeof getLatestSectorSnapshot>> = [];
-    if (settings.sectorShadowEnabled) {
-      const snapshot = await getLatestSectorSnapshot(input.today);
-      const sel = selectActiveSectors({
-        snapshots: snapshot,
-        topPerSide: settings.topSectorsPerSide,
-        nowMs: Date.now(),
-        maxAgeSec: settings.sectorMaxAgeSec,
-      });
-      activeSectors = [...sel.bullish, ...sel.bearish];
-      activeBullish = sel.bullish.map((s) => s.sector);
-      activeBearish = sel.bearish.map((s) => s.sector);
-    }
-
-    const plan = buildPriorityPlan({
-      feedPicks: input.candidateSnapshot.feedPicks,
-      riskBearingSymbols: input.riskBearing,
-      earlierSuggestionSymbols: input.earlierSuggestions,
-      fullPrioritySymbols: input.fullPriority,
-      fullUniverseSymbols: input.universe,
-      perFeedLimit: settings.perFeedLimit,
-      maxUniqueTier1: settings.maxUniqueTier1,
-      activeSectors,
-      sectorEnabled: settings.sectorShadowEnabled,
-      sectorReservedSlots: settings.sectorReservedSlots,
-      nowMs: Date.now(),
-    });
-
-    return {
-      plan,
-      settings,
-      today: input.today,
-      bucketTs: input.bucketTs,
-      universeCount: input.universe.length,
-      scanPoolCount: input.candidateSnapshot.sectorEntries.length,
-      fullPriorityCount: input.fullPriority.length,
-      activeBullish,
-      activeBearish,
-    };
-  } catch (err) {
-    console.warn(`[priority-refresh] shadow plan build failed: ${(err as Error).message}`);
-    return null;
-  }
-}
-
-/**
- * Record the cycle's shadow telemetry after the scan, including which of this
- * cycle's suggestions fell OUTSIDE the proposed cap (the coverage evidence).
- * Best-effort — never throws.
- */
+/** Record one cycle's membership and suggestion-coverage telemetry. */
 export async function recordShadowCycle(ctx: ShadowCycleContext, suggestions: TradeSuggestion[]): Promise<void> {
   const cappedSet = new Set(ctx.plan.cappedWaitSymbols);
   const outside = suggestions.filter((s) => !cappedSet.has(s.symbol)).map((s) => s.symbol);
@@ -191,4 +94,22 @@ export async function recordShadowCycle(ctx: ShadowCycleContext, suggestions: Tr
     activeBullishSectors: ctx.activeBullish,
     activeBearishSectors: ctx.activeBearish,
   });
+}
+
+/** Build and persist all shadow artifacts after the live decision. */
+export async function runPostDecisionShadow(input: ShadowCycleInput, result: ShadowScanResult): Promise<void> {
+  try {
+    await runPostDecisionShadowCore(input, result, {
+      readSettings: readShadowSettings,
+      readPreviousSectors: getLatestSectorSnapshotBefore,
+      selectSectors: selectActiveSectors,
+      buildPlan: buildPriorityPlan,
+      prepareSectorWrite: prepareSectorSnapshotWrite,
+      recordCycle: recordShadowCycle,
+      recordSectors: recordSectorSnapshot,
+      nowMs: Date.now,
+    });
+  } catch (err) {
+    console.warn(`[priority-refresh] post-decision shadow failed: ${(err as Error).message}`);
+  }
 }

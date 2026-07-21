@@ -254,6 +254,8 @@ export interface SuggestResponse {
    *  the input the priority-refresh shadow producer turns into a stored sector
    *  snapshot for the next cycle's plan (measurement only). */
   sectorAggregates?: SectorAggregate[];
+  /** Dhan quote observation time, captured before scanner-side DB/candle work. */
+  marketDataAsOfMs?: number;
   /** Everything persisted earlier today (continuity across loop iterations). */
   earlierToday: StoredSuggestion[];
   /** Earlier calls + live price — the position-management feed (see TrackedPosition). */
