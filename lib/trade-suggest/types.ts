@@ -97,10 +97,11 @@ export interface PickFactors {
 
 /**
  * Candle-freshness + (later) priority-plan metadata stamped on a suggestion at
- * scan time (see plan §24). The freshness fields are derived from the EQ candles
- * the scanner already loaded — no extra per-symbol query. The priority/sector
- * fields are populated once the priority-refresh planner is wired into the
- * scanner (a later PR); until then they carry safe empties.
+ * scan time (see plan §24). Freshness comes from an extra per-symbol point-read.
+ * It is best-effort informational metadata that fails closed and is never the
+ * source of truth for placement. Priority/sector fields are populated once the
+ * priority-refresh planner is wired into the scanner (a later PR); until then
+ * they carry safe empties.
  */
 export interface SuggestionCandleContext {
   requiredBucketTs: number;

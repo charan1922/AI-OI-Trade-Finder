@@ -14,6 +14,6 @@ function check(name: string, ok: boolean, detail = ''): void {
 }
 
 console.log('=== Pure verification (no DB): candle freshness + stale-candle entry gate ===\n');
-runFreshnessGateChecks(check);
+await runFreshnessGateChecks(check);
 console.log(`\n${failures === 0 ? '✅ all freshness/gate checks passed' : `❌ ${failures} check(s) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

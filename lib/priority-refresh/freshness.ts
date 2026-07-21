@@ -57,3 +57,22 @@ export function evaluateFreshness(row: EqBucketStatus | null, requiredBucketTs: 
     row.updatedAtMs >= closeMs;
   return { requiredBucketTs, latestBucketTs: row?.bucketTs ?? null, fresh };
 }
+
+/**
+ * Best-effort variant for informational callers. A read failure is reported to
+ * the caller and represented as missing/stale data; it must not interrupt the
+ * surrounding scan. Money-touching entry gates deliberately use the strict
+ * store read instead and remain authoritative.
+ */
+export async function evaluateFreshnessBestEffort(
+  requiredBucketTs: number,
+  readStatus: () => Promise<EqBucketStatus | null>,
+  onError?: (error: unknown) => void
+): Promise<CandleFreshness> {
+  try {
+    return evaluateFreshness(await readStatus(), requiredBucketTs);
+  } catch (error) {
+    onError?.(error);
+    return evaluateFreshness(null, requiredBucketTs);
+  }
+}

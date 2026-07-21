@@ -8,7 +8,12 @@
 import { DEFAULT_SETTINGS } from '../lib/auto-trade/config';
 import { checkEntryGates, type EntryGateInput } from '../lib/auto-trade/risk/gates';
 import { FYERS_BUCKET_SEC } from '../lib/fyers/candle-store';
-import { evaluateFreshness, requiredCompletedBucket, type EqBucketStatus } from '../lib/priority-refresh/freshness';
+import {
+  evaluateFreshness,
+  evaluateFreshnessBestEffort,
+  requiredCompletedBucket,
+  type EqBucketStatus,
+} from '../lib/priority-refresh/freshness';
 
 type Check = (name: string, ok: boolean, detail?: string) => void;
 
@@ -42,7 +47,24 @@ const gbase: EntryGateInput = {
   candleFresh: true,
 };
 
-export function runFreshnessGateChecks(check: Check): void {
+export async function runFreshnessGateChecks(check: Check): Promise<void> {
+  {
+    let warned = false;
+    const metadata = await evaluateFreshnessBestEffort(
+      REQUIRED,
+      async () => {
+        throw new Error('temporary database failure');
+      },
+      () => {
+        warned = true;
+      }
+    );
+    check(
+      'freshness metadata: store failure is reported and fails closed without throwing',
+      warned && metadata.requiredBucketTs === REQUIRED && metadata.latestBucketTs === null && !metadata.fresh
+    );
+  }
+
   // ── Freshness rule (finalization) ──────────────────────────────────────────
   check('freshness: required bucket written AT close → fresh', evaluateFreshness(row(REQUIRED, CLOSE_MS), REQUIRED).fresh);
   check('freshness: required bucket written AFTER close → fresh', evaluateFreshness(row(REQUIRED, CLOSE_MS + 12_000), REQUIRED).fresh);
