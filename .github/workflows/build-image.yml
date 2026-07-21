@@ -70,6 +70,10 @@ jobs:
       # downloads an unpinned tsx each run) — reproducible + no runtime fetch
       # (PR#6 review). It resolves the tsconfig @/ path aliases like the box does.
       - run: pnpm exec tsx scripts/verify-quant-shadow.ts
+      # DB-free pure checks for the capped priority-refresh planner (round-robin
+      # fairness, Tier 0/1/2 tiering, the 40-unique cap, sector promotion inside
+      # the cap). Same reproducible `pnpm exec tsx` runner as above.
+      - run: pnpm exec tsx scripts/verify-priority-refresh.ts
 
   build:
     needs: validate
