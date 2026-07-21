@@ -8,7 +8,10 @@
 
 import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
-import { getNumberSetting } from '@/lib/config/feature-toggles';
+import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
+import { getEqBucketStatus } from '@/lib/fyers/candle-store';
+import { BLOCK_STALE_AUTO_ENTRY } from '@/lib/priority-refresh/config';
+import { evaluateFreshness, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
 import { getExecutionAdapter } from './brokers';
 import { minuteOfDayIST } from './config';
@@ -58,16 +61,25 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
 
   // Cap counts EXCLUDING this proposal (it already reserved its own slot).
   const adapter = getExecutionAdapter(settings, 'approval');
-  const [entriesToday, exposure, pnl, brokerFunds, entryCutoffMin, latch, sessionVerified] = await Promise.all([
-    countEntriesToday(date),
-    getExposure(date),
-    dailyRealizedPnl(date),
-    adapter.getFunds(),
-    getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
-    getRiskLatch(),
-    isVerifiedTradingDay(date),
-  ]);
+  const [entriesToday, exposure, pnl, brokerFunds, entryCutoffMin, latch, sessionVerified, blockStaleAutoEntry] =
+    await Promise.all([
+      countEntriesToday(date),
+      getExposure(date),
+      dailyRealizedPnl(date),
+      adapter.getFunds(),
+      getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
+      getRiskLatch(),
+      isVerifiedTradingDay(date),
+      getToggle('BLOCK_STALE_AUTO_ENTRY', BLOCK_STALE_AUTO_ENTRY),
+    ]);
   const funds = brokerFunds.available;
+  // Re-check candle freshness LAST, at approval/placement time (plan §26, PR#10
+  // review): prove the REQUIRED completed bucket was finalized (fetched after it
+  // closed), not merely present. Same block the AI path enforces; exits/guards
+  // are never gated here.
+  const requiredBucketTs = requiredCompletedBucket(Date.now());
+  const bucketStatus = await getEqBucketStatus(trade.symbol, date, requiredBucketTs);
+  const freshness = evaluateFreshness(bucketStatus, requiredBucketTs);
   const verdict = checkEntryGates({
     settings,
     liveEnvEnabled: isAutoTradeLiveEnabled(),
@@ -87,6 +99,10 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     spreadPct: fresh?.spreadPct ?? null,
     hasSlSpot: trade.slSpot != null,
     brokerFundsAvailable: funds,
+    blockStaleAutoEntry,
+    candleLatestBucketTs: freshness.latestBucketTs,
+    candleRequiredBucketTs: freshness.requiredBucketTs,
+    candleFresh: freshness.fresh,
   });
   if (!verdict.allow) {
     await insertDecision({

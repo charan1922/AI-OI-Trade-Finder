@@ -81,6 +81,10 @@ async function main(): Promise<void> {
     spreadPct: 2,
     hasSlSpot: true,
     brokerFundsAvailable: null,
+    blockStaleAutoEntry: true,
+    candleLatestBucketTs: 1_000_000_000,
+    candleRequiredBucketTs: 1_000_000_000, // latest == required → fresh
+    candleFresh: true,
   };
   check('gates: clean entry allowed', checkEntryGates(base).allow);
   check('gates: off mode blocked', !checkEntryGates({ ...base, settings: { ...base.settings, mode: 'off' } }).allow);
@@ -105,6 +109,19 @@ async function main(): Promise<void> {
   check('gates: slippage blocked', !checkEntryGates({ ...base, slippagePct: 6 }).allow);
   check('gates: no premium blocked', !checkEntryGates({ ...base, perLotCost: null }).allow);
   check('gates: no stop blocked', !checkEntryGates({ ...base, hasSlSpot: false }).allow);
+  check(
+    'gates: stale candle blocked (block ON)',
+    !checkEntryGates({ ...base, candleFresh: false, candleLatestBucketTs: 1_000_000_000 - 600 }).allow,
+    'latest is 2 buckets behind required'
+  );
+  check(
+    'gates: missing candle blocked (block ON)',
+    !checkEntryGates({ ...base, candleFresh: false, candleLatestBucketTs: null }).allow
+  );
+  check(
+    'gates: stale candle allowed when block OFF (existing gates decide)',
+    checkEntryGates({ ...base, blockStaleAutoEntry: false, candleFresh: false, candleLatestBucketTs: null }).allow
+  );
   check(
     'gates: live without env key blocked',
     !checkEntryGates({ ...base, settings: { ...base.settings, mode: 'live' } }).allow

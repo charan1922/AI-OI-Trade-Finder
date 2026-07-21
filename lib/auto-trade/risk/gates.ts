@@ -44,6 +44,15 @@ export interface EntryGateInput {
   hasSlSpot: boolean;
   /** Broker's reported available balance (null = venue can't say; paper). */
   brokerFundsAvailable: number | null;
+  /** BLOCK_STALE_AUTO_ENTRY effective toggle — when true a stale latest completed
+   *  5-min candle blocks a NEW entry (exits/guards are never gated on this). */
+  blockStaleAutoEntry: boolean;
+  /** The symbol's latest stored completed 5-min EQ bucket (epoch s) at gate time. */
+  candleLatestBucketTs: number | null;
+  /** The latest FULLY COMPLETED 5-min bucket required at gate time (epoch s). */
+  candleRequiredBucketTs: number;
+  /** Derived: candleLatestBucketTs >= candleRequiredBucketTs (fail-closed false when missing). */
+  candleFresh: boolean;
 }
 
 export function checkEntryGates(x: EntryGateInput): GateVerdict {
@@ -147,6 +156,15 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
     reasons.push(`option spread ${x.spreadPct.toFixed(1)}% exceeds max ${maxSpread}% — too illiquid`);
   }
   if (!x.hasSlSpot) reasons.push('scanner plan has no spot stop-loss — unmanaged entries are not allowed');
+  // Stale-candle entry block (plan §25). The scanner's setup/stop/target are
+  // built from the latest completed 5-min EQ candle; entering on an outdated one
+  // means acting on a stale picture. NEW ENTRIES ONLY — exits, guards, stop
+  // moves and square-off never see this gate. Enforced in code, not the prompt.
+  if (x.blockStaleAutoEntry && !x.candleFresh) {
+    reasons.push(
+      `latest completed 5-min candle is stale (required bucket ${x.candleRequiredBucketTs}, latest ${x.candleLatestBucketTs ?? 'missing'}) — new entry blocked; exits/guards unaffected`
+    );
+  }
 
   return { allow: reasons.length === 0, reasons };
 }
