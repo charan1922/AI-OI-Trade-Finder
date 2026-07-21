@@ -26,7 +26,7 @@ import type { LiveQuoteResponse, LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getEqBucketStatus, getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
-import { evaluateFreshness, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
+import { evaluateFreshnessBestEffort, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
@@ -785,6 +785,9 @@ export async function runTradeSuggest(
 
   const picks: TradeSuggestion[] = [];
   let skippedUnaffordable = 0;
+  // One informational requirement for the whole scan, so picks cannot receive
+  // different bucket stamps if construction crosses a five-minute boundary.
+  const informationalRequiredBucketTs = requiredCompletedBucket(Date.now());
   for (const s of shortlist) {
     if (picks.length >= maxPicks) break;
     const r = s.row;
@@ -966,8 +969,14 @@ export async function runTradeSuggest(
     // bar being present is not proof. Informational here (the auto-trade gate
     // re-checks from the store at placement); priority/sector fields stay empty
     // until the priority-refresh planner is wired into the scanner.
-    const requiredBucketTs = requiredCompletedBucket(Date.now());
-    const freshness = evaluateFreshness(await getEqBucketStatus(r.symbol, date, requiredBucketTs), requiredBucketTs);
+    const freshness = await evaluateFreshnessBestEffort(
+      informationalRequiredBucketTs,
+      () => getEqBucketStatus(r.symbol, date, informationalRequiredBucketTs),
+      (error) =>
+        console.warn(
+          `${TAG} candle freshness metadata failed for ${r.symbol}: ${error instanceof Error ? error.message : String(error)}`
+        )
+    );
 
     picks.push({
       rank: picks.length + 1,
