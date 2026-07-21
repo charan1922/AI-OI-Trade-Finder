@@ -241,6 +241,34 @@ export async function getFyersCandles(
   }));
 }
 
+/**
+ * Status of ONE specific EQ bucket for a symbol on `date`: its start + the epoch
+ * ms it was last written (`updatedAt`), or null when that bucket isn't stored.
+ * The auto-trade freshness gate (lib/priority-refresh/freshness.ts) asks for the
+ * REQUIRED completed bucket and proves it was written AT/AFTER its close time —
+ * a bucket fetched while still forming has an earlier write time and reads stale.
+ * Cheap PK point-read (no full-day scan).
+ */
+export async function getEqBucketStatus(
+  symbol: string,
+  date: string,
+  bucketTs: number
+): Promise<{ bucketTs: number; updatedAtMs: number } | null> {
+  await ensureFyersCandlesTable();
+  const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT bucketTs, updatedAt FROM fyers_candles
+      WHERE symbol = ? AND instrument = 'EQ' AND date = ? AND bucketTs = ? AND open > 0`,
+    symbol,
+    date,
+    bucketTs
+  );
+  const r = rows[0];
+  if (!r) return null;
+  const updatedAtMs = Date.parse(String(r.updatedAt));
+  if (!Number.isFinite(updatedAtMs)) return null;
+  return { bucketTs: toNum(r.bucketTs), updatedAtMs };
+}
+
 /** One symbol's per-5-min NSE combined OI %-change series for `date` (FUT
  *  rows' nseOiPct, attached each poller cycle), ascending — the input to
  *  lib/signals/combined-oi-slope.ts. Rows with no attach yet carry null. */
