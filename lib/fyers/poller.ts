@@ -554,8 +554,13 @@ export async function runFyersCycle(
     if (!opts.dateOverride) {
       await pruneCandleHistory();
       await pruneRankSnapshots();
-      await pruneSectorSnapshots();
-      await prunePriorityCycles();
+      // The priority-refresh retention tables can be read or written by the
+      // asynchronous Auto Trade pass. Do not contend with its money-touching
+      // SQLite work; a later recorder cycle will perform this best-effort cleanup.
+      if (!state.captureRunning) {
+        await pruneSectorSnapshots();
+        await prunePriorityCycles();
+      }
     }
 
     state.cycles += 1;
