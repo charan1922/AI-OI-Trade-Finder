@@ -6,6 +6,7 @@
  * promotion respects PRIORITY_PER_FEED; unknown breadth fails closed). No
  * database, no I/O — runs in GitHub CI via scripts/verify-priority-refresh.ts.
  */
+import { assertPriorityNumberCombo, assertPriorityToggleCombo } from '../lib/config/feature-toggles';
 import { FEED_ORDER } from '../lib/priority-refresh/config';
 import { buildPriorityPlan } from '../lib/priority-refresh/build-plan';
 import { selectRoundRobinCandidates } from '../lib/priority-refresh/round-robin';
@@ -284,4 +285,21 @@ export function runPriorityRefreshChecks(check: Check): void {
     'sector: no active sectors → no promotions',
     selectSectorPromotions({ remainingFeedCandidates: [{ symbol: 'X', sector: 'Y', priceDirectionPct: 1 }], activeSectors: [], existingSymbols: new Set(), maxPromotions: 10 }).length === 0
   );
+
+  // ── Config unsafe-combo guard (§30, pure) ──────────────────────────────────
+  const throws = (fn: () => void): boolean => {
+    try {
+      fn();
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  check('guard: capped ON while stale-block OFF → rejected', throws(() => assertPriorityToggleCombo('USE_CAPPED_PRIORITY_REFRESH', true, { blockStale: false, capped: false })));
+  check('guard: capped ON while stale-block ON → allowed', !throws(() => assertPriorityToggleCombo('USE_CAPPED_PRIORITY_REFRESH', true, { blockStale: true, capped: false })));
+  check('guard: disabling stale-block while capped ON → rejected', throws(() => assertPriorityToggleCombo('BLOCK_STALE_AUTO_ENTRY', false, { blockStale: true, capped: true })));
+  check('guard: disabling stale-block while capped OFF → allowed', !throws(() => assertPriorityToggleCombo('BLOCK_STALE_AUTO_ENTRY', false, { blockStale: true, capped: false })));
+  check('guard: reserved slots > max unique → rejected', throws(() => assertPriorityNumberCombo('PRIORITY_SECTOR_RESERVED_SLOTS', 41, { maxUnique: 40, reserved: 10 })));
+  check('guard: reserved slots ≤ max unique → allowed', !throws(() => assertPriorityNumberCombo('PRIORITY_SECTOR_RESERVED_SLOTS', 10, { maxUnique: 40, reserved: 10 })));
+  check('guard: max unique < reserved slots → rejected', throws(() => assertPriorityNumberCombo('PRIORITY_MAX_UNIQUE', 5, { maxUnique: 40, reserved: 10 })));
 }
