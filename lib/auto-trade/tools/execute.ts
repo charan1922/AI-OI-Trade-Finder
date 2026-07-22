@@ -19,7 +19,7 @@ import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types
 import { alerts } from '../alerts';
 import { getExecutionAdapter } from '../brokers';
 import { CHECK_ORDER_TTL_MS, isEntryWindow, istMinuteLabel, minuteOfDayIST, nowISTClock } from '../config';
-import { exitTrade, placeEntryOrder, type ExecOutcome } from '../execution';
+import { backstopsFromFill, exitTrade, placeEntryOrder, targetRupeesForPosition, type ExecOutcome } from '../execution';
 import { fetchOptionQuote, fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
 import { checkEntryGates, checkStopMove, type EntryGateInput } from '../risk/gates';
 import { getRiskLatch } from '../risk/latch';
@@ -162,6 +162,8 @@ export async function buildAccountState(
     maxCapitalRupees: s.maxCapitalRupees,
     dailyRealizedPnlRupees: pnl,
     dailyLossHaltRupees: s.dailyLossHaltRupees,
+    profitTargetMode: s.profitTargetMode,
+    profitTargetRupees: s.profitTargetRupees,
     pendingApprovals: pending.length,
     brokerFundsAvailable,
     brokerFundsCheckedAtPlacement: true,
@@ -487,6 +489,13 @@ export async function executeAutoTradeTool(
         };
       }
       const entryPremium = freshPremium ?? pick.option.premium.ltp;
+      const lots = 1;
+      const configuredBackstops = backstopsFromFill(
+        entryPremium,
+        pick.option.lotSize,
+        lots,
+        targetRupeesForPosition(rt.settings, lots)
+      );
       const status = rt.settings.mode === 'approval' ? 'pending_approval' : 'placing';
       // Proposal-time SHADOW context (in-memory only): the pick's sector rank.
       // The fill-time metrics (spot/progress/re-anchor/MFE-MAE) are captured
@@ -501,7 +510,7 @@ export async function executeAutoTradeTool(
         strike: pick.option.strike,
         expiryDate: pick.option.expiryDate,
         lotSize: pick.option.lotSize,
-        lots: 1,
+        lots,
         optSecurityId: pick.option.optSecurityId,
         mode: rt.settings.mode,
         broker: rt.settings.mode === 'paper' ? 'paper' : rt.settings.broker,
@@ -510,8 +519,8 @@ export async function executeAutoTradeTool(
         slSpot: pick.plan.slSpot,
         targetSpot: pick.plan.targetSpot,
         entryPremium,
-        slPremium: pick.option.premium.slPremium,
-        targetPremium: pick.option.premium.targetPremium,
+        slPremium: configuredBackstops.slPremium,
+        targetPremium: configuredBackstops.targetPremium,
         aiReasonEntry: reason,
         entrySectorRank,
         entrySectorCount,

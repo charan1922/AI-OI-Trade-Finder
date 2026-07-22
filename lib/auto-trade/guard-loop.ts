@@ -1,5 +1,5 @@
 /**
- * Fast position-guard loop — the 60-second safety net BETWEEN the poller's
+ * Fast position-guard loop — the 5-second safety net BETWEEN the poller's
  * 5-minute passes. Fully headless: started once per server boot from
  * instrumentation.ts (same pattern as the Fyers poller), no page ever needs
  * to be open.
@@ -8,7 +8,7 @@
  * only at the start of each 5-min engine pass — an open position could sit
  * through its premium stop for up to ~5 minutes before code reacted. This
  * loop re-runs THE SAME guard every FAST_GUARD_TICK_MS whenever positions are
- * open. The timer targets a 60-second cadence, but process scheduling, quote
+ * open. The timer targets a 5-second cadence, but process scheduling, quote
  * latency and restarts can add drift; heartbeat state records reality.
  *
  * WHAT IT DOES NOT CHANGE:
@@ -16,7 +16,7 @@
  *    reconciliation or exits because those actions only reduce risk.
  *  - Rate limits: all open option contracts share one batched request through
  *    the serial Dhan quote gate (lib/dhan/market-feed.ts), so the loop adds at
- *    most one quote call/min. Spot stops still read the 5-min
+ *    most one quote call/tick. Spot stops still read the 5-min
  *    fyers_candles close (that's the recorder's granularity); the fast win is
  *    the PREMIUM stop/target, which uses a live quote.
  *  - Process-local overlap: skips its tick while a full engine pass is running
@@ -34,6 +34,7 @@ import { tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 import { FAST_GUARD_TICK_MS } from './config';
 import { isAutoTradePassRunning } from './engine';
 import { reconcileOpenPositions, reconcileUnresolvedOrders } from './execution';
+import { syncFyersPnlStream } from './fyers-pnl-stream';
 import { getGuardHealth, runPositionGuard, type GuardHealth } from './risk/position-guard';
 import { getOpenTrades, getUnresolvedOrders, insertDecision } from './store';
 
@@ -124,11 +125,19 @@ async function tick(): Promise<void> {
     // reconciling unresolved submissions off-hours, but do not quote/guard
     // ordinary positions outside market hours.
     if (!isMarketHours()) {
+      void syncFyersPnlStream([]).catch((err) =>
+        console.warn(`${TAG} P&L stream unsubscribe failed: ${(err as Error).message}`)
+      );
       status = 'market-closed';
       return;
     }
-    const open = await getOpenTrades(); // local SQLite — cheap every minute
+    const open = await getOpenTrades(); // local SQLite — cheap every tick
     openTrades = open.length;
+    // FYERS WebSocket P&L plus validated target fast path. Never await socket
+    // auth/reconnect here: it must not delay the deterministic REST fallback.
+    void syncFyersPnlStream(open).catch((err) =>
+      console.warn(`${TAG} P&L stream sync failed: ${(err as Error).message}`)
+    );
     if (open.length === 0) {
       status = 'no-open-positions';
       return;

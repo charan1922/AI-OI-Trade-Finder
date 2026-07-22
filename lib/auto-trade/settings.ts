@@ -16,11 +16,12 @@ import { prisma } from '@/lib/db';
 import { env } from '@/lib/env';
 import { isTelegramConfigured } from '@/lib/telegram';
 import { DEFAULT_SETTINGS } from './config';
-import type { AiProvider, AutoTradeSettings, BrokerId, TradeMode } from './types';
+import type { AiProvider, AutoTradeSettings, BrokerId, ProfitTargetMode, TradeMode } from './types';
 
 const MODES: TradeMode[] = ['off', 'paper', 'approval', 'live'];
 const BROKERS: BrokerId[] = ['fyers', 'dhan'];
 const PROVIDERS: AiProvider[] = ['azure', 'mimo'];
+const PROFIT_TARGET_MODES: ProfitTargetMode[] = ['per_trade', 'per_lot'];
 
 interface SettingDef {
   key: keyof AutoTradeSettings;
@@ -123,6 +124,21 @@ export const SETTING_DEFS: SettingDef[] = [
     serialize: String,
     label: 'Daily loss halt (₹)',
     description: 'Realized loss on the day at which new entries stop.',
+  },
+  {
+    key: 'profitTargetMode',
+    parse: (raw) => oneOf(raw, PROFIT_TARGET_MODES, 'profitTargetMode'),
+    serialize: String,
+    label: 'Profit target basis',
+    description:
+      'per trade = one fixed cash target for the whole position; per lot = multiply the cash target by the number of lots. Snapshotted before order placement.',
+  },
+  {
+    key: 'profitTargetRupees',
+    parse: (raw) => intInRange(raw, 500, 20_000, 'profitTargetRupees'),
+    serialize: String,
+    label: 'Profit target (₹)',
+    description: 'Cash profit at which the fast guard exits. Default ₹1,100; applies to new trades only.',
   },
   {
     key: 'maxSpreadPct',

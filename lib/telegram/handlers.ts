@@ -138,13 +138,14 @@ register('/status', 'Auto-trade engine status', async () => {
     `Open lots: ${exposure.openLots}/${settings.maxOpenLots}`,
     `Deployed: ₹${exposure.deployedRupees.toLocaleString('en-IN')}/₹${settings.maxCapitalRupees.toLocaleString('en-IN')}`,
     `Daily P&L: ${pnl >= 0 ? '+' : ''}₹${pnl.toLocaleString('en-IN')}  (halt @ -₹${settings.dailyLossHaltRupees.toLocaleString('en-IN')})`,
+    `Profit target: ₹${settings.profitTargetRupees.toLocaleString('en-IN')} ${settings.profitTargetMode === 'per_lot' ? 'per lot' : 'per trade'}`,
     ``,
     `Open positions: ${openTrades.length}`,
   ];
 
   for (const t of openTrades) {
     lines.push(
-      `  • ${t.symbol} ${t.optionType} ${t.strike} — ${t.lots} lot(s) @ ₹${t.entryFillPremium ?? t.entryPremium}`
+      `  • ${t.symbol} ${t.optionType} ${t.strike} — ${t.lots} lot(s) @ ₹${t.entryFillPremium ?? t.entryPremium} · target ₹${t.targetPremium}`
     );
   }
 

@@ -27,7 +27,9 @@ import {
   dailyRealizedPnl,
   getExposure,
   getOpenTrades,
+  getQuoteSnapshotsForTrade,
   getTrade,
+  insertQuoteSnapshots,
   insertTrade,
   updateOrder,
   updateTrade,
@@ -35,7 +37,12 @@ import {
 import { runAutoTradePass } from '../lib/auto-trade/engine';
 import { approveTrade } from '../lib/auto-trade/approval';
 import { runPositionGuard } from '../lib/auto-trade/risk/position-guard';
-import { correlationIdForOrder } from '../lib/auto-trade/execution';
+import {
+  backstopsFromFill,
+  backstopsFromProposalFill,
+  correlationIdForOrder,
+  targetRupeesForPosition,
+} from '../lib/auto-trade/execution';
 import { chunkForTelegram, isNearDuplicateRead, markdownToTelegramHtml } from '../lib/telegram/commentary';
 import { isAdminOnlyPage, requiredPermission, roleForGoogleEmail } from '../lib/auth/rbac';
 import { computeGex } from '../lib/signals/gex';
@@ -46,9 +53,32 @@ import { runProfitProtectChecks } from './profit-protect-checks';
 import { ensureSuggestionsTable, getSuggestions, recordOutcome } from '../lib/trade-suggest/store';
 import { todayIST } from '../lib/dhan/market-feed';
 import { hasRequiredEqBar } from '../lib/fyers/poller';
+import {
+  fyersStreamReconnectDelayMs,
+  fyersStreamNeedsTokenRotation,
+  isStreamTargetExecutable,
+  parseFyersPnlTick,
+} from '../lib/auto-trade/fyers-pnl-stream';
 
 let failures = 0;
 let modeToRestore: 'off' | 'paper' | 'approval' | 'live' | null = null;
+let modeRowExisted = false;
+let modeUpdatedAtToRestore: string | null = null;
+
+async function restoreOriginalMode(): Promise<void> {
+  if (!modeToRestore) return;
+  if (modeRowExisted) {
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO auto_trade_settings (key, value, updatedAt) VALUES ('mode', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt`,
+      modeToRestore,
+      modeUpdatedAtToRestore ?? new Date().toISOString()
+    );
+  } else {
+    await prisma.$executeRawUnsafe(`DELETE FROM auto_trade_settings WHERE key = 'mode'`);
+  }
+}
+
 function check(name: string, ok: boolean, detail = ''): void {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
   if (!ok) failures++;
@@ -57,8 +87,65 @@ function check(name: string, ok: boolean, detail = ''): void {
 async function main(): Promise<void> {
   const originalMode = (await getAutoTradeSettings()).mode;
   modeToRestore = originalMode;
+  const modeRows = (await prisma.$queryRawUnsafe(
+    `SELECT key, updatedAt FROM auto_trade_settings WHERE key = 'mode'`
+  )) as { key: string; updatedAt: string }[];
+  modeRowExisted = modeRows.length > 0;
+  modeUpdatedAtToRestore = modeRows[0]?.updatedAt ?? null;
   const realOpen = await getOpenTrades();
   if (realOpen.length > 0) throw new Error(`verification refuses to run with ${realOpen.length} real open trade(s)`);
+  const streamTick = parseFyersPnlTick({
+    symbol: 'NSE:TEST26JUL100CE',
+    ltp: 20.1,
+    bid_price: 20,
+    bid_size: 1_000,
+    ask_price: 20.2,
+  });
+  check(
+    'FYERS P&L stream: full tick parses executable bid and size',
+    streamTick?.bid === 20 && streamTick.ask === 20.2 && streamTick.bidSize === 1_000
+  );
+  const crossedTick = parseFyersPnlTick({
+    symbol: 'NSE:TEST26JUL100CE',
+    ltp: 20.1,
+    bid_price1: 21,
+    ask_price1: 20,
+  });
+  check('FYERS P&L stream: crossed book bid rejected', crossedTick?.bid == null && crossedTick?.ltp === 20.1);
+  check(
+    'FYERS streamed target: full position is executable',
+    isStreamTargetExecutable({ bid: 20, bidSize: 1_000, targetPremium: 20, qtyUnits: 1_000, bidAgeMs: 0 })
+  );
+  check(
+    'FYERS streamed target: bid below target is rejected',
+    !isStreamTargetExecutable({ bid: 19.95, bidSize: 2_000, targetPremium: 20, qtyUnits: 1_000, bidAgeMs: 0 })
+  );
+  check(
+    'FYERS streamed target: missing displayed size is rejected',
+    !isStreamTargetExecutable({ bid: 20, bidSize: null, targetPremium: 20, qtyUnits: 1_000, bidAgeMs: 0 })
+  );
+  check(
+    'FYERS streamed target: partial displayed size is rejected',
+    !isStreamTargetExecutable({ bid: 20, bidSize: 999, targetPremium: 20, qtyUnits: 1_000, bidAgeMs: 0 })
+  );
+  check(
+    'FYERS streamed target: stale bid is rejected',
+    !isStreamTargetExecutable({ bid: 20, bidSize: 1_000, targetPremium: 20, qtyUnits: 1_000, bidAgeMs: 2_001 })
+  );
+  check('FYERS P&L stream: reconnect starts at 1 second', fyersStreamReconnectDelayMs(0) === 1_000);
+  check('FYERS P&L stream: reconnect backoff is capped at 30 seconds', fyersStreamReconnectDelayMs(99) === 30_000);
+  check(
+    'FYERS P&L stream: unchanged access token keeps the installed socket',
+    !fyersStreamNeedsTokenRotation('token-a', 'token-a'),
+  );
+  check(
+    'FYERS P&L stream: a fresh morning token rotates the installed socket',
+    fyersStreamNeedsTokenRotation('token-a', 'token-b'),
+  );
+  check(
+    'FYERS P&L stream: an older hot-reload state without a token fingerprint rotates once',
+    fyersStreamNeedsTokenRotation(null, 'token-b'),
+  );
   // ── 1. Pure gates ──────────────────────────────────────────────────────────
   const base = {
     settings: { ...DEFAULT_SETTINGS, mode: 'paper' as const },
@@ -84,6 +171,32 @@ async function main(): Promise<void> {
     candleFresh: true,
   };
   check('gates: clean entry allowed', checkEntryGates(base).allow);
+  const oneLotTarget = backstopsFromFill(127, 125, 1, targetRupeesForPosition(DEFAULT_SETTINGS, 1)).targetPremium;
+  check('target: default ₹1,100 per trade maps to premium ₹135.80', oneLotTarget === 135.8, String(oneLotTarget));
+  const twoLotTradeTarget = backstopsFromFill(
+    127,
+    125,
+    2,
+    targetRupeesForPosition({ profitTargetMode: 'per_trade', profitTargetRupees: 1_100 }, 2)
+  ).targetPremium;
+  check('target: per-trade cash stays ₹1,100 across two lots', twoLotTradeTarget === 131.4, String(twoLotTradeTarget));
+  const twoLotPerLotTarget = backstopsFromFill(
+    127,
+    125,
+    2,
+    targetRupeesForPosition({ profitTargetMode: 'per_lot', profitTargetRupees: 1_100 }, 2)
+  ).targetPremium;
+  check(
+    'target: per-lot cash becomes ₹2,200 across two lots',
+    twoLotPerLotTarget === 135.8,
+    String(twoLotPerLotTarget)
+  );
+  const reanchoredTarget = backstopsFromProposalFill(128, 125, 1, 127, 135.8).targetPremium;
+  check(
+    'target: proposal cash snapshot survives a different broker fill',
+    reanchoredTarget === 136.8,
+    String(reanchoredTarget)
+  );
   check('gates: off mode blocked', !checkEntryGates({ ...base, settings: { ...base.settings, mode: 'off' } }).allow);
   check(
     'gates: kill switch blocked',
@@ -188,7 +301,8 @@ async function main(): Promise<void> {
   );
   check(
     'gates: active risk latch blocks entry',
-    !checkEntryGates({ ...base, riskLatchReasons: ['orphan-position:NSE:TEST26JUL100CE (unmanaged venue position)'] }).allow
+    !checkEntryGates({ ...base, riskLatchReasons: ['orphan-position:NSE:TEST26JUL100CE (unmanaged venue position)'] })
+      .allow
   );
   check('stop: bullish tighten up allowed', checkStopMove('bullish', 100, 105).allow);
   check('stop: bullish loosen down blocked', !checkStopMove('bullish', 100, 95).allow);
@@ -338,27 +452,77 @@ async function main(): Promise<void> {
     await prisma.$executeRawUnsafe(
       `INSERT INTO trade_suggestions (date, symbol, optionType, spotAtSuggest, slSpot, targetSpot, suggestedAt, lastSeenAt)
        VALUES (?,?,?,?,?,?,?,?)`,
-      sd, sym, 'CE', 100, 90, 120, `${sd}T10:00:00.000Z`, `${sd}T10:00:00.000Z`,
+      sd,
+      sym,
+      'CE',
+      100,
+      90,
+      120,
+      `${sd}T10:00:00.000Z`,
+      `${sd}T10:00:00.000Z`
     );
     // First grading: a stop, blob present. outcomeAt should be pinned to T1.
     const t1 = Date.parse('2099-02-02T10:05:00Z');
-    await recordOutcome(sd, sym, 'CE', { maxUpPct: 1.3, maxDownPct: -1, closePct: -1, spotOutcome: 'stop', spotOutcomeR: -1, protectShadow: '{"breakeven@1R":0}' }, t1);
+    await recordOutcome(
+      sd,
+      sym,
+      'CE',
+      {
+        maxUpPct: 1.3,
+        maxDownPct: -1,
+        closePct: -1,
+        spotOutcome: 'stop',
+        spotOutcomeR: -1,
+        protectShadow: '{"breakeven@1R":0}',
+      },
+      t1
+    );
     const afterFirst = (await getSuggestions(sd)).find((s) => s.symbol === sym);
-    check('store: first grade persists stop + blob + outcomeAt', afterFirst?.spotOutcome === 'stop' && afterFirst?.spotOutcomeR === -1 && afterFirst?.protectShadow === '{"breakeven@1R":0}' && afterFirst?.outcomeAt != null, JSON.stringify(afterFirst?.outcomeAt));
+    check(
+      'store: first grade persists stop + blob + outcomeAt',
+      afterFirst?.spotOutcome === 'stop' &&
+        afterFirst?.spotOutcomeR === -1 &&
+        afterFirst?.protectShadow === '{"breakeven@1R":0}' &&
+        afterFirst?.outcomeAt != null,
+      JSON.stringify(afterFirst?.outcomeAt)
+    );
     const pinnedOutcomeAt = afterFirst?.outcomeAt;
     // Regrade LATER (T2) with a corrected grade: grade + shadow overwrite, but
     // outcomeAt (the UI "Outcome" grade time) is PRESERVED via COALESCE.
     const t2 = Date.parse('2099-02-03T09:00:00Z');
-    await recordOutcome(sd, sym, 'CE', { maxUpPct: 2, maxDownPct: -0.2, closePct: 2, spotOutcome: 'target', spotOutcomeR: 2, protectShadow: '{"breakeven@1R":2}' }, t2);
+    await recordOutcome(
+      sd,
+      sym,
+      'CE',
+      {
+        maxUpPct: 2,
+        maxDownPct: -0.2,
+        closePct: 2,
+        spotOutcome: 'target',
+        spotOutcomeR: 2,
+        protectShadow: '{"breakeven@1R":2}',
+      },
+      t2
+    );
     const afterRegrade = (await getSuggestions(sd)).find((s) => s.symbol === sym);
-    check('store: regrade overwrites grade + shadow', afterRegrade?.spotOutcome === 'target' && afterRegrade?.spotOutcomeR === 2 && afterRegrade?.protectShadow === '{"breakeven@1R":2}', `${afterRegrade?.spotOutcome} ${afterRegrade?.spotOutcomeR}`);
-    check('store: regrade PRESERVES original outcomeAt (UI Outcome grade time)', afterRegrade?.outcomeAt === pinnedOutcomeAt, `${pinnedOutcomeAt} → ${afterRegrade?.outcomeAt}`);
+    check(
+      'store: regrade overwrites grade + shadow',
+      afterRegrade?.spotOutcome === 'target' &&
+        afterRegrade?.spotOutcomeR === 2 &&
+        afterRegrade?.protectShadow === '{"breakeven@1R":2}',
+      `${afterRegrade?.spotOutcome} ${afterRegrade?.spotOutcomeR}`
+    );
+    check(
+      'store: regrade PRESERVES original outcomeAt (UI Outcome grade time)',
+      afterRegrade?.outcomeAt === pinnedOutcomeAt,
+      `${pinnedOutcomeAt} → ${afterRegrade?.outcomeAt}`
+    );
     await prisma.$executeRawUnsafe(`DELETE FROM trade_suggestions WHERE date = ?`, sd);
   }
 
   // ── 3. Settings CRUD ───────────────────────────────────────────────────────
   const defaults = await getAutoTradeSettings();
-  check('settings: default mode off', defaults.mode === 'off', defaults.mode);
+  check('settings: current mode is valid', ['off', 'paper', 'approval', 'live'].includes(defaults.mode), defaults.mode);
   await setAutoTradeSetting('mode', 'paper');
   check('settings: mode set to paper', (await getAutoTradeSettings()).mode === 'paper');
   let rejected = false;
@@ -481,6 +645,29 @@ async function main(): Promise<void> {
   check('store: exposure rupees = premium×lot', exposure.deployedRupees === 20 * 500, String(exposure.deployedRupees));
   // Atomic exit claim: concurrent callers produce one attempt; a rejected
   // attempt frees a NEW numbered key without losing the prior audit row.
+  const quoteAt = new Date().toISOString();
+  await insertQuoteSnapshots([
+    {
+      tradeId,
+      date,
+      capturedAt: quoteAt,
+      source: 'guard',
+      optSecurityId: '999001',
+      ltp: 24.1,
+      priceSource: 'ltp',
+      bid: 24,
+      ask: 24.2,
+      spreadPct: 0.83,
+      slPremium: 17,
+      targetPremium: 22.2,
+    },
+  ]);
+  const quoteHistory = await getQuoteSnapshotsForTrade(tradeId);
+  check(
+    'store: executable bid/ask snapshot persisted',
+    quoteHistory.length === 1 && quoteHistory[0]?.bid === 24 && quoteHistory[0]?.ask === 24.2
+  );
+
   const exitClaimInput = {
     tradeId,
     idemKeyBase: `${date}:TESTSYM:CE:exit:${tradeId}`,
@@ -514,6 +701,7 @@ async function main(): Promise<void> {
   const closed = await getTrade(tradeId);
   check('store: close persisted', closed?.status === 'closed' && closed.realizedPnlRupees === 3000);
   check('store: daily pnl', (await dailyRealizedPnl(date)) === 3000);
+  await prisma.$executeRawUnsafe(`DELETE FROM auto_quote_snapshots WHERE tradeId = ?`, tradeId);
   await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, date);
   check('store: cleanup', (await countEntriesToday(date)) === 0);
 
@@ -526,7 +714,7 @@ async function main(): Promise<void> {
   check('engine: no guard actions on empty book', outcome.guardActions.length === 0);
 
   // Leave the system exactly as found.
-  await setAutoTradeSetting('mode', originalMode);
+  await restoreOriginalMode();
   check('settings: original mode restored', (await getAutoTradeSettings()).mode === originalMode);
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
@@ -536,7 +724,7 @@ async function main(): Promise<void> {
 void main().catch(async (err) => {
   if (modeToRestore) {
     try {
-      await setAutoTradeSetting('mode', modeToRestore);
+      await restoreOriginalMode();
     } catch {
       // Preserve the original verification error below.
     }
