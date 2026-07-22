@@ -19,6 +19,7 @@
 import { alerts } from '../alerts';
 import { isPastSquareOff, istMinuteLabel, minuteOfDayIST } from '../config';
 import { exitTrade } from '../execution';
+import { isRestTargetExecutable } from '../backstops';
 import { fetchOptionQuotesWithHealth, latestSpotRead, type OptionQuote } from '../quotes';
 import { getAutoTradeSettings } from '../settings';
 import {
@@ -178,7 +179,11 @@ export interface PositionGuardResult extends PositionGuardCoreResult {
 
 const guardHost = globalThis as unknown as {
   __positionGuardInFlight?: Promise<PositionGuardCoreResult>;
+  /** tradeId → last minute bucket a ROUTINE quote snapshot was stored for. */
+  __guardSampleMinute?: Map<number, number>;
 };
+guardHost.__guardSampleMinute ??= new Map<number, number>();
+const guardSampleMinute = guardHost.__guardSampleMinute;
 
 /** Check every open trade against the hard exit rules; exit what must exit.
  *  Returns a human-readable action list for the audit log. */
@@ -204,6 +209,17 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
       .filter((id) => Number.isFinite(id) && id > 0)
       .map(String)
   );
+  // The contracts whose premium stop/target this pass is actually responsible
+  // for: a confirmed fill AND today's row (a previous session's ghost row is
+  // never exited here — reconciliation owns it — so it must not raise a false
+  // blindness alarm either).
+  const protectedOptionIds = new Set(
+    open
+      .filter((trade) => trade.entryFillPremium != null && trade.date === date)
+      .map((trade) => Number(trade.optSecurityId))
+      .filter((id) => Number.isFinite(id) && id > 0)
+      .map(String)
+  );
   let optionQuotes: ReadonlyMap<string, OptionQuote> = new Map<string, OptionQuote>();
   let quoteCapturedAt: string | null = null;
   if (!squareOff && attemptedOptionIds.size > 0) {
@@ -211,10 +227,38 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
     optionQuotes = batch.quotes;
     quoteCapturedAt = new Date().toISOString();
     // A failed batch is BLINDNESS, not silence: warn → critical alert → latch.
-    actions.push(...(await recordQuoteHealth(batch.sourceOk, batch.error, open.length)));
+    //
+    // AT-REVIEW 2026-07-23: a SUCCESSFUL request that returns no usable quote
+    // for a contract we hold is equally blind. `sourceOk` only reports the HTTP
+    // call, so on its own it would reset the guard to "healthy" while that
+    // position's premium stop AND target were both silently skipped below
+    // (the `if (quote)` branch never runs). The FYERS stream does not cover
+    // this: it carries the fast TARGET path only, never the stop. Health is
+    // therefore keyed to the contracts we must protect, not to the transport.
+    const blindIds = [...protectedOptionIds].filter((id) => !optionQuotes.has(id));
+    const fullyPriced = batch.sourceOk && blindIds.length === 0;
+    const blindSymbols = open
+      .filter((trade) => blindIds.includes(String(Number(trade.optSecurityId))))
+      .map((trade) => `${trade.symbol} ${trade.strike}${trade.optionType}`);
+    actions.push(
+      ...(await recordQuoteHealth(
+        fullyPriced,
+        fullyPriced
+          ? null
+          : (batch.error ??
+              `no usable quote for held contract(s): ${blindSymbols.join(', ') || blindIds.join(', ')}`),
+        open.length
+      ))
+    );
   }
   const spotBySymbol = new Map<string, number | null>();
   const quoteSnapshots: NewAutoQuoteSnapshot[] = [];
+  // Drop throttle state for trades that are no longer open, so this cannot
+  // accumulate across sessions in a long-lived process.
+  const openIds = new Set(open.map((trade) => trade.id));
+  for (const tradeId of [...guardSampleMinute.keys()]) {
+    if (!openIds.has(tradeId)) guardSampleMinute.delete(tradeId);
+  }
 
   for (const trade of open) {
     try {
@@ -239,6 +283,7 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
       }
 
       let reason: string | null = null;
+      let snapshotCandidate: NewAutoQuoteSnapshot | null = null;
 
       if (squareOff) {
         reason = `EOD square-off (${istMinuteLabel(squareOffMin)})`;
@@ -246,7 +291,10 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
         // Premium backstops — the primary deterministic exit (we HOLD premium).
         const quote = optionQuotes.get(String(Number(trade.optSecurityId))) ?? null;
         if (quote) {
-          quoteSnapshots.push({
+          // Built now (so it records the pre-trailing-stop levels this decision
+          // was actually made against) but KEPT later, once `reason` is known —
+          // see the retention throttle below.
+          snapshotCandidate = {
             tradeId: trade.id,
             date: trade.date,
             capturedAt: quoteCapturedAt ?? new Date().toISOString(),
@@ -256,10 +304,12 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
             priceSource: quote.priceSource,
             bid: quote.bid,
             ask: quote.ask,
+            bidQty: quote.bidQty,
+            askQty: quote.askQty,
             spreadPct: quote.spreadPct,
             slPremium: trade.slPremium,
             targetPremium: trade.targetPremium,
-          });
+          };
           // Executable exit side (AT-027): a long option EXITS by SELLING, so
           // the tradable price is the BID, not the last print. The stop falls
           // back to the resolved price when the book is empty (capital
@@ -268,10 +318,30 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
           const exitBid = quote.bid;
           const stopPx = exitBid ?? quote.ltp;
           const stopSrc = exitBid != null ? 'bid' : quote.priceSource;
+          // AT-REVIEW 2026-07-23: the target must also be SIZED, not just
+          // priced. A ₹120 bid for 5 units is not a ₹120 exit for 500 — the
+          // market sell would take the top bid and then sweep whatever sits
+          // below it, realising materially less than the configured cash
+          // target. The FYERS stream already required full displayed size; the
+          // REST guard did not, and it runs every 5s so it usually fired first.
+          // Stops are deliberately EXEMPT: capital protection must never wait
+          // for depth to appear.
+          const qtyUnits = trade.lotSize * trade.lots;
+          const targetPriced = exitBid != null && exitBid >= trade.targetPremium;
+          const targetSized = isRestTargetExecutable({
+            bid: exitBid,
+            bidQty: quote.bidQty,
+            targetPremium: trade.targetPremium,
+            qtyUnits,
+          });
           if (stopPx <= trade.slPremium) {
             reason = `premium stop hit (${stopSrc} ₹${stopPx} ≤ ₹${trade.slPremium})`;
-          } else if (exitBid != null && exitBid >= trade.targetPremium) {
-            reason = `premium target hit (bid ₹${exitBid} ≥ ₹${trade.targetPremium})`;
+          } else if (targetPriced && targetSized) {
+            reason = `premium target hit (bid ₹${exitBid} × ${quote.bidQty} units ≥ ₹${trade.targetPremium} for ${qtyUnits} units)`;
+          } else if (targetPriced && !targetSized) {
+            const line = `${trade.symbol} ${trade.optionType}: bid ₹${exitBid} at/above target ₹${trade.targetPremium} but only ${quote.bidQty ?? 'unknown'} of ${qtyUnits} units are bid — holding until the target is executable in full`;
+            actions.push(line);
+            console.warn(`${TAG} ${line}`);
           } else if (exitBid == null && quote.ltp >= trade.targetPremium) {
             const line = `${trade.symbol} ${trade.optionType}: LTP ₹${quote.ltp} at/above target ₹${trade.targetPremium} but no live bid — holding until the target is executable`;
             actions.push(line);
@@ -323,6 +393,20 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
           } else if (spotRead != null) {
             reason = spotExitReason(trade, spotRead.price);
           }
+        }
+      }
+
+      // Retention throttle. The guard samples every 5 seconds per open position
+      // (~4,500 rows per trade per session), which is far more resolution than
+      // any target study needs for a quiet minute. Routine samples are kept once
+      // per minute; anything that actually DECIDED something — a stop, a target,
+      // a square-off, a momentum exit — is always kept, because those are the
+      // rows an audit is looking for.
+      if (snapshotCandidate != null) {
+        const minuteKey = Math.floor(Date.parse(snapshotCandidate.capturedAt) / 60_000);
+        if (reason != null || guardSampleMinute.get(trade.id) !== minuteKey) {
+          quoteSnapshots.push(snapshotCandidate);
+          guardSampleMinute.set(trade.id, minuteKey);
         }
       }
 

@@ -10,13 +10,8 @@
  */
 
 import { alerts, sendCriticalAlert } from './alerts';
-import {
-  ENTRY_METRIC_MAX_AGE_MS,
-  FILL_POLL_ATTEMPTS,
-  FILL_POLL_DELAY_MS,
-  MAX_LOSS_PER_LOT_FALLBACK,
-  DEFAULT_SETTINGS,
-} from './config';
+import { ENTRY_METRIC_MAX_AGE_MS, FILL_POLL_ATTEMPTS, FILL_POLL_DELAY_MS } from './config';
+import { backstopsFromProposalFill } from './backstops';
 import { getAdapterById, getExecutionAdapter } from './brokers';
 import type { BrokerAdapter, OrderTicket } from './brokers/adapter';
 import { ticketQtyUnits } from './brokers/adapter';
@@ -51,46 +46,16 @@ export { correlationIdForOrder };
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Total cash profit represented by the current runtime policy. */
-export function targetRupeesForPosition(
-  settings: Pick<AutoTradeSettings, 'profitTargetMode' | 'profitTargetRupees'>,
-  lots: number
-): number {
-  return settings.profitTargetMode === 'per_lot' ? settings.profitTargetRupees * lots : settings.profitTargetRupees;
-}
-
-/** Premium backstops re-anchored to the ACTUAL fill. The target argument is
- * total rupees for this position, so this function works for either per-trade
- * or per-lot policies and any lot count. */
-export function backstopsFromFill(
-  fill: number,
-  lotSize: number,
-  lots = 1,
-  totalTargetRupees = targetRupeesForPosition(DEFAULT_SETTINGS, lots)
-): { slPremium: number; targetPremium: number } {
-  const slPct = fill * 0.6; // −40% premium backstop
-  const slCap = fill - MAX_LOSS_PER_LOT_FALLBACK / lotSize;
-  const qtyUnits = lotSize * lots;
-  return {
-    slPremium: Math.round(Math.max(0.05, Math.max(slPct, slCap)) * 100) / 100,
-    targetPremium: Math.round((fill + totalTargetRupees / qtyUnits) * 100) / 100,
-  };
-}
-
-/** Re-anchor a proposal's snapshotted cash target to the broker's actual fill.
- * The proposal premium delta is the immutable policy snapshot, so changing the
- * runtime setting while an approval/order is pending cannot move its target. */
-export function backstopsFromProposalFill(
-  fill: number,
-  lotSize: number,
-  lots: number,
-  proposalEntryPremium: number,
-  proposalTargetPremium: number
-): { slPremium: number; targetPremium: number } {
-  const qtyUnits = lotSize * lots;
-  const snapshottedTargetRupees = Math.max(0.01, (proposalTargetPremium - proposalEntryPremium) * qtyUnits);
-  return backstopsFromFill(fill, lotSize, lots, snapshottedTargetRupees);
-}
+// The cash-target math moved to backstops.ts so CI can verify it WITHOUT a
+// database — this module's import graph reaches the store, which kept the money
+// math out of every automated gate (AT-REVIEW 2026-07-23). Re-exported here so
+// existing importers are untouched.
+export {
+  backstopsFromFill,
+  backstopsFromProposalFill,
+  isRestTargetExecutable,
+  targetRupeesForPosition,
+} from './backstops';
 
 function ticketFromTrade(trade: AutoTrade, side: 'BUY' | 'SELL', idemKey: string): OrderTicket {
   return {

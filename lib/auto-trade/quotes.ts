@@ -24,6 +24,12 @@ export interface OptionQuote {
   priceSource: 'ltp' | 'mid';
   bid: number | null;
   ask: number | null;
+  /** Displayed size at the best bid/ask. Null when there is no book at all.
+   *  The PROFIT TARGET requires the bid to actually hold the whole position —
+   *  a ₹120 bid for 5 units is not a ₹120 exit for 500. Stops deliberately
+   *  ignore this: capital protection must not wait for depth to appear. */
+  bidQty: number | null;
+  askQty: number | null;
   spreadPct: number | null;
 }
 
@@ -65,11 +71,17 @@ export async function fetchOptionQuotesWithHealth(optSecurityIds: readonly strin
         out.missingIds.push(String(id));
         continue;
       }
+      // Size at the touch, straight from the same depth ladder bestBidAsk()
+      // reads its prices from — so price and size always describe one book.
+      const topBid = oq.depth?.buy?.[0];
+      const topAsk = oq.depth?.sell?.[0];
       out.quotes.set(String(id), {
         ltp: Math.round(resolved.price * 100) / 100,
         priceSource: resolved.source,
         bid: book?.bid ?? null,
         ask: book?.ask ?? null,
+        bidQty: book == null || topBid?.quantity == null ? null : Number(topBid.quantity),
+        askQty: book == null || topAsk?.quantity == null ? null : Number(topAsk.quantity),
         spreadPct: book == null ? null : Math.round(book.spreadPct * 100) / 100,
       });
     }

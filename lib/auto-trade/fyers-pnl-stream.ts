@@ -84,6 +84,10 @@ interface StreamState {
   subscribed: Set<string>;
   latest: Map<string, LatestTick>;
   lastMessageAt: string | null;
+  /** Numeric mirror of lastMessageAt, and when the socket last came up. The
+   *  silence watchdog compares against whichever is later. */
+  lastMessageAtMs: number | null;
+  connectedAtMs: number | null;
   lastError: string | null;
   syncPromise: Promise<void> | null;
   exitingTradeIds: Set<number>;
@@ -105,6 +109,8 @@ function state(): StreamState {
     subscribed: new Set(),
     latest: new Map(),
     lastMessageAt: null,
+    lastMessageAtMs: null,
+    connectedAtMs: null,
     lastError: null,
     syncPromise: null,
     exitingTradeIds: new Set(),
@@ -222,6 +228,10 @@ async function exitOnStreamedTarget(tracked: TrackedTrade, tick: LatestTick): Pr
             capturedAt: new Date(tick.receivedAt).toISOString(),
             source: 'fyers_stream',
             optSecurityId: trade.optSecurityId,
+            // The size that made this target executable — the exact evidence a
+            // later audit needs to tell a real fill from a lucky print.
+            bidQty: bidSize,
+            askQty: null,
             ltp: tick.ltp,
             priceSource: 'ltp',
             bid,
@@ -268,6 +278,7 @@ function consumeMessage(message: unknown): void {
     depthReceivedAt: hasDepthUpdate ? now : (previous?.depthReceivedAt ?? null),
   });
   s.lastMessageAt = new Date(now).toISOString();
+  s.lastMessageAtMs = now;
   const tracked = s.tracked.get(tick.symbol);
   const latest = s.latest.get(tick.symbol);
   // Never let an LTP-only tick make an older depth quote appear current.
@@ -380,9 +391,55 @@ function scheduleReconnect(reason: string): void {
   console.warn(`${TAG} reconnect scheduled in ${delayMs}ms (${reason}); 5-second REST guard remains active`);
 }
 
+/**
+ * A socket can go half-open: the transport still reports "connected" but no
+ * messages ever arrive again. The reconnect supervisor covers connect timeouts,
+ * errors, explicit closes and token rotation — none of which fire here, so
+ * without this the fast path stays silently dead for the rest of the session.
+ *
+ * The threshold is deliberately generous. A deep out-of-the-money contract can
+ * legitimately go a long time without a price change, so this triggers only on
+ * total silence across EVERY subscribed symbol, and it is measured from the
+ * later of the last message and the moment the socket came up (a socket that
+ * just connected has simply not had time to say anything yet).
+ *
+ * A false positive costs one reconnect; the 5-second REST guard protects
+ * throughout either way.
+ */
+export const STREAM_SILENCE_LIMIT_MS = 120_000;
+
+export function fyersStreamIsSilent(args: {
+  connected: boolean;
+  trackedSymbols: number;
+  lastActivityMs: number | null;
+  nowMs: number;
+}): boolean {
+  if (!args.connected || args.trackedSymbols === 0) return false;
+  if (args.lastActivityMs == null) return false;
+  return args.nowMs - args.lastActivityMs > STREAM_SILENCE_LIMIT_MS;
+}
+
 async function ensureSocket(): Promise<void> {
   const s = state();
   if (s.tracked.size === 0) return;
+
+  // Silence watchdog runs BEFORE the connected/connecting early-return below,
+  // which is exactly the branch that would otherwise keep a dead socket alive.
+  if (
+    fyersStreamIsSilent({
+      connected: s.connected,
+      trackedSymbols: s.subscribed.size,
+      lastActivityMs: Math.max(s.lastMessageAtMs ?? 0, s.connectedAtMs ?? 0) || null,
+      nowMs: Date.now(),
+    })
+  ) {
+    const silentForMs = Date.now() - Math.max(s.lastMessageAtMs ?? 0, s.connectedAtMs ?? 0);
+    console.warn(
+      `${TAG} no market data for ${Math.round(silentForMs / 1000)}s on a connected socket — recycling it`
+    );
+    s.lastError = `stream silent for ${Math.round(silentForMs / 1000)}s; socket recycled`;
+    retireSocketForTokenRotation(s);
+  }
 
   let token: string;
   try {
@@ -423,6 +480,9 @@ async function ensureSocket(): Promise<void> {
       current.reconnectAttempts = 0;
       current.connecting = false;
       current.connected = true;
+      // Grace period for the silence watchdog: a socket that just came up has
+      // not had time to send anything yet.
+      current.connectedAtMs = Date.now();
       current.lastError = null;
       console.log(`${TAG} connected`);
       applySubscriptions();

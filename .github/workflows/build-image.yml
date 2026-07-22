@@ -84,6 +84,12 @@ jobs:
       # empty-batch / atomic-replace semantics hold — DB behaviour the pure checks
       # and the container smoke test don't exercise (PR#11 re-review).
       - run: pnpm exec tsx scripts/verify-priority-refresh-store.ts
+      # DB-free checks for the CASH-TARGET math and both exit-executability
+      # rules (REST + stream), plus reconnect backoff, token rotation and the
+      # stream silence watchdog. v1.26.0 shipped this money math covered only by
+      # scripts/verify-auto-trade.ts, which needs a populated DB and so never ran
+      # here — a green deploy proved nothing about it (AT-REVIEW 2026-07-23).
+      - run: pnpm exec tsx scripts/verify-auto-target-stream.ts
 
   build:
     needs: validate
