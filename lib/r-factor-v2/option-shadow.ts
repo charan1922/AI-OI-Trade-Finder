@@ -68,6 +68,11 @@ async function resolveContract(
       where: { symbol, segment: 'NSE_EQ' },
       select: { securityId: true },
     }),
+    // `gte: now` keeps the current contract for the whole of its own expiry
+    // session: master_contracts stores expiries at 14:30Z (20:00 IST), i.e.
+    // AFTER the close, so an expiry-day quote at 10:00 IST still matches it.
+    // Verified against the loaded master; if that convention ever changes, this
+    // silently rolls to the next month mid-session.
     prisma.masterContract.findFirst({
       where: { underlying: symbol, segment: 'NSE_FNO', instrument: 'OPTSTK', expiryDate: { gte: new Date() } },
       orderBy: { expiryDate: 'asc' },
@@ -105,9 +110,12 @@ async function runWorker(): Promise<void> {
         // Prefer this underlying's own same-clock premium history over the
         // linear prior-session estimate. Null until a few sessions of evidence
         // exist, in which case the fallback is used AND labelled as such.
-        const baseline = await loadSameTimeOptionBaseline(candidate.symbol, todayIST(), Date.now()).catch(
-          () => null,
-        );
+        const baseline = await loadSameTimeOptionBaseline(
+          candidate.symbol,
+          contract.expiry,
+          todayIST(),
+          Date.now(),
+        ).catch(() => null);
         const evidence = deriveOptionActivityEvidence(
           chain,
           contract.expiry,

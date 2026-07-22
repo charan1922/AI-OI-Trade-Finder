@@ -48,6 +48,7 @@ const bearishOption: OptionActivityEvidence = {
   directionScore: -0.85,
   direction: 'bearish',
   directionConfidence: 0.85,
+  directionEvidenceLegs: 8,
   oiPcr: 1.5,
   volumePcr: 1.8,
   premiumValuePcr: 2,
@@ -323,6 +324,67 @@ check('far, cheap open interest cannot masquerade as conviction', () => {
     (result.moneynessWeightedOiPcr ?? 0) < (result.oiPcr ?? 0),
     'delta-weighted PCR must discount the far wing',
   );
+});
+
+// ── An uninformative chain must not vote ────────────────────────────────────
+// Having a chain is not the same as the chain saying something. A full-weight
+// neutral vote would drag a genuinely one-sided read back toward neutral, which
+// is exactly the failure the OI-slope vote is written to avoid.
+check('a chain with no OI build carries no direction evidence', () => {
+  const flat: DetailedOptionChain = {
+    underlyingLastPrice: 1000,
+    fetchedAt: '2026-07-23T05:30:00.000Z',
+    strikes: [
+      {
+        strike: 1000,
+        // OI fell on both sides: no fresh build anywhere, so nothing to read.
+        ce: side({ oi: 900, previousOi: 1000 }),
+        pe: side({ oi: 800, previousOi: 1000, greeks: { delta: -0.5, gamma: 0.01, theta: -0.1, vega: 0.2 } }),
+      },
+    ],
+  };
+  const result = deriveOptionActivityEvidence(flat, '2026-07-30');
+  assert.equal(result.directionEvidenceLegs, 0);
+  assert.equal(result.directionScore, 0);
+});
+
+check('an uninformative chain does not drag direction toward neutral', () => {
+  const silent = { ...bearishOption, directionScore: 0, directionConfidence: 0, directionEvidenceLegs: 0 };
+  const noChain = computeRFactorV2(baseInput('A'));
+  const withSilentChain = computeRFactorV2(baseInput('A', { option: silent }));
+  assert.equal(
+    withSilentChain.directionScore,
+    noChain.directionScore,
+    'merely fetching a chain must not change the direction read',
+  );
+});
+
+check('balanced opposing evidence still votes — it is real information', () => {
+  // directionScore 0 with legs > 0 means bulls and bears genuinely cancelled.
+  // That must count, which is why availability is tested by leg COUNT and not
+  // by directionScore or directionConfidence being zero.
+  const balanced = { ...bearishOption, directionScore: 0, directionConfidence: 0, directionEvidenceLegs: 6 };
+  const noChain = computeRFactorV2(baseInput('B'));
+  const withBalanced = computeRFactorV2(baseInput('B', { option: balanced }));
+  assert.notEqual(withBalanced.directionScore, noChain.directionScore);
+  assert.ok(Math.abs(withBalanced.directionScore) < Math.abs(noChain.directionScore));
+});
+
+check('a single valid directional leg is enough to vote', () => {
+  const oneLeg: DetailedOptionChain = {
+    underlyingLastPrice: 1000,
+    fetchedAt: '2026-07-23T05:30:00.000Z',
+    strikes: [
+      {
+        strike: 1000,
+        ce: side({ oi: 1400, previousOi: 1000, lastPrice: 9, previousClosePrice: 6 }),
+        pe: side({ oi: 800, previousOi: 1000, greeks: { delta: -0.5, gamma: 0.01, theta: -0.1, vega: 0.2 } }),
+      },
+    ],
+  };
+  const result = deriveOptionActivityEvidence(oneLeg, '2026-07-30');
+  assert.equal(result.directionEvidenceLegs, 1);
+  assert.equal(result.direction, 'bullish', 'call buying on a fresh OI build reads bullish');
 });
 
 check('gamma evidence is recorded but never scored', () => {

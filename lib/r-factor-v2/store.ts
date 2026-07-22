@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { RFACTOR_V2_CONFIG_HASH, RFACTOR_V2_MODEL_VERSION } from './engine';
 import type { OptionActivityEvidence, RFactorV2Input, RFactorV2Result } from './types';
 
 /** Sessions of shadow evidence to retain, matching the candle/rank retention. */
@@ -51,6 +52,14 @@ export async function ensureRFactorV2Tables(): Promise<void> {
   // Additive columns for installs created before these fields existed.
   await addColumnIfMissing('rfactor_v2_snapshots', 'comparableActivity', 'REAL NOT NULL DEFAULT 0');
   await addColumnIfMissing('rfactor_v2_snapshots', 'comparableCoverage', 'REAL NOT NULL DEFAULT 0');
+  // Exact observed price at the moment of the snapshot. The evaluator uses this
+  // as the entry reference instead of inferring one from a candle, which is
+  // guesswork about when a bar's close first became visible.
+  await addColumnIfMissing('rfactor_v2_snapshots', 'ltp', 'REAL');
+  // Which scoring definition produced the row. Without these the evaluator
+  // could silently average sessions scored under different rules.
+  await addColumnIfMissing('rfactor_v2_snapshots', 'modelVersion', `TEXT NOT NULL DEFAULT 'unknown'`);
+  await addColumnIfMissing('rfactor_v2_snapshots', 'configHash', `TEXT NOT NULL DEFAULT 'unknown'`);
   await addColumnIfMissing('rfactor_v2_option_snapshots', 'premiumValue', 'REAL NOT NULL DEFAULT 0');
   await addColumnIfMissing('rfactor_v2_option_snapshots', 'optionVolume', 'REAL NOT NULL DEFAULT 0');
   await addColumnIfMissing('rfactor_v2_option_snapshots', 'paceBaselineKind', `TEXT NOT NULL DEFAULT 'missing'`);
@@ -219,11 +228,18 @@ export function resetSameTimeBaselineCache(): void {
 
 /**
  * Same-clock traded-premium baseline for ONE underlying, from prior sessions of
- * retained option evidence. Returns null until enough sessions exist, in which
- * case the caller must fall back to the linear estimate and say so.
+ * retained option evidence.
+ *
+ * Scoped to a SINGLE expiry on purpose. An expiring contract and a freshly
+ * rolled one carry very different time value, so comparing across a rollover
+ * would manufacture a premium-participation spike out of nothing but the
+ * calendar. After a roll there are no prior sessions for the new expiry, so this
+ * correctly returns null and the caller falls back to the linear estimate and
+ * labels it — a few sessions of honest estimate beat a confident wrong number.
  */
 export async function loadSameTimeOptionBaseline(
   symbol: string,
+  expiry: string,
   date: string,
   nowMs: number,
 ): Promise<number | null> {
@@ -239,12 +255,13 @@ export async function loadSameTimeOptionBaseline(
                 ) AS rn,
                 ABS(CAST((((bucketTs + 19800) % 86400) / 60) AS INTEGER) - ?) AS minuteGap
            FROM rfactor_v2_option_snapshots
-          WHERE symbol = ? AND date < ? AND premiumValue > 0
+          WHERE symbol = ? AND expiry = ? AND date < ? AND premiumValue > 0
        )
        SELECT premiumValue FROM ranked WHERE rn = 1 AND minuteGap <= 15`,
       targetMinute,
       targetMinute,
       symbol,
+      expiry,
       date,
     );
     if (rows.length < MIN_SESSIONS_FOR_OPTION_BASELINE) return null;
@@ -254,59 +271,108 @@ export async function loadSameTimeOptionBaseline(
   }
 }
 
+/** Columns per inserted row — keeps batches under SQLite's 999-variable limit. */
+const SNAPSHOT_COLS = 22;
+const SNAPSHOT_BATCH_ROWS = 40;
+
+interface WriteGuard {
+  lastBucketTs: number;
+  lastSymbolCount: number;
+  inFlight: boolean;
+}
+const writeHost = globalThis as unknown as { __rfactorV2Write?: WriteGuard };
+writeHost.__rfactorV2Write ??= { lastBucketTs: 0, lastSymbolCount: 0, inFlight: false };
+const writeGuard = writeHost.__rfactorV2Write;
+
+/**
+ * Persist one row per symbol per MINUTE.
+ *
+ * `/live` recomputes roughly every 7 seconds and several sections poll with
+ * different symbol lists, so without a guard this would fire a full-universe
+ * write many times a minute — contending for SQLite's write lock against
+ * money-touching work, and letting a slower earlier transaction overwrite a
+ * newer observation for the same bucket.
+ *
+ * Three defences, matching the oi_intraday writer:
+ *   - skip entirely once this minute is already stored (a wider symbol list is
+ *     allowed through once, so a bigger poll can still fill in the rest);
+ *   - drop the write if one is already in flight rather than queueing another;
+ *   - INSERT OR IGNORE in batched multi-row statements, so the first
+ *     observation of a minute wins deterministically and repeats collapse.
+ */
 export async function recordRFactorV2Batch(
   date: string,
   oldScores: Map<string, number | null>,
   inputs: RFactorV2Input[],
   results: Map<string, RFactorV2Result>,
   nowMs: number,
+  ltpBySymbol: Map<string, number | null> = new Map(),
 ): Promise<void> {
   if (inputs.length === 0) return;
-  await ensureRFactorV2Tables();
   const bucketTs = Math.floor(nowMs / 60_000) * 60;
-  const capturedAt = new Date(nowMs).toISOString();
-  const ops = inputs.flatMap((input) => {
-    const result = results.get(input.symbol);
-    if (result == null) return [];
-    return [
-      prisma.$executeRawUnsafe(
-        `INSERT INTO rfactor_v2_snapshots
-          (date,bucketTs,symbol,capturedAt,oldRFactor,activityScore,rawActivity,comparableActivity,
+  if (writeGuard.inFlight) return;
+  const sameBucket = writeGuard.lastBucketTs === bucketTs;
+  if (sameBucket && inputs.length <= writeGuard.lastSymbolCount) return;
+
+  writeGuard.inFlight = true;
+  try {
+    await ensureRFactorV2Tables();
+    const capturedAt = new Date(nowMs).toISOString();
+    const rows = inputs.flatMap((input) => {
+      const result = results.get(input.symbol);
+      return result == null ? [] : [{ input, result }];
+    });
+    for (let start = 0; start < rows.length; start += SNAPSHOT_BATCH_ROWS) {
+      const chunk = rows.slice(start, start + SNAPSHOT_BATCH_ROWS);
+      const placeholders = chunk.map(() => `(${Array(SNAPSHOT_COLS).fill('?').join(',')})`).join(',');
+      const params: unknown[] = [];
+      for (const { input, result } of chunk) {
+        params.push(
+          date,
+          bucketTs,
+          input.symbol,
+          capturedAt,
+          ltpBySymbol.get(input.symbol) ?? null,
+          oldScores.get(input.symbol) ?? null,
+          result.activityScore,
+          result.rawActivity,
+          result.comparableActivity,
+          result.activityPercentile,
+          result.activityRank,
+          result.universeSize,
+          result.direction,
+          result.directionScore,
+          result.directionConfidence,
+          result.coverage,
+          result.comparableCoverage,
+          result.optionStatus,
+          RFACTOR_V2_MODEL_VERSION,
+          RFACTOR_V2_CONFIG_HASH,
+          JSON.stringify(input),
+          JSON.stringify(result.factors),
+        );
+      }
+      await prisma.$executeRawUnsafe(
+        `INSERT OR IGNORE INTO rfactor_v2_snapshots
+          (date,bucketTs,symbol,capturedAt,ltp,oldRFactor,activityScore,rawActivity,comparableActivity,
            activityPercentile,activityRank,universeSize,direction,directionScore,directionConfidence,
-           coverage,comparableCoverage,optionStatus,inputs,factors)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(date,bucketTs,symbol) DO UPDATE SET
-           capturedAt=excluded.capturedAt, oldRFactor=excluded.oldRFactor,
-           activityScore=excluded.activityScore, rawActivity=excluded.rawActivity,
-           comparableActivity=excluded.comparableActivity,
-           activityPercentile=excluded.activityPercentile, activityRank=excluded.activityRank,
-           universeSize=excluded.universeSize, direction=excluded.direction,
-           directionScore=excluded.directionScore, directionConfidence=excluded.directionConfidence,
-           coverage=excluded.coverage, comparableCoverage=excluded.comparableCoverage,
-           optionStatus=excluded.optionStatus, inputs=excluded.inputs, factors=excluded.factors`,
-        date,
-        bucketTs,
-        input.symbol,
-        capturedAt,
-        oldScores.get(input.symbol) ?? null,
-        result.activityScore,
-        result.rawActivity,
-        result.comparableActivity,
-        result.activityPercentile,
-        result.activityRank,
-        result.universeSize,
-        result.direction,
-        result.directionScore,
-        result.directionConfidence,
-        result.coverage,
-        result.comparableCoverage,
-        result.optionStatus,
-        JSON.stringify(input),
-        JSON.stringify(result.factors),
-      ),
-    ];
-  });
-  if (ops.length > 0) await prisma.$transaction(ops);
+           coverage,comparableCoverage,optionStatus,modelVersion,configHash,inputs,factors)
+         VALUES ${placeholders}`,
+        ...params,
+      );
+    }
+    writeGuard.lastBucketTs = bucketTs;
+    writeGuard.lastSymbolCount = sameBucket ? Math.max(writeGuard.lastSymbolCount, inputs.length) : inputs.length;
+  } finally {
+    writeGuard.inFlight = false;
+  }
+}
+
+/** Test seam: drop the process-wide once-per-minute write guard. */
+export function resetRFactorV2WriteGuard(): void {
+  writeGuard.lastBucketTs = 0;
+  writeGuard.lastSymbolCount = 0;
+  writeGuard.inFlight = false;
 }
 
 export async function recordOptionEvidence(symbol: string, evidence: OptionActivityEvidence): Promise<void> {

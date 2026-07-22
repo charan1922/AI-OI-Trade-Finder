@@ -44,19 +44,59 @@ const DIRECTION_WEIGHTS = {
 } as const;
 const TOTAL_DIRECTION_WEIGHT = Object.values(DIRECTION_WEIGHTS).reduce((sum, value) => sum + value, 0);
 
-/** A sector's peers, measured this same poll. Never includes the stock itself. */
-export interface RFactorV2SectorContext {
-  peerMeanCoreActivity: number | null;
-  peerDirectionBias: number | null;
-  peers: number;
-}
-
 /** Minimum measured peers before a sector-relative comparison means anything. */
 const MIN_SECTOR_PEERS = 3;
 /** Coverage a name needs before it may contribute to its sector's mean. */
 const MIN_CORE_COVERAGE_FOR_SECTOR = 0.5;
 /** Comparable coverage required before a name is ranked at all. */
 const MIN_RANK_COVERAGE = 0.55;
+
+/**
+ * Bump this whenever scoring BEHAVIOUR changes — new or reweighted factors,
+ * different score curves, changed thresholds, or different option-leg
+ * selection. Evidence rows carry it so the evaluator can never silently mix
+ * sessions scored under two different definitions, which would quietly void the
+ * "freeze the parameters, then judge on later sessions" rule.
+ *
+ * v2.1 — option direction vote is skipped when the chain carried no directional
+ *        evidence, instead of counting as a full-weight neutral vote.
+ */
+export const RFACTOR_V2_MODEL_VERSION = 'v2.1';
+
+/**
+ * Fingerprint of the tunable constants. It catches a weight edit that someone
+ * forgets to bump the version for. It canNOT see the score curves inside
+ * buildCoreFactors — those are code, so changing one REQUIRES bumping
+ * RFACTOR_V2_MODEL_VERSION by hand.
+ */
+function configFingerprint(): string {
+  const canonical = JSON.stringify({
+    activity: ACTIVITY_WEIGHTS,
+    direction: DIRECTION_WEIGHTS,
+    minSectorPeers: MIN_SECTOR_PEERS,
+    minCoreCoverageForSector: MIN_CORE_COVERAGE_FOR_SECTOR,
+    minRankCoverage: MIN_RANK_COVERAGE,
+    directionThreshold: 0.15,
+    activityScale: [1, 7],
+  });
+  // FNV-1a. Deliberately not node:crypto — this module must stay importable
+  // from anywhere without dragging a Node built-in into a bundle.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < canonical.length; i += 1) {
+    hash ^= canonical.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+export const RFACTOR_V2_CONFIG_HASH = configFingerprint();
+
+/** A sector's peers, measured this same poll. Never includes the stock itself. */
+export interface RFactorV2SectorContext {
+  peerMeanCoreActivity: number | null;
+  peerDirectionBias: number | null;
+  peers: number;
+}
 
 function factor(
   key: string,
@@ -239,7 +279,15 @@ export function computeRFactorV2(input: RFactorV2Input, sector?: RFactorV2Sector
   // Peer direction is genuinely independent evidence: it is other stocks' moves,
   // not a second reading of this one.
   if (sectorUsable != null) vote(sectorUsable.peerDirectionBias, DIRECTION_WEIGHTS.sector, (value) => value);
-  if (input.option != null) vote(input.option.directionScore, DIRECTION_WEIGHTS.option, (value) => value);
+  // Having a chain is not the same as the chain saying something. A snapshot
+  // where no leg showed a fresh OI build carries no directional evidence, and
+  // counting it as a full-weight zero would drag a genuinely one-sided read
+  // back toward neutral — the same mistake the OI-slope vote avoids above.
+  // Tested by evidence-leg COUNT, not by directionScore or confidence: balanced
+  // bullish-vs-bearish evidence also scores zero, and that is real information.
+  if (input.option != null && input.option.directionEvidenceLegs > 0) {
+    vote(input.option.directionScore, DIRECTION_WEIGHTS.option, (value) => value);
+  }
 
   const directionScore = directionalWeight > 0 ? directionalSum / directionalWeight : 0;
   const direction: RFactorV2Direction =

@@ -38,6 +38,13 @@ export interface OptionActivityEvidence {
   directionScore: number;
   direction: RFactorV2Direction;
   directionConfidence: number;
+  /**
+   * How many option legs actually carried directional evidence (a fresh OI
+   * build with a readable premium move). ZERO means the chain said nothing
+   * about direction — which is different from it saying "balanced", and the
+   * engine skips the option vote entirely rather than casting a neutral one.
+   */
+  directionEvidenceLegs: number;
   oiPcr: number | null;
   volumePcr: number | null;
   premiumValuePcr: number | null;

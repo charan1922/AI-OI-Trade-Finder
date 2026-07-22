@@ -424,9 +424,15 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
       row.rFactorV2Factors = shadow.factors;
     }
     const oldScores = new Map(rows.map((row) => [row.symbol, row.rFactor]));
-    void recordRFactorV2Batch(today, oldScores, inputs, results, quoteObservedAtMs).catch((error) => {
-      console.warn(`[RFactorV2] snapshot write failed: ${(error as Error).message}`);
-    });
+    // The exact price observed at this instant. Stored so the evaluator uses a
+    // real entry reference rather than inferring one from when a 5-minute bar's
+    // close first became visible. Throttled to one write per minute inside.
+    const ltpBySymbol = new Map(rows.map((row) => [row.symbol, row.ltp]));
+    void recordRFactorV2Batch(today, oldScores, inputs, results, quoteObservedAtMs, ltpBySymbol).catch(
+      (error) => {
+        console.warn(`[RFactorV2] snapshot write failed: ${(error as Error).message}`);
+      },
+    );
     // Shortlist on the comparable score, so option enrichment follows genuine
     // activity instead of re-selecting whichever names were enriched already.
     scheduleOptionEvidenceShadow(

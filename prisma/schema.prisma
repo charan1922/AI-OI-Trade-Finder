@@ -187,7 +187,14 @@ model RFactorV2Snapshot {
   bucketTs              Int
   symbol                String
   capturedAt            String
+  /// Exact price observed at the snapshot, so the evaluator uses a real entry
+  /// reference instead of inferring when a 5-minute bar's close became visible.
+  ltp                   Float?
   oldRFactor            Float?
+  /// Scoring definition that produced the row. The evaluator refuses to average
+  /// across versions, which would silently mix two different measurements.
+  modelVersion          String @default("unknown")
+  configHash            String @default("unknown")
   activityScore         Float
   rawActivity           Float
   /// Activity over the factors EVERY name can supply (option evidence excluded).

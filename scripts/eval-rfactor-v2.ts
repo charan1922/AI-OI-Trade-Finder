@@ -55,6 +55,8 @@ interface SnapshotRow {
   date: string;
   bucketTs: number;
   symbol: string;
+  /** Exact price observed at the snapshot. Null on rows written before it existed. */
+  ltp: number | null;
   oldRFactor: number | null;
   activityScore: number;
   comparableActivity: number;
@@ -64,12 +66,24 @@ interface SnapshotRow {
   direction: string;
   directionConfidence: number;
   optionStatus: string;
+  modelVersion: string;
+  configHash: string;
 }
+
+const columns = new Set(
+  (db.prepare(`PRAGMA table_info(rfactor_v2_snapshots)`).all() as { name: string }[]).map((c) => c.name),
+);
+// Tolerate rows written by an install that predates a column rather than
+// failing outright: an older evidence set is still worth reading, it just
+// carries less of it.
+const optional = (name: string, fallback: string): string =>
+  columns.has(name) ? name : `${fallback} AS ${name}`;
 
 const snapshots = db
   .prepare(
     `SELECT date, bucketTs, symbol, oldRFactor, activityScore, comparableActivity,
-            comparableCoverage, activityRank, universeSize, direction, directionConfidence, optionStatus
+            comparableCoverage, activityRank, universeSize, direction, directionConfidence, optionStatus,
+            ${optional('ltp', 'NULL')}, ${optional('modelVersion', `'unknown'`)}, ${optional('configHash', `'unknown'`)}
        FROM rfactor_v2_snapshots
       ORDER BY date, bucketTs, symbol`,
   )
@@ -96,21 +110,37 @@ for (const row of db
   series.set(key, bucket);
 }
 
-/** First completed bar at or after `ts` — what a reader could actually have acted on. */
-function barAtOrAfter(bars: Bar[] | undefined, ts: number): Bar | null {
+const BAR_SECONDS = 300;
+
+/**
+ * First bar whose CLOSE was observable at or after `ts`.
+ *
+ * A bar's `bucketTs` is when it OPENS; its close is not knowable until five
+ * minutes later. Matching on `bucketTs >= ts` therefore skips the bar that is
+ * actually the first usable price: for a 10:03 snapshot the 10:00 bar closes at
+ * 10:05 and is available then, whereas the 10:05 bar's close only exists at
+ * 10:10. Selecting the latter silently pushes every mid-bar observation almost
+ * a full bar into the future, which distorts 15- and 30-minute outcomes.
+ *
+ * Returns the bar plus the moment its close became observable, which is the
+ * timestamp every horizon must then be measured from.
+ */
+function barObservableAtOrAfter(bars: Bar[] | undefined, ts: number): { bar: Bar; observedAt: number } | null {
   if (bars == null) return null;
   let lo = 0;
   let hi = bars.length - 1;
   let found: Bar | null = null;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    if (bars[mid].bucketTs >= ts) {
+    if (bars[mid].bucketTs + BAR_SECONDS >= ts) {
       found = bars[mid];
       hi = mid - 1;
     } else lo = mid + 1;
   }
+  if (found == null) return null;
+  const observedAt = found.bucketTs + BAR_SECONDS;
   // Never bridge a gap wider than two bars; a stale reference is not a measurement.
-  return found != null && found.bucketTs - ts <= 10 * 60 ? found : null;
+  return observedAt - ts <= 10 * 60 ? { bar: found, observedAt } : null;
 }
 
 const istMinuteOfDay = (bucketTs: number): number => Math.floor((((bucketTs + 19800) % 86400) + 86400) % 86400 / 60);
@@ -138,6 +168,10 @@ const observations: Observation[] = [];
 let skippedNoCandles = 0;
 let skippedCoverage = 0;
 let skippedWindow = 0;
+/** Entry taken from the exact recorded price. */
+let storedLtpRows = 0;
+/** Entry inferred from a candle close because the row predates the ltp column. */
+let inferredEntryRows = 0;
 
 for (const snap of snapshots) {
   if (snap.comparableCoverage < minCoverage) {
@@ -150,17 +184,24 @@ for (const snap of snapshots) {
     continue;
   }
   const bars = series.get(seriesKey(snap.symbol, snap.date));
-  const entry = barAtOrAfter(bars, snap.bucketTs);
-  if (entry == null) {
+  // Prefer the price actually observed at the snapshot. Only fall back to a
+  // candle close when the row predates the stored `ltp` column, and count how
+  // often that happens so the reader knows how much of the result is inferred.
+  const fallback = barObservableAtOrAfter(bars, snap.bucketTs);
+  const usingStoredLtp = snap.ltp != null && snap.ltp > 0;
+  if (!usingStoredLtp && fallback == null) {
     skippedNoCandles += 1;
     continue;
   }
+  const entryPrice = usingStoredLtp ? (snap.ltp as number) : (fallback as { bar: Bar }).bar.close;
+  const entryAt = usingStoredLtp ? snap.bucketTs : (fallback as { observedAt: number }).observedAt;
+
   const directional = new Map<number, number>();
   const absolute = new Map<number, number>();
   for (const horizon of horizons) {
-    const exit = barAtOrAfter(bars, entry.bucketTs + horizon * 60);
+    const exit = barObservableAtOrAfter(bars, entryAt + horizon * 60);
     if (exit == null) continue;
-    const movePct = ((exit.close - entry.close) / entry.close) * 100;
+    const movePct = ((exit.bar.close - entryPrice) / entryPrice) * 100;
     absolute.set(horizon, Math.abs(movePct));
     const sign = snap.direction === 'bullish' ? 1 : snap.direction === 'bearish' ? -1 : 0;
     if (sign !== 0) directional.set(horizon, movePct * sign);
@@ -169,6 +210,10 @@ for (const snap of snapshots) {
     skippedNoCandles += 1;
     continue;
   }
+  // Counted only for observations that survived, so the reported split always
+  // adds up to the usable total rather than to attempts.
+  if (usingStoredLtp) storedLtpRows += 1;
+  else inferredEntryRows += 1;
   observations.push({
     date: snap.date,
     symbol: snap.symbol,
@@ -280,13 +325,41 @@ console.log(
 const inSample = observations.filter((o) => trainDates.has(o.date));
 const outSample = observations.filter((o) => testDates.has(o.date));
 
-// Activity thresholds are taken from the data itself, not hardcoded, so this
-// reports what the distribution actually was rather than a tuned cut.
-const sortedActivity = [...observations.map((o) => o.comparableActivity)].sort((a, b) => a - b);
-const quantile = (q: number): number => sortedActivity[Math.min(sortedActivity.length - 1, Math.floor(q * sortedActivity.length))] ?? 0;
-const p80 = quantile(0.8);
-const p50 = quantile(0.5);
-console.log(`activity p50 / p80   : ${fixed(p50, 4)} / ${fixed(p80, 4)} (comparableActivity)`);
+// Thresholds come from TRAINING sessions ONLY, then are frozen and applied
+// unchanged to the held-out days. Deriving them from all observations would let
+// the test period's own distribution decide which rows land in the test groups —
+// that is leakage, and it would quietly flatter the held-out block.
+const quantileOf = (values: number[], q: number): number =>
+  values.length === 0 ? 0 : (values[Math.min(values.length - 1, Math.floor(q * values.length))] ?? 0);
+const trainingActivity = observations
+  .filter((o) => trainDates.has(o.date))
+  .map((o) => o.comparableActivity)
+  .sort((a, b) => a - b);
+const thresholdSource = trainingActivity.length > 0 ? trainingActivity : [...observations.map((o) => o.comparableActivity)].sort((a, b) => a - b);
+const p80 = quantileOf(thresholdSource, 0.8);
+const p50 = quantileOf(thresholdSource, 0.5);
+console.log(
+  `activity p50 / p80   : ${fixed(p50, 4)} / ${fixed(p80, 4)} ` +
+    `(from ${trainingActivity.length > 0 ? 'training sessions only' : 'ALL rows — no training split available'})`,
+);
+console.log(
+  `entry reference      : ${storedLtpRows} exact recorded price, ${inferredEntryRows} inferred from candle close`,
+);
+
+// Scoring definitions must not be averaged together. If a later change altered
+// the weights or curves, rows from before and after are simply different
+// measurements wearing the same column names.
+const versions = new Map<string, number>();
+for (const snap of snapshots) versions.set(`${snap.modelVersion}/${snap.configHash}`, (versions.get(`${snap.modelVersion}/${snap.configHash}`) ?? 0) + 1);
+if (versions.size > 1) {
+  console.log('\n!! MIXED MODEL VERSIONS — these rows are NOT comparable:');
+  for (const [version, count] of [...versions].sort((a, b) => b[1] - a[1])) {
+    console.log(`     ${version.padEnd(24)} ${count} rows`);
+  }
+  console.log('   Evaluate one version at a time; the combined numbers below are unsafe.');
+} else {
+  console.log(`model version        : ${[...versions.keys()][0] ?? 'unknown'}`);
+}
 
 for (const horizon of horizons) {
   const activityGroups = (rows: Observation[]) => [

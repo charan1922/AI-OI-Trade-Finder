@@ -134,11 +134,13 @@ export function deriveOptionActivityEvidence(
 
   let directionNumerator = 0;
   let directionDenominator = 0;
+  let directionEvidenceLegs = 0;
   for (const row of rows) {
     const oiChange = row.oi - row.previousOi;
     if (!(oiChange > 0) || !(row.previousClose > 0) || !(row.ltp > 0)) continue;
     const premiumDirection = Math.sign(row.ltp - row.previousClose);
     if (premiumDirection === 0) continue;
+    directionEvidenceLegs += 1;
     // Call buying / put writing are bullish; put buying / call writing bearish.
     const sideDirection = row.side === 'CE' ? premiumDirection : -premiumDirection;
     const moneyness = row.delta == null ? 0.5 : Math.abs(row.delta);
@@ -183,6 +185,7 @@ export function deriveOptionActivityEvidence(
     directionScore: Math.round(directionScore * 1000) / 1000,
     direction,
     directionConfidence: Math.round(Math.abs(directionScore) * 1000) / 1000,
+    directionEvidenceLegs,
     oiPcr: ratioOrNull(putOi, callOi),
     volumePcr: ratioOrNull(putVolume, callVolume),
     premiumValuePcr: ratioOrNull(putPremiumValue, callPremiumValue),
