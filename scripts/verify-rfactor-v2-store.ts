@@ -128,9 +128,12 @@ async function main(): Promise<void> {
     `SELECT ltp, modelVersion, configHash FROM rfactor_v2_snapshots WHERE symbol = 'SYM7'`,
   );
   check('observed price round-trips', Number(stored[0]?.ltp) === 107, `ltp=${stored[0]?.ltp}`);
+  // Asserted against the exported constant, not a literal, so a deliberate
+  // version bump does not look like a regression.
+  const { RFACTOR_V2_MODEL_VERSION } = await import('../lib/r-factor-v2/engine');
   check(
     'model version + config hash are recorded',
-    stored[0]?.modelVersion === 'v2.1' && /^[0-9a-f]{8}$/.test(stored[0]?.configHash ?? ''),
+    stored[0]?.modelVersion === RFACTOR_V2_MODEL_VERSION && /^[0-9a-f]{8}$/.test(stored[0]?.configHash ?? ''),
     `${stored[0]?.modelVersion}/${stored[0]?.configHash}`,
   );
 
@@ -153,6 +156,62 @@ async function main(): Promise<void> {
     `SELECT COUNT(DISTINCT bucketTs) AS n FROM rfactor_v2_snapshots`,
   );
   check('a new minute writes a new bucket', Number(nextMinute[0].n) === 2, `${nextMinute[0].n} buckets`);
+
+  // ── Universe integrity ────────────────────────────────────────────────────
+  // /live sections poll different symbol lists while the scanner polls the full
+  // universe. Rank/percentile/universeSize are all relative to whichever list
+  // was computed, so a minute must be owned by exactly ONE universe.
+  const minuteTwo = 1_800_000_180_000;
+  const bucketTwo = Math.floor(minuteTwo / 60_000) * 60;
+  const universeOf = (names: string[]) => ({
+    inputs: names.map(input),
+    results: new Map(names.map((s) => [s, result({ universeSize: names.length, activityRank: 1 })])),
+    oldScores: new Map(names.map((s) => [s, 3.6] as [string, number | null])),
+  });
+
+  // Two DIFFERENT lists of the SAME size — the case a symbol count cannot see.
+  const banking = universeOf(Array.from({ length: 30 }, (_, i) => `BANK${i}`));
+  const momentum = universeOf(Array.from({ length: 30 }, (_, i) => `MOM${i}`));
+  store.resetRFactorV2WriteGuard();
+  await store.recordRFactorV2Batch(date, banking.oldScores, banking.inputs, banking.results, minuteTwo);
+  await store.recordRFactorV2Batch(date, momentum.oldScores, momentum.inputs, momentum.results, minuteTwo + 5_000);
+  const equalSized = await prisma.$queryRawUnsafe<{ keys: number; n: number }[]>(
+    `SELECT COUNT(DISTINCT universeKey) AS keys, COUNT(*) AS n
+       FROM rfactor_v2_snapshots WHERE bucketTs = ?`,
+    bucketTwo,
+  );
+  check(
+    'equal-sized but different watchlists never share a minute',
+    Number(equalSized[0].keys) === 1 && Number(equalSized[0].n) === 30,
+    `${equalSized[0].keys} universeKey(s), ${equalSized[0].n} rows`,
+  );
+
+  // A small UI section first, then the big scanner universe: the larger one
+  // must take the minute over completely rather than interleaving two ranking
+  // fields under identical column names.
+  const minuteThree = 1_800_000_240_000;
+  const bucketThree = Math.floor(minuteThree / 60_000) * 60;
+  const small = universeOf(Array.from({ length: 20 }, (_, i) => `SMALL${i}`));
+  const large = universeOf(Array.from({ length: 100 }, (_, i) => `BIG${i}`));
+  store.resetRFactorV2WriteGuard();
+  await store.recordRFactorV2Batch(date, small.oldScores, small.inputs, small.results, minuteThree);
+  await store.recordRFactorV2Batch(date, large.oldScores, large.inputs, large.results, minuteThree + 5_000);
+  const replaced = await prisma.$queryRawUnsafe<{ keys: number; n: number; sizes: number }[]>(
+    `SELECT COUNT(DISTINCT universeKey) AS keys, COUNT(*) AS n, COUNT(DISTINCT universeSize) AS sizes
+       FROM rfactor_v2_snapshots WHERE bucketTs = ?`,
+    bucketThree,
+  );
+  check(
+    'a larger universe replaces the minute instead of mixing ranks',
+    Number(replaced[0].keys) === 1 && Number(replaced[0].n) === 100 && Number(replaced[0].sizes) === 1,
+    `${replaced[0].keys} key(s), ${replaced[0].n} rows, ${replaced[0].sizes} universeSize value(s)`,
+  );
+
+  const leftovers = await prisma.$queryRawUnsafe<{ n: number }[]>(
+    `SELECT COUNT(*) AS n FROM rfactor_v2_snapshots WHERE bucketTs = ? AND symbol LIKE 'SMALL%'`,
+    bucketThree,
+  );
+  check('the superseded smaller universe leaves no rows behind', Number(leftovers[0].n) === 0, `${leftovers[0].n} rows`);
 
   // Option evidence: baselines must not mix expiries.
   const optionEvidence = (premiumValue: number, capturedAt: string, expiry: string) => ({

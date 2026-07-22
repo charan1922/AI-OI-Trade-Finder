@@ -1,4 +1,5 @@
 import { clearCachedToken, getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/auth';
+import { fetchWithTimeout, isAbortError } from '@/lib/dhan/fetch-timeout';
 import { env } from '@/lib/env';
 
 /** One level of the order-book ladder (Dhan quote `depth.buy[]` / `depth.sell[]`). */
@@ -97,10 +98,23 @@ function throughQuoteGate<T>(task: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Hard ceiling on a measurement-only request once it has been dispatched. The
+ * task joins the same serial `gate.tail` as live quotes, so an unbounded shadow
+ * request would wedge the queue and make a money-path quote wait behind it
+ * forever. This caps that exposure; see SHADOW_REQUEST_TIMEOUT_MS's use in
+ * fetchDetailedOptionChainShadow.
+ */
+export const SHADOW_REQUEST_TIMEOUT_MS = 5_000;
+
+/**
  * Best-effort low-priority gate for measurement-only option-chain snapshots.
- * It waits for the foreground queue to drain and for a quiet interval. A quote
- * arriving after dispatch can still wait behind this single request, but the
- * shadow worker never queues a batch ahead of live quote traffic.
+ * It waits for the foreground queue to drain and for a quiet interval.
+ *
+ * A quote arriving after dispatch can still wait behind this ONE request, which
+ * is why the request it wraps MUST be independently bounded — the gate cannot
+ * cancel a task it has already started. As a second line of defence the queue is
+ * only ever handed a settled-by-timeout promise, so `gate.tail` advances even if
+ * the underlying socket never does.
  */
 async function throughQuoteGateLowPriority<T>(task: () => Promise<T>): Promise<T | null> {
   const giveUpAt = Date.now() + 15_000;
@@ -115,10 +129,15 @@ async function throughQuoteGateLowPriority<T>(task: () => Promise<T>): Promise<T
     gate.lastDispatchAt = Date.now();
     return task();
   });
-  gate.tail = run.then(
-    () => undefined,
-    () => undefined,
-  );
+  // Belt and braces: whatever the task does, the queue moves on within the
+  // shadow timeout budget so foreground quotes are never held hostage.
+  gate.tail = Promise.race([
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+    sleep(SHADOW_REQUEST_TIMEOUT_MS + QUOTE_MIN_INTERVAL_MS),
+  ]);
   return run;
 }
 
@@ -549,17 +568,31 @@ export async function fetchDetailedOptionChainShadow(
   if (!hasDhanAuth()) return null;
   const token = await getDhanAccessToken();
   const clientId = env.DHAN_CLIENT_ID!;
+  // Bounded: this shares the serial Quote-API queue with live quotes, so a
+  // hung measurement request must never become an unbounded stall on the
+  // trade path. On timeout we abandon the snapshot — evidence is optional,
+  // a blocked quote is not.
   const resp = await throughQuoteGateLowPriority(() =>
-    fetch('https://api.dhan.co/v2/optionchain', {
-      method: 'POST',
-      headers: {
-        'access-token': token,
-        'client-id': clientId,
-        'Content-Type': 'application/json',
+    fetchWithTimeout(
+      'https://api.dhan.co/v2/optionchain',
+      {
+        method: 'POST',
+        headers: {
+          'access-token': token,
+          'client-id': clientId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ UnderlyingScrip: underlyingSecId, UnderlyingSeg: 'NSE_EQ', Expiry: expiry }),
       },
-      body: JSON.stringify({ UnderlyingScrip: underlyingSecId, UnderlyingSeg: 'NSE_EQ', Expiry: expiry }),
-    }),
-  );
+      SHADOW_REQUEST_TIMEOUT_MS,
+    ),
+  ).catch((error: unknown) => {
+    if (isAbortError(error)) {
+      console.warn(`[Dhan] shadow optionchain timed out after ${SHADOW_REQUEST_TIMEOUT_MS}ms for secId=${underlyingSecId}`);
+      return null;
+    }
+    throw error;
+  });
   if (resp == null) return null;
   if (resp.status === 429) noteQuote429();
   if (!resp.ok) {

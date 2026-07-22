@@ -55,6 +55,8 @@ interface SnapshotRow {
   date: string;
   bucketTs: number;
   symbol: string;
+  /** Exact instant of observation — bucketTs is floored to the minute. */
+  capturedAt: string;
   /** Exact price observed at the snapshot. Null on rows written before it existed. */
   ltp: number | null;
   oldRFactor: number | null;
@@ -79,9 +81,9 @@ const columns = new Set(
 const optional = (name: string, fallback: string): string =>
   columns.has(name) ? name : `${fallback} AS ${name}`;
 
-const snapshots = db
+const allSnapshots = db
   .prepare(
-    `SELECT date, bucketTs, symbol, oldRFactor, activityScore, comparableActivity,
+    `SELECT date, bucketTs, symbol, capturedAt, oldRFactor, activityScore, comparableActivity,
             comparableCoverage, activityRank, universeSize, direction, directionConfidence, optionStatus,
             ${optional('ltp', 'NULL')}, ${optional('modelVersion', `'unknown'`)}, ${optional('configHash', `'unknown'`)}
        FROM rfactor_v2_snapshots
@@ -89,10 +91,39 @@ const snapshots = db
   )
   .all() as SnapshotRow[];
 
-if (snapshots.length === 0) {
+if (allSnapshots.length === 0) {
   console.log('rfactor_v2_snapshots is empty — nothing to evaluate yet.');
   process.exit(0);
 }
+
+// ── One scoring definition at a time ────────────────────────────────────────
+// Rows from two model versions are two different measurements wearing the same
+// column names; averaging them is meaningless. This is guaranteed to happen the
+// first time a new version deploys over retained rows, so the harness REFUSES
+// rather than printing a caveat above numbers people will quote anyway.
+const versionCounts = new Map<string, number>();
+for (const snap of allSnapshots) {
+  const key = `${snap.modelVersion}/${snap.configHash}`;
+  versionCounts.set(key, (versionCounts.get(key) ?? 0) + 1);
+}
+const requestedVersion = arg('model-version', '');
+let snapshots = allSnapshots;
+if (requestedVersion !== '') {
+  snapshots = allSnapshots.filter((s) => `${s.modelVersion}/${s.configHash}`.startsWith(requestedVersion));
+  if (snapshots.length === 0) {
+    console.error(`No rows match --model-version=${requestedVersion}. Present: ${[...versionCounts.keys()].join(', ')}`);
+    process.exit(1);
+  }
+} else if (versionCounts.size > 1) {
+  console.error('Refusing to evaluate mixed model versions — the rows are not comparable.\n');
+  for (const [version, count] of [...versionCounts].sort((a, b) => b[1] - a[1])) {
+    console.error(`  ${version.padEnd(24)} ${count} rows`);
+  }
+  console.error('\nRe-run pinned to one, e.g:');
+  console.error(`  npx tsx scripts/eval-rfactor-v2.ts --model-version=${[...versionCounts.keys()].sort().reverse()[0]}`);
+  process.exit(1);
+}
+const evaluatedVersion = requestedVersion !== '' ? requestedVersion : ([...versionCounts.keys()][0] ?? 'unknown');
 
 // ── Forward spot moves from retained candles ────────────────────────────────
 interface Bar {
@@ -194,7 +225,15 @@ for (const snap of snapshots) {
     continue;
   }
   const entryPrice = usingStoredLtp ? (snap.ltp as number) : (fallback as { bar: Bar }).bar.close;
-  const entryAt = usingStoredLtp ? snap.bucketTs : (fallback as { observedAt: number }).observedAt;
+  // Measure horizons from the EXACT capture instant, not the floored minute.
+  // A price seen at 10:05:59 with a 15-minute horizon must not be paired with
+  // the 10:20 close, which landed 59 seconds before the horizon was reached.
+  const capturedAtMs = Date.parse(snap.capturedAt);
+  const entryAt = usingStoredLtp
+    ? Number.isFinite(capturedAtMs)
+      ? Math.floor(capturedAtMs / 1000)
+      : snap.bucketTs
+    : (fallback as { observedAt: number }).observedAt;
 
   const directional = new Map<number, number>();
   const absolute = new Map<number, number>();
@@ -346,20 +385,21 @@ console.log(
   `entry reference      : ${storedLtpRows} exact recorded price, ${inferredEntryRows} inferred from candle close`,
 );
 
-// Scoring definitions must not be averaged together. If a later change altered
-// the weights or curves, rows from before and after are simply different
-// measurements wearing the same column names.
-const versions = new Map<string, number>();
-for (const snap of snapshots) versions.set(`${snap.modelVersion}/${snap.configHash}`, (versions.get(`${snap.modelVersion}/${snap.configHash}`) ?? 0) + 1);
-if (versions.size > 1) {
-  console.log('\n!! MIXED MODEL VERSIONS — these rows are NOT comparable:');
-  for (const [version, count] of [...versions].sort((a, b) => b[1] - a[1])) {
-    console.log(`     ${version.padEnd(24)} ${count} rows`);
-  }
-  console.log('   Evaluate one version at a time; the combined numbers below are unsafe.');
-} else {
-  console.log(`model version        : ${[...versions.keys()][0] ?? 'unknown'}`);
-}
+console.log(`model version        : ${evaluatedVersion} (mixed versions are refused, not averaged)`);
+// Ranks are relative to the symbol set they were computed against, so a bucket
+// holding two universes would mean two incompatible definitions of "rank 1".
+const mixedUniverseBuckets = db
+  .prepare(
+    columns.has('universeKey')
+      ? `SELECT COUNT(*) AS n FROM (
+           SELECT date, bucketTs FROM rfactor_v2_snapshots
+            GROUP BY date, bucketTs HAVING COUNT(DISTINCT universeKey) > 1)`
+      : `SELECT 0 AS n`,
+  )
+  .get() as { n: number };
+console.log(
+  `universe integrity   : ${Number(mixedUniverseBuckets.n) === 0 ? 'one universe per minute' : `!! ${mixedUniverseBuckets.n} minute(s) hold MIXED universes — ranks not comparable`}`,
+);
 
 for (const horizon of horizons) {
   const activityGroups = (rows: Observation[]) => [

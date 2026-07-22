@@ -330,6 +330,40 @@ check('far, cheap open interest cannot masquerade as conviction', () => {
 // Having a chain is not the same as the chain saying something. A full-weight
 // neutral vote would drag a genuinely one-sided read back toward neutral, which
 // is exactly the failure the OI-slope vote is written to avoid.
+check('premium turnover values contracts at traded price, not last print', () => {
+  // Same volume, same LTP; only the session VWAP differs. A leg that ran hard
+  // intraday must not be priced as if every contract traded at the last print.
+  const chainWith = (averagePrice: number): DetailedOptionChain => ({
+    underlyingLastPrice: 1000,
+    fetchedAt: '2026-07-23T05:30:00.000Z',
+    strikes: [
+      {
+        strike: 1000,
+        ce: side({ lastPrice: 40, averagePrice, volume: 1000, previousVolume: 1000, previousClosePrice: 5 }),
+        pe: null,
+      },
+    ],
+  });
+  // Baseline of 12000 = the trended leg's true traded premium (12 x 1000).
+  const trended = deriveOptionActivityEvidence(chainWith(12), '2026-07-30', 12_000);
+  const flat = deriveOptionActivityEvidence(chainWith(40), '2026-07-30', 12_000);
+  assert.equal(trended.premiumValue, 12_000, 'VWAP x volume, not LTP x volume');
+  assert.equal(flat.premiumValue, 40_000);
+  assert.ok(
+    (flat.premiumTurnoverPace ?? 0) > (trended.premiumTurnoverPace ?? 0),
+    'the genuinely heavier leg must read as the busier one',
+  );
+});
+
+check('a missing session VWAP falls back to last price', () => {
+  const noAverage: DetailedOptionChain = {
+    underlyingLastPrice: 1000,
+    fetchedAt: '2026-07-23T05:30:00.000Z',
+    strikes: [{ strike: 1000, ce: side({ lastPrice: 10, averagePrice: 0, volume: 500 }), pe: null }],
+  };
+  assert.equal(deriveOptionActivityEvidence(noAverage, '2026-07-30').premiumValue, 5_000);
+});
+
 check('a chain with no OI build carries no direction evidence', () => {
   const flat: DetailedOptionChain = {
     underlyingLastPrice: 1000,
@@ -397,5 +431,38 @@ check('gamma evidence is recorded but never scored', () => {
   assert.equal(withGamma.activityScore, noLot.activityScore);
   assert.equal(withGamma.directionScore, noLot.directionScore);
 });
+
+// ── A hung shadow request must not stall the shared quote queue ─────────────
+// The measurement-only option request shares the serial Dhan Quote-API queue
+// with live quotes, so an unbounded request would make a money-path quote wait
+// behind it forever. Node's fetch has NO default timeout, so this is real.
+// Proven against a local server that accepts the socket and never replies.
+async function verifyShadowRequestTimeout(): Promise<void> {
+  const { createServer } = await import('node:http');
+  const { fetchWithTimeout, isAbortError } = await import('@/lib/dhan/fetch-timeout');
+
+  const hung = createServer(() => {
+    /* accept the connection, never send headers */
+  });
+  await new Promise<void>((resolve) => hung.listen(0, '127.0.0.1', resolve));
+  const port = (hung.address() as { port: number }).port;
+
+  const startedAt = Date.now();
+  let aborted = false;
+  try {
+    await fetchWithTimeout(`http://127.0.0.1:${port}/`, { method: 'GET' }, 400);
+  } catch (error) {
+    aborted = isAbortError(error);
+  }
+  const elapsed = Date.now() - startedAt;
+  hung.close();
+
+  check('a never-answering request aborts instead of hanging', () => {
+    assert.ok(aborted, 'expected an abort, got a different outcome');
+    assert.ok(elapsed < 3_000, `expected release well under 3s, took ${elapsed}ms`);
+  });
+}
+
+await verifyShadowRequestTimeout();
 
 console.log(`R-Factor V2 verification passed: ${checks} checks`);

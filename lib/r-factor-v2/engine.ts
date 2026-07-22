@@ -60,8 +60,10 @@ const MIN_RANK_COVERAGE = 0.55;
  *
  * v2.1 — option direction vote is skipped when the chain carried no directional
  *        evidence, instead of counting as a full-weight neutral vote.
+ * v2.2 — option premium turnover and the direction weighting value contracts at
+ *        session VWAP instead of LTP × cumulative volume.
  */
-export const RFACTOR_V2_MODEL_VERSION = 'v2.1';
+export const RFACTOR_V2_MODEL_VERSION = 'v2.2';
 
 /**
  * Fingerprint of the tunable constants. It catches a weight edit that someone

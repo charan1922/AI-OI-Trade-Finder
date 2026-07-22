@@ -37,6 +37,7 @@ function evidenceRow(strike: number, side: 'CE' | 'PE', value: DetailedOptionSid
     volume: value.volume,
     previousVolume: value.previousVolume,
     ltp: value.lastPrice,
+    averagePrice: value.averagePrice,
     previousClose: value.previousClosePrice,
     iv: value.impliedVolatility,
     bid: value.topBidPrice,
@@ -92,12 +93,18 @@ export function deriveOptionActivityEvidence(
       .filter((row) => row.side === side)
       .reduce((total, row) => total + row.oi * (row.delta == null ? 0.5 : Math.abs(row.delta)), 0);
 
+  // Value the day's contracts at the price they actually traded at (session
+  // VWAP), not at the last print. On a leg that ran from 4 to 40, LTP ×
+  // cumulative volume overstates the premium traded several-fold. Falls back to
+  // LTP only when the feed gives no average.
+  const tradedPrice = (row: OptionStrikeEvidence): number =>
+    row.averagePrice > 0 ? row.averagePrice : row.ltp;
   const callPremiumValue = rows
     .filter((row) => row.side === 'CE')
-    .reduce((total, row) => total + row.ltp * row.volume, 0);
+    .reduce((total, row) => total + tradedPrice(row) * row.volume, 0);
   const putPremiumValue = rows
     .filter((row) => row.side === 'PE')
-    .reduce((total, row) => total + row.ltp * row.volume, 0);
+    .reduce((total, row) => total + tradedPrice(row) * row.volume, 0);
   const previousPremiumValue = rows.reduce(
     (total, row) => total + row.previousClose * row.previousVolume,
     0,
@@ -145,7 +152,7 @@ export function deriveOptionActivityEvidence(
     const sideDirection = row.side === 'CE' ? premiumDirection : -premiumDirection;
     const moneyness = row.delta == null ? 0.5 : Math.abs(row.delta);
     const economicWeight =
-      Math.sqrt(Math.max(1, row.ltp * row.volume)) *
+      Math.sqrt(Math.max(1, tradedPrice(row) * row.volume)) *
       clamp01(oiChange / Math.max(row.previousOi, 1)) *
       moneyness;
     directionNumerator += sideDirection * economicWeight;

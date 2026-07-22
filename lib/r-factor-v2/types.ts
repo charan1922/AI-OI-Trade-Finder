@@ -22,6 +22,12 @@ export interface OptionStrikeEvidence {
   volume: number;
   previousVolume: number;
   ltp: number;
+  /**
+   * Session VWAP for this leg. Premium turnover uses this rather than LTP,
+   * because LTP × cumulative volume prices the whole day's trades at the last
+   * print — badly wrong on a leg that trended hard intraday.
+   */
+  averagePrice: number;
   previousClose: number;
   iv: number | null;
   bid: number | null;

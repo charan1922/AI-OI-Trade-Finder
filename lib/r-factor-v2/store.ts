@@ -60,6 +60,8 @@ export async function ensureRFactorV2Tables(): Promise<void> {
   // could silently average sessions scored under different rules.
   await addColumnIfMissing('rfactor_v2_snapshots', 'modelVersion', `TEXT NOT NULL DEFAULT 'unknown'`);
   await addColumnIfMissing('rfactor_v2_snapshots', 'configHash', `TEXT NOT NULL DEFAULT 'unknown'`);
+  // Which exact symbol set this minute's ranking was computed against.
+  await addColumnIfMissing('rfactor_v2_snapshots', 'universeKey', `TEXT NOT NULL DEFAULT 'unknown'`);
   await addColumnIfMissing('rfactor_v2_option_snapshots', 'premiumValue', 'REAL NOT NULL DEFAULT 0');
   await addColumnIfMissing('rfactor_v2_option_snapshots', 'optionVolume', 'REAL NOT NULL DEFAULT 0');
   await addColumnIfMissing('rfactor_v2_option_snapshots', 'paceBaselineKind', `TEXT NOT NULL DEFAULT 'missing'`);
@@ -272,33 +274,54 @@ export async function loadSameTimeOptionBaseline(
 }
 
 /** Columns per inserted row — keeps batches under SQLite's 999-variable limit. */
-const SNAPSHOT_COLS = 22;
+const SNAPSHOT_COLS = 23;
 const SNAPSHOT_BATCH_ROWS = 40;
 
 interface WriteGuard {
   lastBucketTs: number;
-  lastSymbolCount: number;
+  lastUniverseSize: number;
+  lastUniverseKey: string;
   inFlight: boolean;
 }
 const writeHost = globalThis as unknown as { __rfactorV2Write?: WriteGuard };
-writeHost.__rfactorV2Write ??= { lastBucketTs: 0, lastSymbolCount: 0, inFlight: false };
+writeHost.__rfactorV2Write ??= { lastBucketTs: 0, lastUniverseSize: 0, lastUniverseKey: '', inFlight: false };
 const writeGuard = writeHost.__rfactorV2Write;
 
 /**
- * Persist one row per symbol per MINUTE.
+ * Stable fingerprint of the exact symbol set a computation covered. Two equally
+ * sized but different watchlists must not look interchangeable.
+ */
+export function universeKeyFor(symbols: string[]): string {
+  const canonical = [...symbols].sort().join(',');
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < canonical.length; i += 1) {
+    hash ^= canonical.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${symbols.length}-${hash.toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * Persist ONE canonical universe per minute.
  *
- * `/live` recomputes roughly every 7 seconds and several sections poll with
- * different symbol lists, so without a guard this would fire a full-universe
- * write many times a minute — contending for SQLite's write lock against
- * money-touching work, and letting a slower earlier transaction overwrite a
- * newer observation for the same bucket.
+ * `/live` recomputes roughly every 7 seconds and its category sections each
+ * poll with a DIFFERENT symbol list, while the scanner polls the full universe.
+ * Two things follow, and both matter:
  *
- * Three defences, matching the oi_intraday writer:
- *   - skip entirely once this minute is already stored (a wider symbol list is
- *     allowed through once, so a bigger poll can still fill in the rest);
- *   - drop the write if one is already in flight rather than queueing another;
- *   - INSERT OR IGNORE in batched multi-row statements, so the first
- *     observation of a minute wins deterministically and repeats collapse.
+ *   1. Writing on every computation would fire full-universe transactions many
+ *      times a minute, contending for SQLite's write lock with money-touching
+ *      work.
+ *   2. `activityRank`, `activityPercentile` and `universeSize` are all relative
+ *      to whichever symbol list was computed. Mixing a 20-name UI section with
+ *      the 166-name scanner inside one minute would store two incompatible
+ *      definitions under identical column names — evidence that looks
+ *      comparable and is not. Counting symbols is not enough to tell them
+ *      apart either: two different 60-name watchlists are the same size.
+ *
+ * So a minute is owned by the LARGEST universe seen in it, identified by an
+ * exact symbol-set fingerprint. A strictly larger universe replaces the minute
+ * wholesale; anything smaller or differently-shaped is dropped rather than
+ * interleaved. The result is one internally consistent ranking per bucket.
  */
 export async function recordRFactorV2Batch(
   date: string,
@@ -311,13 +334,27 @@ export async function recordRFactorV2Batch(
   if (inputs.length === 0) return;
   const bucketTs = Math.floor(nowMs / 60_000) * 60;
   if (writeGuard.inFlight) return;
+  const universeKey = universeKeyFor(inputs.map((input) => input.symbol));
   const sameBucket = writeGuard.lastBucketTs === bucketTs;
-  if (sameBucket && inputs.length <= writeGuard.lastSymbolCount) return;
+  // Same exact universe again inside the minute → nothing new to learn.
+  if (sameBucket && universeKey === writeGuard.lastUniverseKey) return;
+  // A smaller or equal-sized-but-different list must not be interleaved with
+  // the minute's owner; its ranks were computed against a different field.
+  if (sameBucket && inputs.length <= writeGuard.lastUniverseSize) return;
 
   writeGuard.inFlight = true;
   try {
     await ensureRFactorV2Tables();
     const capturedAt = new Date(nowMs).toISOString();
+    // A strictly larger universe takes the minute over completely, so the
+    // bucket never holds a mixture of two ranking fields.
+    if (sameBucket && writeGuard.lastUniverseSize > 0) {
+      await prisma.$executeRawUnsafe(
+        `DELETE FROM rfactor_v2_snapshots WHERE date = ? AND bucketTs = ?`,
+        date,
+        bucketTs,
+      );
+    }
     const rows = inputs.flatMap((input) => {
       const result = results.get(input.symbol);
       return result == null ? [] : [{ input, result }];
@@ -348,6 +385,7 @@ export async function recordRFactorV2Batch(
           result.optionStatus,
           RFACTOR_V2_MODEL_VERSION,
           RFACTOR_V2_CONFIG_HASH,
+          universeKey,
           JSON.stringify(input),
           JSON.stringify(result.factors),
         );
@@ -356,13 +394,14 @@ export async function recordRFactorV2Batch(
         `INSERT OR IGNORE INTO rfactor_v2_snapshots
           (date,bucketTs,symbol,capturedAt,ltp,oldRFactor,activityScore,rawActivity,comparableActivity,
            activityPercentile,activityRank,universeSize,direction,directionScore,directionConfidence,
-           coverage,comparableCoverage,optionStatus,modelVersion,configHash,inputs,factors)
+           coverage,comparableCoverage,optionStatus,modelVersion,configHash,universeKey,inputs,factors)
          VALUES ${placeholders}`,
         ...params,
       );
     }
     writeGuard.lastBucketTs = bucketTs;
-    writeGuard.lastSymbolCount = sameBucket ? Math.max(writeGuard.lastSymbolCount, inputs.length) : inputs.length;
+    writeGuard.lastUniverseSize = inputs.length;
+    writeGuard.lastUniverseKey = universeKey;
   } finally {
     writeGuard.inFlight = false;
   }
@@ -371,7 +410,8 @@ export async function recordRFactorV2Batch(
 /** Test seam: drop the process-wide once-per-minute write guard. */
 export function resetRFactorV2WriteGuard(): void {
   writeGuard.lastBucketTs = 0;
-  writeGuard.lastSymbolCount = 0;
+  writeGuard.lastUniverseSize = 0;
+  writeGuard.lastUniverseKey = '';
   writeGuard.inFlight = false;
 }
 
