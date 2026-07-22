@@ -285,6 +285,102 @@ async function main(): Promise<void> {
     `${kept[0].n} dates`,
   );
 
+  // ── A larger universe arriving mid-write must be coalesced, not dropped ────
+  // Returning early on `inFlight` meant the minute was owned by the largest
+  // universe that happened to arrive while the writer was IDLE: a 166-name
+  // scanner result landing during a 20-name section's write was thrown away.
+  const coalesceDate = '2099-08-01';
+  const coalesceMs = 1_800_000_600_000;
+  store.resetRFactorV2WriteGuard();
+  const smallSymbols = symbols.slice(0, 2);
+  const bigSymbols = symbols.slice(0, 50);
+  const mk = (list: string[]) => ({
+    inputs: list.map(input),
+    results: new Map(list.map((s) => [s, result()])),
+    old: new Map(list.map((s) => [s, 3.6] as [string, number | null])),
+    ltp: new Map(list.map((s) => [s, 100] as [string, number | null])),
+  });
+  const smallUniverse = mk(smallSymbols);
+  const bigUniverse = mk(bigSymbols);
+
+  // Start the small write, then hand the larger one in WHILE it is in flight.
+  const firstWrite = store.recordRFactorV2Batch(
+    coalesceDate,
+    smallUniverse.old,
+    smallUniverse.inputs,
+    smallUniverse.results,
+    coalesceMs,
+    smallUniverse.ltp,
+  );
+  const secondWrite = store.recordRFactorV2Batch(
+    coalesceDate,
+    bigUniverse.old,
+    bigUniverse.inputs,
+    bigUniverse.results,
+    coalesceMs,
+    bigUniverse.ltp,
+  );
+  await Promise.all([firstWrite, secondWrite]);
+
+  const owned = await prisma.$queryRawUnsafe<{ n: number; keys: number }[]>(
+    `SELECT COUNT(*) AS n, COUNT(DISTINCT universeKey) AS keys
+       FROM rfactor_v2_snapshots WHERE date = ?`,
+    coalesceDate,
+  );
+  check(
+    'a larger universe arriving mid-write is coalesced, not dropped',
+    Number(owned[0].n) === bigSymbols.length,
+    `${owned[0].n} rows (expected ${bigSymbols.length})`,
+  );
+  check(
+    'the minute ends up owned by exactly ONE universe',
+    Number(owned[0].keys) === 1,
+    `${owned[0].keys} distinct universeKey values`,
+  );
+
+  // ── Duplicate symbols must not inflate the universe ────────────────────────
+  const dupDate = '2099-08-02';
+  store.resetRFactorV2WriteGuard();
+  const dupList = Array.from({ length: 60 }, () => 'SYM0');
+  const dup = mk(dupList);
+  await store.recordRFactorV2Batch(dupDate, dup.old, dup.inputs, dup.results, coalesceMs, dup.ltp);
+  const dupRows = await prisma.$queryRawUnsafe<{ n: number }[]>(
+    `SELECT COUNT(*) AS n FROM rfactor_v2_snapshots WHERE date = ?`,
+    dupDate,
+  );
+  check(
+    'a repeated symbol cannot fake a large universe',
+    Number(dupRows[0].n) === 1,
+    `${dupRows[0].n} rows stored for 60 copies of one symbol`,
+  );
+
+  // ── The takeover really is atomic ─────────────────────────────────────────
+  // The DELETE and every INSERT chunk share one transaction, so a failure
+  // anywhere leaves the previous universe untouched rather than an empty or
+  // half-filled minute that still looks internally consistent.
+  const atomicBefore = await prisma.$queryRawUnsafe<{ n: number }[]>(
+    `SELECT COUNT(*) AS n FROM rfactor_v2_snapshots WHERE date = ?`,
+    coalesceDate,
+  );
+  let rolledBack = false;
+  try {
+    await prisma.$transaction([
+      prisma.$executeRawUnsafe(`DELETE FROM rfactor_v2_snapshots WHERE date = ?`, coalesceDate),
+      prisma.$executeRawUnsafe(`INSERT INTO rfactor_v2_snapshots (date) VALUES ('broken-on-purpose')`),
+    ]);
+  } catch {
+    rolledBack = true;
+  }
+  const atomicAfter = await prisma.$queryRawUnsafe<{ n: number }[]>(
+    `SELECT COUNT(*) AS n FROM rfactor_v2_snapshots WHERE date = ?`,
+    coalesceDate,
+  );
+  check(
+    'a failed batch rolls the DELETE back, keeping the prior universe',
+    rolledBack && Number(atomicAfter[0].n) === Number(atomicBefore[0].n),
+    `rolledBack=${rolledBack}, ${atomicBefore[0].n} rows before / ${atomicAfter[0].n} after`,
+  );
+
   try {
     await prisma.$disconnect();
   } catch {

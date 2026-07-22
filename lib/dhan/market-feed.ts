@@ -1,5 +1,13 @@
 import { clearCachedToken, getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/auth';
-import { fetchWithTimeout, isAbortError } from '@/lib/dhan/fetch-timeout';
+import { fetchJsonWithTimeout, isAbortError } from '@/lib/dhan/fetch-timeout';
+import {
+  noteQuote429,
+  noteQuoteOk,
+  quoteCooldownRemainingMs,
+  SHADOW_REQUEST_TIMEOUT_MS,
+  throughQuoteGate,
+  throughQuoteGateLowPriority,
+} from '@/lib/dhan/quote-gate';
 import { env } from '@/lib/env';
 
 /** One level of the order-book ladder (Dhan quote `depth.buy[]` / `depth.sell[]`). */
@@ -25,133 +33,12 @@ export interface MarketFeedQuote {
 
 export type MarketFeedResponse = Record<string, Record<string, MarketFeedQuote>>;
 
-// ─── Quote-API rate gate (server-side, per Dhan account) ─────────────────────
-// Dhan's Quote APIs (/marketfeed/quote, /marketfeed/ohlc, /optionchain) share a
-// strict 1 req/sec limit enforced PER ACCOUNT — not per browser tab. The /live
-// page's client scheduler only spaces a single tab's polls; multiple tabs, a page
-// reload, the /heatmap page, and option-chain fetches all hit the same Dhan
-// account and collide → HTTP 429 (code 805, which then puts the account in a
-// penalty box that keeps 429-ing even compliant traffic). This gate is the single
-// server-side choke point: every Quote-API call runs one-at-a-time, ≥
-// QUOTE_MIN_INTERVAL_MS apart, and a 429 trips an escalating cooldown that pauses
-// ALL quote traffic so the penalty box can clear instead of being poked again.
-//
-// State lives on globalThis (not a module `let`): Turbopack HMR re-evaluates this
-// module on every hot reload — and separate route bundles can hold their own copy
-// — which would reset/duplicate the queue. globalThis is the one thing shared
-// across all of them in a single server process (auth.ts persists for the same
-// reason). One queue, one account, one rate limit.
-const QUOTE_MIN_INTERVAL_MS = 1500; // ~0.67 req/sec — a safety margin under 1/sec, not the boundary
-const QUOTE_BACKOFF_BASE_MS = 4000; // first 429 cool-off; doubles on each consecutive 429
-const QUOTE_BACKOFF_MAX_MS = 30_000; // cap the escalation
+// ─── Quote-API rate gate ─────────────────────────────────────────────────────
+// Extracted to lib/dhan/quote-gate.ts so its serialisation guarantees can be
+// tested in CI: lib/env parses at import and throws without credentials, so
+// nothing importing THIS module can run there (PR#15 re-review).
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-interface QuoteGateState {
-  /** Tail of the serial chain; each new task appends. Never rejects. */
-  tail: Promise<unknown>;
-  /** When the last task was dispatched (start-to-start spacing anchor). */
-  lastDispatchAt: number;
-  /** No task dispatches before this time — set/extended by a 429. */
-  cooldownUntil: number;
-  /** Consecutive 429s; drives the exponential backoff, reset on any success. */
-  consecutive429: number;
-  /** Interactive/live quote callers waiting or executing. Shadow option-chain
-   * work yields while this is non-zero so it cannot build a backlog ahead of
-   * money-path quote reads. */
-  foregroundPending: number;
-}
-
-const gateHost = globalThis as unknown as { __dhanQuoteGate?: QuoteGateState };
-gateHost.__dhanQuoteGate ??= {
-  tail: Promise.resolve(),
-  lastDispatchAt: 0,
-  cooldownUntil: 0,
-  consecutive429: 0,
-  foregroundPending: 0,
-};
-const gate = gateHost.__dhanQuoteGate;
-gate.foregroundPending ??= 0;
-
-/**
- * Run a Quote-API task one-at-a-time, spaced ≥ QUOTE_MIN_INTERVAL_MS from the
- * previous dispatch AND not before any active 429 cooldown. Serial execution +
- * spacing + shared cooldown together keep the whole process within Dhan's
- * per-account limit no matter how many tabs / routes call in.
- */
-function throughQuoteGate<T>(task: () => Promise<T>): Promise<T> {
-  gate.foregroundPending++;
-  const run = gate.tail.then(async (): Promise<T> => {
-    const target = Math.max(gate.lastDispatchAt + QUOTE_MIN_INTERVAL_MS, gate.cooldownUntil);
-    const wait = target - Date.now();
-    if (wait > 0) await sleep(wait);
-    gate.lastDispatchAt = Date.now();
-    return task();
-  });
-  gate.tail = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run.finally(() => {
-    gate.foregroundPending = Math.max(0, gate.foregroundPending - 1);
-  });
-}
-
-/**
- * Hard ceiling on a measurement-only request once it has been dispatched. The
- * task joins the same serial `gate.tail` as live quotes, so an unbounded shadow
- * request would wedge the queue and make a money-path quote wait behind it
- * forever. This caps that exposure; see SHADOW_REQUEST_TIMEOUT_MS's use in
- * fetchDetailedOptionChainShadow.
- */
-export const SHADOW_REQUEST_TIMEOUT_MS = 5_000;
-
-/**
- * Best-effort low-priority gate for measurement-only option-chain snapshots.
- * It waits for the foreground queue to drain and for a quiet interval.
- *
- * A quote arriving after dispatch can still wait behind this ONE request, which
- * is why the request it wraps MUST be independently bounded — the gate cannot
- * cancel a task it has already started. As a second line of defence the queue is
- * only ever handed a settled-by-timeout promise, so `gate.tail` advances even if
- * the underlying socket never does.
- */
-async function throughQuoteGateLowPriority<T>(task: () => Promise<T>): Promise<T | null> {
-  const giveUpAt = Date.now() + 15_000;
-  while (gate.foregroundPending > 0 || Date.now() - gate.lastDispatchAt < QUOTE_MIN_INTERVAL_MS) {
-    if (Date.now() >= giveUpAt) return null;
-    await sleep(250);
-  }
-  const run = gate.tail.then(async (): Promise<T> => {
-    const target = Math.max(gate.lastDispatchAt + QUOTE_MIN_INTERVAL_MS, gate.cooldownUntil);
-    const wait = target - Date.now();
-    if (wait > 0) await sleep(wait);
-    gate.lastDispatchAt = Date.now();
-    return task();
-  });
-  // Belt and braces: whatever the task does, the queue moves on within the
-  // shadow timeout budget so foreground quotes are never held hostage.
-  gate.tail = Promise.race([
-    run.then(
-      () => undefined,
-      () => undefined,
-    ),
-    sleep(SHADOW_REQUEST_TIMEOUT_MS + QUOTE_MIN_INTERVAL_MS),
-  ]);
-  return run;
-}
-
-/** A 429 was seen — escalate the cooldown so every subsequent dispatch waits it out. */
-function noteQuote429(): void {
-  gate.consecutive429 = Math.min(gate.consecutive429 + 1, 8);
-  const backoff = Math.min(QUOTE_BACKOFF_BASE_MS * 2 ** (gate.consecutive429 - 1), QUOTE_BACKOFF_MAX_MS);
-  gate.cooldownUntil = Date.now() + backoff;
-}
-
-/** A Quote-API call succeeded — clear the escalation. */
-function noteQuoteOk(): void {
-  gate.consecutive429 = 0;
-}
 
 /**
  * Best bid/ask + spread from a quote's depth ladder. Returns null when the book
@@ -279,7 +166,7 @@ export async function dhanMarketFeed(
     if (resp.status === 429) {
       noteQuote429();
       console.warn(
-        `[Dhan] marketfeed/${endpoint} HTTP 429 — cooling off ${Math.round((gate.cooldownUntil - Date.now()) / 100) / 10}s`
+        `[Dhan] marketfeed/${endpoint} HTTP 429 — cooling off ${Math.round(quoteCooldownRemainingMs() / 100) / 10}s`
       );
       return {};
     }
@@ -572,8 +459,14 @@ export async function fetchDetailedOptionChainShadow(
   // hung measurement request must never become an unbounded stall on the
   // trade path. On timeout we abandon the snapshot — evidence is optional,
   // a blocked quote is not.
+  // fetchJsonWithTimeout, NOT fetchWithTimeout: the body is read inside the
+  // serial quote queue, and a header-only deadline leaves a stalled body
+  // pending forever — wedging the option-shadow worker permanently.
   const resp = await throughQuoteGateLowPriority(() =>
-    fetchWithTimeout(
+    fetchJsonWithTimeout<{
+      status?: string;
+      data?: { last_price?: number; oc?: Record<string, { ce?: Record<string, unknown>; pe?: Record<string, unknown> }> };
+    }>(
       'https://api.dhan.co/v2/optionchain',
       {
         method: 'POST',
@@ -594,17 +487,14 @@ export async function fetchDetailedOptionChainShadow(
     throw error;
   });
   if (resp == null) return null;
-  if (resp.status === 429) noteQuote429();
-  if (!resp.ok) {
-    console.warn(`[Dhan] shadow optionchain HTTP ${resp.status} for secId=${underlyingSecId}`);
+  const { response, json } = resp;
+  if (response.status === 429) noteQuote429();
+  if (!response.ok) {
+    console.warn(`[Dhan] shadow optionchain HTTP ${response.status} for secId=${underlyingSecId}`);
     return null;
   }
   noteQuoteOk();
-  const json = (await resp.json()) as {
-    status?: string;
-    data?: { last_price?: number; oc?: Record<string, { ce?: Record<string, unknown>; pe?: Record<string, unknown> }> };
-  };
-  if (json.status !== 'success' || json.data?.oc == null) return null;
+  if (json == null || json.status !== 'success' || json.data?.oc == null) return null;
   const underlyingLastPrice = finite(json.data.last_price);
   if (!(underlyingLastPrice > 0)) return null;
   const strikes = Object.entries(json.data.oc)

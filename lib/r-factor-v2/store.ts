@@ -277,15 +277,33 @@ export async function loadSameTimeOptionBaseline(
 const SNAPSHOT_COLS = 23;
 const SNAPSHOT_BATCH_ROWS = 40;
 
+interface PendingWrite {
+  date: string;
+  oldScores: Map<string, number | null>;
+  inputs: RFactorV2Input[];
+  results: Map<string, RFactorV2Result>;
+  nowMs: number;
+  ltpBySymbol: Map<string, number | null>;
+}
+
 interface WriteGuard {
   lastBucketTs: number;
   lastUniverseSize: number;
   lastUniverseKey: string;
   inFlight: boolean;
+  /** Largest universe that arrived while a write was busy — see below. */
+  pending: PendingWrite | null;
 }
 const writeHost = globalThis as unknown as { __rfactorV2Write?: WriteGuard };
-writeHost.__rfactorV2Write ??= { lastBucketTs: 0, lastUniverseSize: 0, lastUniverseKey: '', inFlight: false };
+writeHost.__rfactorV2Write ??= {
+  lastBucketTs: 0,
+  lastUniverseSize: 0,
+  lastUniverseKey: '',
+  inFlight: false,
+  pending: null,
+};
 const writeGuard = writeHost.__rfactorV2Write;
+writeGuard.pending ??= null;
 
 /**
  * Stable fingerprint of the exact symbol set a computation covered. Two equally
@@ -331,9 +349,43 @@ export async function recordRFactorV2Batch(
   nowMs: number,
   ltpBySymbol: Map<string, number | null> = new Map(),
 ): Promise<void> {
-  if (inputs.length === 0) return;
+  // Defence in depth against a duplicated watchlist: the engine keys its
+  // results by symbol, so a repeated name adds nothing but WOULD inflate the
+  // universe size and let a 200-copy list out-rank a genuine 166-name scan.
+  // The route dedupes too; this makes the store correct on its own.
+  const uniqueInputs = [...new Map(inputs.map((input) => [input.symbol, input])).values()];
+  if (uniqueInputs.length === 0) return;
+  const payload: PendingWrite = { date, oldScores, inputs: uniqueInputs, results, nowMs, ltpBySymbol };
+
+  // Coalesce rather than drop. Returning early on `inFlight` meant the minute
+  // was owned by the largest universe that happened to arrive while the writer
+  // was IDLE — a 166-name scanner result landing during a 20-name section's
+  // write was thrown away, leaving the small section owning the minute.
+  if (writeGuard.inFlight) {
+    if (writeGuard.pending == null || uniqueInputs.length > writeGuard.pending.inputs.length) {
+      writeGuard.pending = payload;
+    }
+    return;
+  }
+
+  writeGuard.inFlight = true;
+  try {
+    let next: PendingWrite | null = payload;
+    while (next != null) {
+      await writeUniverseSnapshot(next);
+      next = writeGuard.pending;
+      writeGuard.pending = null;
+    }
+  } finally {
+    writeGuard.inFlight = false;
+  }
+}
+
+/** One minute-bucket write. Ownership checks live here so a coalesced pending
+ *  candidate is re-judged against whatever the previous write just stored. */
+async function writeUniverseSnapshot(payload: PendingWrite): Promise<void> {
+  const { date, oldScores, inputs, results, nowMs, ltpBySymbol } = payload;
   const bucketTs = Math.floor(nowMs / 60_000) * 60;
-  if (writeGuard.inFlight) return;
   const universeKey = universeKeyFor(inputs.map((input) => input.symbol));
   const sameBucket = writeGuard.lastBucketTs === bucketTs;
   // Same exact universe again inside the minute → nothing new to learn.
@@ -342,17 +394,22 @@ export async function recordRFactorV2Batch(
   // the minute's owner; its ranks were computed against a different field.
   if (sameBucket && inputs.length <= writeGuard.lastUniverseSize) return;
 
-  writeGuard.inFlight = true;
-  try {
+  {
     await ensureRFactorV2Tables();
     const capturedAt = new Date(nowMs).toISOString();
-    // A strictly larger universe takes the minute over completely, so the
-    // bucket never holds a mixture of two ranking fields.
+    // The takeover DELETE and every INSERT chunk go in ONE transaction. Run
+    // separately, a crash or lock between them would leave the minute empty or
+    // holding only the first chunk — and because every surviving row carries a
+    // single universeKey, the evaluator's mixed-universe check would report
+    // that truncated bucket as perfectly consistent (PR#15 re-review).
+    const ops: ReturnType<typeof prisma.$executeRawUnsafe>[] = [];
     if (sameBucket && writeGuard.lastUniverseSize > 0) {
-      await prisma.$executeRawUnsafe(
-        `DELETE FROM rfactor_v2_snapshots WHERE date = ? AND bucketTs = ?`,
-        date,
-        bucketTs,
+      ops.push(
+        prisma.$executeRawUnsafe(
+          `DELETE FROM rfactor_v2_snapshots WHERE date = ? AND bucketTs = ?`,
+          date,
+          bucketTs,
+        ),
       );
     }
     const rows = inputs.flatMap((input) => {
@@ -390,20 +447,22 @@ export async function recordRFactorV2Batch(
           JSON.stringify(result.factors),
         );
       }
-      await prisma.$executeRawUnsafe(
-        `INSERT OR IGNORE INTO rfactor_v2_snapshots
+      ops.push(
+        prisma.$executeRawUnsafe(
+          `INSERT OR IGNORE INTO rfactor_v2_snapshots
           (date,bucketTs,symbol,capturedAt,ltp,oldRFactor,activityScore,rawActivity,comparableActivity,
            activityPercentile,activityRank,universeSize,direction,directionScore,directionConfidence,
            coverage,comparableCoverage,optionStatus,modelVersion,configHash,universeKey,inputs,factors)
          VALUES ${placeholders}`,
-        ...params,
+          ...params,
+        ),
       );
     }
+    // All-or-nothing: the previous universe survives intact if anything fails.
+    await prisma.$transaction(ops);
     writeGuard.lastBucketTs = bucketTs;
     writeGuard.lastUniverseSize = inputs.length;
     writeGuard.lastUniverseKey = universeKey;
-  } finally {
-    writeGuard.inFlight = false;
   }
 }
 
@@ -413,6 +472,7 @@ export function resetRFactorV2WriteGuard(): void {
   writeGuard.lastUniverseSize = 0;
   writeGuard.lastUniverseKey = '';
   writeGuard.inFlight = false;
+  writeGuard.pending = null;
 }
 
 export async function recordOptionEvidence(symbol: string, evidence: OptionActivityEvidence): Promise<void> {

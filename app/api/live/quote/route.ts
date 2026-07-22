@@ -50,8 +50,19 @@ export async function POST(req: Request) {
     // such request per category section, serialized client-side to ≤1 req/sec. This
     // generous guard only stops a pathological input from ballooning a batch
     // (≤200 symbols ≈ ≤400 instruments, well under Dhan's per-request limit).
+    // Deduplicated at the boundary. A repeated name buys nothing downstream (the
+    // engine keys everything by symbol) but WOULD inflate the V2 universe size,
+    // letting a list of 200 copies of one symbol claim the minute over a genuine
+    // 166-name scanner universe (PR#15 re-review).
     const symbols: string[] = Array.isArray(body.symbols)
-      ? (body.symbols as unknown[]).slice(0, 200).map((s) => String(s).toUpperCase())
+      ? [
+          ...new Set(
+            (body.symbols as unknown[])
+              .slice(0, 200)
+              .map((s) => String(s).trim().toUpperCase())
+              .filter(Boolean),
+          ),
+        ]
       : [];
     const fresh = body.fresh === true;
 

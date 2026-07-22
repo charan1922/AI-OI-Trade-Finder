@@ -114,6 +114,21 @@ if (requestedVersion !== '') {
     console.error(`No rows match --model-version=${requestedVersion}. Present: ${[...versionCounts.keys()].join(', ')}`);
     process.exit(1);
   }
+  // A version prefix can still span several config hashes. `--model-version=v2.2`
+  // matching both v2.2/aaaa and v2.2/bbbb would average two different scoring
+  // definitions and print a confident "v2.2" over the top — the precise case the
+  // config hash exists to catch, since it is what changes when someone edits a
+  // constant without bumping the human-readable version (PR#15 re-review).
+  const matchedKeys = new Set(snapshots.map((s) => `${s.modelVersion}/${s.configHash}`));
+  if (matchedKeys.size > 1) {
+    console.error(`--model-version=${requestedVersion} still matches ${matchedKeys.size} distinct scoring definitions:\n`);
+    for (const key of [...matchedKeys].sort()) {
+      console.error(`  ${key.padEnd(24)} ${snapshots.filter((s) => `${s.modelVersion}/${s.configHash}` === key).length} rows`);
+    }
+    console.error('\nThese are NOT comparable. Re-run pinned to one exact key, e.g:');
+    console.error(`  npx tsx scripts/eval-rfactor-v2.ts --model-version=${[...matchedKeys].sort()[0]}`);
+    process.exit(1);
+  }
 } else if (versionCounts.size > 1) {
   console.error('Refusing to evaluate mixed model versions — the rows are not comparable.\n');
   for (const [version, count] of [...versionCounts].sort((a, b) => b[1] - a[1])) {
@@ -123,7 +138,11 @@ if (requestedVersion !== '') {
   console.error(`  npx tsx scripts/eval-rfactor-v2.ts --model-version=${[...versionCounts.keys()].sort().reverse()[0]}`);
   process.exit(1);
 }
-const evaluatedVersion = requestedVersion !== '' ? requestedVersion : ([...versionCounts.keys()][0] ?? 'unknown');
+// Report the FULL key actually evaluated, never the abbreviation asked for.
+const evaluatedVersion =
+  snapshots.length > 0
+    ? `${snapshots[0].modelVersion}/${snapshots[0].configHash}`
+    : ([...versionCounts.keys()][0] ?? 'unknown');
 
 // ── Forward spot moves from retained candles ────────────────────────────────
 interface Bar {

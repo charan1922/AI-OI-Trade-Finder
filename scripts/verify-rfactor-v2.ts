@@ -465,4 +465,115 @@ async function verifyShadowRequestTimeout(): Promise<void> {
 
 await verifyShadowRequestTimeout();
 
+// ── A stalled BODY must abort too, not just stalled headers ─────────────────
+// fetchWithTimeout clears its timer the moment a Response exists, so a server
+// that completes the header exchange and then never finishes the JSON leaves
+// `response.json()` pending forever. That would hang fetchDetailedOptionChain-
+// Shadow and leave the option-shadow worker `running` for the life of the
+// process, silently ending all future option evidence.
+async function verifyStalledBodyTimeout(): Promise<void> {
+  const { createServer } = await import('node:http');
+  const { fetchJsonWithTimeout, isAbortError } = await import('@/lib/dhan/fetch-timeout');
+
+  const partial = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' });
+    res.write('{"status":"suc'); // valid headers, deliberately truncated body
+    // never res.end()
+  });
+  await new Promise<void>((resolve) => partial.listen(0, '127.0.0.1', resolve));
+  const port = (partial.address() as { port: number }).port;
+
+  const startedAt = Date.now();
+  let aborted = false;
+  try {
+    await fetchJsonWithTimeout(`http://127.0.0.1:${port}/`, { method: 'GET' }, 400);
+  } catch (error) {
+    aborted = isAbortError(error);
+  }
+  const elapsed = Date.now() - startedAt;
+  partial.close();
+
+  check('a stalled response BODY aborts instead of hanging', () => {
+    assert.ok(aborted, 'expected an abort while reading the body, got a different outcome');
+    assert.ok(elapsed < 3_000, `expected release well under 3s, took ${elapsed}ms`);
+  });
+}
+
+await verifyStalledBodyTimeout();
+
+// ── The shadow gate must never break Dhan request serialisation ─────────────
+// The gate previously handed `gate.tail` a race between the real task and a
+// fixed sleep started at QUEUE time. Because the task also waits out a 429
+// cooldown, the tail could resolve while the task was still parked — letting a
+// foreground quote dispatch concurrently and re-trigger the 429.
+async function verifyQuoteGateSerialisation(): Promise<void> {
+  const gate = await import('@/lib/dhan/quote-gate');
+
+  // 1. Low-priority work yields while a cooldown is running.
+  check('shadow work yields during a 429 cooldown', () => {
+    const now = 1_000_000_000;
+    assert.equal(
+      gate.shouldLowPriorityYield({
+        foregroundPending: 0,
+        lastDispatchAt: now - 60_000,
+        cooldownUntil: now + 20_000,
+        nowMs: now,
+      }),
+      true,
+      'a shadow request must not reserve the first slot after a cooldown',
+    );
+    assert.equal(
+      gate.shouldLowPriorityYield({
+        foregroundPending: 0,
+        lastDispatchAt: now - 60_000,
+        cooldownUntil: 0,
+        nowMs: now,
+      }),
+      false,
+      'an idle, uncooled gate must let shadow work through',
+    );
+  });
+
+  // 2. Concurrency stays at one across a shadow + foreground overlap, with the
+  //    shadow task deliberately outlasting the old race window.
+  gate.__resetQuoteGateForTest({ lastDispatchAt: Date.now() - 10_000 });
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const order: string[] = [];
+  const task = (label: string, ms: number) => async () => {
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    order.push(label);
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    inFlight -= 1;
+    return label;
+  };
+
+  const shadow = gate.throughQuoteGateLowPriority(task('shadow', 900));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const foreground = gate.throughQuoteGate(task('foreground', 50));
+  await Promise.all([shadow, foreground]);
+
+  check('a shadow request never runs concurrently with a live quote', () => {
+    assert.equal(maxInFlight, 1, `max concurrent Dhan dispatches was ${maxInFlight}, must be 1`);
+    assert.deepEqual(order, ['shadow', 'foreground'], 'queue order must be preserved');
+  });
+
+  // 3. A shadow request gives up rather than queueing behind a long cooldown.
+  gate.__resetQuoteGateForTest({ cooldownUntil: Date.now() + 30_000 });
+  const startedAt = Date.now();
+  const gaveUp = await Promise.race([
+    gate.throughQuoteGateLowPriority(async () => 'dispatched'),
+    new Promise((resolve) => setTimeout(() => resolve('still-waiting'), 1_500)),
+  ]);
+  gate.__resetQuoteGateForTest();
+
+  check('a shadow request waits (not dispatches) through a live cooldown', () => {
+    assert.equal(gaveUp, 'still-waiting', 'the shadow request must not dispatch during a cooldown');
+    assert.ok(Date.now() - startedAt < 3_000);
+  });
+}
+
+await verifyQuoteGateSerialisation();
+
 console.log(`R-Factor V2 verification passed: ${checks} checks`);
