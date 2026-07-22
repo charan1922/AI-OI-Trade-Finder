@@ -21,6 +21,9 @@ import { ensureMorningContext, getMorningContext } from '../_lib/morning-candles
 import { cachedQuoteResponse } from '../_lib/quote-response-cache';
 import { buildLiveRFactorInput, MIN_SESSION_FRACTION, sessionFractionElapsed } from '../_lib/rfactor-inputs';
 import { loadRFactorBaselines } from '../_lib/rfactor-baselines';
+import { computeRFactorV2Batch, type RFactorV2Input } from '@/lib/r-factor-v2';
+import { getCachedOptionEvidence, scheduleOptionEvidenceShadow } from '@/lib/r-factor-v2/option-shadow';
+import { getSameTimeBaselines, recordRFactorV2Batch, robustZScore } from '@/lib/r-factor-v2/store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -246,6 +249,8 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
       futOi,
       oiLevel,
       turnover,
+      dayHigh: eqQ?.ohlc?.high ?? null,
+      dayLow: eqQ?.ohlc?.low ?? null,
       hasDepth: ba != null,
       sinceEntryPct: null, // filled from the recorded intraday series below
       turnoverLvl,
@@ -342,6 +347,96 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
     }
   } catch (e) {
     console.warn('[live/quote] intraday OI capture failed:', (e as Error).message);
+  }
+
+  // R-factor V2 is SHADOW ONLY — no trading code reads any of it.
+  //
+  // Nothing here may block the response. The scanner calls this route with
+  // `fresh: true` (it must never read a stale cache), so every millisecond spent
+  // below lands directly on the path that produces real trade decisions. The
+  // same-clock baseline read is therefore served from a background-refreshed
+  // cache, and the snapshot write is fire-and-forget. The scoring itself is pure
+  // arithmetic over data already in memory.
+  try {
+    const sameTime = getSameTimeBaselines(today, allowed, quoteObservedAtMs);
+    const optionEvidence = getCachedOptionEvidence(allowed, quoteObservedAtMs);
+    const inputs: RFactorV2Input[] = rows.map((row) => {
+      const base = baselines.get(row.symbol);
+      const sameTimeBase = sameTime.get(row.symbol);
+      const rangeRatio =
+        row.ltp != null && row.ltp > 0 && row.dayHigh != null && row.dayLow != null &&
+        base?.rangeSpread20dAvg != null && base.rangeSpread20dAvg > 0
+          ? ((row.dayHigh - row.dayLow) / row.ltp) / base.rangeSpread20dAvg
+          : null;
+      const turnoverPace =
+        row.turnover != null && sameTimeBase != null && sameTimeBase.median > 0
+          ? row.turnover / sameTimeBase.median
+          : (row.turnoverLvl ?? null);
+      const turnoverZ = robustZScore(sameTimeBase, row.turnover);
+      const futuresOiChangePct =
+        row.futOi != null && base?.futOiPrev != null && base.futOiPrev > 0
+          ? ((row.futOi - base.futOiPrev) / base.futOiPrev) * 100
+          : null;
+      return {
+        symbol: row.symbol,
+        sector: fno.get(row.symbol)?.sector ?? null,
+        priceChangePct: row.changePctOpen,
+        rangeRatio,
+        turnoverPace,
+        turnoverZ,
+        turnoverBaselineKind:
+          turnoverZ != null
+            ? 'same-time-z'
+            : sameTimeBase != null
+              ? 'same-time'
+              : row.turnoverLvl != null
+                ? 'linear-fallback'
+                : 'missing',
+        oiLevel: row.oiLevel,
+        futuresOiChangePct,
+        oiVelocity: row.oiVelocity,
+        nseCombinedOiChangePct: row.nseChgOiPct ?? null,
+        nseOiSlope30m: row.nseOiSlope30m ?? null,
+        nsePremiumPace:
+          row.nsePremValueCr != null &&
+          sameTimeBase?.premiumMedian != null &&
+          sameTimeBase.premiumMedian > 0
+            ? row.nsePremValueCr / sameTimeBase.premiumMedian
+            : null,
+        spreadPct: row.spreadPct,
+        imbalance: row.imbalance,
+        option: optionEvidence.get(row.symbol) ?? null,
+      };
+    });
+    const results = computeRFactorV2Batch(inputs);
+    for (const row of rows) {
+      const shadow = results.get(row.symbol);
+      if (shadow == null) continue;
+      row.rFactorV2Activity = shadow.activityScore;
+      row.rFactorV2Percentile = shadow.activityPercentile;
+      row.rFactorV2Rank = shadow.activityRank || null;
+      row.rFactorV2Universe = shadow.universeSize;
+      row.rFactorV2Direction = shadow.direction;
+      row.rFactorV2DirectionConfidence = shadow.directionConfidence;
+      row.rFactorV2Coverage = shadow.coverage;
+      row.rFactorV2ComparableCoverage = shadow.comparableCoverage;
+      row.rFactorV2OptionStatus = shadow.optionStatus;
+      row.rFactorV2Factors = shadow.factors;
+    }
+    const oldScores = new Map(rows.map((row) => [row.symbol, row.rFactor]));
+    void recordRFactorV2Batch(today, oldScores, inputs, results, quoteObservedAtMs).catch((error) => {
+      console.warn(`[RFactorV2] snapshot write failed: ${(error as Error).message}`);
+    });
+    // Shortlist on the comparable score, so option enrichment follows genuine
+    // activity instead of re-selecting whichever names were enriched already.
+    scheduleOptionEvidenceShadow(
+      [...results.entries()]
+        .sort((a, b) => b[1].comparableActivity - a[1].comparableActivity)
+        .slice(0, 6)
+        .map(([symbol, result]) => ({ symbol, priority: result.comparableActivity })),
+    );
+  } catch (error) {
+    console.warn(`[RFactorV2] shadow capture failed: ${(error as Error).message}`);
   }
 
   return {

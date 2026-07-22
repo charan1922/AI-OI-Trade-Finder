@@ -55,6 +55,10 @@ interface QuoteGateState {
   cooldownUntil: number;
   /** Consecutive 429s; drives the exponential backoff, reset on any success. */
   consecutive429: number;
+  /** Interactive/live quote callers waiting or executing. Shadow option-chain
+   * work yields while this is non-zero so it cannot build a backlog ahead of
+   * money-path quote reads. */
+  foregroundPending: number;
 }
 
 const gateHost = globalThis as unknown as { __dhanQuoteGate?: QuoteGateState };
@@ -63,8 +67,10 @@ gateHost.__dhanQuoteGate ??= {
   lastDispatchAt: 0,
   cooldownUntil: 0,
   consecutive429: 0,
+  foregroundPending: 0,
 };
 const gate = gateHost.__dhanQuoteGate;
+gate.foregroundPending ??= 0;
 
 /**
  * Run a Quote-API task one-at-a-time, spaced ≥ QUOTE_MIN_INTERVAL_MS from the
@@ -73,6 +79,7 @@ const gate = gateHost.__dhanQuoteGate;
  * per-account limit no matter how many tabs / routes call in.
  */
 function throughQuoteGate<T>(task: () => Promise<T>): Promise<T> {
+  gate.foregroundPending++;
   const run = gate.tail.then(async (): Promise<T> => {
     const target = Math.max(gate.lastDispatchAt + QUOTE_MIN_INTERVAL_MS, gate.cooldownUntil);
     const wait = target - Date.now();
@@ -83,6 +90,34 @@ function throughQuoteGate<T>(task: () => Promise<T>): Promise<T> {
   gate.tail = run.then(
     () => undefined,
     () => undefined
+  );
+  return run.finally(() => {
+    gate.foregroundPending = Math.max(0, gate.foregroundPending - 1);
+  });
+}
+
+/**
+ * Best-effort low-priority gate for measurement-only option-chain snapshots.
+ * It waits for the foreground queue to drain and for a quiet interval. A quote
+ * arriving after dispatch can still wait behind this single request, but the
+ * shadow worker never queues a batch ahead of live quote traffic.
+ */
+async function throughQuoteGateLowPriority<T>(task: () => Promise<T>): Promise<T | null> {
+  const giveUpAt = Date.now() + 15_000;
+  while (gate.foregroundPending > 0 || Date.now() - gate.lastDispatchAt < QUOTE_MIN_INTERVAL_MS) {
+    if (Date.now() >= giveUpAt) return null;
+    await sleep(250);
+  }
+  const run = gate.tail.then(async (): Promise<T> => {
+    const target = Math.max(gate.lastDispatchAt + QUOTE_MIN_INTERVAL_MS, gate.cooldownUntil);
+    const wait = target - Date.now();
+    if (wait > 0) await sleep(wait);
+    gate.lastDispatchAt = Date.now();
+    return task();
+  });
+  gate.tail = run.then(
+    () => undefined,
+    () => undefined,
   );
   return run;
 }
@@ -429,6 +464,125 @@ export interface OptionChainSummary {
   totalOptOi: number;
   totalOptVolume: number;
   pcr: number; // PE volume / CE volume
+}
+
+export interface DetailedOptionSide {
+  securityId: string | null;
+  lastPrice: number;
+  averagePrice: number;
+  oi: number;
+  previousOi: number;
+  previousClosePrice: number;
+  previousVolume: number;
+  volume: number;
+  impliedVolatility: number | null;
+  topBidPrice: number | null;
+  topBidQuantity: number | null;
+  topAskPrice: number | null;
+  topAskQuantity: number | null;
+  greeks: { delta: number; gamma: number; theta: number; vega: number } | null;
+}
+
+export interface DetailedOptionStrike {
+  strike: number;
+  ce: DetailedOptionSide | null;
+  pe: DetailedOptionSide | null;
+}
+
+export interface DetailedOptionChain {
+  underlyingLastPrice: number;
+  strikes: DetailedOptionStrike[];
+  fetchedAt: string;
+}
+
+const finite = (value: unknown, fallback = 0): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+const positiveOrNull = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+function parseDetailedOptionSide(raw: Record<string, unknown> | undefined): DetailedOptionSide | null {
+  if (raw == null) return null;
+  const greeksRaw = raw.greeks as Record<string, unknown> | undefined;
+  return {
+    securityId: raw.security_id == null ? null : String(raw.security_id),
+    lastPrice: finite(raw.last_price),
+    averagePrice: finite(raw.average_price),
+    oi: finite(raw.oi),
+    previousOi:
+      raw.previous_oi != null
+        ? finite(raw.previous_oi)
+        : raw.oi_change != null
+          ? finite(raw.oi) - finite(raw.oi_change)
+          : 0,
+    previousClosePrice: finite(raw.previous_close_price),
+    previousVolume: finite(raw.previous_volume),
+    volume: finite(raw.volume),
+    impliedVolatility: positiveOrNull(raw.implied_volatility),
+    topBidPrice: positiveOrNull(raw.top_bid_price),
+    topBidQuantity: positiveOrNull(raw.top_bid_quantity),
+    topAskPrice: positiveOrNull(raw.top_ask_price),
+    topAskQuantity: positiveOrNull(raw.top_ask_quantity),
+    greeks:
+      greeksRaw == null
+        ? null
+        : {
+            delta: finite(greeksRaw.delta),
+            gamma: finite(greeksRaw.gamma),
+            theta: finite(greeksRaw.theta),
+            vega: finite(greeksRaw.vega),
+          },
+  };
+}
+
+/**
+ * Full strike-aware chain for R-factor V2 shadow research. This is deliberately
+ * low priority and returns null instead of delaying a busy live-quote queue.
+ */
+export async function fetchDetailedOptionChainShadow(
+  underlyingSecId: number,
+  expiry: string,
+): Promise<DetailedOptionChain | null> {
+  if (!hasDhanAuth()) return null;
+  const token = await getDhanAccessToken();
+  const clientId = env.DHAN_CLIENT_ID!;
+  const resp = await throughQuoteGateLowPriority(() =>
+    fetch('https://api.dhan.co/v2/optionchain', {
+      method: 'POST',
+      headers: {
+        'access-token': token,
+        'client-id': clientId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ UnderlyingScrip: underlyingSecId, UnderlyingSeg: 'NSE_EQ', Expiry: expiry }),
+    }),
+  );
+  if (resp == null) return null;
+  if (resp.status === 429) noteQuote429();
+  if (!resp.ok) {
+    console.warn(`[Dhan] shadow optionchain HTTP ${resp.status} for secId=${underlyingSecId}`);
+    return null;
+  }
+  noteQuoteOk();
+  const json = (await resp.json()) as {
+    status?: string;
+    data?: { last_price?: number; oc?: Record<string, { ce?: Record<string, unknown>; pe?: Record<string, unknown> }> };
+  };
+  if (json.status !== 'success' || json.data?.oc == null) return null;
+  const underlyingLastPrice = finite(json.data.last_price);
+  if (!(underlyingLastPrice > 0)) return null;
+  const strikes = Object.entries(json.data.oc)
+    .map(([key, row]) => ({
+      strike: finite(key),
+      ce: parseDetailedOptionSide(row.ce),
+      pe: parseDetailedOptionSide(row.pe),
+    }))
+    .filter((row) => row.strike > 0)
+    .sort((a, b) => a.strike - b.strike);
+  return { underlyingLastPrice, strikes, fetchedAt: new Date().toISOString() };
 }
 
 /**
