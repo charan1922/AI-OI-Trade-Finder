@@ -10,15 +10,13 @@
  * review.
  */
 
-import { MAX_LOSS_PER_LOT_RUPEES, TF_LOT_TARGET_RUPEES } from '@/lib/trade-suggest/config';
+import { MAX_LOSS_PER_LOT_RUPEES } from '@/lib/trade-suggest/config';
 import { nowIST, minuteOfDayIST, nowISTClock } from '@/lib/ist';
 import type { AutoTradeSettings } from './types';
 
-/** ₹ risk/reward anchors per lot — the SAME numbers the scanner plans with
- *  (user rules: max loss ₹1.5k/lot, target ₹5k/lot). Used to re-anchor the
- *  premium backstops to the actual fill price. */
+/** ₹ risk anchor per lot. The live profit target is a separate runtime policy
+ * because the scanner's wider spot plan is context, not a fixed cash exit. */
 export const MAX_LOSS_PER_LOT_FALLBACK = MAX_LOSS_PER_LOT_RUPEES;
-export const TARGET_PER_LOT_FALLBACK = TF_LOT_TARGET_RUPEES;
 
 /** Seed values for the runtime settings store (settings.ts). Mode starts OFF —
  *  the operator must explicitly select paper/approval/live on /auto-trade. */
@@ -31,6 +29,8 @@ export const DEFAULT_SETTINGS: AutoTradeSettings = {
   maxOpenLots: 2, // user rule: max 2 lots at once
   maxCapitalRupees: 60_000, // user rule: ₹50–60k account — ₹-cap on deployed premium
   dailyLossHaltRupees: 3_000, // 2 × the ₹1.5k/lot max loss — then stop for the day
+  profitTargetMode: 'per_trade', // fixed cash profit for the whole position
+  profitTargetRupees: 1_100, // requested default; editable without a redeploy
   maxSpreadPct: 3, // option bid-ask ceiling — see MAX_SPREAD_PCT below for the evidence
   approvalTtlMin: 15, // a pending approval is stale after 3 poller cycles
   telegramAlerts: true, // send auto-trade alerts + commentary to Telegram
@@ -95,12 +95,12 @@ export const MAX_TOOL_STEPS = 10;
  * 5-min passes, OPEN positions get their premium stop/target re-checked every
  * this-many ms (all open contracts are batched into at most one live Dhan
  * quote request per active tick, through the shared serial quote gate).
- * 10 seconds (was 60; AT-026, gap analysis 2026-07-20): a one-minute window on
+ * 5 seconds (was 60; tightened after the 2026-07-22 live-loss review): a one-minute window on
  * an intraday option stop was a material chunk of the risk budget. This is a
  * TARGET cadence, not an exit-latency guarantee — the guard heartbeat reports
  * actual scheduling and quote latency. Deterministic code only — no AI here.
  */
-export const FAST_GUARD_TICK_MS = 10_000;
+export const FAST_GUARD_TICK_MS = 5_000;
 
 /** place_entry_order demands a check_order ALLOW for the SAME symbol within
  *  this window (AT-006: the check-then-place workflow is code-enforced, not

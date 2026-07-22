@@ -7,4 +7,4 @@
 export { runAutoTradePass, type AutoTradePassOutcome } from './engine';
 export { getAutoTradeSettings, setAutoTradeSetting, SETTING_DEFS } from './settings';
 export { approveTrade, rejectTrade } from './approval';
-export type { AutoTrade, AutoTradeSettings, TradeMode, BrokerId, AiProvider } from './types';
+export type { AutoTrade, AutoTradeSettings, TradeMode, BrokerId, AiProvider, ProfitTargetMode } from './types';

@@ -1,5 +1,15 @@
 # New Session Handoff
 
+Before changing live Auto Trade entry or exit rules, also read
+`knowledge-base/init/05-live-loss-review-2026-07-22.md`. It records the full
+production-data review, the `v1.18.0` comparison, the 12:15 entry-window drift,
+and the local configurable ₹1,100 target hotfix. The same local work now retains
+5-second bid/ask snapshots and adds FYERS per-trade/overall streaming P&L. A
+fresh, non-crossed FYERS bid may trigger the target immediately only when its
+displayed quantity covers the entire position. The deterministic 5-second REST
+guard remains the fallback, and stop-loss checks remain there. Confirm whether that hotfix was
+subsequently committed/deployed; the document's initial status is local-only.
+
 Paste the following into a new Codex session when continuing this work:
 
 ```text

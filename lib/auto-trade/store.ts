@@ -13,7 +13,15 @@
 
 import { prisma } from '@/lib/db';
 import { correlationIdForOrder } from './brokers/adapter';
-import type { AutoDecision, AutoOrder, AutoTrade, OrderStatus, ToolTraceEntry, TradeStatus } from './types';
+import type {
+  AutoDecision,
+  AutoOrder,
+  AutoQuoteSnapshot,
+  AutoTrade,
+  OrderStatus,
+  ToolTraceEntry,
+  TradeStatus,
+} from './types';
 
 let tablesReady = false;
 
@@ -137,6 +145,29 @@ async function ensureTables(): Promise<void> {
     )
   `);
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_auto_decisions_date ON auto_decisions(date)`);
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS auto_quote_snapshots (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      tradeId       INTEGER NOT NULL,
+      date          TEXT NOT NULL,
+      capturedAt    TEXT NOT NULL,
+      source        TEXT NOT NULL,
+      optSecurityId TEXT NOT NULL,
+      ltp           REAL NOT NULL,
+      priceSource   TEXT NOT NULL,
+      bid           REAL,
+      ask           REAL,
+      spreadPct     REAL,
+      slPremium     REAL NOT NULL,
+      targetPremium REAL NOT NULL
+    )
+  `);
+  await prisma.$executeRawUnsafe(
+    `CREATE INDEX IF NOT EXISTS idx_auto_quote_snapshots_trade_at ON auto_quote_snapshots(tradeId, capturedAt)`
+  );
+  await prisma.$executeRawUnsafe(
+    `CREATE INDEX IF NOT EXISTS idx_auto_quote_snapshots_date_at ON auto_quote_snapshots(date, capturedAt)`
+  );
   tablesReady = true;
 }
 
@@ -429,9 +460,9 @@ export async function getTradesByDate(date: string): Promise<AutoTrade[]> {
  *  dropdown for the EOD history page. Read-only. */
 export async function getAutoTradeDates(): Promise<string[]> {
   await ensureTables();
-  const rows = (await prisma.$queryRawUnsafe(
-    `SELECT DISTINCT date FROM auto_trades ORDER BY date DESC`
-  )) as { date: string }[];
+  const rows = (await prisma.$queryRawUnsafe(`SELECT DISTINCT date FROM auto_trades ORDER BY date DESC`)) as {
+    date: string;
+  }[];
   return rows.map((r) => r.date);
 }
 
@@ -511,6 +542,58 @@ export async function dailyRealizedPnl(date: string): Promise<number> {
 }
 
 // ─── Orders ──────────────────────────────────────────────────────────────────
+
+export type NewAutoQuoteSnapshot = Omit<AutoQuoteSnapshot, 'id'>;
+
+/** Persist one quote batch in a single SQLite statement. Callers invoke this
+ * after protective exit submission and catch failures: retaining evidence is
+ * important, but it must never add latency to or break a stop/target. */
+export async function insertQuoteSnapshots(rows: readonly NewAutoQuoteSnapshot[]): Promise<void> {
+  if (rows.length === 0) return;
+  await ensureTables();
+  const placeholders = rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+  const values = rows.flatMap((row) => [
+    row.tradeId,
+    row.date,
+    row.capturedAt,
+    row.source,
+    row.optSecurityId,
+    row.ltp,
+    row.priceSource,
+    row.bid,
+    row.ask,
+    row.spreadPct,
+    row.slPremium,
+    row.targetPremium,
+  ]);
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO auto_quote_snapshots
+       (tradeId, date, capturedAt, source, optSecurityId, ltp, priceSource,
+        bid, ask, spreadPct, slPremium, targetPremium)
+     VALUES ${placeholders}`,
+    ...values
+  );
+}
+
+/** Readback used by diagnostics/tests and future per-trade audit pages. */
+export async function getQuoteSnapshotsForTrade(tradeId: number): Promise<AutoQuoteSnapshot[]> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(
+    `SELECT * FROM auto_quote_snapshots WHERE tradeId = ? ORDER BY capturedAt, id`,
+    tradeId
+  )) as Record<string, unknown>[];
+  return rows.map((row) => ({
+    ...(row as unknown as AutoQuoteSnapshot),
+    id: Number(row.id),
+    tradeId: Number(row.tradeId),
+    ltp: Number(row.ltp),
+    bid: row.bid == null ? null : Number(row.bid),
+    ask: row.ask == null ? null : Number(row.ask),
+    spreadPct: row.spreadPct == null ? null : Number(row.spreadPct),
+    slPremium: Number(row.slPremium),
+    targetPremium: Number(row.targetPremium),
+  }));
+}
 
 export async function insertOrder(o: {
   tradeId: number;

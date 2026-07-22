@@ -446,6 +446,30 @@ model AutoDecision {
   @@map("auto_decisions")
 }
 
+/// Exact-contract quote history captured while Auto Trade positions are open.
+/// The executable SELL-side bid is retained so future target reviews do not
+/// have to infer fillability from LTP. Writes happen only after the position
+/// guard has submitted any required protective exit.
+model AutoQuoteSnapshot {
+  id            Int     @id @default(autoincrement())
+  tradeId       Int
+  date          String
+  capturedAt    String
+  source        String
+  optSecurityId String
+  ltp           Float
+  priceSource   String
+  bid           Float?
+  ask           Float?
+  spreadPct     Float?
+  slPremium     Float
+  targetPremium Float
+
+  @@index([tradeId, capturedAt])
+  @@index([date, capturedAt])
+  @@map("auto_quote_snapshots")
+}
+
 /// Permanent EOD copy of the /live "Live Urgency" board (created at runtime via
 /// raw SQL in lib/signals/live-urgency-eod.ts; declared here so `db push` keeps
 /// it). One row per (date, symbol) — the first post-market capture of a session

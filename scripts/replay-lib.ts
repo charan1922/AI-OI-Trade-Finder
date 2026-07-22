@@ -148,6 +148,11 @@ export interface Variant {
    *  (lib/sector/aggregate.ts; flat sectors <0.1% pass). False in prod —
    *  sector alignment is display evidence until this variant earns its place. */
   requireSectorAlign: boolean;
+  /** Research-only entry confirmations. Production remains represented by the
+   * shipped defaults (false/undefined/true respectively). */
+  requireConfirmedOrb?: boolean;
+  minBreakoutVolumeRatio?: number;
+  requireSupertrendAlign?: boolean;
 }
 
 /** Mirrors the production config — the loop's baseline. */
@@ -678,6 +683,24 @@ export function replayVariant(
         (direction === 'bullish'
           ? sc.openRangeHigh != null && snap.ltp > sc.openRangeHigh
           : sc.openRangeLow != null && snap.ltp < sc.openRangeLow);
+      const lastCompletedBar = bars.at(-1) ?? null;
+      const confirmedOrBreakout =
+        sc.openRangeComplete &&
+        lastCompletedBar != null &&
+        (direction === 'bullish'
+          ? sc.openRangeHigh != null &&
+            lastCompletedBar.close > sc.openRangeHigh &&
+            snap.ltp > sc.openRangeHigh
+          : sc.openRangeLow != null && lastCompletedBar.close < sc.openRangeLow && snap.ltp < sc.openRangeLow);
+      const volumeLookback = bars.slice(-7, -1).filter((bar) => bar.volume > 0);
+      const priorAverageVolume =
+        volumeLookback.length > 0
+          ? volumeLookback.reduce((sum, bar) => sum + bar.volume, 0) / volumeLookback.length
+          : null;
+      const breakoutVolumeRatio =
+        lastCompletedBar != null && priorAverageVolume != null && priorAverageVolume > 0
+          ? lastCompletedBar.volume / priorAverageVolume
+          : null;
       const st = supertrend(bars);
       const vw = sessionVwap(bars);
       const supertrendAligned =
@@ -772,10 +795,21 @@ export function replayVariant(
         bump('directionDisagree');
         continue;
       }
+      if (variant.requireConfirmedOrb && !confirmedOrBreakout) {
+        bump('confirmedOrbMissing');
+        continue;
+      }
+      if (
+        variant.minBreakoutVolumeRatio != null &&
+        (breakoutVolumeRatio == null || breakoutVolumeRatio < variant.minBreakoutVolumeRatio)
+      ) {
+        bump('breakoutVolumeWeak');
+        continue;
+      }
       // Supertrend/VWAP alignment hard gates — the live engine enforces these
       // (added from the July 10–13 benchmark: 0/3 wins misaligned); mirrored
       // here for fidelity. null = not yet computable = gate skipped, as live.
-      if (supertrendAligned === false) {
+      if (variant.requireSupertrendAlign !== false && supertrendAligned === false) {
         bump('supertrendDisagree');
         continue;
       }

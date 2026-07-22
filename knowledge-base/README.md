@@ -10,6 +10,7 @@ have to rely on old chat history.
 - `init/02-production-operations.md` — where to inspect it in production and which settings matter.
 - `init/03-live-enablement-plan.md` — evidence and engineering required before enabling live capped refresh.
 - `init/04-new-session-handoff.md` — a ready-to-paste prompt for a new Codex session.
+- `init/05-live-loss-review-2026-07-22.md` — production evidence for the losing streak, tag comparison, and the local cash-target hotfix.
 
 ## Maintenance rule
 

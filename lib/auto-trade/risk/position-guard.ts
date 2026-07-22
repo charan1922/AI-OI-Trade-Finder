@@ -7,7 +7,7 @@
  *   1. EOD square-off at/after the configured IST time — no position survives into the
  *      broker's forced-square-off penalty window.
  *   2. Premium stop  (slPremium: tighter of −40% and −₹1.5k/lot, re-anchored
- *      to the actual fill) and premium target (+₹5k/lot).
+ *      to the actual fill) and the trade's snapshotted cash-profit target.
  *   3. Spot stop / spot target from the scanner plan (latest 5-min close in
  *      fyers_candles) — the level the AI manages; it may only ever TIGHTEN.
  *
@@ -21,7 +21,14 @@ import { isPastSquareOff, istMinuteLabel, minuteOfDayIST } from '../config';
 import { exitTrade } from '../execution';
 import { fetchOptionQuotesWithHealth, latestSpotRead, type OptionQuote } from '../quotes';
 import { getAutoTradeSettings } from '../settings';
-import { getOpenTrades, getOrdersForTrade, updateShadowExcursion, updateTrade } from '../store';
+import {
+  getOpenTrades,
+  getOrdersForTrade,
+  insertQuoteSnapshots,
+  type NewAutoQuoteSnapshot,
+  updateShadowExcursion,
+  updateTrade,
+} from '../store';
 import type { AutoTrade } from '../types';
 import { activateRiskLatch, clearRiskLatchReason } from './latch';
 import { supertrend } from '@/lib/signals/indicators';
@@ -198,13 +205,16 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
       .map(String)
   );
   let optionQuotes: ReadonlyMap<string, OptionQuote> = new Map<string, OptionQuote>();
+  let quoteCapturedAt: string | null = null;
   if (!squareOff && attemptedOptionIds.size > 0) {
     const batch = await fetchOptionQuotesWithHealth([...attemptedOptionIds]);
     optionQuotes = batch.quotes;
+    quoteCapturedAt = new Date().toISOString();
     // A failed batch is BLINDNESS, not silence: warn → critical alert → latch.
     actions.push(...(await recordQuoteHealth(batch.sourceOk, batch.error, open.length)));
   }
   const spotBySymbol = new Map<string, number | null>();
+  const quoteSnapshots: NewAutoQuoteSnapshot[] = [];
 
   for (const trade of open) {
     try {
@@ -236,6 +246,20 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
         // Premium backstops — the primary deterministic exit (we HOLD premium).
         const quote = optionQuotes.get(String(Number(trade.optSecurityId))) ?? null;
         if (quote) {
+          quoteSnapshots.push({
+            tradeId: trade.id,
+            date: trade.date,
+            capturedAt: quoteCapturedAt ?? new Date().toISOString(),
+            source: 'guard',
+            optSecurityId: trade.optSecurityId,
+            ltp: quote.ltp,
+            priceSource: quote.priceSource,
+            bid: quote.bid,
+            ask: quote.ask,
+            spreadPct: quote.spreadPct,
+            slPremium: trade.slPremium,
+            targetPremium: trade.targetPremium,
+          });
           // Executable exit side (AT-027): a long option EXITS by SELLING, so
           // the tradable price is the BID, not the last print. The stop falls
           // back to the resolved price when the book is empty (capital
@@ -339,6 +363,13 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
       actions.push(line);
       console.error(`${TAG} ${line}`);
     }
+  }
+  // One best-effort batch AFTER all stop/target checks and exit submissions.
+  // Quote retention must never delay or break money-protecting actions.
+  try {
+    await insertQuoteSnapshots(quoteSnapshots);
+  } catch (err) {
+    console.warn(`${TAG} quote snapshot insert failed: ${(err as Error).message}`);
   }
   return { actions, optionQuotes, attemptedOptionIds, spotBySymbol };
 }

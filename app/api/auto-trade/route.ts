@@ -4,6 +4,7 @@ import { isAutoTradeLiveEnabled } from '@/lib/env';
 import { adminOnly } from '@/lib/auth/server';
 import { istMinuteLabel, isEntryWindow, nowISTClock } from '@/lib/auto-trade/config';
 import { getGuardLoopStatus } from '@/lib/auto-trade/guard-loop';
+import { getFyersPnlStreamStatus } from '@/lib/auto-trade/fyers-pnl-stream';
 import { getRiskLatch } from '@/lib/auto-trade/risk/latch';
 import { getAutoTradeSettings, SETTING_DEFS } from '@/lib/auto-trade/settings';
 import { getNumberSetting } from '@/lib/config/feature-toggles';
@@ -33,23 +34,31 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const date = url.searchParams.get('date') ?? todayIST();
     const settings = await getAutoTradeSettings();
-    const [trades, pending, decisions, entriesToday, exposure, pnl, commentaryCutoffMin, riskLatch] = await Promise.all([
-      getTradesByDate(date),
-      getPendingApprovals(date),
-      getDecisions(date, 30),
-      countEntriesToday(date),
-      getExposure(date),
-      dailyRealizedPnl(date),
-      getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT).catch(
-        () => COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT
-      ),
-      getRiskLatch(),
-    ]);
+    const [trades, pending, decisions, entriesToday, exposure, pnl, commentaryCutoffMin, riskLatch] = await Promise.all(
+      [
+        getTradesByDate(date),
+        getPendingApprovals(date),
+        getDecisions(date, 30),
+        countEntriesToday(date),
+        getExposure(date),
+        dailyRealizedPnl(date),
+        getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT).catch(
+          () => COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT
+        ),
+        getRiskLatch(),
+      ]
+    );
     const effectiveEntryEndMin = Math.min(settings.entryEndMin, commentaryCutoffMin - 1, settings.squareOffMin - 1);
     // Attach each trade's broker orders so the console can show why an entry
     // failed / where it stands (broker order id, status, fill, error).
+    const pnlStream = getFyersPnlStreamStatus();
+    const livePnlByTrade = new Map(pnlStream.trades.map((trade) => [trade.tradeId, trade]));
     const tradesWithOrders = await Promise.all(
-      trades.map(async (t) => ({ ...t, orders: await getOrdersForTrade(t.id) }))
+      trades.map(async (t) => ({
+        ...t,
+        livePnl: livePnlByTrade.get(t.id) ?? null,
+        orders: await getOrdersForTrade(t.id),
+      }))
     );
     return NextResponse.json({
       success: true,
@@ -78,6 +87,7 @@ export async function GET(req: Request) {
       decisions,
       riskLatch,
       guardLoop: getGuardLoopStatus(),
+      pnlStream,
     });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });

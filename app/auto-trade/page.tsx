@@ -21,6 +21,8 @@ interface Settings {
   maxOpenLots: number;
   maxCapitalRupees: number;
   dailyLossHaltRupees: number;
+  profitTargetMode: 'per_trade' | 'per_lot';
+  profitTargetRupees: number;
   approvalTtlMin: number;
   /** Entry window + forced square-off, IST minutes from midnight (clamped server-side). */
   entryStartMin: number;
@@ -58,7 +60,18 @@ interface TradeRow {
   shadowExitReason: string | null;
   shadowPnlRupees: number | null;
   proposedAt: string;
+  livePnl?: LivePnl | null;
   orders?: OrderRow[];
+}
+interface LivePnl {
+  ltp: number | null;
+  bid: number | null;
+  ask: number | null;
+  executablePnlRupees: number | null;
+  ltpPnlRupees: number | null;
+  targetPnlRupees: number;
+  updatedAt: string | null;
+  fresh: boolean;
 }
 interface OrderRow {
   id: number;
@@ -100,9 +113,22 @@ interface ApiResponse {
     reasons: { key: string; detail: string; at: string }[];
     activatedAt: string | null;
   };
+  pnlStream?: {
+    connected: boolean;
+    connecting: boolean;
+    trackedTrades: number;
+    executablePnlRupees: number | null;
+    ltpPnlRupees: number | null;
+    executablePricedTrades: number;
+    lastMessageAt: string | null;
+    lastError: string | null;
+    reconnectAttempts: number;
+    nextReconnectAt: string | null;
+  };
 }
 
-const POLL_MS = 30_000;
+// Local API refresh only; broker ticks arrive continuously at the server.
+const POLL_MS = 5_000;
 
 function fmtTime(iso: string): string {
   const d = new Date(iso);
@@ -275,7 +301,9 @@ function TradeCard({
   onAction: (action: string, id: number) => void;
   busy: boolean;
 }) {
-  const pnl = trade.realizedPnlRupees;
+  const livePnl = trade.status === 'open' && trade.livePnl?.fresh ? trade.livePnl : null;
+  const pnl = trade.realizedPnlRupees ?? livePnl?.executablePnlRupees ?? null;
+  const isLivePnl = trade.realizedPnlRupees == null && livePnl?.executablePnlRupees != null;
   return (
     <div className="rounded-md border border-border bg-card p-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -291,6 +319,7 @@ function TradeCard({
           <span
             className={`ml-auto text-sm font-bold tabular-nums ${pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
           >
+            {isLivePnl ? 'LIVE ' : ''}
             {pnl >= 0 ? '+' : ''}₹{pnl.toLocaleString('en-IN')}
           </span>
         )}
@@ -307,6 +336,12 @@ function TradeCard({
             ? ` · out ₹${trade.exitFillPremium}`
             : ` · stop ₹${trade.slPremium} · target ₹${trade.targetPremium}`}
         </span>
+        {livePnl && (
+          <span>
+            stream: bid <b className="text-foreground">₹{livePnl.bid ?? '—'}</b> · LTP ₹{livePnl.ltp ?? '—'} · target
+            P&amp;L ₹{livePnl.targetPnlRupees.toLocaleString('en-IN')}
+          </span>
+        )}
       </div>
       <RichText content={trade.aiReasonEntry} className="mt-1.5 space-y-1 text-xs text-foreground/90" />
       {trade.exitReason && <div className="mt-0.5 text-[11px] text-muted-foreground">exit: {trade.exitReason}</div>}
@@ -605,6 +640,16 @@ export default function AutoTradePage() {
             ]}
             onSelect={(v) => void setSetting('aiProvider', v)}
           />
+          <SelectorRow
+            label="Target basis"
+            value={s.profitTargetMode}
+            busy={busy}
+            options={[
+              { value: 'per_trade', label: 'Per trade' },
+              { value: 'per_lot', label: 'Per lot' },
+            ]}
+            onSelect={(v) => void setSetting('profitTargetMode', v)}
+          />
           <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
             <button
               type="button"
@@ -677,11 +722,25 @@ export default function AutoTradePage() {
               busy={busy}
               onCommit={(v) => void setSetting('dailyLossHaltRupees', v)}
             />
+            <CapField
+              label="Profit target"
+              unit="₹"
+              value={s.profitTargetRupees}
+              min={500}
+              max={20_000}
+              step={100}
+              busy={busy}
+              onCommit={(v) => void setSetting('profitTargetRupees', v)}
+            />
           </div>
           <p className="text-[11px] text-muted-foreground">
             Set <b>Budget</b> to your account balance — the scanner only picks 1-lot contracts that fit it, and the
             auto-trader caps deployed premium here. Always <b>1 lot per trade</b>; <b>Max lots</b> is how many can be
-            open at once. E.g. ₹30k budget + 1 lot = one affordable lot at a time; ₹60k + 2 = up to two. Entry window{' '}
+            open at once. E.g. ₹30k budget + 1 lot = one affordable lot at a time; ₹60k + 2 = up to two. The{' '}
+            <b>₹{s.profitTargetRupees.toLocaleString('en-IN')} profit target</b> is{' '}
+            {s.profitTargetMode === 'per_trade' ? 'fixed for the entire trade' : 'multiplied by the number of lots'} and
+            is locked into each trade before its order is placed. Existing open/pending trades do not move when this
+            setting changes. Entry window{' '}
             <b>
               {toHHMM(s.entryStartMin)}–{toHHMM(s.entryEndMin)}
             </b>{' '}
@@ -695,7 +754,7 @@ export default function AutoTradePage() {
       )}
 
       {today && s && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           <Cap label="Entries today" used={today.entriesUsed} max={s.maxTradesPerDay} />
           <Cap label="Open lots" used={today.openLots} max={s.maxOpenLots} />
           <Cap label="Deployed" used={today.deployedRupees} max={s.maxCapitalRupees} unit="₹" />
@@ -705,6 +764,29 @@ export default function AutoTradePage() {
               className={`text-sm font-bold tabular-nums ${today.realizedPnlRupees >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
             >
               {today.realizedPnlRupees >= 0 ? '+' : ''}₹{today.realizedPnlRupees.toLocaleString('en-IN')}
+            </div>
+          </div>
+          <div className="rounded-md border border-border bg-card px-3 py-2">
+            <div className="text-[10px] tracking-wide text-muted-foreground uppercase">Live executable P&amp;L</div>
+            <div
+              className={`text-sm font-bold tabular-nums ${
+                (data?.pnlStream?.executablePnlRupees ?? 0) >= 0
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-red-600 dark:text-red-400'
+              }`}
+            >
+              {data?.pnlStream?.executablePnlRupees == null
+                ? data?.pnlStream?.connecting
+                  ? 'connecting…'
+                  : '—'
+                : `${data.pnlStream.executablePnlRupees >= 0 ? '+' : ''}₹${data.pnlStream.executablePnlRupees.toLocaleString('en-IN')}`}
+            </div>
+            <div className="text-[9px] text-muted-foreground">
+              {data?.pnlStream?.connected
+                ? 'FYERS stream · bid based'
+                : data?.pnlStream?.nextReconnectAt
+                  ? `FYERS reconnect ${data.pnlStream.reconnectAttempts} scheduled · 5s REST guard active`
+                  : '5s REST guard active'}
             </div>
           </div>
         </div>

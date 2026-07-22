@@ -51,4 +51,24 @@ declare module 'fyers-api-v3' {
     get_positions(): Promise<Record<string, unknown> | undefined>;
     get_funds(): Promise<Record<string, unknown> | undefined>;
   }
+
+  export interface FyersDataSocketInstance {
+    FullMode: unknown;
+    LiteMode: unknown;
+    on(event: 'connect' | 'message' | 'error' | 'close', handler: (message?: unknown) => void): void;
+    subscribe(symbols: string[], depth?: boolean, channel?: number): void;
+    unsubscribe(symbols: string[], depth?: boolean, channel?: number): void;
+    mode(mode: unknown, channel?: number): void;
+    connect(): void;
+    close(): void;
+    isConnected(): boolean;
+    /** SDK releases have shipped both spellings; runtime code probes safely. */
+    autoReconnect?: (retries?: number) => void;
+    autoreconnect?: (retries?: number) => void;
+  }
+
+  export const fyersDataSocket: {
+    new (accessToken: string, logPath?: string, enableLogging?: boolean): FyersDataSocketInstance;
+    getInstance(accessToken: string, logPath?: string, enableLogging?: boolean): FyersDataSocketInstance;
+  };
 }

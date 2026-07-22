@@ -11,6 +11,7 @@
 export type TradeMode = 'off' | 'paper' | 'approval' | 'live';
 export type BrokerId = 'fyers' | 'dhan';
 export type AiProvider = 'azure' | 'mimo';
+export type ProfitTargetMode = 'per_trade' | 'per_lot';
 export type OrderSide = 'BUY' | 'SELL';
 
 /** Runtime settings — stored in auto_trade_settings, editable from /auto-trade. */
@@ -34,6 +35,10 @@ export interface AutoTradeSettings {
   maxCapitalRupees: number;
   /** Realized loss on the day at which the module halts new entries (₹). */
   dailyLossHaltRupees: number;
+  /** Cash profit target for each new position. `per_trade` stays fixed when
+   * lots change; `per_lot` multiplies the amount by the number of lots. */
+  profitTargetMode: ProfitTargetMode;
+  profitTargetRupees: number;
   /** Reject an entry when the option's bid-ask spread exceeds this % of mid —
    *  the ceiling on instant market-order slippage (half-spread paid at fill). */
   maxSpreadPct: number;
@@ -74,8 +79,8 @@ export interface AutoTrade {
   entrySpot: number;
   slSpot: number | null;
   targetSpot: number | null;
-  /** Premium plan: entry quote at proposal + the deterministic backstops
-   *  (slPremium = tighter of −40% and −₹cap/lot; targetPremium = +₹5k/lot). */
+  /** Premium plan: entry quote at proposal + deterministic cash backstops.
+   * targetPremium snapshots the effective policy before placement. */
   entryPremium: number;
   slPremium: number;
   targetPremium: number;
@@ -170,6 +175,26 @@ export interface AutoDecision {
   completionTokens: number | null;
 }
 
+/** One exact-contract market snapshot captured while a position is open.
+ * `bid` is the executable price for selling our long option; retaining it
+ * turns future cash-target reviews into executable-price audits rather than
+ * LTP-only estimates. Logging is measurement-only and never blocks an exit. */
+export interface AutoQuoteSnapshot {
+  id: number;
+  tradeId: number;
+  date: string;
+  capturedAt: string;
+  source: 'guard' | 'ai_get_quote' | 'fyers_stream';
+  optSecurityId: string;
+  ltp: number;
+  priceSource: 'ltp' | 'mid';
+  bid: number | null;
+  ask: number | null;
+  spreadPct: number | null;
+  slPremium: number;
+  targetPremium: number;
+}
+
 /** Verdict of the pre-trade gates. reasons lists every failed gate. */
 export interface GateVerdict {
   allow: boolean;
@@ -197,6 +222,8 @@ export interface AccountState {
   maxCapitalRupees: number;
   dailyRealizedPnlRupees: number;
   dailyLossHaltRupees: number;
+  profitTargetMode: ProfitTargetMode;
+  profitTargetRupees: number;
   pendingApprovals: number;
   brokerFundsAvailable: number | null;
   /** Real broker funds are fetched only inside the placement/approval gate so
