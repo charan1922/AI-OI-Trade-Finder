@@ -95,6 +95,17 @@ jobs:
       # before those columns existed, size round-tripping, batched multi-row
       # param counts, and 20-session retention (PR#16 review).
       - run: pnpm exec tsx scripts/verify-auto-trade-store.ts
+      # DB-free pure checks for the R-Factor V2 SHADOW engine (activity/direction
+      # separation, fixed-denominator coverage, ranking that ignores the
+      # shortlist-only option factor, per-stock robust z, peer-excluded sector
+      # context, and the rule that an uninformative option chain casts no vote).
+      - run: pnpm exec tsx scripts/verify-rfactor-v2.ts
+      # R-Factor V2 STORE round-trip against an isolated throwaway SQLite DB:
+      # additive columns on a pre-existing table, batched multi-row param counts
+      # past one chunk, database-backed minute ownership across restarts and
+      # out-of-order arrivals, expiry- and version-scoped option baselines, and
+      # 20-session retention (PR#15 review).
+      - run: pnpm exec tsx scripts/verify-rfactor-v2-store.ts
 
   build:
     needs: validate

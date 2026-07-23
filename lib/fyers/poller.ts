@@ -37,6 +37,7 @@ import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 import { startCycleTimeline } from '@/lib/ops/cycle-timeline';
 import { pruneRankSnapshots, recordRankSnapshot } from '@/lib/signals/rank-tracker';
 import { pruneQuoteSnapshots } from '@/lib/auto-trade/store';
+import { pruneRFactorV2Snapshots } from '@/lib/r-factor-v2/store';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import { reviewToday } from '@/lib/trade-suggest/review';
 import { pruneSectorSnapshots } from '@/lib/priority-refresh/sector-snapshot-store';
@@ -559,6 +560,16 @@ export async function runFyersCycle(
       // auto_quote_snapshots outgrows every other table. Never runs while the
       // Auto Trade pass holds the DB — a later cycle will clean up.
       if (!state.captureRunning) await pruneQuoteSnapshots();
+      // The R-Factor V2 shadow writes one row per symbol per minute with two
+      // JSON payloads attached, making it the fastest-growing table here. Same
+      // 20-session policy as candles/ranks, and skipped during capture for the
+      // same reason as the neighbours above: the scanner drives the /live quote
+      // route, which is what writes these rows.
+      if (!state.captureRunning) {
+        await pruneRFactorV2Snapshots().catch((err) => {
+          console.warn(`${TAG} rfactor-v2 retention failed: ${(err as Error).message}`);
+        });
+      }
       // The priority-refresh retention tables can be read or written by the
       // asynchronous Auto Trade pass. Do not contend with its money-touching
       // SQLite work; a later recorder cycle will perform this best-effort cleanup.

@@ -179,6 +179,98 @@ model OiIntraday {
   @@map("oi_intraday")
 }
 
+/// R-factor V2 SHADOW snapshots. These are evidence only: no scanner, planner,
+/// AI decision, or order path reads them. Missing factors remain missing and are
+/// reflected in coverage instead of being silently reweighted.
+model RFactorV2Snapshot {
+  date                  String
+  bucketTs              Int
+  symbol                String
+  capturedAt            String
+  /// Exact price observed at the snapshot, so the evaluator uses a real entry
+  /// reference instead of inferring when a 5-minute bar's close became visible.
+  ltp                   Float?
+  oldRFactor            Float?
+  /// Scoring definition that produced the row. The evaluator refuses to average
+  /// across versions, which would silently mix two different measurements.
+  modelVersion          String @default("unknown")
+  configHash            String @default("unknown")
+  activityScore         Float
+  rawActivity           Float
+  /// Activity over the factors EVERY name can supply (option evidence excluded).
+  /// Ranking uses this so a shortlist-only factor cannot make today's leaders
+  /// re-select themselves tomorrow.
+  comparableActivity    Float  @default(0)
+  activityPercentile    Float
+  activityRank          Int
+  /// Count of RANKABLE names (those meeting the coverage floor).
+  universeSize          Int
+  /// Total symbols the computation covered. Ownership of a minute compares this,
+  /// not universeSize — the two are different numbers and must not be conflated.
+  inputUniverseSize     Int    @default(0)
+  /// Fingerprint of the exact symbol set the ranking was computed against. Rank
+  /// and percentile are only comparable within one key.
+  universeKey           String @default("unknown")
+  direction             String
+  directionScore        Float
+  directionConfidence   Float
+  coverage              Float
+  comparableCoverage    Float  @default(0)
+  optionStatus          String
+  inputs                String
+  factors               String
+
+  @@id([date, bucketTs, symbol])
+  @@index([date, symbol, bucketTs])
+  @@map("rfactor_v2_snapshots")
+}
+
+/// Which universe owns each minute. Kept in the database, NOT in process memory:
+/// ownership has to survive a restart and must not depend on the order writes
+/// happen to arrive in, since a larger older batch can land after a smaller
+/// newer one.
+model RFactorV2BucketOwner {
+  date              String
+  bucketTs          Int
+  universeKey       String
+  inputUniverseSize Int
+  capturedAt        String
+
+  @@id([date, bucketTs])
+  @@map("rfactor_v2_bucket_owner")
+}
+
+/// Full near-money strike evidence used by R-factor V2 shadow enrichment. One
+/// JSON payload per candidate snapshot keeps every qualifying CE/PE leg used by
+/// the aggregate while avoiding calls for the entire F&O universe.
+model RFactorV2OptionSnapshot {
+  date                  String
+  bucketTs              Int
+  symbol                String
+  capturedAt            String
+  expiry                String
+  activityScore         Float
+  direction             String
+  directionScore        Float
+  directionConfidence   Float
+  /// Traded premium value + contract volume behind the pace, kept as plain
+  /// columns so later sessions can build a same-clock baseline cheaply instead
+  /// of assuming activity accrues linearly through the day.
+  premiumValue          Float  @default(0)
+  optionVolume          Float  @default(0)
+  /// Which denominator the retained pace actually used.
+  paceBaselineKind      String @default("missing")
+  /// Definition that produced premiumValue, versioned independently of the
+  /// engine. Same-clock baselines compare today's number against RETAINED ones,
+  /// so a row from an older definition must never feed one.
+  optionEvidenceVersion String @default("unknown")
+  evidence              String
+
+  @@id([date, bucketTs, symbol])
+  @@index([date, symbol, bucketTs])
+  @@map("rfactor_v2_option_snapshots")
+}
+
 /// App-wide feature toggles flipped from the /config page (created at runtime
 /// via raw SQL in lib/config/feature-toggles.ts; declared here so `db push`
 /// keeps it). The registry + defaults live in that file; this table only stores
