@@ -11,6 +11,8 @@ have to rely on old chat history.
 - `init/03-live-enablement-plan.md` — evidence and engineering required before enabling live capped refresh.
 - `init/04-new-session-handoff.md` — a ready-to-paste prompt for a new Codex session.
 - `init/05-live-loss-review-2026-07-22.md` — production evidence for the losing streak, tag comparison, and the local cash-target hotfix.
+- `init/06-rfactor-v2-shadow.md` — the shadow activity/direction engine.
+- `init/07-premium-stop-review-2026-07-23.md` — why the premium stop was resized to the option itself, the SRF proof case, the replay verdict and its limits, the 10-setting configuration drift, and the toggle audit. **Supersedes the stop-loss half of `05`.**
 
 ## Maintenance rule
 
