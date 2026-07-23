@@ -190,6 +190,11 @@ export interface AutoQuoteSnapshot {
   priceSource: 'ltp' | 'mid';
   bid: number | null;
   ask: number | null;
+  /** Displayed size at the touch. Null on rows written before it was recorded.
+   *  A target study needs this: the same bid price is or is not an executable
+   *  exit depending entirely on whether it holds the whole position. */
+  bidQty: number | null;
+  askQty: number | null;
   spreadPct: number | null;
   slPremium: number;
   targetPremium: number;
