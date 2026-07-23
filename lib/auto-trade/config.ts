@@ -79,8 +79,9 @@ export const MAX_ENTRY_SLIPPAGE_PCT = 4;
 /** Reject an entry when the option's bid-ask spread exceeds this % (DEFAULT —
  *  the effective value is settings.maxSpreadPct, tunable on /auto-trade).
  *  The spread is instant market-order slippage: half is paid at each fill, so
- *  an 8% ceiling allowed up to ~₹1,600 round-trip bleed on a ₹20k lot — more
- *  than the ₹1.5k max loss. Evidence for 3 (decision traces, 2026-07-16):
+ *  an 8% ceiling allowed up to ~₹1,600 round-trip bleed on a ₹20k lot — a large
+ *  fraction of the ₹2,500 planned per-lot risk budget. Evidence for 3 (decision
+ *  traces, 2026-07-16):
  *  SIEMENS 3750CE surfaced at 5.5% and 3.0% spread and only the AI's judgment
  *  refused it — the old 8% code gate would have passed both, violating "the
  *  AI proposes, code disposes". Every actual entry (HYUNDAI/MANKIND/

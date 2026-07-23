@@ -184,7 +184,12 @@ export const MIN_TURNOVER_SCORE = 0.1;
  *  - SRF 23-Jul: the stock sat 1 point from entry (4.6% of the way to the spot
  *    stop) while the option had already burned 78% of its stop budget. It was
  *    stopped at ₹36, then the call proved RIGHT — the stock fell 175 points and
- *    the same contract traded ₹178 by 14:50 (₹26,880/lot instead of −₹1,610).
+ *    the same contract's bid reached ₹178 by 14:50, a ₹26,880/lot MAX FAVORABLE
+ *    move against the −₹1,610 actually booked. That ₹26,880 is what the contract
+ *    OFFERED, not what the exit policy would take: the auto-trader holds to a
+ *    ~₹1,100 cash target, so a surviving SRF books ≈₹1,100. The point the number
+ *    proves is narrow and real — the tight stop fired on noise and flipped a
+ *    winner into a loser — NOT that a wider stop harvests the whole move.
  *  - The SRF option's own bid ranged ₹36.10–₹45.05 (20.3% of entry) inside the
  *    6.5-minute hold, with the stock nearly flat.
  *  - Sorted by stop width, the live record separates almost perfectly: every
@@ -192,8 +197,12 @@ export const MIN_TURNOVER_SCORE = 0.1;
  *    NESTLEIND 9.2%, POLYCAB 9.4%, COLPAL 11.7%); the two above 20% won
  *    (HEROMOTOCO 20.6%, M&M 23.8%).
  *
- * 25 sits above every observed noise band while staying well inside the 40–50%
- * Indian option-buying convention this replaced.
+ * 25 sits above every noise band seen in this SMALL in-sample set (n=9) while
+ * staying well inside the 40–50% Indian option-buying convention it replaced.
+ * Treat it as a calibrated STARTING POINT, not a proven universal stop: DTE,
+ * moneyness, IV regime and the bid-ask spread all move an option's true noise,
+ * and the forward live sessions are the real test. It is runtime-tunable
+ * (settings.optionStopPct) so it can be revised without a code change.
  */
 export const OPTION_STOP_PCT = 25;
 /**
@@ -213,8 +222,10 @@ export const OPTION_STOP_PCT = 25;
  * cutting the stop short is not.
  *
  * ₹2,500 against the nine recorded trades: allows all four of 23-Jul (three
- * winners plus SRF, which survives its stop and becomes the day's biggest
- * winner) and refuses all five earlier losers, whose lots were ₹12.7k–₹19.4k.
+ * winners plus SRF, which survives its stop instead of being shaken out at
+ * −₹1,610) and refuses all five earlier losers, whose lots were ₹12.7k–₹19.4k.
+ * (A surviving SRF books its ~₹1,100 cash target like any other winner — the win
+ * is turning a −₹1,610 loss into a target hit, not capturing SRF's full move.)
  * NOTE the interaction with dailyLossHaltRupees — a halt at or below this value
  * stops the day after a single full-stop loss.
  */

@@ -20,6 +20,10 @@ interface Settings {
   maxTradesPerDay: number;
   maxOpenLots: number;
   maxCapitalRupees: number;
+  /** Premium stop width (% of the option fill) and the ₹ ceiling one lot may
+   *  risk at that stop — both enforced in code (settings.ts + risk/gates.ts). */
+  optionStopPct: number;
+  maxRiskPerLotRupees: number;
   dailyLossHaltRupees: number;
   profitTargetMode: 'per_trade' | 'per_lot';
   profitTargetRupees: number;
@@ -715,6 +719,26 @@ export default function AutoTradePage() {
               onCommit={(v) => void setSetting('maxCapitalRupees', v)}
             />
             <CapField
+              label="Stop width"
+              unit="%"
+              value={s.optionStopPct}
+              min={10}
+              max={40}
+              step={1}
+              busy={busy}
+              onCommit={(v) => void setSetting('optionStopPct', v)}
+            />
+            <CapField
+              label="Max risk/lot"
+              unit="₹"
+              value={s.maxRiskPerLotRupees}
+              min={1_000}
+              max={10_000}
+              step={500}
+              busy={busy}
+              onCommit={(v) => void setSetting('maxRiskPerLotRupees', v)}
+            />
+            <CapField
               label="Loss halt"
               unit="₹"
               value={s.dailyLossHaltRupees}
@@ -751,6 +775,22 @@ export default function AutoTradePage() {
               /config → Entry &amp; Exit Times
             </a>{' '}
             (one place for every clock; still enforced in code — brokers penalty-square intraday ~15:26, we act first).
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            <b>Stop width</b> is how far the option price may fall below your fill before the guard exits, as a % of that
+            fill — sized to the option&apos;s own movement, never tightened to squeeze a lot in. <b>Max risk/lot</b> is
+            the most one lot may lose at that stop, as a <i>planned</i> figure (before exit slippage, fees and taxes);
+            the entry gate <b>refuses an over-sized contract</b> instead of narrowing the stop. At{' '}
+            <b>{s.optionStopPct}%</b> × <b>₹{s.maxRiskPerLotRupees.toLocaleString('en-IN')}</b>, the biggest lot that
+            still fits costs about{' '}
+            <b>₹{(s.optionStopPct > 0 ? Math.round(s.maxRiskPerLotRupees / (s.optionStopPct / 100)) : 0).toLocaleString('en-IN')}</b>{' '}
+            in premium.
+            {s.dailyLossHaltRupees <= s.maxRiskPerLotRupees && (
+              <span className="ml-1 inline-flex items-center gap-1 font-semibold text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="size-3" /> Daily loss halt (₹{s.dailyLossHaltRupees.toLocaleString('en-IN')})
+                is at or below max risk/lot — one full-stop loss would halt the day. Raise the halt above it.
+              </span>
+            )}
           </p>
         </div>
       )}

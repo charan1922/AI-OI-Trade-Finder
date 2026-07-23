@@ -137,12 +137,21 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
   // Actual-fill risk check (PR#18 review). The entry gate sizes risk off the
   // best ask, but a MARKET order can sweep above it — so the ceiling it enforced
   // is a planned figure, not a guarantee. Measure what the position really
-  // carries and say so loudly if it breached the budget, rather than discovering
-  // it from the P&L. Reporting only: the position is already open and exiting it
-  // here would realise a loss to avoid a paper one.
+  // carries and, if it broke the budget the gate APPROVED it against, say so
+  // loudly AND stand the system down for the day (a risk latch: blocks further
+  // entries, never forces an exit — the position is already open and guarded).
+  //
+  // The ceiling compared against is the one SNAPSHOTTED on the trade at gate
+  // time, not the live setting: an operator raising or lowering
+  // maxRiskPerLotRupees in the seconds between approval and fill must not hide a
+  // real breach or manufacture a false one (PR#18 review). Falls back to the
+  // current setting only for rows written before the snapshot existed.
   try {
-    const { maxRiskPerLotRupees } = await getAutoTradeSettings();
-    const ceiling = maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK;
+    let ceiling = trade.approvedMaxRiskPerLotRupees ?? null;
+    if (ceiling == null || !Number.isFinite(ceiling)) {
+      const { maxRiskPerLotRupees } = await getAutoTradeSettings();
+      ceiling = maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK;
+    }
     const actualRiskPerLot = Math.round((fill - stops.slPremium) * trade.lotSize);
     if (Number.isFinite(actualRiskPerLot) && actualRiskPerLot > ceiling) {
       const detail =
@@ -152,6 +161,10 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
         `A market buy can fill above the ask, so the ceiling is a PLANNED figure, not a guaranteed maximum loss.`;
       console.warn(`${TAG} ${detail}`);
       alerts.riskCeilingBreachedOnFill(detail);
+      // Durable incident: our sizing assumption was violated by the fill, so no
+      // further entry may be added until an operator reviews it. Exits are never
+      // gated on the latch, so THIS position stays fully guarded.
+      await activateRiskLatch(`risk-ceiling-breach-on-fill:trade-${trade.id}`, detail);
     }
   } catch (err) {
     console.warn(`${TAG} actual-fill risk check failed: ${(err as Error).message}`);

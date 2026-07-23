@@ -453,6 +453,9 @@ model AutoTrade {
   entryPremium      Float
   slPremium         Float
   targetPremium     Float
+  // Per-lot ₹ risk ceiling in force when the order was gated — the post-fill
+  // breach check compares against THIS, not the current setting (PR#18 review).
+  approvedMaxRiskPerLotRupees Float?
   entryFillPremium  Float?
   exitFillPremium   Float?
   exitReason        String?

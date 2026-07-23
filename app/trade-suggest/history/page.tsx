@@ -542,9 +542,11 @@ export default function TradeLogPage() {
         (newest first). <b>Entry</b> = first call time · <b>Outcome</b> = which level the spot hit (target / stop / open); the
         time shown is the EOD grade time, not the exact hit time. <b>Lots</b> sized to ₹{(CAPITAL_BUDGET / 1000).toFixed(0)}k
         capital, capped at {MAX_LOTS}. <b>Modeled P/L</b> is the plan outcome (not real broker fills) — target hit →
-        +₹5,000/lot; stop hit → the loss implied by that row&apos;s own stored premium stop, which since 23 Jul 2026 is a
-        flat <b>{OPTION_STOP_PCT}% of the option&apos;s price</b> (older rows keep the lot-size-dependent stop they were
-        actually run under, so history is never restated); <b>open</b> = neither touched (no ₹ claimed).{' '}
+        +₹5,000/lot (the scanner&apos;s objective; the live auto-trader uses its own smaller cash target); stop hit → the
+        loss implied by that row&apos;s own stored premium stop, which since 23 Jul 2026 is a flat percentage of the
+        option&apos;s price (the runtime premium-stop width, <b>{OPTION_STOP_PCT}%</b> by default — a row set at a
+        different width grades against the width it was actually run under, and older rows keep the lot-size-dependent
+        stop, so history is never restated); <b>open</b> = neither touched (no ₹ claimed).{' '}
         <b>Move</b> = best spot move in the suggested direction at close. <b>⚠ stop*</b> = both target and stop were touched
         intraday — counted as the stop, since a disciplined exit takes the stop first. Signal analysis only; no order is placed.
       </p>

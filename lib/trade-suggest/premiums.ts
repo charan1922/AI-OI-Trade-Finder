@@ -132,10 +132,14 @@ export async function attachPremiums(options: OptionPlan[], policy?: PremiumPoli
       // fixed OPTION_STOP_PCT stop it would put more than MAX_RISK_PER_LOT_RUPEES
       // behind that stop. Auto-trade REFUSES this outright (risk/gates.ts); the
       // scanner only warns, so a manual trader still sees the pick and the reason.
-      const riskAtStop = ((price * stopPct) / 100) * o.lotSize;
+      // Priced off the ASK when there is a book — that is the executable market-BUY
+      // price the gate itself sizes against, so the warning and the refusal agree
+      // (PR#18 review). Falls back to the resolved mark when no ask is quoted.
+      const riskBasis = book?.ask ?? price;
+      const riskAtStop = ((riskBasis * stopPct) / 100) * o.lotSize;
       if (riskAtStop > maxRiskPerLot)
         warnings.push(
-          `lot risks ₹${Math.round(riskAtStop).toLocaleString('en-IN')} at the ${stopPct}% premium stop — above the ₹${maxRiskPerLot.toLocaleString('en-IN')} per-lot budget`
+          `lot risks ₹${Math.round(riskAtStop).toLocaleString('en-IN')} at the ${stopPct}% premium stop (off the ₹${Math.round(riskBasis * 100) / 100} ${book?.ask != null ? 'ask' : 'mark'}) — above the ₹${maxRiskPerLot.toLocaleString('en-IN')} per-lot budget`
         );
       const premium: OptionPremium = {
         ltp: Math.round(price * 100) / 100,

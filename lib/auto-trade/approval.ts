@@ -94,7 +94,10 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     dailyRealizedPnl: pnl,
     symbolTradedToday: false, // this trade IS the symbol's slot
     lots: trade.lots,
-    perLotCost: fresh != null ? Math.round(fresh.ltp * trade.lotSize * 100) / 100 : null,
+    // Capital + broker-funds priced off the ASK (the executable market-BUY
+    // price), matching the AI path and the per-lot risk ceiling — not the ltp/mid
+    // mark (PR#18 review). Falls back to the mark only when no ask is quoted.
+    perLotCost: fresh != null ? Math.round((fresh.ask ?? fresh.ltp) * trade.lotSize * 100) / 100 : null,
     // PR#18 review — this path previously omitted lotSize entirely, so the
     // per-lot risk ceiling silently skipped itself on EVERY human-approved
     // entry. A proposal that sat just under the limit could drift over it while

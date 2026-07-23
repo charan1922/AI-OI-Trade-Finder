@@ -1,10 +1,19 @@
 /**
- * Replay the premium-stop rule change against every recorded LIVE trade.
+ * Fill-price SENSITIVITY ANALYSIS of the premium-stop rule change, over every
+ * recorded LIVE trade.
  *
- * Answers one question with stored data only: under the new rule (a flat
- * OPTION_STOP_PCT stop, with over-sized lots REFUSED at MAX_RISK_PER_LOT_RUPEES
- * instead of having their stop tightened), which of the real trades would still
- * have been taken, and which would have survived their stop?
+ * NOT an exact replay of the production entry gate. It decides allow/refuse from
+ * each trade's ACTUAL FILL against MAX_RISK_PER_LOT_RUPEES; the real gate
+ * (risk/gates.ts) decides from the PRE-ORDER ASK, the ask quantity, and the
+ * runtime settings at that moment. A trade whose ask-risk sat just under the
+ * ceiling but whose market fill nudged it over would be allowed-and-latched by
+ * production yet labelled "refused" below. Read the verdicts as fill-price
+ * sensitivity, not as what the gate would literally have done.
+ *
+ * With that caveat, it answers: under the new rule (a flat OPTION_STOP_PCT stop,
+ * with over-sized lots refused at MAX_RISK_PER_LOT_RUPEES instead of having their
+ * stop tightened), which real trades still fit the per-lot budget at their fill,
+ * and which would have survived their stop?
  *
  * Data sources — all recorded, nothing modelled:
  *   auto_trades            the real fills, stops and outcomes
@@ -110,7 +119,8 @@ async function main(): Promise<void> {
       ORDER BY date, id`
   )) as TradeRow[];
 
-  console.log(`Premium-stop replay — new rule: ${OPTION_STOP_PCT}% stop, refuse a lot risking over ${inr(MAX_RISK_PER_LOT_RUPEES)}`);
+  console.log(`Premium-stop FILL-PRICE SENSITIVITY — new rule: ${OPTION_STOP_PCT}% stop, refuse a lot risking over ${inr(MAX_RISK_PER_LOT_RUPEES)}`);
+  console.log(`(allow/refuse decided from each trade's FILL; the live gate uses the pre-order ASK + depth — not identical)`);
   console.log(`${trades.length} completed live trades on record\n`);
 
   let allowedCount = 0;
@@ -124,6 +134,9 @@ async function main(): Promise<void> {
     const oldStop = Number(t.slPremium);
     const oldWidthPct = ((fill - oldStop) / fill) * 100;
     const newStop = stopPremiumForFill(fill);
+    // Sensitivity basis: risk at the ACTUAL FILL. Production sizes off the
+    // pre-order ask (+ ask depth); this uses the fill because that is what the
+    // recorded rows carry, so a near-boundary trade could differ from the gate.
     const risk = riskPerLotRupees(fill, lotSize);
     const allowed = risk <= MAX_RISK_PER_LOT_RUPEES;
     const pnl = t.realizedPnlRupees == null ? null : Number(t.realizedPnlRupees);
@@ -243,6 +256,9 @@ async function main(): Promise<void> {
       `     from, not an independent validation set. Every bid figure above is\n` +
       `     the lowest RETAINED SNAPSHOT, not a continuous tape. The next live\n` +
       `     sessions are the real forward test.\n` +
+      `  6. Allow/refuse here is a FILL-price sensitivity. The live gate sizes off\n` +
+      `     the pre-order ASK + ask depth and the runtime settings, so a trade\n` +
+      `     near the ceiling could be gated differently than labelled above.\n` +
       `Directional evidence, not proof. Watch the next few live sessions.`
   );
 }

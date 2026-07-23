@@ -88,9 +88,15 @@ the stop; only the bid was below it.
 
 The directional call was correct. From `fyers_candles` the underlying fell to
 2615.6 by 14:55 — 175 points — and from `rfactor_v2_option_snapshots` the same
-contract was bid **₹178.45 at 14:50**. Held, one lot was worth **+₹26,880**
-instead of the −₹1,610 booked. A 25% stop sits at ₹33.04; the lowest bid
+contract was bid **₹178.45 at 14:50**. A 25% stop sits at ₹33.04; the lowest bid
 recorded in the entire session was ₹36.10, so it would never have been touched.
+
+That ₹178.45 bid is a **₹26,880/lot maximum favorable move** — what the contract
+*offered*, not what the exit policy would have taken. The auto-trader holds to a
+~₹1,100 cash target, so a surviving SRF books **≈₹1,100**, not ₹26,880. The point
+this proves is exact and narrow: the tight stop fired on the contract's own noise
+and flipped a would-be winner into a −₹1,610 loss. It does **not** show that a
+wider stop harvests the whole move — do not cite ₹26,880 as an expected result.
 
 ## Secondary finding — entry slippage silently enlarges the risk
 
@@ -105,7 +111,12 @@ trade:
 | 2026-07-20 | COLPAL | ₹4.75 | ₹5.45 (+15%) |
 | 2026-07-23 | SRF | ₹6.80 | ₹7.50 (+10%) |
 
-This is not addressed by the current branch and remains open.
+**Addressed in the PR #18 review round** (see below): the entry gate now sizes
+capital and per-lot risk off the **best ask** (the price a market BUY lifts), and
+`applyEntryFill` re-anchors the stop to the **actual fill** and raises a critical
+alert + risk latch when that fill pushed the lot above the approved budget. The
+planned figure is now an ask-based number, and any excess the market fill added
+on top is measured and surfaced rather than hidden.
 
 ## Implementation on `fix/premium-stop-sized-to-option`
 
@@ -130,10 +141,52 @@ This is not addressed by the current branch and remains open.
   budget; each row grades against the stop it was actually run under
 - bench `scripts/verify-auto-trade.ts` 34 → 50 checks
 
+## PR #18 review round (follow-up hardening)
+
+A detailed code review of the branch raised six points; the valid ones were
+implemented on the same branch:
+
+- **Capital + broker-funds gates priced off the ask.** They used to size off the
+  ltp/mid *mark*; a market BUY lifts the ask, so the mark understated the cash
+  committed and could permit an order the executable price pushes over budget.
+  Now `perLotCost` on both the AI path (`tools/execute.ts`) and the approval
+  path (`approval.ts`) is `ask × lotSize`, matching the per-lot risk ceiling. The
+  slippage-vs-scan check stays mark-to-mark on purpose — it measures *drift*, and
+  folding the spread into it would trip on wide-but-stable books.
+- **The approved risk ceiling is snapshotted on the trade.**
+  `approvedMaxRiskPerLotRupees` is written at proposal time; the post-fill breach
+  check compares the actual fill against *that* number, not the live setting, so
+  an operator changing `maxRiskPerLotRupees` between gate and fill can neither
+  hide a real breach nor manufacture a false one. A genuine breach now also
+  **activates the risk latch** (blocks further entries, never forces an exit —
+  the open position stays guarded), not just an alert.
+- **The two new controls are on `/auto-trade`.** `Stop width (%)` and
+  `Max risk/lot (₹)` are editable cap fields; the page shows the biggest lot cost
+  that still fits (`maxRisk ÷ stop%`) and warns when the daily loss halt is at or
+  below max risk/lot. Previously these were editable only by a direct API call.
+- **Honest labelling.** The scanner scorecard still targets ₹5,000/lot while the
+  live auto-trader targets ~₹1,100 cash — two different reward policies, now
+  called out (see the SRF note above). `maxRiskPerLotRupees` is described as
+  *planned* premium risk (before exit slippage, fees and taxes), not a guaranteed
+  maximum loss. `OPTION_STOP_PCT = 25` is documented as a calibrated starting
+  point from a 9-trade in-sample set, not a proven universal stop.
+- **Replay reframed** as a fill-price sensitivity analysis (below).
+
+Not done (deliberately): a full risk-policy snapshot (approved ask/askQty/policy
+version) and a marketable-limit entry to hard-cap fill risk. The single-column
+ceiling snapshot achieves the correctness fix; the rest is a larger design change
+and the marketable-limit swap trades a fill guarantee for a no-fill risk on a
+protective entry — an operator decision, not a review fix.
+
 ## Replay verdict
 
-Reproducible with `npx tsx scripts/replay-premium-stop.ts`, which replays every
-recorded live trade against the new rule using `auto_quote_snapshots` and
+Reproducible with `npx tsx scripts/replay-premium-stop.ts`. It is a **fill-price
+sensitivity analysis, not an exact replay of the production gate**: it decides
+allow/refuse from each trade's *actual fill* against the ₹2,500 ceiling, whereas
+production gates on the *pre-order ask*, the ask quantity, and the runtime
+settings at that moment. A trade whose ask-risk sat just under the ceiling but
+whose market fill nudged it over would be *allowed-and-latched* by production yet
+labelled *refused* here. It uses `auto_quote_snapshots` and
 `rfactor_v2_option_snapshots`.
 
 - allowed under the new rule: 4 — the three winners unchanged, plus SRF, which
@@ -236,8 +289,10 @@ SQLite by `deploy/box/autostop.sh`. Do not remove it on a grep result.
 5. Add a reason marker for breakout-bypass admissions before judging that
    toggle, and surface an explicit warning when a bypass is enabled while its
    parent gate is disabled.
-6. Recompute the premium stop from the **actual fill** rather than the scanner
-   quote, to remove the 10–50% silent risk inflation documented above.
+6. ~~Recompute the premium stop from the **actual fill** rather than the scanner
+   quote, to remove the 10–50% silent risk inflation documented above.~~ **Done in
+   the PR #18 review round:** the gate sizes off the ask and `applyEntryFill`
+   re-anchors to the actual fill and latches on a budget breach.
 7. Keep several thousand rupees of margin headroom above the lot cost. Two picks
    have been lost to shortfalls of ₹1,275 (ETERNAL 23-Jul) and ₹1,909
    (SONACOMS 17-Jul).

@@ -93,6 +93,7 @@ async function ensureTables(): Promise<void> {
     'entryObservedRiskPoints REAL', // POST-ENTRY risk |observedSpot − plannedStop| — the MFE/MAE denominator (measures from where the position actually opened)
     'shadowMfeR REAL', // max FAVORABLE excursion in R from the OBSERVED fill (candle high/low, observed risk)
     'shadowMaeR REAL', // max ADVERSE excursion in R from the OBSERVED fill (candle high/low, observed risk)
+    'approvedMaxRiskPerLotRupees REAL', // per-lot ₹ risk ceiling in force when the order was gated (PR#18 review — the fill-breach check compares against THIS, not the current setting)
   ]) {
     if (!existingTradeColumns.has(col.split(' ')[0]))
       await prisma.$executeRawUnsafe(`ALTER TABLE auto_trades ADD COLUMN ${col}`);
@@ -233,6 +234,9 @@ export interface NewTrade {
   slPremium: number;
   targetPremium: number;
   aiReasonEntry: string;
+  /** Per-lot ₹ risk ceiling the entry gate enforced (snapshotted at proposal so
+   *  the post-fill breach check compares against the budget that approved it). */
+  approvedMaxRiskPerLotRupees?: number | null;
   /** Proposal-time SHADOW context (sector activity rank among scanned sectors) —
    *  written in the insert so it costs no extra round-trip before placement. */
   entrySectorRank?: number | null;
@@ -247,9 +251,9 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
        date, symbol, direction, optionType, strike, expiryDate, lotSize, lots,
        optSecurityId, mode, broker, status, entrySpot, slSpot, targetSpot,
        entryPremium, slPremium, targetPremium, aiReasonEntry,
-       entrySectorRank, entrySectorCount, proposedAt, updatedAt
+       approvedMaxRiskPerLotRupees, entrySectorRank, entrySectorCount, proposedAt, updatedAt
      )
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM auto_trades
         WHERE date = ? AND symbol = ?
@@ -275,6 +279,7 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     t.slPremium,
     t.targetPremium,
     t.aiReasonEntry,
+    t.approvedMaxRiskPerLotRupees ?? null,
     t.entrySectorRank ?? null,
     t.entrySectorCount ?? null,
     now,
@@ -443,6 +448,7 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     entryPremium: Number(r.entryPremium),
     slPremium: Number(r.slPremium),
     targetPremium: Number(r.targetPremium),
+    approvedMaxRiskPerLotRupees: r.approvedMaxRiskPerLotRupees == null ? null : Number(r.approvedMaxRiskPerLotRupees),
     entryFillPremium: r.entryFillPremium == null ? null : Number(r.entryFillPremium),
     exitFillPremium: r.exitFillPremium == null ? null : Number(r.exitFillPremium),
     realizedPnlRupees: r.realizedPnlRupees == null ? null : Number(r.realizedPnlRupees),

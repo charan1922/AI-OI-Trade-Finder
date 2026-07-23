@@ -130,9 +130,9 @@ export const SETTING_DEFS: SettingDef[] = [
     key: 'maxRiskPerLotRupees',
     parse: (raw) => intInRange(raw, 1_000, 10_000, 'maxRiskPerLotRupees'),
     serialize: String,
-    label: 'Max risk per lot (₹)',
+    label: 'Max planned premium risk per lot (₹)',
     description:
-      'The most ONE lot may lose if its premium stop is hit. Enforced by refusing an over-sized contract at the entry gate — the stop is never tightened to make the arithmetic fit, which is what produced 7.7%–23.8% stop widths nobody chose. Keep the daily loss halt above this, or one full stop ends the day.',
+      'The PLANNED premium risk one lot may carry — the entry-to-stop distance at the % stop, priced off the ask we would pay. It is a planned figure, NOT a guaranteed max loss: a stop-triggered market sell can fill below the stop, and it excludes fees and taxes. Enforced by refusing an over-sized contract at the entry gate — the stop is never tightened to make the arithmetic fit, which is what produced 7.7%–23.8% stop widths nobody chose. Keep the daily loss halt above this, or one full stop ends the day.',
   },
   {
     key: 'dailyLossHaltRupees',
@@ -163,7 +163,7 @@ export const SETTING_DEFS: SettingDef[] = [
     serialize: String,
     label: 'Max option spread (%)',
     description:
-      'Reject an entry when the option’s bid-ask spread exceeds this % of its price. The spread is what a market order loses instantly at fill — 3% caps that bleed at ~₹600 on a ₹20k lot; 8% would allow more than the ₹1.5k max loss. Exits are never blocked by this.',
+      'Reject an entry when the option’s bid-ask spread exceeds this % of its price. The spread is what a market order loses instantly at fill — 3% caps that bleed at ~₹600 on a ₹20k lot; a loose 8% would let the instant fill cost approach the whole per-lot risk budget. Exits are never blocked by this.',
   },
   {
     key: 'approvalTtlMin',

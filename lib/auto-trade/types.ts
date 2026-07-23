@@ -90,6 +90,14 @@ export interface AutoTrade {
   entryPremium: number;
   slPremium: number;
   targetPremium: number;
+  /** The per-lot ₹ risk ceiling in force when this order was GATED (proposal
+   *  time). Snapshotted so the post-fill breach check compares the actual fill
+   *  against the budget that actually approved the order — not against whatever
+   *  the setting happens to be seconds later, which would raise false breaches
+   *  or hide real ones if an operator changed it in between (PR#18 review). Null
+   *  on rows written before this snapshot existed → the check falls back to the
+   *  current setting. */
+  approvedMaxRiskPerLotRupees?: number | null;
   /** Actual fills (null until the broker confirms — never fabricated). */
   entryFillPremium: number | null;
   exitFillPremium: number | null;

@@ -261,11 +261,21 @@ async function buildGateInput(
   const bucketStatus = await getEqBucketStatus(pick.symbol, rt.date, requiredBucketTs);
   const freshness = evaluateFreshness(bucketStatus, requiredBucketTs);
   const freshPremium = fresh?.ltp ?? null;
+  const askPrice = fresh?.ask ?? null;
   const slippagePct =
     scanPremium != null && scanPremium > 0 && freshPremium != null
       ? ((freshPremium - scanPremium) / scanPremium) * 100
       : null;
   const lotSize = pick.option?.lotSize ?? 0;
+  // Capital + broker-funds are sized off the ASK, the price a market BUY
+  // actually lifts — same basis the per-lot risk ceiling already uses. Pricing
+  // them off the ltp/mid mark (as they used to) understated the cash committed
+  // and could permit an order whose executable cost pushes deployed premium over
+  // the budget (PR#18 review). The mark stays the basis of the slippage-vs-scan
+  // DRIFT check above, which must compare like-for-like (mark to mark), not fold
+  // the spread into the drift. Falls back to the mark only when no ask is quoted
+  // — in which case the risk ceiling below fails the entry closed anyway.
+  const entryCostBasis = askPrice ?? freshPremium;
   return {
     input: {
       settings: rt.settings,
@@ -281,11 +291,11 @@ async function buildGateInput(
       dailyRealizedPnl: state.dailyRealizedPnlRupees,
       symbolTradedToday: tradedToday,
       lots: 1,
-      perLotCost: freshPremium != null && lotSize > 0 ? Math.round(freshPremium * lotSize * 100) / 100 : null,
+      perLotCost: entryCostBasis != null && lotSize > 0 ? Math.round(entryCostBasis * lotSize * 100) / 100 : null,
       lotSize: lotSize > 0 ? lotSize : null,
       // Risk is priced off the ASK — a market BUY lifts the offer, so that is
       // the entry price we actually pay (PR#18 review).
-      askPrice: fresh?.ask ?? null,
+      askPrice,
       askQty: fresh?.askQty ?? null,
       slippagePct,
       spreadPct: fresh?.spreadPct ?? null,
@@ -529,6 +539,10 @@ export async function executeAutoTradeTool(
         entryPremium,
         slPremium: configuredBackstops.slPremium,
         targetPremium: configuredBackstops.targetPremium,
+        // Snapshot the per-lot risk ceiling the gate just enforced, so the
+        // post-fill breach check measures against the budget that approved this
+        // order rather than a since-changed setting (PR#18 review).
+        approvedMaxRiskPerLotRupees: rt.settings.maxRiskPerLotRupees ?? null,
         aiReasonEntry: reason,
         entrySectorRank,
         entrySectorCount,
