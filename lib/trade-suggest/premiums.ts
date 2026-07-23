@@ -56,14 +56,44 @@ export function resolveOptionPrice(
   return null;
 }
 
+/** The stop/risk policy the displayed plan should reflect. Passed in by the
+ *  engine from the EFFECTIVE auto-trade settings so the suggested stop is the
+ *  one that will actually fire — the compile-time constants are only the
+ *  fallback for callers with no runtime context (PR#18 review found the scanner
+ *  hard-coded 25% / ₹2,500 while auto-trade honoured the runtime values). */
+export interface PremiumPolicy {
+  stopPct: number;
+  maxRiskPerLot: number;
+}
+
+const DEFAULT_PREMIUM_POLICY: PremiumPolicy = {
+  stopPct: OPTION_STOP_PCT,
+  maxRiskPerLot: MAX_RISK_PER_LOT_RUPEES,
+};
+
+/** Guard the injected policy: a corrupt runtime value must fall back to the
+ *  coded default rather than produce a nonsense stop on a real plan. */
+function safePolicy(policy?: PremiumPolicy): PremiumPolicy {
+  const stopPct =
+    policy != null && Number.isFinite(policy.stopPct) && policy.stopPct > 0 && policy.stopPct < 100
+      ? policy.stopPct
+      : DEFAULT_PREMIUM_POLICY.stopPct;
+  const maxRiskPerLot =
+    policy != null && Number.isFinite(policy.maxRiskPerLot) && policy.maxRiskPerLot > 0
+      ? policy.maxRiskPerLot
+      : DEFAULT_PREMIUM_POLICY.maxRiskPerLot;
+  return { stopPct, maxRiskPerLot };
+}
+
 /**
  * One batched Dhan quote for the picked option contracts → live premium,
- * option-book spread, volume/OI, per-lot cost, premium SL (−PREMIUM_SL_PCT%)
- * and the ₹TF_LOT_TARGET_RUPEES/lot premium target. Mutates each plan's
- * `premium`; leaves it null (never fabricated) when no price of any kind
- * comes back — and says so in the log.
+ * option-book spread, volume/OI, per-lot cost, the premium stop (a flat
+ * `policy.stopPct` of the contract's own price) and the ₹TF_LOT_TARGET_RUPEES/lot
+ * premium target. Mutates each plan's `premium`; leaves it null (never
+ * fabricated) when no price of any kind comes back — and says so in the log.
  */
-export async function attachPremiums(options: OptionPlan[]): Promise<void> {
+export async function attachPremiums(options: OptionPlan[], policy?: PremiumPolicy): Promise<void> {
+  const { stopPct, maxRiskPerLot } = safePolicy(policy);
   const ids = options.map((o) => Number(o.optSecurityId)).filter((n) => n > 0);
   if (ids.length === 0) return;
   const unpriced: string[] = [];
@@ -102,10 +132,10 @@ export async function attachPremiums(options: OptionPlan[]): Promise<void> {
       // fixed OPTION_STOP_PCT stop it would put more than MAX_RISK_PER_LOT_RUPEES
       // behind that stop. Auto-trade REFUSES this outright (risk/gates.ts); the
       // scanner only warns, so a manual trader still sees the pick and the reason.
-      const riskAtStop = ((price * OPTION_STOP_PCT) / 100) * o.lotSize;
-      if (riskAtStop > MAX_RISK_PER_LOT_RUPEES)
+      const riskAtStop = ((price * stopPct) / 100) * o.lotSize;
+      if (riskAtStop > maxRiskPerLot)
         warnings.push(
-          `lot risks ₹${Math.round(riskAtStop).toLocaleString('en-IN')} at the ${OPTION_STOP_PCT}% premium stop — above the ₹${MAX_RISK_PER_LOT_RUPEES.toLocaleString('en-IN')} per-lot budget`
+          `lot risks ₹${Math.round(riskAtStop).toLocaleString('en-IN')} at the ${stopPct}% premium stop — above the ₹${maxRiskPerLot.toLocaleString('en-IN')} per-lot budget`
         );
       const premium: OptionPremium = {
         ltp: Math.round(price * 100) / 100,
@@ -122,7 +152,7 @@ export async function attachPremiums(options: OptionPlan[]): Promise<void> {
         // that nobody chose, and every one under ~12% lost (2026-07-23 review).
         // The rupee budget is enforced instead by refusing an over-sized lot —
         // surfaced here as a warning, blocked for real in risk/gates.ts.
-        slPremium: Math.round(Math.max(0.05, price * (1 - OPTION_STOP_PCT / 100)) * 100) / 100,
+        slPremium: Math.round(Math.max(0.05, price * (1 - stopPct / 100)) * 100) / 100,
         targetPremium: Math.round((price + TF_LOT_TARGET_RUPEES / o.lotSize) * 100) / 100,
         liquidityWarning: warnings.length > 0 ? warnings.join('; ') : null,
       };

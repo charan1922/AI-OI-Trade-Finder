@@ -54,7 +54,15 @@ interface TradeRow {
 
 const inr = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
 
-/** Lowest option bid the guard itself recorded while the position was open. */
+/**
+ * Lowest option bid PRESENT IN THE RETAINED GUARD SNAPSHOTS while the position
+ * was open. The guard samples roughly every 5 seconds and keeps one routine row
+ * per minute (plus every row that decided something), so this is the lowest
+ * SAMPLED bid — not proof that no lower bid ever existed between samples
+ * (PR#18 review). It is the same evidence the live stop was actually checked
+ * against, which is why it is the fair basis for "would the wider stop have
+ * fired?", but it must not be described as a continuous low.
+ */
 async function guardLowBid(tradeId: number): Promise<number | null> {
   const rows = (await prisma.$queryRawUnsafe(
     `SELECT MIN(bid) AS low FROM auto_quote_snapshots WHERE tradeId = ? AND bid IS NOT NULL`,
@@ -95,7 +103,10 @@ async function main(): Promise<void> {
     `SELECT id, date, symbol, optionType, strike, lotSize, entryFillPremium, slPremium,
             exitFillPremium, realizedPnlRupees, exitReason, closedAt
        FROM auto_trades
-      WHERE mode = 'live' AND entryFillPremium IS NOT NULL
+      WHERE mode = 'live'
+        AND status = 'closed'
+        AND entryFillPremium IS NOT NULL
+        AND realizedPnlRupees IS NOT NULL
       ORDER BY date, id`
   )) as TradeRow[];
 
@@ -143,7 +154,7 @@ async function main(): Promise<void> {
     const brokeOld = low <= oldStop;
     const brokeNew = low <= newStop;
     console.log(
-      `   lowest bid the guard recorded while open: ${inr(low)}` +
+      `   lowest bid in the retained snapshots while open: ${inr(low)}` +
         `  → old stop ${brokeOld ? 'BROKEN' : 'held'} · new stop ${brokeNew ? 'BROKEN' : 'HELD'}`
     );
 
@@ -166,7 +177,7 @@ async function main(): Promise<void> {
           `            later in the day the bid did reach ${inr(stoppedLater.bid)} at ${stoppedLater.capturedAt} — it would have stopped out then.`
         );
       } else {
-        console.log(`            the bid never reached ${inr(newStop)} again for the rest of the session.`);
+        console.log(`            no retained snapshot shows the bid back at ${inr(newStop)} for the rest of the session.`);
       }
       if (best) {
         const wouldBe = (best.bid - fill) * lotSize;
@@ -228,6 +239,10 @@ async function main(): Promise<void> {
       `  4. Refusing a trade is not free: it also forgoes whatever that trade might\n` +
       `     have won. On this sample all five refusals were losses, but that is a\n` +
       `     property of the sample, not a guarantee.\n` +
+      `  5. These nine trades are the IN-SAMPLE evidence the policy was chosen\n` +
+      `     from, not an independent validation set. Every bid figure above is\n` +
+      `     the lowest RETAINED SNAPSHOT, not a continuous tape. The next live\n` +
+      `     sessions are the real forward test.\n` +
       `Directional evidence, not proof. Watch the next few live sessions.`
   );
 }

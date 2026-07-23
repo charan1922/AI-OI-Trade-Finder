@@ -162,5 +162,10 @@ export const alerts = {
 
   guardBlind: (detail: string) => sendCriticalAlert(`🙈 GUARD BLIND: ${detail} — premium stops are NOT being checked`),
 
+  /** A market entry filled above the ask the risk gate sized against, so the
+   *  position carries more than the approved per-lot budget. Reporting only —
+   *  the position is already open (PR#18 review). */
+  riskCeilingBreachedOnFill: (detail: string) => sendCriticalAlert(`⚠️ RISK CEILING EXCEEDED ON FILL: ${detail}`),
+
   eodSquareOff: (symbol: string) => sendAlert(`⏰ EOD square-off: ${symbol}`),
 };

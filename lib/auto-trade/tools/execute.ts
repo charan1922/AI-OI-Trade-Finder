@@ -283,6 +283,10 @@ async function buildGateInput(
       lots: 1,
       perLotCost: freshPremium != null && lotSize > 0 ? Math.round(freshPremium * lotSize * 100) / 100 : null,
       lotSize: lotSize > 0 ? lotSize : null,
+      // Risk is priced off the ASK — a market BUY lifts the offer, so that is
+      // the entry price we actually pay (PR#18 review).
+      askPrice: fresh?.ask ?? null,
+      askQty: fresh?.askQty ?? null,
       slippagePct,
       spreadPct: fresh?.spreadPct ?? null,
       hasSlSpot: pick.plan.slSpot != null,

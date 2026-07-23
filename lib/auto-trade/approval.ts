@@ -95,6 +95,23 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     symbolTradedToday: false, // this trade IS the symbol's slot
     lots: trade.lots,
     perLotCost: fresh != null ? Math.round(fresh.ltp * trade.lotSize * 100) / 100 : null,
+    // PR#18 review — this path previously omitted lotSize entirely, so the
+    // per-lot risk ceiling silently skipped itself on EVERY human-approved
+    // entry. A proposal that sat just under the limit could drift over it while
+    // waiting for the click and still be approved, because the option only had
+    // to move a couple of percent (inside the slippage guard) for the risk to
+    // cross while nothing was measuring it.
+    lotSize: trade.lotSize > 0 ? trade.lotSize : null,
+    askPrice: fresh?.ask ?? null,
+    askQty: fresh?.askQty ?? null,
+    // Gate on the width the FILL will actually carry. applyEntryFill re-anchors
+    // to the width snapshotted in this proposal (slPremium ÷ entryPremium), so
+    // gating on a since-changed runtime `optionStopPct` would evaluate one risk
+    // policy and then ship a different one.
+    stopPctOverride:
+      trade.entryPremium > 0 && trade.slPremium > 0 && trade.slPremium < trade.entryPremium
+        ? (1 - trade.slPremium / trade.entryPremium) * 100
+        : null,
     slippagePct,
     spreadPct: fresh?.spreadPct ?? null,
     hasSlSpot: trade.slSpot != null,

@@ -45,10 +45,25 @@ export interface EntryGateInput {
   /** The lot being entered. */
   lots: number;
   perLotCost: number | null;
-  /** Units in one lot — needed to price the per-lot risk in rupees. Optional so
-   *  older fixtures keep working; when absent the risk-ceiling gate is skipped
-   *  (perLotCost alone already blocks an unpriceable entry). */
-  lotSize?: number | null;
+  /** Units in one lot. REQUIRED — the per-lot risk cannot be priced without it,
+   *  and a risk gate must never read "cannot calculate" as "allow" (PR#18 review).
+   *  A missing or non-positive value FAILS THE ENTRY. */
+  lotSize: number | null;
+  /** Best ASK on the option — the executable price for a market BUY, and
+   *  therefore the honest basis for the per-lot risk. `perLotCost` is derived
+   *  from the resolved ltp/mid, which is a mark, not a price we can transact at
+   *  (PR#18 review). Null → risk cannot be verified → entry fails closed. */
+  askPrice: number | null;
+  /** Displayed size at the best ask. A lot larger than the resting ask sweeps up
+   *  the book, so the real fill is worse than `askPrice`; without enough
+   *  displayed size the risk estimate is not trustworthy. */
+  askQty: number | null;
+  /** Premium stop width (% of entry) THIS entry will actually carry. On the AI
+   *  path it is the runtime setting; on the approval path it MUST be the width
+   *  snapshotted in the proposal, because that is what the fill will re-anchor
+   *  to — gating on a since-changed setting would evaluate one policy and ship
+   *  another (PR#18 review). Null → fall back to the runtime/coded value. */
+  stopPctOverride?: number | null;
   /** Scanner's quote this cycle vs the fresh quote at placement time (%). */
   slippagePct: number | null;
   /** Bid-ask spread % on the option contract (null when no depth available). */
@@ -154,26 +169,54 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
         `broker funds: ₹${Math.round(funds).toLocaleString('en-IN')} available < ₹${Math.round(cost).toLocaleString('en-IN')} needed`
       );
     }
-    // Per-lot risk ceiling. The premium stop is a fixed % of the option's price
-    // (sized to the CONTRACT's noise), so an expensive lot carries proportionally
-    // more rupees behind that stop. The budget is therefore enforced here, by
-    // refusing the contract — NOT by tightening the stop until the arithmetic
-    // fits, which is what produced stop widths of 7.7%–23.8% that nobody chose
-    // and that lost every time they landed under ~12% (2026-07-23 review).
-    const stopPct = s.optionStopPct ?? OPTION_STOP_PCT_FALLBACK;
-    const maxRiskPerLot = s.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK;
-    const lotSize = x.lotSize;
-    if (lotSize != null && Number.isFinite(lotSize) && lotSize > 0) {
-      const riskPerLot = riskPerLotRupees(x.perLotCost / lotSize, lotSize, stopPct);
-      if (!Number.isFinite(riskPerLot)) {
-        reasons.push('per-lot risk could not be computed — failing closed');
-      } else if (riskPerLot > maxRiskPerLot) {
-        reasons.push(
-          `lot risks ₹${Math.round(riskPerLot).toLocaleString('en-IN')} at the ${stopPct}% premium stop ` +
-            `> max ₹${maxRiskPerLot.toLocaleString('en-IN')} per lot — contract too expensive for this account ` +
-            `(the stop is not tightened to fit)`
-        );
-      }
+  }
+
+  // ── Per-lot risk ceiling ───────────────────────────────────────────────────
+  // The premium stop is a fixed % of the option's price (sized to the CONTRACT's
+  // noise), so an expensive lot carries proportionally more rupees behind that
+  // stop. The budget is enforced HERE, by refusing the contract — never by
+  // tightening the stop until the arithmetic fits, which is what produced stop
+  // widths of 7.7%–23.8% that nobody chose and that lost every time they landed
+  // under ~12% (2026-07-23 review).
+  //
+  // Deliberately OUTSIDE the `perLotCost` else-branch and fail-closed throughout:
+  // a risk gate that skips itself when an input is missing is a risk gate that
+  // approves the unmeasurable (PR#18 review found exactly that on the human
+  // approval path, which never passed lotSize at all).
+  //
+  // Priced off the ASK, not the resolved ltp/mid. The entry is a market BUY, so
+  // the ask is what we actually pay; the stop is then re-anchored to that higher
+  // fill at the same percentage width, which is real rupees of risk the old
+  // ltp-based figure did not count.
+  const stopPct = x.stopPctOverride ?? s.optionStopPct ?? OPTION_STOP_PCT_FALLBACK;
+  const maxRiskPerLot = s.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK;
+  const lotSize = x.lotSize;
+  const qtyUnits = lotSize != null ? lotSize * x.lots : null;
+  if (lotSize == null || !Number.isFinite(lotSize) || lotSize <= 0) {
+    reasons.push('lot size unavailable — per-lot risk cannot be computed, failing closed');
+  } else if (x.askPrice == null || !Number.isFinite(x.askPrice) || x.askPrice <= 0) {
+    reasons.push('no live ask on the option — the executable entry price is unknown, so risk cannot be verified');
+  } else if (!Number.isFinite(stopPct) || stopPct <= 0 || stopPct >= 100) {
+    reasons.push(`invalid premium stop width (${stopPct}) — failing closed`);
+  } else {
+    const riskPerLot = riskPerLotRupees(x.askPrice, lotSize, stopPct);
+    if (!Number.isFinite(riskPerLot)) {
+      reasons.push('per-lot risk could not be computed — failing closed');
+    } else if (riskPerLot > maxRiskPerLot) {
+      reasons.push(
+        `lot risks ₹${Math.round(riskPerLot).toLocaleString('en-IN')} at the ${stopPct}% premium stop ` +
+          `(priced off the ₹${x.askPrice} ask we would actually pay) > max ₹${maxRiskPerLot.toLocaleString('en-IN')} ` +
+          `per lot — contract too expensive for this account (the stop is not tightened to fit)`
+      );
+    }
+    // A lot larger than the resting ask sweeps up the book, so the real fill is
+    // worse than `askPrice` and the risk above is an under-estimate. Refuse
+    // rather than quietly rely on a number we know is optimistic.
+    if (qtyUnits != null && (x.askQty == null || !Number.isFinite(x.askQty) || x.askQty < qtyUnits)) {
+      reasons.push(
+        `only ${x.askQty ?? 'unknown'} of ${qtyUnits} units are offered at the ₹${x.askPrice} ask — ` +
+          `a market buy would sweep above it, so the per-lot risk estimate cannot be trusted`
+      );
     }
   }
   if (x.slippagePct == null || !Number.isFinite(x.slippagePct)) {

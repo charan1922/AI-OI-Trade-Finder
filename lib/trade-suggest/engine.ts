@@ -79,7 +79,7 @@ import { qualifiesByBreakout } from '@/lib/trade-suggest/breakout-bypass';
 import { chaoticOpenRatio } from '@/lib/trade-suggest/chaotic-open';
 import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
 import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
-import { attachPremiums } from '@/lib/trade-suggest/premiums';
+import { attachPremiums, type PremiumPolicy } from '@/lib/trade-suggest/premiums';
 import { buildSpotPlan, computeCompositeScore } from '@/lib/trade-suggest/scoring';
 import { getSuggestions, upsertSuggestions } from '@/lib/trade-suggest/store';
 import type { OptionPlan, SuggestResponse, SuggestWindow, TradeSuggestion } from '@/lib/trade-suggest/types';
@@ -790,7 +790,22 @@ export async function runTradeSuggest(
     const side: 'CE' | 'PE' = s.direction === 'bullish' ? 'CE' : 'PE';
     optionBySymbol.set(s.row.symbol, await resolveAtmOption(s.row.symbol, s.row.ltp ?? 0, side));
   }
-  await attachPremiums([...optionBySymbol.values()].filter((o): o is OptionPlan => o !== null));
+  // Display the stop/risk policy that will ACTUALLY fire, not the coded default:
+  // both values are runtime-editable on /auto-trade, and the scanner previously
+  // hard-coded them, so changing the setting silently desynced what the page
+  // showed from what the guard enforced (PR#18 review). Best-effort — a settings
+  // read must never break a scan, and getAutoTradeSettings already fails safe.
+  let premiumPolicy: PremiumPolicy | undefined;
+  try {
+    const at = await getAutoTradeSettings();
+    premiumPolicy = { stopPct: at.optionStopPct, maxRiskPerLot: at.maxRiskPerLotRupees };
+  } catch {
+    premiumPolicy = undefined; // fall back to the coded defaults inside attachPremiums
+  }
+  await attachPremiums(
+    [...optionBySymbol.values()].filter((o): o is OptionPlan => o !== null),
+    premiumPolicy
+  );
 
   const picks: TradeSuggestion[] = [];
   let skippedUnaffordable = 0;
