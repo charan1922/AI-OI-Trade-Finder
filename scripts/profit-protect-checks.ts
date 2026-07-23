@@ -6,7 +6,7 @@
  * / missing-rule) + the blob parser. Run by the DB-free CI runner AND the box bench.
  */
 import { gradeSpotPath } from '../lib/trade-suggest/grade';
-import { aggregateProtection, parseProtectBlob, type ProtectRule, PROTECT_MODEL_VERSION, PROTECT_PRESETS, simulateAllPresets, simulateProtected } from '../lib/trade-suggest/profit-protect';
+import { aggregateProtection, parseProtectBlob, type ProtectAggRow, type ProtectRule, PROTECT_MODEL_VERSION, PROTECT_PRESETS, simulateAllPresets, simulateProtected } from '../lib/trade-suggest/profit-protect';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
@@ -139,7 +139,7 @@ export function runProfitProtectChecks(check: CheckFn): void {
   //    row missing one rule only shrinks THAT rule's n. All at the CURRENT
   //    version, so all are counted. ─────────────────────────────────────────────
   const V = PROTECT_MODEL_VERSION;
-  const rows = [
+  const rows: ProtectAggRow[] = [
     { baseR: -1, version: V, rules: { 'breakeven@1R': 0, 'breakeven@1.5R': -1, 'trail@1R-lock0.5': 0.8 } },
     { baseR: 2, version: V, rules: { 'breakeven@1R': 0, 'breakeven@1.5R': 2, 'trail@1R-lock0.5': 2 } },
     { baseR: -0.5, version: V, rules: { 'breakeven@1.5R': -0.5 } }, // BE@1R & trail were entry-ambiguous here

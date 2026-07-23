@@ -10,8 +10,14 @@
  */
 
 import { alerts, sendCriticalAlert } from './alerts';
-import { ENTRY_METRIC_MAX_AGE_MS, FILL_POLL_ATTEMPTS, FILL_POLL_DELAY_MS } from './config';
-import { backstopsFromProposalFill } from './backstops';
+import {
+  ENTRY_METRIC_MAX_AGE_MS,
+  FILL_POLL_ATTEMPTS,
+  FILL_POLL_DELAY_MS,
+  MAX_RISK_PER_LOT_FALLBACK,
+} from './config';
+import { getAutoTradeSettings } from './settings';
+import { backstopsFromProposalFill, effectiveBreachCeiling, fillRiskPerLotRupees } from './backstops';
 import { getAdapterById, getExecutionAdapter } from './brokers';
 import type { BrokerAdapter, OrderTicket } from './brokers/adapter';
 import { ticketQtyUnits } from './brokers/adapter';
@@ -53,7 +59,11 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 export {
   backstopsFromFill,
   backstopsFromProposalFill,
+  effectiveBreachCeiling,
+  fillRiskPerLotRupees,
   isRestTargetExecutable,
+  riskPerLotRupees,
+  stopPremiumForFill,
   targetRupeesForPosition,
 } from './backstops';
 
@@ -101,7 +111,8 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
     trade.lotSize,
     trade.lots,
     trade.entryPremium,
-    trade.targetPremium
+    trade.targetPremium,
+    trade.slPremium
   );
   await updateOrder(orderId, {
     status: 'filled',
@@ -125,6 +136,45 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
       .catch((err) => console.warn(`${TAG} P&L stream post-fill sync failed: ${(err as Error).message}`));
   }
   alerts.tradePlaced(trade.symbol, trade.optionType, fill);
+  // Actual-fill risk check (PR#18 review). The entry gate sizes risk off the
+  // best ask, but a MARKET order can sweep above it — so the ceiling it enforced
+  // is a planned figure, not a guarantee. Measure what the position really
+  // carries and, if it broke the budget the gate APPROVED it against, say so
+  // loudly AND stand the system down for the day (a risk latch: blocks further
+  // entries, never forces an exit — the position is already open and guarded).
+  //
+  // The ceiling compared against is the one SNAPSHOTTED on the trade at gate
+  // time, not the live setting: an operator raising or lowering
+  // maxRiskPerLotRupees in the seconds between approval and fill must not hide a
+  // real breach or manufacture a false one (PR#18 review). Falls back to the
+  // current setting only for rows written before the snapshot existed.
+  try {
+    // Prefer the ceiling SNAPSHOTTED on the trade (the one that actually
+    // approved this placement); read the live setting only when there is no
+    // snapshot. On the approval path the snapshot is refreshed to the
+    // approval-time ceiling at the moment of the click, so this compares against
+    // exactly what the gate enforced (PR#18 re-review).
+    const snapshot = trade.approvedMaxRiskPerLotRupees ?? null;
+    const currentSetting =
+      snapshot != null && Number.isFinite(snapshot) ? null : (await getAutoTradeSettings()).maxRiskPerLotRupees;
+    const ceiling = effectiveBreachCeiling(snapshot, currentSetting, MAX_RISK_PER_LOT_FALLBACK);
+    const actualRiskPerLot = fillRiskPerLotRupees(fill, stops.slPremium, trade.lotSize);
+    if (Number.isFinite(actualRiskPerLot) && actualRiskPerLot > ceiling) {
+      const detail =
+        `${trade.symbol} ${trade.strike}${trade.optionType}: filled at ₹${fill} (proposal ₹${trade.entryPremium}), ` +
+        `so this lot now risks ₹${actualRiskPerLot.toLocaleString('en-IN')} to its ₹${stops.slPremium} stop — ` +
+        `above the ₹${ceiling.toLocaleString('en-IN')} per-lot budget the gate approved. ` +
+        `A market buy can fill above the ask, so the ceiling is a PLANNED figure, not a guaranteed maximum loss.`;
+      console.warn(`${TAG} ${detail}`);
+      alerts.riskCeilingBreachedOnFill(detail);
+      // Durable incident: our sizing assumption was violated by the fill, so no
+      // further entry may be added until an operator reviews it. Exits are never
+      // gated on the latch, so THIS position stays fully guarded.
+      await activateRiskLatch(`risk-ceiling-breach-on-fill:trade-${trade.id}`, detail);
+    }
+  } catch (err) {
+    console.warn(`${TAG} actual-fill risk check failed: ${(err as Error).message}`);
+  }
   // SHADOW measurement AFTER the fill is booked — off the pre-submission path,
   // at the moment the position actually opened. Best-effort; never throws.
   await captureEntryShadow(trade);

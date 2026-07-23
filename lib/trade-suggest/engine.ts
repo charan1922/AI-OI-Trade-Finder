@@ -79,7 +79,7 @@ import { qualifiesByBreakout } from '@/lib/trade-suggest/breakout-bypass';
 import { chaoticOpenRatio } from '@/lib/trade-suggest/chaotic-open';
 import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
 import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
-import { attachPremiums } from '@/lib/trade-suggest/premiums';
+import { attachPremiums, type PremiumPolicy } from '@/lib/trade-suggest/premiums';
 import { buildSpotPlan, computeCompositeScore } from '@/lib/trade-suggest/scoring';
 import { getSuggestions, upsertSuggestions } from '@/lib/trade-suggest/store';
 import type { OptionPlan, SuggestResponse, SuggestWindow, TradeSuggestion } from '@/lib/trade-suggest/types';
@@ -504,6 +504,11 @@ export async function runTradeSuggest(
     optShare: number | null;
     /** True when admitted via the momentum-breakout path (accumulation gates bypassed). */
     momentumPath: boolean;
+    /** True when the OI gate passed ONLY via the breakout bypass (price broke out,
+     *  no OI evidence). Recorded so these admissions are visible in the Trade Log
+     *  — every other permissive path already stamps a reason, this one did not,
+     *  which made the toggle impossible to evaluate (audit 2026-07-23). */
+    breakoutBypassPath: boolean;
     /** Opening 15-min range ÷ settled 5-min ATR (chaotic-open.ts); null = not yet computable. */
     chaosRatio: number | null;
     /** Best ~30-min leaderboard climb (gainers/OI boards); null = no board history. */
@@ -697,6 +702,10 @@ export async function runTradeSuggest(
       nseOiPct,
       optShare,
       momentumPath: momentumOk,
+      // Credit the bypass only when it is what actually opened the door: if the
+      // momentum path also qualified this name, the bypass was not load-bearing
+      // and marking it would overstate the toggle's contribution.
+      breakoutBypassPath: breakoutOk && !momentumOk,
       chaosRatio,
       rankClimb: rankClimbSpots,
       climbPath: climbCatchOk,
@@ -781,7 +790,22 @@ export async function runTradeSuggest(
     const side: 'CE' | 'PE' = s.direction === 'bullish' ? 'CE' : 'PE';
     optionBySymbol.set(s.row.symbol, await resolveAtmOption(s.row.symbol, s.row.ltp ?? 0, side));
   }
-  await attachPremiums([...optionBySymbol.values()].filter((o): o is OptionPlan => o !== null));
+  // Display the stop/risk policy that will ACTUALLY fire, not the coded default:
+  // both values are runtime-editable on /auto-trade, and the scanner previously
+  // hard-coded them, so changing the setting silently desynced what the page
+  // showed from what the guard enforced (PR#18 review). Best-effort — a settings
+  // read must never break a scan, and getAutoTradeSettings already fails safe.
+  let premiumPolicy: PremiumPolicy | undefined;
+  try {
+    const at = await getAutoTradeSettings();
+    premiumPolicy = { stopPct: at.optionStopPct, maxRiskPerLot: at.maxRiskPerLotRupees };
+  } catch {
+    premiumPolicy = undefined; // fall back to the coded defaults inside attachPremiums
+  }
+  await attachPremiums(
+    [...optionBySymbol.values()].filter((o): o is OptionPlan => o !== null),
+    premiumPolicy
+  );
 
   const picks: TradeSuggestion[] = [];
   let skippedUnaffordable = 0;
@@ -883,6 +907,11 @@ export async function runTradeSuggest(
       ...(s.momentumPath
         ? [
             '⚡ MOMENTUM-BREAKOUT path: no accumulation evidence (low R-Factor / no OI build) — entered on confirmed OR breakout + Supertrend + VWAP + move ≥1.5%. Short-covering profile; expect speed, respect the stop.',
+          ]
+        : []),
+      ...(s.breakoutBypassPath
+        ? [
+            '🚪 BREAKOUT-BYPASS path: both OI gates failed (no futures build, no qualifying NSE combined build) — admitted on a confirmed OR breakout with Supertrend + VWAP agreeing and R-Factor ≥ 3.6. Price led, open interest did not confirm.',
           ]
         : []),
       `R-Factor ${r.rFactor?.toFixed(2)} (${s.direction}, confidence ${((r.rFactorConfidence ?? 0) * 100).toFixed(0)}%)`,

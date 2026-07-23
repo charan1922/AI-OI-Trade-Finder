@@ -18,7 +18,14 @@ import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generat
 import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types';
 import { alerts } from '../alerts';
 import { getExecutionAdapter } from '../brokers';
-import { CHECK_ORDER_TTL_MS, isEntryWindow, istMinuteLabel, minuteOfDayIST, nowISTClock } from '../config';
+import {
+  CHECK_ORDER_TTL_MS,
+  isEntryWindow,
+  istMinuteLabel,
+  MAX_RISK_PER_LOT_FALLBACK,
+  minuteOfDayIST,
+  nowISTClock,
+} from '../config';
 import { backstopsFromFill, exitTrade, placeEntryOrder, targetRupeesForPosition, type ExecOutcome } from '../execution';
 import { fetchOptionQuote, fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
 import { checkEntryGates, checkStopMove, type EntryGateInput } from '../risk/gates';
@@ -160,6 +167,8 @@ export async function buildAccountState(
     maxOpenLots: s.maxOpenLots,
     deployedRupees: exposure.deployedRupees,
     maxCapitalRupees: s.maxCapitalRupees,
+    optionStopPct: s.optionStopPct,
+    maxRiskPerLotRupees: s.maxRiskPerLotRupees,
     dailyRealizedPnlRupees: pnl,
     dailyLossHaltRupees: s.dailyLossHaltRupees,
     profitTargetMode: s.profitTargetMode,
@@ -259,11 +268,21 @@ async function buildGateInput(
   const bucketStatus = await getEqBucketStatus(pick.symbol, rt.date, requiredBucketTs);
   const freshness = evaluateFreshness(bucketStatus, requiredBucketTs);
   const freshPremium = fresh?.ltp ?? null;
+  const askPrice = fresh?.ask ?? null;
   const slippagePct =
     scanPremium != null && scanPremium > 0 && freshPremium != null
       ? ((freshPremium - scanPremium) / scanPremium) * 100
       : null;
   const lotSize = pick.option?.lotSize ?? 0;
+  // Capital + broker-funds are sized off the ASK, the price a market BUY
+  // actually lifts — same basis the per-lot risk ceiling already uses. Pricing
+  // them off the ltp/mid mark (as they used to) understated the cash committed
+  // and could permit an order whose executable cost pushes deployed premium over
+  // the budget (PR#18 review). The mark stays the basis of the slippage-vs-scan
+  // DRIFT check above, which must compare like-for-like (mark to mark), not fold
+  // the spread into the drift. Falls back to the mark only when no ask is quoted
+  // — in which case the risk ceiling below fails the entry closed anyway.
+  const entryCostBasis = askPrice ?? freshPremium;
   return {
     input: {
       settings: rt.settings,
@@ -279,7 +298,12 @@ async function buildGateInput(
       dailyRealizedPnl: state.dailyRealizedPnlRupees,
       symbolTradedToday: tradedToday,
       lots: 1,
-      perLotCost: freshPremium != null && lotSize > 0 ? Math.round(freshPremium * lotSize * 100) / 100 : null,
+      perLotCost: entryCostBasis != null && lotSize > 0 ? Math.round(entryCostBasis * lotSize * 100) / 100 : null,
+      lotSize: lotSize > 0 ? lotSize : null,
+      // Risk is priced off the ASK — a market BUY lifts the offer, so that is
+      // the entry price we actually pay (PR#18 review).
+      askPrice,
+      askQty: fresh?.askQty ?? null,
       slippagePct,
       spreadPct: fresh?.spreadPct ?? null,
       hasSlSpot: pick.plan.slSpot != null,
@@ -494,7 +518,8 @@ export async function executeAutoTradeTool(
         entryPremium,
         pick.option.lotSize,
         lots,
-        targetRupeesForPosition(rt.settings, lots)
+        targetRupeesForPosition(rt.settings, lots),
+        rt.settings.optionStopPct
       );
       const status = rt.settings.mode === 'approval' ? 'pending_approval' : 'placing';
       // Proposal-time SHADOW context (in-memory only): the pick's sector rank.
@@ -521,6 +546,17 @@ export async function executeAutoTradeTool(
         entryPremium,
         slPremium: configuredBackstops.slPremium,
         targetPremium: configuredBackstops.targetPremium,
+        // Snapshot the risk policy the gate just enforced, so the post-fill
+        // breach check and the exposure reservation measure against what actually
+        // approved THIS order — the per-lot ceiling and the executable ask — not
+        // a since-changed setting or the cheaper ltp/mid mark (PR#18 review).
+        approvedMaxRiskPerLotRupees: rt.settings.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK,
+        approvedEntryAskPremium: input.askPrice ?? null,
+        // Enforce the capital cap ATOMICALLY at insert (not only in the gate
+        // pre-check): the row is created only if this ask-based reservation still
+        // fits alongside every other risk-bearing row — race-proof against a
+        // concurrent human approval (PR#18 re-review).
+        maxCapitalRupees: rt.settings.maxCapitalRupees,
         aiReasonEntry: reason,
         entrySectorRank,
         entrySectorCount,
@@ -528,7 +564,9 @@ export async function executeAutoTradeTool(
       if (tradeId == null) {
         const result = {
           placed: false,
-          reasons: [`${symbol} was already claimed or attempted today by another pass`],
+          reasons: [
+            `${symbol} was not opened: it was already claimed/attempted today, or opening it now would exceed the ₹${rt.settings.maxCapitalRupees.toLocaleString('en-IN')} capital cap once concurrent reservations are counted`,
+          ],
         };
         return {
           result,

@@ -7,7 +7,7 @@
  * covered only by a bench nothing in CI ran (AT-REVIEW 2026-07-23).
  * execution.ts re-exports these, so existing importers are unaffected.
  */
-import { DEFAULT_SETTINGS, MAX_LOSS_PER_LOT_FALLBACK } from './config';
+import { DEFAULT_SETTINGS, OPTION_STOP_PCT_FALLBACK } from './config';
 import type { AutoTradeSettings } from './types';
 
 /** Total cash profit represented by the current runtime policy. */
@@ -18,6 +18,76 @@ export function targetRupeesForPosition(
   return settings.profitTargetMode === 'per_lot' ? settings.profitTargetRupees * lots : settings.profitTargetRupees;
 }
 
+/**
+ * The premium stop level for an entry at `fill`, as a straight percentage of the
+ * option's own price.
+ *
+ * Deliberately NOT a function of lot size. The previous rule took the tighter of
+ * −40% and −₹1,500/lot; because the rupee budget divided by a lot size that
+ * varies 75–700 units, the effective stop landed anywhere from 7.7% to 23.8%
+ * across nine live trades. The per-lot rupee budget is now enforced by REFUSING
+ * over-sized contracts at the gate (riskPerLotRupees + checkEntryGates), which
+ * leaves this free to be what a stop should be: wider than the contract's own
+ * noise. See OPTION_STOP_PCT in lib/trade-suggest/config.ts for the evidence.
+ */
+export function stopPremiumForFill(fill: number, stopPct: number = OPTION_STOP_PCT_FALLBACK): number {
+  const pct = Number.isFinite(stopPct) && stopPct > 0 && stopPct < 100 ? stopPct : OPTION_STOP_PCT_FALLBACK;
+  return Math.round(Math.max(0.05, fill * (1 - pct / 100)) * 100) / 100;
+}
+
+/**
+ * Rupees at risk on ONE lot if the premium stop is hit, measured from the price
+ * actually being paid. This is the number the sizing gate compares against
+ * settings.maxRiskPerLotRupees — it is what the account really stands to lose,
+ * so it uses the ROUNDED stop level the guard will fire on, not the raw
+ * percentage (a ₹0.005 rounding step is immaterial, but the two must agree).
+ */
+export function riskPerLotRupees(fill: number, lotSize: number, stopPct: number = OPTION_STOP_PCT_FALLBACK): number {
+  if (!Number.isFinite(fill) || !Number.isFinite(lotSize) || fill <= 0 || lotSize <= 0) return Number.NaN;
+  return Math.round((fill - stopPremiumForFill(fill, stopPct)) * lotSize * 100) / 100;
+}
+
+/** Rupees ONE lot actually risks once the fill and its (re-anchored) stop are
+ *  both known — the post-fill measurement the ceiling-breach check uses. Pure so
+ *  CI can prove it without a fill or a DB. */
+export function fillRiskPerLotRupees(fill: number, slPremium: number, lotSize: number): number {
+  return Math.round((fill - slPremium) * lotSize);
+}
+
+/**
+ * Which per-lot ₹ ceiling the fill-breach check compares against. The ceiling
+ * SNAPSHOTTED on the trade at gate time wins — an operator moving the runtime
+ * setting between the gate and the fill must not hide a real breach or invent a
+ * false one (PR#18 re-review). Only when no snapshot exists (rows written before
+ * the column) does it fall back to the current setting, then the coded default.
+ * Pure + fail-safe: a non-finite value at any tier is skipped.
+ */
+export function effectiveBreachCeiling(
+  snapshot: number | null | undefined,
+  currentSetting: number | null | undefined,
+  fallback: number
+): number {
+  if (snapshot != null && Number.isFinite(snapshot)) return snapshot;
+  if (currentSetting != null && Number.isFinite(currentSetting)) return currentSetting;
+  return fallback;
+}
+
+/**
+ * Would adding one more reservation breach the capital cap? Pure mirror of the
+ * aggregate check the store enforces ATOMICALLY inside its INSERT/UPDATE (the
+ * SQL is the real guard against concurrent approvals; this documents and unit-
+ * tests the arithmetic). `reservedExcludingRupees` is the premium already
+ * reserved by every risk-bearing row EXCEPT the one being decided. Refuses on
+ * strictly `>` the cap — exactly AT the cap is allowed, matching checkEntryGates.
+ */
+export function capitalReservationExceeds(
+  reservedExcludingRupees: number,
+  candidateRupees: number,
+  capRupees: number
+): boolean {
+  return reservedExcludingRupees + candidateRupees > capRupees;
+}
+
 /** Premium backstops re-anchored to the ACTUAL fill. The target argument is
  * total rupees for this position, so this function works for either per-trade
  * or per-lot policies and any lot count. */
@@ -25,30 +95,49 @@ export function backstopsFromFill(
   fill: number,
   lotSize: number,
   lots = 1,
-  totalTargetRupees = targetRupeesForPosition(DEFAULT_SETTINGS, lots)
+  totalTargetRupees = targetRupeesForPosition(DEFAULT_SETTINGS, lots),
+  stopPct: number = OPTION_STOP_PCT_FALLBACK
 ): { slPremium: number; targetPremium: number } {
-  const slPct = fill * 0.6; // −40% premium backstop
-  const slCap = fill - MAX_LOSS_PER_LOT_FALLBACK / lotSize;
   const qtyUnits = lotSize * lots;
   return {
-    slPremium: Math.round(Math.max(0.05, Math.max(slPct, slCap)) * 100) / 100,
+    slPremium: stopPremiumForFill(fill, stopPct),
     targetPremium: Math.round((fill + totalTargetRupees / qtyUnits) * 100) / 100,
   };
 }
 
-/** Re-anchor a proposal's snapshotted cash target to the broker's actual fill.
- * The proposal premium delta is the immutable policy snapshot, so changing the
- * runtime setting while an approval/order is pending cannot move its target. */
+/**
+ * Re-anchor a proposal's snapshotted backstops to the broker's actual fill.
+ *
+ * BOTH sides are recovered from the proposal, never re-read from settings: the
+ * cash target from the proposal's premium delta, and the stop WIDTH from the
+ * proposal's own stop as a percentage of its entry. Changing `profitTargetRupees`
+ * or `optionStopPct` while an approval or order is pending therefore cannot move
+ * the levels a human already approved.
+ *
+ * `proposalSlPremium` is optional so existing 5-argument callers keep the coded
+ * default; when supplied it must be below the proposal entry (a stop at or above
+ * entry is not a policy width) or the default is used.
+ */
 export function backstopsFromProposalFill(
   fill: number,
   lotSize: number,
   lots: number,
   proposalEntryPremium: number,
-  proposalTargetPremium: number
+  proposalTargetPremium: number,
+  proposalSlPremium?: number | null
 ): { slPremium: number; targetPremium: number } {
   const qtyUnits = lotSize * lots;
   const snapshottedTargetRupees = Math.max(0.01, (proposalTargetPremium - proposalEntryPremium) * qtyUnits);
-  return backstopsFromFill(fill, lotSize, lots, snapshottedTargetRupees);
+  const snapshottedStopPct =
+    proposalSlPremium != null &&
+    Number.isFinite(proposalSlPremium) &&
+    Number.isFinite(proposalEntryPremium) &&
+    proposalEntryPremium > 0 &&
+    proposalSlPremium > 0 &&
+    proposalSlPremium < proposalEntryPremium
+      ? (1 - proposalSlPremium / proposalEntryPremium) * 100
+      : OPTION_STOP_PCT_FALLBACK;
+  return backstopsFromFill(fill, lotSize, lots, snapshottedTargetRupees, snapshottedStopPct);
 }
 
 /**

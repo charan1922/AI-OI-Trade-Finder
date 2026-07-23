@@ -172,20 +172,64 @@ export const MAX_SPREAD_PCT = 0.3; // execution-cost ceiling (matches setup-scor
  */
 export const MIN_TURNOVER_SCORE = 0.1;
 
-/** Premium-based max-loss backstop: exit if the option loses this % of premium
- *  (Indian option-buying convention is 40–50%; the SPOT SL remains the primary,
- *  signal-based exit). */
-export const PREMIUM_SL_PCT = 40;
 /**
- * Hard ₹ cap on the loss PER LOT. The premium stop is placed at
- * max(−PREMIUM_SL_PCT%, −this/lot) — i.e. the TIGHTER of the 40% backstop and
- * this rupee budget — so a single lot can never lose more than this. The SPOT SL
- * stays the structure-based (last-candle / support) exit; this only bounds the ₹.
- * User call 2026-07-10: the flat 40% stop risked ₹11k+/lot on pricey options to
- * make the ₹5k/lot target (a 0.45:1 R:R). At ₹1,500 the R:R is ~3.3:1 (2 lots →
- * −₹3,000 max). Tight stop — near-ATM ~5% premium move — expect more stop-outs.
+ * Premium stop distance, as a % of the entry price of the OPTION.
+ *
+ * This is sized to the option's OWN noise, not to the underlying's. An intraday
+ * near-ATM option re-prices on three things the spot knows nothing about — time
+ * decay, the post-open volatility cool-off, and the bid-ask spread — so a stop
+ * narrower than that noise measures the contract breathing, not the idea failing.
+ *
+ * Evidence (2026-07-23 review of all 9 completed live trades):
+ *  - SRF 23-Jul: the stock sat 1 point from entry (4.6% of the way to the spot
+ *    stop) while the option had already burned 78% of its stop budget. It was
+ *    stopped at ₹36, then the call proved RIGHT — the stock fell 175 points and
+ *    the same contract's bid reached ₹178 by 14:50, a ₹26,880/lot MAX FAVORABLE
+ *    move against the −₹1,610 actually booked. That ₹26,880 is what the contract
+ *    OFFERED, not what the exit policy would take: the auto-trader holds to a
+ *    ~₹1,100 cash target, so a surviving SRF books ≈₹1,100. The point the number
+ *    proves is narrow and real — the tight stop fired on noise and flipped a
+ *    winner into a loser — NOT that a wider stop harvests the whole move.
+ *  - The SRF option's own bid ranged ₹36.10–₹45.05 (20.3% of entry) inside the
+ *    6.5-minute hold, with the stock nearly flat.
+ *  - Sorted by stop width, the live record separates almost perfectly: every
+ *    stop tighter than 12% of premium lost (INDUSINDBK 7.7%, AXISBANK 8.1%,
+ *    NESTLEIND 9.2%, POLYCAB 9.4%, COLPAL 11.7%); the two above 20% won
+ *    (HEROMOTOCO 20.6%, M&M 23.8%).
+ *
+ * 25 sits above every noise band seen in this SMALL in-sample set (n=9) while
+ * staying well inside the 40–50% Indian option-buying convention it replaced.
+ * Treat it as a calibrated STARTING POINT, not a proven universal stop: DTE,
+ * moneyness, IV regime and the bid-ask spread all move an option's true noise,
+ * and the forward live sessions are the real test. It is runtime-tunable
+ * (settings.optionStopPct) so it can be revised without a code change.
  */
-export const MAX_LOSS_PER_LOT_RUPEES = 1500;
+export const OPTION_STOP_PCT = 25;
+/**
+ * Hard ₹ ceiling on the risk PER LOT — enforced by REFUSING the entry, never by
+ * squeezing the stop.
+ *
+ * The old rule (MAX_LOSS_PER_LOT_RUPEES = ₹1,500, applied as
+ * `max(−40%, −1500/lot)`) enforced the budget the other way round: it moved the
+ * stop until the arithmetic fitted. Because ₹1,500 ÷ lotSize lands somewhere
+ * different for every contract, the effective stop ranged 7.7%–23.8% across nine
+ * live trades and NOBODY chose those numbers — they fell out of the lot size.
+ * Big-lot names silently got the tightest leash and lost every time.
+ *
+ * The budget is now a SIZING filter: if OPTION_STOP_PCT of the lot's cost would
+ * exceed this ceiling, the contract is too expensive for the account and the
+ * entry is refused (risk/gates.ts). Choosing what to buy is the honest lever;
+ * cutting the stop short is not.
+ *
+ * ₹2,500 against the nine recorded trades: allows all four of 23-Jul (three
+ * winners plus SRF, which survives its stop instead of being shaken out at
+ * −₹1,610) and refuses all five earlier losers, whose lots were ₹12.7k–₹19.4k.
+ * (A surviving SRF books its ~₹1,100 cash target like any other winner — the win
+ * is turning a −₹1,610 loss into a target hit, not capturing SRF's full move.)
+ * NOTE the interaction with dailyLossHaltRupees — a halt at or below this value
+ * stops the day after a single full-stop loss.
+ */
+export const MAX_RISK_PER_LOT_RUPEES = 2500;
 /** TF-style profit objective per lot (₹) — translated to a premium target. */
 export const TF_LOT_TARGET_RUPEES = 5000;
 /** Option-liquidity warnings: bid-ask spread of the OPTION itself above this %

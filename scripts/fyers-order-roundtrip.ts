@@ -11,8 +11,20 @@
  * Usage: npx tsx scripts/fyers-order-roundtrip.ts --yes
  *        (add --symbol=XYZ to test a different underlying; default SRF)
  */
-import { config } from 'dotenv';
-config({ path: '.env.local' });
+// Node's built-in env loader — no `dotenv` dependency (it is not in package.json
+// and was never installed). try/catch preserves dotenv's silent no-op when the
+// file is absent; process.loadEnvFile throws.
+try {
+  process.loadEnvFile('.env.local');
+} catch {
+  // no .env.local — fall through to whatever is already in the environment
+}
+
+// Force module scope. This script has only dynamic `await import()`s, so with
+// the dotenv static import gone it would otherwise be a global script and its
+// top-level `main()` would collide with the identically-named one in
+// fyers-order-smoke.ts under the shared scripts typecheck project.
+export {};
 
 const MAX_PREMIUM_BUDGET = 20_000; // ₹ premium per lot ceiling (capital ₹25k)
 

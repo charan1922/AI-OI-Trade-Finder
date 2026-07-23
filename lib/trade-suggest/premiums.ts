@@ -21,9 +21,9 @@
 
 import { bestBidAsk, dhanMarketFeed } from '@/lib/dhan/market-feed';
 import {
-  MAX_LOSS_PER_LOT_RUPEES,
   MAX_OPT_SPREAD_PCT,
-  PREMIUM_SL_PCT,
+  MAX_RISK_PER_LOT_RUPEES,
+  OPTION_STOP_PCT,
   TF_LOT_TARGET_RUPEES,
 } from '@/lib/trade-suggest/config';
 import type { OptionPlan, OptionPremium } from '@/lib/trade-suggest/types';
@@ -56,14 +56,44 @@ export function resolveOptionPrice(
   return null;
 }
 
+/** The stop/risk policy the displayed plan should reflect. Passed in by the
+ *  engine from the EFFECTIVE auto-trade settings so the suggested stop is the
+ *  one that will actually fire — the compile-time constants are only the
+ *  fallback for callers with no runtime context (PR#18 review found the scanner
+ *  hard-coded 25% / ₹2,500 while auto-trade honoured the runtime values). */
+export interface PremiumPolicy {
+  stopPct: number;
+  maxRiskPerLot: number;
+}
+
+const DEFAULT_PREMIUM_POLICY: PremiumPolicy = {
+  stopPct: OPTION_STOP_PCT,
+  maxRiskPerLot: MAX_RISK_PER_LOT_RUPEES,
+};
+
+/** Guard the injected policy: a corrupt runtime value must fall back to the
+ *  coded default rather than produce a nonsense stop on a real plan. */
+function safePolicy(policy?: PremiumPolicy): PremiumPolicy {
+  const stopPct =
+    policy != null && Number.isFinite(policy.stopPct) && policy.stopPct > 0 && policy.stopPct < 100
+      ? policy.stopPct
+      : DEFAULT_PREMIUM_POLICY.stopPct;
+  const maxRiskPerLot =
+    policy != null && Number.isFinite(policy.maxRiskPerLot) && policy.maxRiskPerLot > 0
+      ? policy.maxRiskPerLot
+      : DEFAULT_PREMIUM_POLICY.maxRiskPerLot;
+  return { stopPct, maxRiskPerLot };
+}
+
 /**
  * One batched Dhan quote for the picked option contracts → live premium,
- * option-book spread, volume/OI, per-lot cost, premium SL (−PREMIUM_SL_PCT%)
- * and the ₹TF_LOT_TARGET_RUPEES/lot premium target. Mutates each plan's
- * `premium`; leaves it null (never fabricated) when no price of any kind
- * comes back — and says so in the log.
+ * option-book spread, volume/OI, per-lot cost, the premium stop (a flat
+ * `policy.stopPct` of the contract's own price) and the ₹TF_LOT_TARGET_RUPEES/lot
+ * premium target. Mutates each plan's `premium`; leaves it null (never
+ * fabricated) when no price of any kind comes back — and says so in the log.
  */
-export async function attachPremiums(options: OptionPlan[]): Promise<void> {
+export async function attachPremiums(options: OptionPlan[], policy?: PremiumPolicy): Promise<void> {
+  const { stopPct, maxRiskPerLot } = safePolicy(policy);
   const ids = options.map((o) => Number(o.optSecurityId)).filter((n) => n > 0);
   if (ids.length === 0) return;
   const unpriced: string[] = [];
@@ -98,6 +128,22 @@ export async function attachPremiums(options: OptionPlan[]): Promise<void> {
             ? 'last trade is stale (outside the live book) — priced off the bid-ask mid'
             : 'no trade printed yet — priced off the bid-ask mid'
         );
+      // The contract is priceable but too big for the per-lot risk budget: at the
+      // fixed OPTION_STOP_PCT stop it would put more than MAX_RISK_PER_LOT_RUPEES
+      // behind that stop. Auto-trade REFUSES this outright (risk/gates.ts); the
+      // scanner only warns, so a manual trader still sees the pick and the reason.
+      // The executable price a market BUY actually lifts: the ASK when there is a
+      // book, else the resolved mark. Both the per-lot COST (affordability) and
+      // the per-lot RISK are sized off this, so the scanner's "fits the budget"
+      // and "risks too much" agree with what auto-trade's gate enforces (PR#18
+      // review + re-review — the affordability filter used the cheaper mark, so a
+      // pick could look affordable here yet be refused there).
+      const executablePrice = book?.ask ?? price;
+      const riskAtStop = ((executablePrice * stopPct) / 100) * o.lotSize;
+      if (riskAtStop > maxRiskPerLot)
+        warnings.push(
+          `lot risks ₹${Math.round(riskAtStop).toLocaleString('en-IN')} at the ${stopPct}% premium stop (off the ₹${Math.round(executablePrice * 100) / 100} ${book?.ask != null ? 'ask' : 'mark'}) — above the ₹${maxRiskPerLot.toLocaleString('en-IN')} per-lot budget`
+        );
       const premium: OptionPremium = {
         ltp: Math.round(price * 100) / 100,
         priceSource: resolved.source,
@@ -106,14 +152,18 @@ export async function attachPremiums(options: OptionPlan[]): Promise<void> {
         spreadPct: book == null ? null : Math.round(book.spreadPct * 100) / 100,
         volume,
         oi,
-        perLotCost: Math.round(price * o.lotSize * 100) / 100,
-        // Stop premium = the TIGHTER of the 40% backstop and the ₹ per-lot cap,
-        // so a lot can't lose more than MAX_LOSS_PER_LOT_RUPEES (higher premium = smaller loss).
-        slPremium:
-          Math.round(
-            Math.max(0, Math.max(price * (1 - PREMIUM_SL_PCT / 100), price - MAX_LOSS_PER_LOT_RUPEES / o.lotSize)) *
-              100
-          ) / 100,
+        // Affordability = the EXECUTABLE cost (ask × lot), not the ltp/mid mark ×
+        // lot — the engine skips a pick when this exceeds the capital budget, and
+        // it must agree with auto-trade's ask-based capital gate. `ltp` above
+        // keeps the mark for display/analytics (PR#18 re-review).
+        perLotCost: Math.round(executablePrice * o.lotSize * 100) / 100,
+        // Stop premium = a straight OPTION_STOP_PCT of the contract's own price.
+        // It is deliberately NOT squeezed to fit a rupee budget: dividing a flat
+        // ₹/lot cap by lot sizes that range 75–700 produced stops of 7.7%–23.8%
+        // that nobody chose, and every one under ~12% lost (2026-07-23 review).
+        // The rupee budget is enforced instead by refusing an over-sized lot —
+        // surfaced here as a warning, blocked for real in risk/gates.ts.
+        slPremium: Math.round(Math.max(0.05, price * (1 - stopPct / 100)) * 100) / 100,
         targetPremium: Math.round((price + TF_LOT_TARGET_RUPEES / o.lotSize) * 100) / 100,
         liquidityWarning: warnings.length > 0 ? warnings.join('; ') : null,
       };

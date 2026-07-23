@@ -2,7 +2,7 @@
 
 import { ChevronDown, ChevronRight, ExternalLink, Loader2, NotebookText, RefreshCw } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { CAPITAL_BUDGET, MAX_LOSS_PER_LOT_RUPEES } from '@/lib/trade-suggest/config';
+import { CAPITAL_BUDGET, OPTION_STOP_PCT } from '@/lib/trade-suggest/config';
 
 /** Mirrors lib/trade-suggest/store.ts StoredSuggestion (the persisted row). */
 interface StoredRow {
@@ -137,12 +137,12 @@ function lotsFor(s: StoredRow): number {
 function planOutcome(s: StoredRow): { basis: Basis; plPerShare: number | null } {
   if (s.outcomeAt == null) return { basis: 'PENDING', plPerShare: null };
   const tgtPL = s.premiumTarget != null && s.premiumAtSuggest != null ? s.premiumTarget - s.premiumAtSuggest : null;
-  // Cap the modeled loss at the ₹ per-lot budget — a losing trade that hit the old
-  // 40% stop necessarily passed through this tighter level first, so recomputing
-  // historical rows at the cap is honest (and new rows are already stored capped).
-  const capPerShare = s.lotSize > 0 ? MAX_LOSS_PER_LOT_RUPEES / s.lotSize : null;
-  const rawSlPL = s.premiumSl != null && s.premiumAtSuggest != null ? s.premiumSl - s.premiumAtSuggest : null;
-  const slPL = rawSlPL == null ? null : capPerShare == null ? rawSlPL : Math.max(rawSlPL, -capPerShare);
+  // The stop loss is whatever THAT ROW's stored premiumSl actually was — no extra
+  // rupee cap applied on top. Rows written before 2026-07-23 carry the old
+  // lot-size-dependent stop (`max(−40%, −₹1,500/lot)`); newer rows carry the flat
+  // OPTION_STOP_PCT one. Re-capping every row at today's budget would restate
+  // history against a rule those trades were never run under.
+  const slPL = s.premiumSl != null && s.premiumAtSuggest != null ? s.premiumSl - s.premiumAtSuggest : null;
 
   if (s.spotOutcome != null) {
     switch (s.spotOutcome) {
@@ -542,9 +542,11 @@ export default function TradeLogPage() {
         (newest first). <b>Entry</b> = first call time · <b>Outcome</b> = which level the spot hit (target / stop / open); the
         time shown is the EOD grade time, not the exact hit time. <b>Lots</b> sized to ₹{(CAPITAL_BUDGET / 1000).toFixed(0)}k
         capital, capped at {MAX_LOTS}. <b>Modeled P/L</b> is the plan outcome (not real broker fills) — target hit →
-        +₹5,000/lot; stop hit → loss capped at{' '}
-        <b>₹{MAX_LOSS_PER_LOT_RUPEES.toLocaleString('en-IN')}/lot</b> (the spot SL sits at the structure level — last
-        candle / support — this only bounds the ₹ if it&apos;s wide); <b>open</b> = neither touched (no ₹ claimed).{' '}
+        +₹5,000/lot (the scanner&apos;s objective; the live auto-trader uses its own smaller cash target); stop hit → the
+        loss implied by that row&apos;s own stored premium stop, which since 23 Jul 2026 is a flat percentage of the
+        option&apos;s price (the runtime premium-stop width, <b>{OPTION_STOP_PCT}%</b> by default — a row set at a
+        different width grades against the width it was actually run under, and older rows keep the lot-size-dependent
+        stop, so history is never restated); <b>open</b> = neither touched (no ₹ claimed).{' '}
         <b>Move</b> = best spot move in the suggested direction at close. <b>⚠ stop*</b> = both target and stop were touched
         intraday — counted as the stop, since a disciplined exit takes the stop first. Signal analysis only; no order is placed.
       </p>

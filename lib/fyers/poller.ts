@@ -1055,13 +1055,16 @@ async function runConfigDriftReminder(state: PollerState): Promise<void> {
   if (state.lastConfigDriftAlertDate === today) return; // fast in-memory path
   if (await isMarketHoliday(today)) return;
 
-  const { tradeSuggestConfigOverrideSummary } = await import('@/lib/config/feature-toggles');
+  const { tradeSuggestConfigOverrideSummary, unreachableToggleWarnings } = await import(
+    '@/lib/config/feature-toggles'
+  );
   const { sendMessageAsync } = await import('@/lib/telegram');
   const outcome = await runConfigDriftReminderCore({
     wasMarked: () => wasMarkedToday(DRIFT_MARKER, today),
     acquireLease: () => tryAcquireRuntimeLease(DRIFT_LEASE, 120_000),
     releaseLease: () => releaseRuntimeLease(DRIFT_LEASE),
     getOverrides: tradeSuggestConfigOverrideSummary,
+    getUnreachable: unreachableToggleWarnings,
     send: async (message) => {
       const r = await sendMessageAsync(message);
       return { ok: r.ok, error: r.error };

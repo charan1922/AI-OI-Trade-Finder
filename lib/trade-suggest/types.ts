@@ -23,9 +23,13 @@ export interface OptionPremium {
   /** Today's traded volume + open interest of this contract (liquidity). */
   volume: number | null;
   oi: number | null;
-  /** ltp × lotSize — the capital one lot costs. */
+  /** EXECUTABLE cost of one lot = (ask, else mark) × lotSize — what a market BUY
+   *  actually commits. The engine's affordability skip uses this, so it agrees
+   *  with auto-trade's ask-based capital gate. `ltp` is the mark, kept separate. */
   perLotCost: number;
-  /** Premium max-loss backstop: ltp × (1 − PREMIUM_SL_PCT/100). */
+  /** Premium stop: ltp × (1 − OPTION_STOP_PCT/100) — sized to the OPTION's own
+   *  noise and independent of lot size. The per-lot rupee budget is enforced by
+   *  refusing an over-sized contract, not by tightening this. */
   slPremium: number;
   /** Premium level that books ~₹TF_LOT_TARGET_RUPEES on one lot. */
   targetPremium: number;

@@ -56,7 +56,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: USE_BREAKOUT_BYPASS,
     description:
-      'Normally a stock is only suggested when open interest (OI) shows big players building positions in it. But some fast movers break out on PRICE first and the OI shows up only later — the normal rule throws those away. ON: a stock with no OI evidence yet can still qualify, but only if price has clearly broken out of its opening range in the trade direction, the trend tools (Supertrend / VWAP) agree, and its R-Factor is strong. OFF (default): OI evidence is always required. Trade-off: ON finds early breakout winners but with weaker proof behind them — keep OFF until the daily benchmark shows it picks more winners than junk.',
+      'Normally a stock is only suggested when "open interest" (how many option/futures contracts big players are holding) is clearly rising — proof that money is flowing in. Some fast stocks jump on price first and that proof only shows up later, so the normal rule skips them. ON: a stock with no open-interest proof yet can still qualify — but only if its price has clearly broken above its early-morning range in the trade direction, the trend indicators agree, and its overall strength score is high. OFF (default): open-interest proof is always required. Trade-off: ON catches early breakouts but on thinner proof — keep OFF until the nightly test shows it picks more winners than junk.',
   },
   {
     key: 'USE_TF_BREAKOUT_GATE',
@@ -64,7 +64,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: USE_TF_BREAKOUT_GATE,
     description:
-      'An extra strictness filter on top of all the normal rules. ON: a stock is only suggested when its Breakout badge (the /live column) says the breakout is CONFIRMED in the same direction as the trade — meaning the morning low (for buys) or morning high (for sells) held all day, AND price has already cleared at least one important level such as the opening-range high, yesterday’s high, or a multi-day high. Stocks whose base is still forming, that look like a fakeout, or that have no candle data yet are all dropped (the scan shows how many). OFF (default): the badge is shown as information only and never blocks a suggestion. Keep OFF for now — backtesting proved the breakout signal points the right way at the right time, but has NOT yet proven that filtering on it produces better trades.',
+      'An extra-strict filter on top of the normal rules. ON: a stock is suggested only when its Breakout badge (the /live column) says the breakout is CONFIRMED in the trade direction — the morning low held (for buys) or the morning high held (for sells), AND price has already cleared an important level such as the early-morning-range high, yesterday’s high, or a multi-day high. Stocks still forming, looking like a false breakout, or missing data are dropped (the scan shows how many). OFF (default): the badge is shown as information only and never blocks a suggestion. Keep OFF for now — testing showed the breakout signal points the right way at the right time, but filtering on it has NOT yet been shown to produce better trades.',
   },
   {
     key: 'SCAN_FULL_UNIVERSE',
@@ -72,7 +72,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: SCAN_FULL_UNIVERSE,
     description:
-      'How many stocks the scanner even looks at. OFF (default): only the stocks already on NSE’s movers lists — OI spurts, top gainers, top losers, most active — the same names the /nse/movers page shows (typically 50–80). ON: it checks all ~166 tradeable F&O stocks instead. Every quality rule still applies either way — this only widens who gets LOOKED at, not who qualifies. ON also records intraday data for the whole universe, which the nightly replay benchmark needs.',
+      'How many stocks the scanner even looks at. OFF (default): only the stocks already on NSE’s "movers" lists — biggest open-interest jumps, top gainers, top losers, most active — the same names the /nse/movers page shows (usually 50–80). ON: it checks all ~166 tradeable F&O stocks instead. The quality rules are the same either way — this only widens who gets LOOKED at, not who qualifies. ON also records data for every stock, which the nightly test needs.',
   },
   {
     key: 'SCAN_OUTSIDE_WINDOW',
@@ -80,7 +80,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: SCAN_OUTSIDE_WINDOW,
     description:
-      'When the scanner is allowed to suggest trades. OFF (safe default): only during the proven morning window, 09:40–11:00 — the whole strategy was built and tested on morning entries, which is when the best moves start. ON: it will suggest trades any time the market is open. Be aware: out-of-window picks get saved and mixed into the daily scorecard, so they affect your stats. Turn ON only when you deliberately want all-day scanning.',
+      'When the scanner may suggest trades. OFF (safe default): only during the proven morning window, 09:40–11:00 — the whole strategy was built and tested on morning entries, when the best moves begin. ON: it suggests trades any time the market is open. Note: out-of-window picks are saved and mixed into the daily scorecard, so they affect your stats. Turn ON only when you really want all-day scanning.',
   },
   {
     key: 'EXCLUDE_EXTENDED',
@@ -88,7 +88,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: EXCLUDE_EXTENDED,
     description:
-      'ON (safe default): skips any stock that has already moved 3% or more from today’s open — by the time you’d enter, the move has mostly happened, and chasing late has been a losing bet in our testing (0 of 5 chased picks worked). OFF: the scanner is allowed to suggest those big early movers too. Keep ON unless you deliberately want to chase.',
+      'ON (safe default): skip any stock that has already moved 3% or more from today’s open. By the time you could enter, most of the move is over, and chasing late has lost every time we tried it (0 wins out of 5). OFF: the scanner may suggest these big early movers too. Keep ON unless you deliberately want to chase.',
   },
   {
     key: 'USE_EXTENDED_TREND_BYPASS',
@@ -96,7 +96,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: USE_EXTENDED_TREND_BYPASS,
     description:
-      'Works WITH “Skip already-extended movers”. That rule throws away every stock already 3%+ from the open — but on a genuine TREND day, a stock can keep running much further all day. ON: such a stock is let back in, and ONLY while it is still pushing to fresh highs/lows, holding the right side of VWAP, and its Supertrend agrees with the direction — a spike that has stalled or lost VWAP stays excluded. Let-back-in stocks still carry the “extended” score penalty, so they rank cautiously. OFF (default): every 3%+ mover stays excluded, full stop. Experimental — turn ON only to gather evidence on the Trade Log before trusting it.',
+      'Works together with “Skip already-extended movers”. That rule drops every stock already 3%+ from the open — but on a real trending day a stock can keep running much further. ON: such a stock is allowed back in, but ONLY while it is still making fresh highs/lows, staying on the right side of the day’s average-price line (VWAP), and its trend indicator agrees with the direction — one that has stalled or slipped back stays out. Any stock let back in still carries a scoring penalty, so it ranks cautiously. OFF (default): every 3%+ mover stays out, no exceptions. Experimental — turn ON only to gather evidence before trusting it. (Only does anything while “Skip already-extended movers” above is ON.)',
   },
   {
     key: 'USE_CHAOTIC_OPEN_GATE',
@@ -104,7 +104,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: USE_CHAOTIC_OPEN_GATE,
     description:
-      'Skips a stock whose FIRST 15 MINUTES were a violent spike compared to its own normal 5-minute movement (more than 5× its settled average bar). Why: a stock that blows all its energy at the open tends to fade right after — both auto-trade losers (HYUNDAI 15-Jul, SRF 16-Jul) opened at 5.5–5.7× and faded within 30 minutes, while the winners (MANKIND, PATANJALI, POLYCAB) opened calmer and trended. The 5× line was calibrated on a full-universe backtest: a tighter 4× would have wrongly blocked genuine trend days (KALYANKJIL, SIEMENS, CGPOWER at ~4.3–4.5×). ON (default, per operator request 17-Jul): violent-open names are skipped; the scan shows how many. OFF: the open character is still stamped on every pick as information. Honest caveat: the evidence is 2 recorded days — the nightly scorecard is accruing proof, and this switch comes OFF if the replay turns against it.',
+      'Skip a stock whose FIRST 15 MINUTES were a wild spike compared to its own normal pace (more than 5× its usual 5-minute bar). Why: a stock that burns all its energy at the open tends to fade right after — both auto-trade losers opened this wildly and faded within 30 minutes, while the winners opened calmer and trended. The 5× line is deliberately not tighter: a 4× line would have wrongly blocked some genuine trend days. ON (default): wild-open stocks are skipped; the scan shows how many. OFF: the open is still noted on each pick as information. Honest note: this rests on only 2 recorded days — the nightly scorecard is still gathering proof, and this switch comes OFF if results turn against it.',
   },
   {
     key: 'USE_RANK_CLIMB_GATE',
@@ -112,7 +112,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: USE_RANK_CLIMB_GATE,
     description:
-      'OFF (default — ships off for the live-trading debut; turn ON here once live has run clean for a few days): a stock whose combined OI build is small (1–5%, below the usual 5% bar) can still qualify on the options-led path IF it is actively climbing the NSE movers leaderboard (gainers or OI board) over the last ~30 minutes — the ADANIENSOL profile (16-Jul: TF made ₹10.1k, we found 0; it was climbing gainers #15→#7 with options flow qualifying). The options-share and premium-value checks still apply. Evidence is 1 day (winners climbing 5/8 vs losers 1/7) — the replay grid tracks it nightly. ON: enables the catch path. OFF: only the plain 5% rule qualifies, exactly as the proven code.',
+      'A stock with only a small rise in open interest (1–5%, below the usual 5% bar) can still qualify on the options path IF it is actively climbing NSE’s movers leaderboard (top gainers or open-interest board) over the last ~30 minutes and its options activity checks out. This catches the kind of stock we once missed while others made money on it. ON: turns this extra path on. OFF (default): only the plain 5% rule qualifies — exactly like the proven version. It ships OFF for the live-trading start; turn it ON here once live has run cleanly for a few days. Evidence so far is just 1 day, tracked by the nightly test.',
   },
   {
     key: 'USE_MOMENTUM_BREAKOUT',
@@ -120,7 +120,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Trade Suggest',
     default: USE_MOMENTUM_BREAKOUT,
     description:
-      'A fourth way for a stock to qualify, built for SHORT-COVERING breakouts (price rising while open interest falls — ADANIGREEN 14-Jul was the textbook case: TradeFinder rode it for ₹15.9k while every OI-based rule here rejected it, by design). ON: a stock with NO accumulation evidence (low R-Factor, no OI build, quiet setup) can still be suggested — but ONLY with a confirmed opening-range breakout, BOTH Supertrend AND VWAP agreeing, and at least a 1.5% move from the open in the trade direction. Liquidity, turnover and direction rules still apply. OFF (default): keep it off until the nightly replay benchmark proves it catches these winners without letting fakeouts through across several recorded days — one good day is not proof.',
+      'A fourth way for a stock to qualify, built for "short-covering" breakouts — price rising while open interest FALLS (traders who bet against it rushing to exit). These score badly on every normal rule by design, yet can be big winners. ON: a stock with no build-up evidence at all (low strength score, no open-interest build, quiet setup) can still be suggested — but ONLY with a confirmed early-morning-range breakout, BOTH trend tools agreeing, and at least a 1.5% move from the open in the trade direction. Liquidity, activity and direction rules still apply. OFF (default): keep it off until the nightly test proves it catches these winners without letting false breakouts through over several days — one good day is not proof.',
   },
   {
     key: 'PRIORITY_REFRESH_SHADOW',
@@ -128,7 +128,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Priority Refresh',
     default: PRIORITY_REFRESH_SHADOW,
     description:
-      'MEASUREMENT ONLY — never changes trading. Each 5-minute cycle the app also works out a SMALLER “refresh first” list (your open positions + earlier picks, plus a fair top-40 drawn evenly from the five NSE mover feeds) and records its membership plus how many of that cycle’s suggestions fell OUTSIDE the proposed cap (the coverage evidence). It does NOT reorder anything and does NOT measure timing — the poller waits for the full ~50–80 name list in the exact same order as today. ON (default) to collect that evidence; OFF to stop the extra bookkeeping.',
+      'MEASUREMENT ONLY — never changes trading. Each 5-minute cycle the app also works out a SHORTER “refresh-first” list (your open positions and earlier picks, plus a fair top-40 spread evenly across NSE’s five movers feeds) and records it, along with how many of that cycle’s suggestions fell outside that shorter list. It does NOT reorder anything and does NOT change timing — the app still waits for the full ~50–80 name list in the same order as today. ON (default) to collect this evidence; OFF to stop the extra note-taking.',
   },
   {
     key: 'PRIORITY_ACTIVE_SECTORS_SHADOW',
@@ -136,7 +136,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Priority Refresh',
     default: PRIORITY_ACTIVE_SECTORS_SHADOW,
     description:
-      'MEASUREMENT ONLY. Inside the shadow plan above, also try promoting a few stocks from the day’s strongest sectors — but only names already on a mover feed, and only when the stock’s own price move agrees with the sector’s direction. It records what WOULD have been promoted so we can judge whether it improves picks; it does not touch the live list. ON (default) to gather the evidence.',
+      'MEASUREMENT ONLY. Inside the shadow plan above, also try bumping up a few stocks from the day’s strongest sectors — but only names already on a movers feed, and only when the stock’s own move agrees with its sector’s direction. It just records what WOULD have been bumped up so we can judge whether it helps; it never touches the live list. ON (default) to gather the evidence.',
   },
   {
     // Registered now that the stale-candle gate it controls is on `main` (PR #10
@@ -149,7 +149,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Priority Refresh',
     default: BLOCK_STALE_AUTO_ENTRY,
     description:
-      'SAFETY — ON by default. An Auto-Trade NEW entry is refused unless the stock’s latest COMPLETED 5-minute candle was refreshed after it closed this cycle: the scanner builds its stop and target from that candle, so entering on a stale/still-forming one means acting on an old picture. Exits, stop-moves and the 15:12 square-off are NEVER affected. Leave ON unless you are deliberately debugging.',
+      'SAFETY — ON by default. Auto-Trade refuses a NEW entry unless the stock’s latest FINISHED 5-minute candle was refreshed after it closed this cycle. The scanner builds its stop and target from that candle, so entering on an old or half-formed one means acting on a stale picture. Exits, stop moves, and the 15:12 square-off are NEVER affected. Leave ON unless you are deliberately debugging.',
   },
   // NOTE: the LIVE controls (USE_CAPPED_PRIORITY_REFRESH,
   // PRIORITY_INCLUDE_ACTIVE_SECTORS) are still NOT registered here — a /config
@@ -162,7 +162,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     category: 'Server',
     default: false,
     description:
-      'Master switch for the AWS box powering ITSELF off to save money. OFF (default): the box stays up 24/7 — safest while you are actively testing live, no surprise shutdowns. ON: a scheduler on the box powers it off in the evening (~16:30 IST, well after the 15:12 square-off) and keeps it off all weekend, then AWS wakes it again at 08:15 IST on the next trading day. The shutdown is position-guarded — it will NOT power off while any trade is open/placing, no matter the time — and overnight jobs are safe because the nightly bhavcopy sync backfills on the morning startup. Flip this ON once live testing settles and you want the ~₹1,000/month saving.',
+      'Master switch for the server powering ITSELF off to save money. OFF (default): the server stays on 24/7 — safest while you are actively testing live, with no surprise shutdowns. ON: the server powers off in the evening (~16:30 IST, well after the 15:12 square-off) and stays off all weekend, then wakes automatically at 08:15 IST on the next trading day. It will NOT power off while any trade is open, whatever the time, and overnight data catches up on the morning restart. Turn ON once live testing settles and you want the ~₹1,000/month saving.',
   },
 ];
 
@@ -187,7 +187,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 1,
     max: 10,
     description:
-      'How many qualified stocks a scan may suggest at most. The quality gates are the real constraint — quiet days produce 1–2 regardless. With a ₹50–60k account only the top 1–3 are actionable; anything beyond that is a watchlist.',
+      'The most stocks one scan may suggest. The quality rules are the real limit — quiet days give 1–2 no matter what. With a ₹50–60k account only the top 1–3 are actually tradeable; the rest are just a watchlist.',
   },
   // Times are IST minutes from midnight (e.g. 09:40 = 580, 11:00 = 660).
   {
@@ -198,7 +198,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 9 * 60 + 15,
     max: 13 * 60,
     description:
-      'When the scanner window OPENS, as IST minutes from midnight (default 580 = 09:40 — the proven morning window). The window is where suggestions are normal; “Scan outside the window” overrides it entirely when ON.',
+      'When the scan window OPENS, in IST minutes from midnight (default 580 = 09:40, the proven morning window). This is when suggestions are normal; the “Scan outside the window” switch overrides it completely when ON.',
   },
   {
     key: 'WINDOW_END_MIN',
@@ -208,7 +208,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 10 * 60,
     max: 14 * 60 + 30,
     description:
-      'When the scanner window CLOSES, as IST minutes from midnight (default 660 = 11:00). Late-window momentum fades fastest — widen deliberately, not casually.',
+      'When the scan window CLOSES, in IST minutes from midnight (default 660 = 11:00). Momentum fades fastest late in the window — widen this on purpose, not casually.',
   },
   {
     key: 'COMMENTARY_ENTRY_CUTOFF_MIN',
@@ -221,7 +221,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 11 * 60,
     max: 15 * 60,
     description:
-      'After this IST time (minutes from midnight; default 750 = 12:30) the AI commentary stops pitching fresh entries and focuses on managing/exiting open positions. Deterministic — injected by code, not left to the model.',
+      'After this IST time (minutes from midnight; default 750 = 12:30) the AI commentary stops suggesting fresh entries and switches to managing and exiting open positions. Set by code, not left to the AI.',
   },
   {
     key: 'PRIORITY_PER_FEED',
@@ -231,7 +231,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 5,
     max: 24,
     description:
-      'How many names from EACH of the five NSE mover feeds (OI build-up, gainers, losers, most-active by value and by volume) the reduced list considers — ranks 1..N. Higher casts a wider net but lengthens the wait. Bounded 5–24 so a Config click can’t configure a degenerate 1-per-feed list that persists into a later live deploy (PR#11 review). Shadow-only until reduced priority refresh is turned on.',
+      'How many names from EACH of NSE’s five movers feeds (open-interest build-up, gainers, losers, most active by value, most active by volume) the shorter refresh list considers — the top 1..N. Higher casts a wider net but makes the wait longer. Limited to 5–24 so a stray click can’t set a broken 1-per-feed list. Only matters once the reduced refresh is turned on.',
   },
   {
     key: 'PRIORITY_MAX_UNIQUE',
@@ -241,7 +241,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 20,
     max: 80,
     description:
-      'The hard cap on the reduced “Tier 1” candidate list (unique stocks). Your open positions and earlier picks (Tier 0) are always waited for ON TOP of this — they never eat into the cap. Bounded 20–80 so a casual change can’t shrink it to a degenerate handful (PR#11 review).',
+      'The hard limit on the shorter “Tier 1” candidate list (unique stocks). Your open positions and earlier picks are always handled ON TOP of this — they never eat into the limit. Kept between 20 and 80 so a casual change can’t shrink it to a handful.',
   },
   {
     key: 'PRIORITY_SECTOR_RESERVED_SLOTS',
@@ -251,7 +251,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 0,
     max: 40,
     description:
-      'Of the Tier 1 cap, how many slots are set aside for active-sector promotion. Must not exceed “max unique Tier 1”. Any reserved slot that finds no qualifying sector stock falls back to the normal top-of-feed list, so the cap is always filled.',
+      'Of the Tier 1 limit, how many spots are set aside for strong-sector stocks. Can’t be more than “max unique Tier 1”. Any reserved spot that finds no qualifying sector stock falls back to the normal top-of-feed list, so the list is always filled.',
   },
   {
     key: 'PRIORITY_TOP_SECTORS_PER_SIDE',
@@ -261,7 +261,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 0,
     max: 6,
     description:
-      'When promoting sector stocks, how many strong sectors to pick per side — this many bullish AND this many bearish (so both call and put opportunities are covered).',
+      'When promoting sector stocks, how many strong sectors to pick on each side — this many bullish AND this many bearish, so both call and put ideas are covered.',
   },
   {
     key: 'PRIORITY_SECTOR_MAX_AGE_SEC',
@@ -271,7 +271,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 300,
     max: 900,
     description:
-      'Ignore the stored sector snapshot if it is older than this many seconds, and fall back to the plain top-of-feed list. The snapshot is produced by the PREVIOUS 5-minute cycle, so this must comfortably exceed one cycle — default 420s (5-min cycle + grace). Below ~one cycle it would reject every next-cycle read and sector promotion would never run (PR#11 review).',
+      'Ignore the saved sector snapshot if it is older than this many seconds, and fall back to the plain top-of-feed list. The snapshot comes from the PREVIOUS 5-minute cycle, so this must comfortably exceed one cycle — default 420s (one cycle plus a little grace). Set too low, it would reject every fresh read and sector promotion would never run.',
   },
 ];
 
@@ -353,6 +353,49 @@ function isClockNumberSetting(key: string, min: number): boolean {
 const minToHHMM = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 /**
+ * Toggles that are only ever REACHED from inside another toggle's branch.
+ *
+ * A switch listed here, turned ON while its parent is OFF, is unreachable code
+ * wearing the costume of a live permission. It is not drift — both values may
+ * sit at their own defaults — so the drift summary above cannot catch it.
+ *
+ * Found 2026-07-23: `USE_EXTENDED_TREND_BYPASS` was ON while `EXCLUDE_EXTENDED`
+ * had been switched OFF that morning. The bypass only ever runs inside the
+ * `excludeExtended && s.extended` branch in trade-suggest/engine.ts, so it did
+ * nothing at all — while /config showed it enabled. Nothing in the app said so.
+ */
+export const TOGGLE_PARENTS: { child: string; parent: string; why: string }[] = [
+  {
+    child: 'USE_EXTENDED_TREND_BYPASS',
+    parent: 'EXCLUDE_EXTENDED',
+    why: 'the bypass only re-admits names that “Skip already-extended movers” has excluded — with the parent OFF nothing is excluded, so there is nothing to re-admit',
+  },
+];
+
+/**
+ * PURE: bypass switches that are ON but unreachable because the rule they hang
+ * off is OFF. Separate from drift on purpose — this is a *combination* fault,
+ * and both halves can be at their own defaults while the pair is meaningless.
+ */
+export function buildUnreachableToggleWarnings(
+  toggles: Pick<ToggleState, 'key' | 'label' | 'value'>[]
+): string[] {
+  const byKey = new Map(toggles.map((t) => [t.key, t]));
+  const out: string[] = [];
+  for (const link of TOGGLE_PARENTS) {
+    const child = byKey.get(link.child);
+    const parent = byKey.get(link.parent);
+    if (child == null || parent == null) continue;
+    if (child.value && !parent.value) {
+      out.push(
+        `“${child.label}” is ON but does nothing: it only runs inside “${parent.label}”, which is OFF — ${link.why}. Turn the parent back ON to use it, or turn this OFF so the page reflects what is actually running.`
+      );
+    }
+  }
+  return out;
+}
+
+/**
  * PURE: which scanner/trading-relevant settings currently differ from their
  * coded-safe default. Every default IS the safe state; a drifted value is
  * exactly the class of thing that caused the COLPAL 2026-07-20 loss
@@ -387,6 +430,13 @@ export function buildConfigOverrideSummary(
 export async function tradeSuggestConfigOverrideSummary(): Promise<string[]> {
   const [toggles, numbers] = await Promise.all([getAllToggles(), getAllNumberSettings()]);
   return buildConfigOverrideSummary(toggles, numbers);
+}
+
+/** Bypass switches currently ON but unreachable (parent rule OFF). Reported
+ *  alongside the drift summary in the pre-open reminder — an operator reading
+ *  "bypass ON" deserves to know it is inert. */
+export async function unreachableToggleWarnings(): Promise<string[]> {
+  return buildUnreachableToggleWarnings(await getAllToggles());
 }
 
 /** Persist a toggle. Unknown keys are rejected (the registry is the allowlist).

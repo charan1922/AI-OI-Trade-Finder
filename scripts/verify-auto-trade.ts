@@ -22,6 +22,7 @@ import { executeAutoTradeTool, newPassPolicyState, type ToolRuntime } from '../l
 import { DEFAULT_SETTINGS } from '../lib/auto-trade/config';
 import { getAutoTradeSettings, setAutoTradeSetting } from '../lib/auto-trade/settings';
 import {
+  claimApprovalForPlacement,
   countEntriesToday,
   claimExitOrder,
   dailyRealizedPnl,
@@ -48,6 +49,7 @@ import { isAdminOnlyPage, requiredPermission, roleForGoogleEmail } from '../lib/
 import { computeGex } from '../lib/signals/gex';
 import { runQuantShadowChecks } from './quant-shadow-checks';
 import { runConfigDriftChecks } from './config-drift-checks';
+import { runPremiumStopChecks } from './premium-stop-checks';
 import { runGradeChecks } from './grade-checks';
 import { runProfitProtectChecks } from './profit-protect-checks';
 import { ensureSuggestionsTable, getSuggestions, recordOutcome } from '../lib/trade-suggest/store';
@@ -148,7 +150,11 @@ async function main(): Promise<void> {
   );
   // ── 1. Pure gates ──────────────────────────────────────────────────────────
   const base = {
-    settings: { ...DEFAULT_SETTINGS, mode: 'paper' as const },
+    // This fixture's ₹30,000 lot (kept because the capital-cap check below is
+    // written against it) inherently risks ₹7,500 at a 25% stop, so it needs a
+    // matching ceiling to isolate the OTHER gates. The risk ceiling itself is
+    // covered with realistic contracts in scripts/premium-stop-checks.ts.
+    settings: { ...DEFAULT_SETTINGS, mode: 'paper' as const, maxRiskPerLotRupees: 10_000 },
     liveEnvEnabled: false,
     marketOpen: true,
     sessionVerified: true,
@@ -161,6 +167,11 @@ async function main(): Promise<void> {
     symbolTradedToday: false,
     lots: 1,
     perLotCost: 30_000,
+    // The risk ceiling now FAILS CLOSED without these, so the base fixture must
+    // carry an executable price and enough displayed size (PR#18 review).
+    lotSize: 500,
+    askPrice: 60,
+    askQty: 500,
     slippagePct: 1,
     spreadPct: 2,
     hasSlSpot: true,
@@ -197,6 +208,10 @@ async function main(): Promise<void> {
     reanchoredTarget === 136.8,
     String(reanchoredTarget)
   );
+
+  // The premium-stop and per-lot-risk assertions moved to premium-stop-checks.ts
+  // so they run in CI (this bench needs a populated DB and is box-only). Invoked
+  // below with the rest of the pure suites — see runPremiumStopChecks.
   check('gates: off mode blocked', !checkEntryGates({ ...base, settings: { ...base.settings, mode: 'off' } }).allow);
   check(
     'gates: kill switch blocked',
@@ -215,7 +230,12 @@ async function main(): Promise<void> {
     'deployed 40k + 30k > 60k'
   );
   check('gates: re-entry blocked', !checkEntryGates({ ...base, symbolTradedToday: true }).allow);
-  check('gates: loss halt blocked', !checkEntryGates({ ...base, dailyRealizedPnl: -3_000 }).allow);
+  check('gates: loss halt blocked', !checkEntryGates({ ...base, dailyRealizedPnl: -5_000 }).allow);
+  check(
+    'gates: loss halt NOT tripped one rupee short of the limit',
+    checkEntryGates({ ...base, dailyRealizedPnl: -4_999 }).allow,
+    'halt is ≤ −dailyLossHaltRupees, not <'
+  );
   check('gates: slippage blocked', !checkEntryGates({ ...base, slippagePct: 6 }).allow);
   check('gates: no premium blocked', !checkEntryGates({ ...base, perLotCost: null }).allow);
   check('gates: no stop blocked', !checkEntryGates({ ...base, hasSlSpot: false }).allow);
@@ -438,6 +458,7 @@ async function main(): Promise<void> {
   // CI (scripts/verify-quant-shadow.ts). Single source — no drift.
   runQuantShadowChecks(check);
   await runConfigDriftChecks(check);
+  runPremiumStopChecks(check);
   runGradeChecks(check);
   runProfitProtectChecks(check);
 
@@ -657,6 +678,8 @@ async function main(): Promise<void> {
       priceSource: 'ltp',
       bid: 24,
       ask: 24.2,
+      bidQty: null,
+      askQty: null,
       spreadPct: 0.83,
       slPremium: 17,
       targetPremium: 22.2,
@@ -704,6 +727,157 @@ async function main(): Promise<void> {
   await prisma.$executeRawUnsafe(`DELETE FROM auto_quote_snapshots WHERE tradeId = ?`, tradeId);
   await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, date);
   check('store: cleanup', (await countEntriesToday(date)) === 0);
+
+  // ── 4b. Approval re-snapshot + ask-based exposure (PR#18 re-review) ─────────
+  // A pending_approval row carries a PROPOSAL-time ceiling (₹2,500) and ask
+  // (₹42) while the mark is ₹40. Exposure must reserve off the ask; approval
+  // must atomically re-snapshot the APPROVAL-time ceiling/ask; a second click
+  // must not re-win or overwrite.
+  const apDate = '2099-03-03';
+  await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, apDate);
+  const apId = await insertTrade({
+    date: apDate,
+    symbol: 'APSYM',
+    direction: 'bullish',
+    optionType: 'CE',
+    strike: 100,
+    expiryDate: '2099-03-27',
+    lotSize: 200,
+    lots: 1,
+    optSecurityId: '888888',
+    mode: 'approval',
+    broker: 'fyers',
+    status: 'pending_approval',
+    entrySpot: 1000,
+    slSpot: 990,
+    targetSpot: 1020,
+    entryPremium: 40, // ltp/mid mark
+    slPremium: 30,
+    targetPremium: 45.5,
+    approvedMaxRiskPerLotRupees: 2500, // proposal-time ceiling
+    approvedEntryAskPremium: 42, // proposal-time ask (above the mark)
+    aiReasonEntry: 'approval bench',
+  });
+  if (apId == null) throw new Error('approval bench insert unexpectedly failed');
+  const apExpo = await getExposure(apDate);
+  check(
+    'exposure: a pending row reserves off the approved ASK (₹42×200), not the ₹40 mark',
+    apExpo.deployedRupees === 42 * 200,
+    String(apExpo.deployedRupees)
+  );
+  const claimedAp = await claimApprovalForPlacement(apId, {
+    maxRiskPerLotRupees: 3000,
+    entryAskPremium: 44,
+    maxCapitalRupees: 60_000, // ₹44×200 = ₹8,800, well within — this test is about the snapshot refresh, not the cap
+    date: apDate,
+  });
+  check('approval claim: the first caller wins the pending→placing transition', claimedAp === true);
+  const apTrade = await getTrade(apId);
+  check('approval claim: status advanced to placing', apTrade?.status === 'placing');
+  check(
+    'approval claim: ceiling re-snapshotted to the APPROVAL-time value (₹3,000, not the proposal ₹2,500)',
+    apTrade?.approvedMaxRiskPerLotRupees === 3000,
+    String(apTrade?.approvedMaxRiskPerLotRupees)
+  );
+  check(
+    'approval claim: ask re-snapshotted to the fresh approval-time ask (₹44)',
+    apTrade?.approvedEntryAskPremium === 44,
+    String(apTrade?.approvedEntryAskPremium)
+  );
+  const claimedAp2 = await claimApprovalForPlacement(apId, {
+    maxRiskPerLotRupees: 9999,
+    entryAskPremium: 99,
+    maxCapitalRupees: 60_000,
+    date: apDate,
+  });
+  check('approval claim: a second click cannot re-win (row already placing)', claimedAp2 === false);
+  const apTrade2 = await getTrade(apId);
+  check(
+    'approval claim: the losing second click did NOT overwrite the snapshot',
+    apTrade2?.approvedMaxRiskPerLotRupees === 3000 && apTrade2?.approvedEntryAskPremium === 44
+  );
+  await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, apDate);
+
+  // ── 4c. Aggregate capital cap is atomic across DIFFERENT trades (PR#18 re-review) ─
+  // Two pending proposals each fit the ₹60k cap against the OTHER's proposal-time
+  // reservation, but their two FRESH asks together exceed it. Approving both
+  // concurrently must let exactly ONE through; total reserved must stay ≤ cap.
+  const capDate = '2099-04-04';
+  await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, capDate);
+  const mkPending = (symbol: string, sec: string) =>
+    insertTrade({
+      date: capDate,
+      symbol,
+      direction: 'bullish',
+      optionType: 'CE',
+      strike: 100,
+      expiryDate: '2099-04-24',
+      lotSize: 1000,
+      lots: 1,
+      optSecurityId: sec,
+      mode: 'approval',
+      broker: 'fyers',
+      status: 'pending_approval',
+      entrySpot: 1000,
+      slSpot: 990,
+      targetSpot: 1020,
+      entryPremium: 25,
+      slPremium: 19,
+      targetPremium: 30,
+      approvedEntryAskPremium: 25, // proposal ask → reserves ₹25,000 each
+      maxCapitalRupees: 60_000,
+      aiReasonEntry: 'cap race bench',
+    });
+  const capAId = await mkPending('CAPA', '770001');
+  const capBId = await mkPending('CAPB', '770002');
+  check('cap race: both proposals insert (₹25k + ₹25k = ₹50k ≤ ₹60k)', capAId != null && capBId != null, `${capAId},${capBId}`);
+  if (capAId == null || capBId == null) throw new Error('cap race bench insert unexpectedly failed');
+  // Fresh asks rise to ₹31 each (₹31k/lot). Approve both AT ONCE.
+  const claimCap = (id: number) =>
+    claimApprovalForPlacement(id, {
+      maxRiskPerLotRupees: 2500,
+      entryAskPremium: 31,
+      maxCapitalRupees: 60_000,
+      date: capDate,
+    });
+  const capResults = await Promise.all([claimCap(capAId), claimCap(capBId)]);
+  check(
+    'cap race: exactly ONE of two concurrent approvals wins (the other would push ₹62k > ₹60k)',
+    capResults.filter(Boolean).length === 1,
+    `winners=${capResults.filter(Boolean).length}`
+  );
+  const capExpo = await getExposure(capDate);
+  check(
+    'cap race: total reserved stays within the ₹60k cap',
+    capExpo.deployedRupees <= 60_000,
+    `₹${capExpo.deployedRupees}`
+  );
+  // insertTrade also refuses a single row that alone would breach the cap.
+  const soloOverCap = await insertTrade({
+    date: capDate,
+    symbol: 'CAPC',
+    direction: 'bullish',
+    optionType: 'CE',
+    strike: 100,
+    expiryDate: '2099-04-24',
+    lotSize: 1000,
+    lots: 1,
+    optSecurityId: '770003',
+    mode: 'paper',
+    broker: 'paper',
+    status: 'placing',
+    entrySpot: 1000,
+    slSpot: 990,
+    targetSpot: 1020,
+    entryPremium: 68,
+    slPremium: 51,
+    targetPremium: 73,
+    approvedEntryAskPremium: 70, // ₹70 × 1000 = ₹70,000 alone > ₹60k
+    maxCapitalRupees: 60_000,
+    aiReasonEntry: 'cap solo bench',
+  });
+  check('cap: a single lot whose ask cost alone exceeds the cap is refused at insert', soloOverCap == null);
+  await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, capDate);
 
   const guards = await Promise.all([runPositionGuard(date), runPositionGuard(date)]);
   check('guard: concurrent callers coalesce', guards.filter((guard) => guard.coalesced).length === 1);

@@ -10,8 +10,20 @@
  * Usage:  npx tsx scripts/fyers-order-smoke.ts
  * Built after the 2026-07-16 SRF incident (order refused, reason lost).
  */
-import { config } from 'dotenv';
-config({ path: '.env.local' });
+// Node's built-in env loader — no `dotenv` dependency (it is not in package.json
+// and was never installed). try/catch preserves dotenv's silent no-op when the
+// file is absent; process.loadEnvFile throws.
+try {
+  process.loadEnvFile('.env.local');
+} catch {
+  // no .env.local — fall through to whatever is already in the environment
+}
+
+// Force module scope. This script has only dynamic `await import()`s, so with
+// the dotenv static import gone it would otherwise be a global script and its
+// top-level `main()` would collide with the identically-named one in
+// fyers-order-roundtrip.ts under the shared scripts typecheck project.
+export {};
 
 async function main(): Promise<void> {
   const { fyersModel } = await import('fyers-api-v3');

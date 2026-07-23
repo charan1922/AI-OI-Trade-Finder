@@ -33,6 +33,12 @@ export interface AutoTradeSettings {
   /** Hard cap on premium capital deployed across open+pending positions (₹).
    *  User rule: 50–60k account — whichever of lots/₹ binds first wins. */
   maxCapitalRupees: number;
+  /** Premium stop distance as a % of the option's entry price — sized to the
+   *  OPTION's own noise, independent of lot size (see OPTION_STOP_PCT). */
+  optionStopPct: number;
+  /** ₹ ceiling on the risk one lot may carry. Enforced by REFUSING an over-sized
+   *  contract at the entry gate, never by tightening the stop. */
+  maxRiskPerLotRupees: number;
   /** Realized loss on the day at which the module halts new entries (₹). */
   dailyLossHaltRupees: number;
   /** Cash profit target for each new position. `per_trade` stays fixed when
@@ -84,6 +90,19 @@ export interface AutoTrade {
   entryPremium: number;
   slPremium: number;
   targetPremium: number;
+  /** The per-lot ₹ risk ceiling in force when this order was GATED (proposal
+   *  time). Snapshotted so the post-fill breach check compares the actual fill
+   *  against the budget that actually approved the order — not against whatever
+   *  the setting happens to be seconds later, which would raise false breaches
+   *  or hide real ones if an operator changed it in between (PR#18 review). Null
+   *  on rows written before this snapshot existed → the check falls back to the
+   *  current setting. */
+  approvedMaxRiskPerLotRupees?: number | null;
+  /** The ASK the entry gate sized against — the executable market-BUY price.
+   *  Pending/placing exposure reserves off this (not the ltp/mid mark) so the
+   *  capital cap is a true hard cap while an order is unresolved. Refreshed to
+   *  the approval-time ask on the approval path. */
+  approvedEntryAskPremium?: number | null;
   /** Actual fills (null until the broker confirms — never fabricated). */
   entryFillPremium: number | null;
   exitFillPremium: number | null;
@@ -225,6 +244,10 @@ export interface AccountState {
   maxOpenLots: number;
   deployedRupees: number;
   maxCapitalRupees: number;
+  /** Premium stop width (% of entry) and the ₹ ceiling one lot may risk — the
+   *  AI needs both to understand a "lot risks too much" refusal. */
+  optionStopPct: number;
+  maxRiskPerLotRupees: number;
   dailyRealizedPnlRupees: number;
   dailyLossHaltRupees: number;
   profitTargetMode: ProfitTargetMode;

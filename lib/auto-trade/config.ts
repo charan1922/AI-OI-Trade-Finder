@@ -10,13 +10,19 @@
  * review.
  */
 
-import { MAX_LOSS_PER_LOT_RUPEES } from '@/lib/trade-suggest/config';
+import { MAX_RISK_PER_LOT_RUPEES, OPTION_STOP_PCT } from '@/lib/trade-suggest/config';
 import { nowIST, minuteOfDayIST, nowISTClock } from '@/lib/ist';
 import type { AutoTradeSettings } from './types';
 
-/** ₹ risk anchor per lot. The live profit target is a separate runtime policy
- * because the scanner's wider spot plan is context, not a fixed cash exit. */
-export const MAX_LOSS_PER_LOT_FALLBACK = MAX_LOSS_PER_LOT_RUPEES;
+/** Premium stop distance (% of the option's entry price) used when no runtime
+ * setting is available — pure callers (backstops.ts) and CI fixtures. The
+ * effective value is settings.optionStopPct. */
+export const OPTION_STOP_PCT_FALLBACK = OPTION_STOP_PCT;
+
+/** ₹ ceiling on the risk carried by ONE lot. Enforced by refusing an over-sized
+ * contract at the gate, never by tightening the stop — see MAX_RISK_PER_LOT_RUPEES.
+ * The effective value is settings.maxRiskPerLotRupees. */
+export const MAX_RISK_PER_LOT_FALLBACK = MAX_RISK_PER_LOT_RUPEES;
 
 /** Seed values for the runtime settings store (settings.ts). Mode starts OFF —
  *  the operator must explicitly select paper/approval/live on /auto-trade. */
@@ -28,7 +34,9 @@ export const DEFAULT_SETTINGS: AutoTradeSettings = {
   maxTradesPerDay: 2, // user rule: max 2 real trades a day
   maxOpenLots: 2, // user rule: max 2 lots at once
   maxCapitalRupees: 60_000, // user rule: ₹50–60k account — ₹-cap on deployed premium
-  dailyLossHaltRupees: 3_000, // 2 × the ₹1.5k/lot max loss — then stop for the day
+  optionStopPct: OPTION_STOP_PCT, // premium stop width, sized to the OPTION's own noise
+  maxRiskPerLotRupees: MAX_RISK_PER_LOT_RUPEES, // ₹ ceiling per lot — refuses over-sized contracts
+  dailyLossHaltRupees: 5_000, // 2 × the ₹2.5k/lot risk ceiling — then stop for the day
   profitTargetMode: 'per_trade', // fixed cash profit for the whole position
   profitTargetRupees: 1_100, // requested default; editable without a redeploy
   maxSpreadPct: 3, // option bid-ask ceiling — see MAX_SPREAD_PCT below for the evidence
@@ -71,8 +79,9 @@ export const MAX_ENTRY_SLIPPAGE_PCT = 4;
 /** Reject an entry when the option's bid-ask spread exceeds this % (DEFAULT —
  *  the effective value is settings.maxSpreadPct, tunable on /auto-trade).
  *  The spread is instant market-order slippage: half is paid at each fill, so
- *  an 8% ceiling allowed up to ~₹1,600 round-trip bleed on a ₹20k lot — more
- *  than the ₹1.5k max loss. Evidence for 3 (decision traces, 2026-07-16):
+ *  an 8% ceiling allowed up to ~₹1,600 round-trip bleed on a ₹20k lot — a large
+ *  fraction of the ₹2,500 planned per-lot risk budget. Evidence for 3 (decision
+ *  traces, 2026-07-16):
  *  SIEMENS 3750CE surfaced at 5.5% and 3.0% spread and only the AI's judgment
  *  refused it — the old 8% code gate would have passed both, violating "the
  *  AI proposes, code disposes". Every actual entry (HYUNDAI/MANKIND/
