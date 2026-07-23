@@ -160,6 +160,8 @@ export async function buildAccountState(
     maxOpenLots: s.maxOpenLots,
     deployedRupees: exposure.deployedRupees,
     maxCapitalRupees: s.maxCapitalRupees,
+    optionStopPct: s.optionStopPct,
+    maxRiskPerLotRupees: s.maxRiskPerLotRupees,
     dailyRealizedPnlRupees: pnl,
     dailyLossHaltRupees: s.dailyLossHaltRupees,
     profitTargetMode: s.profitTargetMode,
@@ -280,6 +282,7 @@ async function buildGateInput(
       symbolTradedToday: tradedToday,
       lots: 1,
       perLotCost: freshPremium != null && lotSize > 0 ? Math.round(freshPremium * lotSize * 100) / 100 : null,
+      lotSize: lotSize > 0 ? lotSize : null,
       slippagePct,
       spreadPct: fresh?.spreadPct ?? null,
       hasSlSpot: pick.plan.slSpot != null,
@@ -494,7 +497,8 @@ export async function executeAutoTradeTool(
         entryPremium,
         pick.option.lotSize,
         lots,
-        targetRupeesForPosition(rt.settings, lots)
+        targetRupeesForPosition(rt.settings, lots),
+        rt.settings.optionStopPct
       );
       const status = rt.settings.mode === 'approval' ? 'pending_approval' : 'placing';
       // Proposal-time SHADOW context (in-memory only): the pick's sector rank.

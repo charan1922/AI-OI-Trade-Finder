@@ -33,6 +33,12 @@ export interface AutoTradeSettings {
   /** Hard cap on premium capital deployed across open+pending positions (₹).
    *  User rule: 50–60k account — whichever of lots/₹ binds first wins. */
   maxCapitalRupees: number;
+  /** Premium stop distance as a % of the option's entry price — sized to the
+   *  OPTION's own noise, independent of lot size (see OPTION_STOP_PCT). */
+  optionStopPct: number;
+  /** ₹ ceiling on the risk one lot may carry. Enforced by REFUSING an over-sized
+   *  contract at the entry gate, never by tightening the stop. */
+  maxRiskPerLotRupees: number;
   /** Realized loss on the day at which the module halts new entries (₹). */
   dailyLossHaltRupees: number;
   /** Cash profit target for each new position. `per_trade` stays fixed when
@@ -225,6 +231,10 @@ export interface AccountState {
   maxOpenLots: number;
   deployedRupees: number;
   maxCapitalRupees: number;
+  /** Premium stop width (% of entry) and the ₹ ceiling one lot may risk — the
+   *  AI needs both to understand a "lot risks too much" refusal. */
+  optionStopPct: number;
+  maxRiskPerLotRupees: number;
   dailyRealizedPnlRupees: number;
   dailyLossHaltRupees: number;
   profitTargetMode: ProfitTargetMode;

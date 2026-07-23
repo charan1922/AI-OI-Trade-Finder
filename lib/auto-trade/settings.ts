@@ -119,11 +119,28 @@ export const SETTING_DEFS: SettingDef[] = [
     description: 'Cap on premium deployed across open + pending positions. User account: ₹50–60k.',
   },
   {
+    key: 'optionStopPct',
+    parse: (raw) => intInRange(raw, 10, 40, 'optionStopPct'),
+    serialize: String,
+    label: 'Premium stop width (%)',
+    description:
+      'How far the option price may fall below your fill before the guard exits, as a % of that fill. Sized to the OPTION’s own movement — time decay, the post-open volatility cool-off and the bid-ask spread all move it while the stock sits still. Below ~15% the stop lands inside that noise and fires on trades that were right (SRF 23-Jul: stopped at a 17% stop, then the contract traded 4× higher the same afternoon). Clamped 10–40%.',
+  },
+  {
+    key: 'maxRiskPerLotRupees',
+    parse: (raw) => intInRange(raw, 1_000, 10_000, 'maxRiskPerLotRupees'),
+    serialize: String,
+    label: 'Max risk per lot (₹)',
+    description:
+      'The most ONE lot may lose if its premium stop is hit. Enforced by refusing an over-sized contract at the entry gate — the stop is never tightened to make the arithmetic fit, which is what produced 7.7%–23.8% stop widths nobody chose. Keep the daily loss halt above this, or one full stop ends the day.',
+  },
+  {
     key: 'dailyLossHaltRupees',
     parse: (raw) => intInRange(raw, 500, 20_000, 'dailyLossHaltRupees'),
     serialize: String,
     label: 'Daily loss halt (₹)',
-    description: 'Realized loss on the day at which new entries stop.',
+    description:
+      'Realized loss on the day at which new entries stop. Set it above “Max risk per lot” — at or below it, a single full-stop loss halts the day.',
   },
   {
     key: 'profitTargetMode',

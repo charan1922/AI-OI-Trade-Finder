@@ -38,9 +38,22 @@ AI-driven order execution over the deterministic `/trade-suggest` scanner. Desig
 ### Hard limits (user's risk rules — enforced in code, not prompts)
 
 - Entries only **09:45–11:00 IST**; exits any time; forced square-off at **15:12** (`SQUARE_OFF_MIN`)
-- Max **2 trades/day**, max **2 open lots**, max **₹60k** deployed premium, **₹3k** daily-loss halt (settings-tunable ranges in `lib/auto-trade/settings.ts`)
+- Max **2 trades/day**, max **2 open lots**, max **₹60k** deployed premium, **₹5k** daily-loss halt (settings-tunable ranges in `lib/auto-trade/settings.ts`)
 - Always 1 lot; scanner picks only (the AI cannot choose symbol/strike/size); no re-entry of a symbol the same day; stop moves may only tighten
 - Position guard (premium SL/target + spot plan + square-off) runs BEFORE the AI every pass and under the kill switch — deterministic, works with the LLM down
+
+### Premium stop: size it to the OPTION, cap the risk by REFUSING (not by tightening)
+
+Changed 2026-07-23 after reviewing all 9 completed live trades. **Never restore the old rule.**
+
+- The stop is `OPTION_STOP_PCT` (**25%**) of the option's own entry price — `stopPremiumForFill()` in `lib/auto-trade/backstops.ts`. It is **not a function of lot size**.
+- The per-lot rupee budget (`MAX_RISK_PER_LOT_RUPEES`, **₹2,500**) is enforced by **refusing an over-sized contract** in `risk/gates.ts` — never by moving the stop until the arithmetic fits.
+- Why: the old rule was `max(−40%, −₹1,500 ÷ lotSize)`. Because lot sizes run 75–700, the *effective* stop landed anywhere from **7.7% to 23.8%** across nine live trades and nobody chose those numbers. Every stop under ~12% lost (INDUSINDBK 7.7%, AXISBANK 8.1%, NESTLEIND 9.2%, POLYCAB 9.4%, COLPAL 11.7%); both above 20% won.
+- The proof case: **SRF 2026-07-23**. Stopped at a 17% stop while the stock sat 1 point from entry — the option had already burned 78% of its stop budget on time decay, the post-open volatility cool-off and a 2.16% bid-ask spread. The call was RIGHT: the stock fell 175 points and the same contract bid **₹178 by 14:50** (₹26,880/lot instead of −₹1,610). A 25% stop (₹33.04) was never touched all session.
+- An option re-prices on things the spot knows nothing about. SRF's own bid ranged ₹36.10–₹45.05 (**20.3% of entry**) inside a 6.5-minute hold with the stock nearly flat — a stop inside that band measures the contract breathing, not the idea failing.
+- `backstopsFromProposalFill()` recovers the stop WIDTH from the proposal (`slPremium ÷ entryPremium`) exactly as it recovers the cash target, so changing `optionStopPct` while an approval is pending cannot move levels a human already approved.
+- Evidence is reproducible: `npx tsx scripts/replay-premium-stop.ts` replays every recorded live trade against the new rule and prints its own caveats (n=9; full-day option prices exist only for 2026-07-23; lot cost and old stop width are the same underlying variable).
+- **Keep `dailyLossHaltRupees` above `maxRiskPerLotRupees`** or one full-stop loss ends the day.
 
 ### Brokers (adapter pattern in `brokers/`)
 

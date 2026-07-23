@@ -6,7 +6,16 @@
  * file is the enforcement — a failed gate is final for the attempt.
  */
 
-import { ENTRY_END_MIN, ENTRY_START_MIN, istMinuteLabel, MAX_ENTRY_SLIPPAGE_PCT, MAX_SPREAD_PCT } from '../config';
+import { riskPerLotRupees } from '../backstops';
+import {
+  ENTRY_END_MIN,
+  ENTRY_START_MIN,
+  istMinuteLabel,
+  MAX_ENTRY_SLIPPAGE_PCT,
+  MAX_RISK_PER_LOT_FALLBACK,
+  MAX_SPREAD_PCT,
+  OPTION_STOP_PCT_FALLBACK,
+} from '../config';
 import type { AutoTradeSettings, GateVerdict } from '../types';
 
 export interface EntryGateInput {
@@ -36,6 +45,10 @@ export interface EntryGateInput {
   /** The lot being entered. */
   lots: number;
   perLotCost: number | null;
+  /** Units in one lot — needed to price the per-lot risk in rupees. Optional so
+   *  older fixtures keep working; when absent the risk-ceiling gate is skipped
+   *  (perLotCost alone already blocks an unpriceable entry). */
+  lotSize?: number | null;
   /** Scanner's quote this cycle vs the fresh quote at placement time (%). */
   slippagePct: number | null;
   /** Bid-ask spread % on the option contract (null when no depth available). */
@@ -77,6 +90,8 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
     ['settings.entryStartMin', s.entryStartMin ?? ENTRY_START_MIN],
     ['settings.entryEndMin', s.entryEndMin ?? ENTRY_END_MIN],
     ['settings.maxSpreadPct', s.maxSpreadPct ?? MAX_SPREAD_PCT],
+    ['settings.optionStopPct', s.optionStopPct ?? OPTION_STOP_PCT_FALLBACK],
+    ['settings.maxRiskPerLotRupees', s.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK],
   ];
   const corrupt = numerics.filter(([, value]) => !Number.isFinite(value)).map(([name]) => name);
   if (x.entryCutoffMin != null && Number.isNaN(x.entryCutoffMin)) corrupt.push('entryCutoffMin');
@@ -138,6 +153,27 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
       reasons.push(
         `broker funds: ₹${Math.round(funds).toLocaleString('en-IN')} available < ₹${Math.round(cost).toLocaleString('en-IN')} needed`
       );
+    }
+    // Per-lot risk ceiling. The premium stop is a fixed % of the option's price
+    // (sized to the CONTRACT's noise), so an expensive lot carries proportionally
+    // more rupees behind that stop. The budget is therefore enforced here, by
+    // refusing the contract — NOT by tightening the stop until the arithmetic
+    // fits, which is what produced stop widths of 7.7%–23.8% that nobody chose
+    // and that lost every time they landed under ~12% (2026-07-23 review).
+    const stopPct = s.optionStopPct ?? OPTION_STOP_PCT_FALLBACK;
+    const maxRiskPerLot = s.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK;
+    const lotSize = x.lotSize;
+    if (lotSize != null && Number.isFinite(lotSize) && lotSize > 0) {
+      const riskPerLot = riskPerLotRupees(x.perLotCost / lotSize, lotSize, stopPct);
+      if (!Number.isFinite(riskPerLot)) {
+        reasons.push('per-lot risk could not be computed — failing closed');
+      } else if (riskPerLot > maxRiskPerLot) {
+        reasons.push(
+          `lot risks ₹${Math.round(riskPerLot).toLocaleString('en-IN')} at the ${stopPct}% premium stop ` +
+            `> max ₹${maxRiskPerLot.toLocaleString('en-IN')} per lot — contract too expensive for this account ` +
+            `(the stop is not tightened to fit)`
+        );
+      }
     }
   }
   if (x.slippagePct == null || !Number.isFinite(x.slippagePct)) {

@@ -22,6 +22,33 @@ interface Reminder {
 
 const REMINDERS: Reminder[] = [
   {
+    title: 'Watch the new 25% premium stop on the next few live sessions',
+    when: 'After ~4–5 more trading days (around 30 Jul 2026)',
+    added: '2026-07-23',
+    what: [
+      'Until 23 Jul the premium stop was “the tighter of −40% and −₹1,500 per lot”. Because ₹1,500 is divided by a lot size that ranges 75–700 units, the stop that actually applied landed anywhere between 7.7% and 23.8% of the option’s price — and nobody ever chose those numbers, they fell out of the lot size.',
+      'Across all 9 completed live trades that split the record almost perfectly: every stop tighter than 12% lost (INDUSINDBK 7.7%, AXISBANK 8.1%, NESTLEIND 9.2%, POLYCAB 9.4%, COLPAL 11.7%), and both stops above 20% won (HEROMOTOCO 20.6%, M&M 23.8%).',
+      'The proof case is SRF on 23 Jul. It was stopped out at ₹36 while the STOCK was still 1 point from the entry price — the option had already given up 78% of its stop budget to time decay, the post-open volatility cool-off, and a 2.16% gap between the buy and sell price. The call was right: the stock fell 175 points and the same contract was bid ₹178 by 14:50. Held, that lot was worth +₹26,880 instead of −₹1,610.',
+      'The stop is now a flat 25% of the option’s own price, and the ₹ budget is enforced the other way round — a lot that would risk more than ₹2,500 is REFUSED at the gate instead of being given a tighter stop. Replaying all 9 trades: the 3 winners are unchanged, SRF survives, and 5 losers are refused (3 of those refusals are new — the capital cap already blocked the other 2).',
+      'HONEST LIMIT: n=9 over 5 sessions, and full-day option prices only exist for 23 Jul. Lot cost and the old stop width are the same underlying variable, so “refused the losers” and “tight stops lost” are one finding seen twice, not two independent ones. Refusing a trade also forgoes whatever it might have won.',
+    ],
+    action:
+      'Ask Claude: "run scripts/replay-premium-stop.ts and check the new stop against the sessions since 23 Jul". Watch for the failure mode this change can cause — losses that are now larger (~₹2,200 instead of ~₹1,500) without a matching rise in the winners. If that shows up, lower "Premium stop width" on /auto-trade rather than reverting to a ₹/lot squeeze.',
+  },
+  {
+    title: 'Two toggles are currently redundant — decide what to do with them',
+    when: 'Next time you touch /config',
+    added: '2026-07-23',
+    what: [
+      '“Extended-trend bypass” is ON but does NOTHING right now. It only ever runs inside the branch that handles a stock already 3%+ from the open — and “Skip already-extended movers”, the switch that creates that branch, was turned OFF on 23 Jul at 09:35. With the parent off, the bypass is unreachable code. Leaving it ON reads like a live permission that is not live.',
+      '“Breakout bypass” overlaps almost entirely with “Momentum-breakout path” while that one is ON. Both need a confirmed opening-range breakout with Supertrend and VWAP agreeing. Momentum additionally waives the R-Factor gate; the bypass still requires R-Factor ≥ 3.6, which is the normal gate anyway. Its only unique slice is a strong-R breakout that has moved LESS than 1.5% from the open.',
+      'Worse, a pick admitted by the breakout bypass writes NO marker into its reasons list, so you cannot tell from the Trade Log which picks came in that way — unlike the momentum path, which stamps a ⚡ line. That is an observability gap, not just a redundancy.',
+      'For contrast: “Auto power-off” looks unused in the TypeScript but is NOT — deploy/box/autostop.sh reads it straight out of SQLite. Do not remove it.',
+    ],
+    action:
+      'Decide two things on /config: (1) either turn “Skip already-extended movers” back ON (its safe default) or turn “Extended-trend bypass” OFF — do not leave a bypass enabled whose parent rule is disabled; (2) either ask Claude to add a reason marker for breakout-bypass admissions, or turn that toggle OFF while the momentum path is ON.',
+  },
+  {
     title: 'Turn on the "TF breakout gate"?',
     when: 'After ~4–5 more trading days (around 21 Jul 2026)',
     added: '2026-07-15',
@@ -62,10 +89,12 @@ const REMINDERS: Reminder[] = [
       'Ask Claude: "run the replay grid across all recorded days — shipped vs no-rank-climb-catch vs climb-catch>=5 vs momentum-breakout 1% — with per-fire precision". Keep USE_RANK_CLIMB_GATE ON only if it avoids slipping losers / catches climbers across several days; escalate to an R-Factor relaxation experiment only if the evidence stays clean.',
   },
   {
-    title: 'Chaotic-open gate went live ON — verify it earns its place',
-    when: 'After ~4–5 more trading days (around 23 Jul 2026)',
+    title: 'Chaotic-open gate was switched OFF on 23 Jul — first day’s evidence went AGAINST the gate',
+    when: 'Due now — re-check after ~4 more trading days (around 29 Jul 2026)',
     added: '2026-07-17',
     what: [
+      'UPDATE 23 Jul: the gate was turned OFF at 09:34, 15 minutes before the first scan. That let 11 violent-open names through — and on the day they were the BETTER half: those 11 scored +7.15R in total (avg +0.65R each) while the 25 calm-open names scored −4.12R (avg −0.16R). That is the opposite of what the gate assumes.',
+      'Do NOT act on that yet. It is one day, and only ONE of those 11 (ETERNAL) was ever sent to a real order — and it was blocked on margin. So the day’s real money never tested the question at all.',
       'Both auto-trade losers (HYUNDAI 15-Jul −₹1,911, SRF 16-Jul would-be loss) opened VIOLENTLY — their first 15 minutes ranged 5.5–5.7× the stock’s own normal 5-minute bar — then faded within half an hour. The winners (MANKIND, PATANJALI, POLYCAB) opened calmer and trended.',
       'A new gate ("Skip chaotic opens" on /config) now skips any pick whose opening was more than 5× its settled average bar. It went live ON (operator request, 17-Jul) — unlike the other experimental switches, which wait for proof first.',
       'The 5× line matters: the first draft used 4×, and the full-universe backtest showed 4× would have wrongly blocked genuine trend-day winners (KALYANKJIL, SIEMENS, CGPOWER all sat at ~4.3–4.5× at 10:30) because most stocks naturally open hot. At 5×: both losers still blocked, all winners kept, 6 losing picks cut, zero winners lost. ADANIENSOL 16-Jul (TF’s +₹10.1k) measured a CALM 2.2–3.1× — this gate never touches that class.',
@@ -75,38 +104,43 @@ const REMINDERS: Reminder[] = [
       'Ask Claude: "replay the chaotic-open gate across recorded days". If it kept cutting HYUNDAI/SRF-type losers without cutting winners → keep ON. If it cost a real winner → flip it OFF on /config (one click) and park it back with the other experiments.',
   },
   {
-    title: 'Momentum-breakout switch is still OFF',
-    when: 'After several recorded sessions (needs multi-day replay proof)',
+    title: 'Momentum-breakout switch was turned ON without the multi-day replay — grade it now',
+    when: 'Overdue — it is already live and taking real trades',
     added: '2026-07-15',
     what: [
-      'On 14 Jul, TradeFinder made +₹15,930 on ADANIGREEN — a short-covering breakout our engine skipped BY DESIGN (price up while OI falls scores zero on every accumulation gate).',
-      'A 4th entry path was built for exactly that pattern (confirmed opening-range breakout + Supertrend AND VWAP agreeing + a real move behind it). It is OFF (USE_MOMENTUM_BREAKOUT) until replays over several days prove it catches the ADANIGREEN type without letting in fakeouts.',
-      'SECOND confirmed case, 16 Jul: TradeFinder made +₹10,159 on ADANIENSOL. It sat on our gainers board all window (rank 5–15), opened calm (chaotic ratio 2.2–3.1 — clean staircase to +3% by 11:00), broke its opening range ~10:00 with trend agreement — and every OI gate refused it: futures OI 0.96× (needs 1.1×), options share 6.7% (needs 10%), premium pool ₹4.4Cr (needs ₹5Cr). Price led, OI flat — exactly the class this switch exists for. Two textbook cases now; still needs the multi-day replay before flipping ON.',
+      'ORIGINAL ITEM: on 14 Jul TradeFinder made +₹15,930 on ADANIGREEN, a short-covering breakout our engine skips BY DESIGN (price up while OI falls scores zero on every accumulation gate). A 4th entry path was built for that pattern and shipped OFF until replays over several days proved it.',
+      'SECOND case, 16 Jul: TradeFinder made +₹10,159 on ADANIENSOL — on our gainers board all window, calm open, broke its opening range ~10:00 with trend agreement, and every OI gate refused it (futures OI 0.96× vs 1.1×, options share 6.7% vs 10%, premium ₹4.4Cr vs ₹5Cr).',
+      'STATUS CHANGE: the switch was turned ON at 23:43 on 22 Jul, without that replay. It is no longer a parked decision — it is the live admission path. On 23 Jul it produced 35 of the day’s 38 suggestions and ALL FIVE real trades (SRF, ETERNAL, BAJAJ-AUTO, M&M, HEROMOTOCO). Before that night it had produced zero picks on all 12 recorded days.',
+      'First day’s result: of 33 graded momentum picks, 14 won and 19 lost, summing to +3.03R (avg +0.09R). Of the 5 it sent to real orders, 3 won, 1 lost, 1 was blocked on margin. That is ONE day.',
+      '24 of the 35 momentum picks had an R-Factor below 3.6, meaning the momentum path is the only thing that could have admitted them — this switch is doing real work, not rubber-stamping picks that would qualify anyway.',
     ],
     action:
-      'Ask Claude: "validate the momentum-breakout path across recorded days". If proven → flip ON "Momentum breakout" on /config.',
+      'Ask Claude: "grade the momentum-breakout path across every recorded day now that it is live". It is ON and trading, so the question is no longer whether to enable it but whether to keep it — decide on the accumulated scorecard, not on 23 Jul alone.',
   },
   {
-    title: 'Watch the FIRST real broker order manually',
-    when: 'The day auto-trade mode moves from paper to approval/live',
+    title: 'First real broker orders have now run — reconciliation is the thing left to watch',
+    when: 'Ongoing, until a few clean live sessions have passed',
     added: '2026-07-15',
     what: [
-      'Every order so far has been paper (simulated fills at real prices). The real Fyers/Dhan order APIs are wired but have NEVER been exercised against a live account.',
-      'The first real order is the one place a surprise can cost money before code can catch it.',
+      'CLOSED: the original item was "the real Fyers/Dhan order APIs have NEVER been exercised against a live account". They have now — 14 live orders across 13–23 Jul, with 9 confirmed fills and exits.',
+      'What it taught us, worth keeping: SRF on 16 Jul got stuck in PLACING because the Fyers SDK wraps a network error and an API rejection identically, so a thrown error can never be read as "the order definitely did not reach the broker".',
+      'Margin rejections are real and have blocked two picks: SONACOMS on 17 Jul (short ₹1,909 of ₹25,000) and ETERNAL on 23 Jul (short ₹1,275 of ₹16,157). Keeping a few thousand rupees of headroom above the lot cost avoids losing a pick to arithmetic.',
     ],
     action:
-      'When approving the first real trade, keep the broker terminal open and watch the order end-to-end: placement → fill → the app’s recorded fill matches the broker’s.',
+      'No longer needs a manual watch on every order. Do keep checking that each session ends with no stuck PLACING row and no position open at the broker that the app does not know about — the reconcile step owns that, and the risk latch blocks new entries if it disagrees.',
   },
   {
-    title: 'Check prod disk usage',
-    when: 'Around 22 Jul 2026 (one week after the retention change)',
+    title: 'Check prod disk usage (on the AWS box, not Railway)',
+    when: 'Overdue — was due 22 Jul 2026',
     added: '2026-07-15',
     what: [
       'Candles used to be wiped every day; since v1.18.0 we keep 20 sessions (needed for replays and the breakout gate evidence).',
-      'That means the database file grows every day for ~4 weeks before it levels off. The Railway volume was about 47% used before this change.',
+      'That means the database file grows every day for ~4 weeks before it levels off.',
+      'The original wording pointed at a Railway volume. Prod has since moved to the self-hosted AWS EC2 box, so the check is now a disk check on that machine (/app/data), not a Railway dashboard.',
+      'For scale: the full prod DB pulled on 23 Jul was 260 MB, up from 230 MB earlier the same day — most of that growth is candles, OI samples and rank snapshots.',
     ],
     action:
-      'Open Railway → service → volume usage. If it is heading past ~80%, ask Claude to trim retention or grow the volume.',
+      'SSH to the AWS box and run df -h plus du -sh /app/data. If the disk is heading past ~80%, ask Claude to trim candle retention or grow the volume.',
   },
 ];
 

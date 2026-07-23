@@ -54,6 +54,8 @@ export {
   backstopsFromFill,
   backstopsFromProposalFill,
   isRestTargetExecutable,
+  riskPerLotRupees,
+  stopPremiumForFill,
   targetRupeesForPosition,
 } from './backstops';
 
@@ -101,7 +103,8 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
     trade.lotSize,
     trade.lots,
     trade.entryPremium,
-    trade.targetPremium
+    trade.targetPremium,
+    trade.slPremium
   );
   await updateOrder(orderId, {
     status: 'filled',

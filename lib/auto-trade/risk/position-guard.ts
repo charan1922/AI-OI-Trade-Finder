@@ -6,8 +6,11 @@
  *
  *   1. EOD square-off at/after the configured IST time — no position survives into the
  *      broker's forced-square-off penalty window.
- *   2. Premium stop  (slPremium: tighter of −40% and −₹1.5k/lot, re-anchored
- *      to the actual fill) and the trade's snapshotted cash-profit target.
+ *   2. Premium stop  (slPremium: OPTION_STOP_PCT of the option's own price,
+ *      re-anchored to the actual fill) and the trade's snapshotted cash-profit
+ *      target. The per-lot rupee budget is NOT enforced here — an over-sized
+ *      contract is refused at the entry gate instead, so this stop is free to
+ *      sit outside the contract's own noise.
  *   3. Spot stop / spot target from the scanner plan (latest 5-min close in
  *      fyers_candles) — the level the AI manages; it may only ever TIGHTEN.
  *

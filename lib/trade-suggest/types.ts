@@ -25,7 +25,9 @@ export interface OptionPremium {
   oi: number | null;
   /** ltp × lotSize — the capital one lot costs. */
   perLotCost: number;
-  /** Premium max-loss backstop: ltp × (1 − PREMIUM_SL_PCT/100). */
+  /** Premium stop: ltp × (1 − OPTION_STOP_PCT/100) — sized to the OPTION's own
+   *  noise and independent of lot size. The per-lot rupee budget is enforced by
+   *  refusing an over-sized contract, not by tightening this. */
   slPremium: number;
   /** Premium level that books ~₹TF_LOT_TARGET_RUPEES on one lot. */
   targetPremium: number;

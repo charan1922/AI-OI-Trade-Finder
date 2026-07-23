@@ -10,13 +10,19 @@
  * review.
  */
 
-import { MAX_LOSS_PER_LOT_RUPEES } from '@/lib/trade-suggest/config';
+import { MAX_RISK_PER_LOT_RUPEES, OPTION_STOP_PCT } from '@/lib/trade-suggest/config';
 import { nowIST, minuteOfDayIST, nowISTClock } from '@/lib/ist';
 import type { AutoTradeSettings } from './types';
 
-/** ₹ risk anchor per lot. The live profit target is a separate runtime policy
- * because the scanner's wider spot plan is context, not a fixed cash exit. */
-export const MAX_LOSS_PER_LOT_FALLBACK = MAX_LOSS_PER_LOT_RUPEES;
+/** Premium stop distance (% of the option's entry price) used when no runtime
+ * setting is available — pure callers (backstops.ts) and CI fixtures. The
+ * effective value is settings.optionStopPct. */
+export const OPTION_STOP_PCT_FALLBACK = OPTION_STOP_PCT;
+
+/** ₹ ceiling on the risk carried by ONE lot. Enforced by refusing an over-sized
+ * contract at the gate, never by tightening the stop — see MAX_RISK_PER_LOT_RUPEES.
+ * The effective value is settings.maxRiskPerLotRupees. */
+export const MAX_RISK_PER_LOT_FALLBACK = MAX_RISK_PER_LOT_RUPEES;
 
 /** Seed values for the runtime settings store (settings.ts). Mode starts OFF —
  *  the operator must explicitly select paper/approval/live on /auto-trade. */
@@ -28,7 +34,9 @@ export const DEFAULT_SETTINGS: AutoTradeSettings = {
   maxTradesPerDay: 2, // user rule: max 2 real trades a day
   maxOpenLots: 2, // user rule: max 2 lots at once
   maxCapitalRupees: 60_000, // user rule: ₹50–60k account — ₹-cap on deployed premium
-  dailyLossHaltRupees: 3_000, // 2 × the ₹1.5k/lot max loss — then stop for the day
+  optionStopPct: OPTION_STOP_PCT, // premium stop width, sized to the OPTION's own noise
+  maxRiskPerLotRupees: MAX_RISK_PER_LOT_RUPEES, // ₹ ceiling per lot — refuses over-sized contracts
+  dailyLossHaltRupees: 5_000, // 2 × the ₹2.5k/lot risk ceiling — then stop for the day
   profitTargetMode: 'per_trade', // fixed cash profit for the whole position
   profitTargetRupees: 1_100, // requested default; editable without a redeploy
   maxSpreadPct: 3, // option bid-ask ceiling — see MAX_SPREAD_PCT below for the evidence

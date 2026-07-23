@@ -39,6 +39,8 @@ import { approveTrade } from '../lib/auto-trade/approval';
 import { runPositionGuard } from '../lib/auto-trade/risk/position-guard';
 import {
   backstopsFromFill,
+  riskPerLotRupees,
+  stopPremiumForFill,
   backstopsFromProposalFill,
   correlationIdForOrder,
   targetRupeesForPosition,
@@ -197,6 +199,97 @@ async function main(): Promise<void> {
     reanchoredTarget === 136.8,
     String(reanchoredTarget)
   );
+
+  // ── Premium stop: a flat % of the OPTION's price, independent of lot size ──
+  // The rule this replaced was `max(−40%, −₹1,500/lot)`, whose effective width
+  // fell out of the lot size (7.7%–23.8% across nine live trades). These checks
+  // pin the new behaviour to the real fills from that review.
+  check(
+    'stop: 25% of the option price, not a ₹/lot squeeze (SRF 23-Jul fill ₹44.05)',
+    stopPremiumForFill(44.05) === 33.04,
+    String(stopPremiumForFill(44.05))
+  );
+  check(
+    'stop: SRF would have survived its stop — lowest recorded bid ₹36.10 sits above ₹33.04',
+    36.1 > stopPremiumForFill(44.05),
+    `old stop was ₹36.55, which the ₹36.10 bid broke`
+  );
+  check(
+    'stop: width is identical for the same price at a different lot size',
+    stopPremiumForFill(44.05) === stopPremiumForFill(44.05),
+    'lot size is not an input'
+  );
+  // Under the old rule these two landed 16 percentage points apart (INDUSINDBK
+  // 7.7%, POLYCAB 9.4% — and M&M 23.8%) purely because of lot size. Now both
+  // sit on 25%; the only remaining difference is the 2-decimal rounding of the
+  // stop level itself, which is why this is a tolerance and not equality.
+  const widthPct = (fill: number) => (1 - stopPremiumForFill(fill) / fill) * 100;
+  check(
+    'stop: two very different contracts now land on the same width (was 7.7% vs 9.4%)',
+    Math.abs(widthPct(27.75) - widthPct(127)) < 0.05,
+    `INDUSINDBK ₹27.75 → ${widthPct(27.75).toFixed(3)}% · POLYCAB ₹127 → ${widthPct(127).toFixed(3)}%`
+  );
+  check(
+    'stop: a custom width is honoured',
+    stopPremiumForFill(100, 10) === 90,
+    String(stopPremiumForFill(100, 10))
+  );
+  check(
+    'stop: a nonsense width falls back to the coded default',
+    stopPremiumForFill(100, Number.NaN) === stopPremiumForFill(100),
+    String(stopPremiumForFill(100, Number.NaN))
+  );
+  check('stop: never goes to or below zero', stopPremiumForFill(0.05) >= 0.05, String(stopPremiumForFill(0.05)));
+  check(
+    'risk: per-lot rupees = (fill − stop) × lotSize (SRF ₹44.05 × 200)',
+    riskPerLotRupees(44.05, 200) === 2202,
+    String(riskPerLotRupees(44.05, 200))
+  );
+  check(
+    'risk: proposal re-anchor snapshots the STOP width too, not just the target',
+    backstopsFromProposalFill(128, 125, 1, 127, 135.8, 95.25).slPremium === 96,
+    // proposal stop 95.25 on entry 127 = 25% → same 25% applied to the ₹128 fill
+    String(backstopsFromProposalFill(128, 125, 1, 127, 135.8, 95.25).slPremium)
+  );
+  check(
+    'risk: a pending settings change cannot move an approved stop',
+    backstopsFromProposalFill(128, 125, 1, 127, 135.8, 114.3).slPremium === 115.2,
+    // proposal was written at a 10% width; the fill keeps 10%, not today's 25%
+    String(backstopsFromProposalFill(128, 125, 1, 127, 135.8, 114.3).slPremium)
+  );
+
+  // ── Per-lot risk ceiling: refuse the contract, never tighten the stop ──
+  const riskBase = { ...base, perLotCost: 8_810, lotSize: 200 }; // SRF 23-Jul
+  check(
+    'gates: SRF-sized lot (₹8,810, risks ₹2,202) is allowed under the ₹2,500 ceiling',
+    checkEntryGates(riskBase).allow,
+    JSON.stringify(checkEntryGates(riskBase).reasons)
+  );
+  check(
+    'gates: POLYCAB-sized lot (₹15,875, risks ₹3,969) is REFUSED, not given a tighter stop',
+    !checkEntryGates({ ...riskBase, perLotCost: 15_875, lotSize: 125 }).allow
+  );
+  check(
+    'gates: INDUSINDBK-sized lot (₹19,425, risks ₹4,856) is REFUSED',
+    !checkEntryGates({ ...riskBase, perLotCost: 19_425, lotSize: 700 }).allow
+  );
+  check(
+    'gates: the refusal names the risk, the ceiling and that the stop is not tightened',
+    checkEntryGates({ ...riskBase, perLotCost: 15_875, lotSize: 125 }).reasons.some(
+      (r) => r.includes('lot risks ₹') && r.includes('per lot') && r.includes('not tightened')
+    )
+  );
+  check(
+    'gates: a missing lot size skips the risk ceiling rather than failing open on a wrong number',
+    checkEntryGates({ ...riskBase, lotSize: null }).allow
+  );
+  check(
+    'gates: a corrupt optionStopPct fails CLOSED',
+    !checkEntryGates({
+      ...riskBase,
+      settings: { ...riskBase.settings, optionStopPct: Number.NaN },
+    }).allow
+  );
   check('gates: off mode blocked', !checkEntryGates({ ...base, settings: { ...base.settings, mode: 'off' } }).allow);
   check(
     'gates: kill switch blocked',
@@ -215,7 +308,12 @@ async function main(): Promise<void> {
     'deployed 40k + 30k > 60k'
   );
   check('gates: re-entry blocked', !checkEntryGates({ ...base, symbolTradedToday: true }).allow);
-  check('gates: loss halt blocked', !checkEntryGates({ ...base, dailyRealizedPnl: -3_000 }).allow);
+  check('gates: loss halt blocked', !checkEntryGates({ ...base, dailyRealizedPnl: -5_000 }).allow);
+  check(
+    'gates: loss halt NOT tripped one rupee short of the limit',
+    checkEntryGates({ ...base, dailyRealizedPnl: -4_999 }).allow,
+    'halt is ≤ −dailyLossHaltRupees, not <'
+  );
   check('gates: slippage blocked', !checkEntryGates({ ...base, slippagePct: 6 }).allow);
   check('gates: no premium blocked', !checkEntryGates({ ...base, perLotCost: null }).allow);
   check('gates: no stop blocked', !checkEntryGates({ ...base, hasSlSpot: false }).allow);

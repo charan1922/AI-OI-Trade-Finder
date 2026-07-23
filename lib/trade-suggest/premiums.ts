@@ -21,9 +21,9 @@
 
 import { bestBidAsk, dhanMarketFeed } from '@/lib/dhan/market-feed';
 import {
-  MAX_LOSS_PER_LOT_RUPEES,
   MAX_OPT_SPREAD_PCT,
-  PREMIUM_SL_PCT,
+  MAX_RISK_PER_LOT_RUPEES,
+  OPTION_STOP_PCT,
   TF_LOT_TARGET_RUPEES,
 } from '@/lib/trade-suggest/config';
 import type { OptionPlan, OptionPremium } from '@/lib/trade-suggest/types';
@@ -98,6 +98,15 @@ export async function attachPremiums(options: OptionPlan[]): Promise<void> {
             ? 'last trade is stale (outside the live book) — priced off the bid-ask mid'
             : 'no trade printed yet — priced off the bid-ask mid'
         );
+      // The contract is priceable but too big for the per-lot risk budget: at the
+      // fixed OPTION_STOP_PCT stop it would put more than MAX_RISK_PER_LOT_RUPEES
+      // behind that stop. Auto-trade REFUSES this outright (risk/gates.ts); the
+      // scanner only warns, so a manual trader still sees the pick and the reason.
+      const riskAtStop = ((price * OPTION_STOP_PCT) / 100) * o.lotSize;
+      if (riskAtStop > MAX_RISK_PER_LOT_RUPEES)
+        warnings.push(
+          `lot risks ₹${Math.round(riskAtStop).toLocaleString('en-IN')} at the ${OPTION_STOP_PCT}% premium stop — above the ₹${MAX_RISK_PER_LOT_RUPEES.toLocaleString('en-IN')} per-lot budget`
+        );
       const premium: OptionPremium = {
         ltp: Math.round(price * 100) / 100,
         priceSource: resolved.source,
@@ -107,13 +116,13 @@ export async function attachPremiums(options: OptionPlan[]): Promise<void> {
         volume,
         oi,
         perLotCost: Math.round(price * o.lotSize * 100) / 100,
-        // Stop premium = the TIGHTER of the 40% backstop and the ₹ per-lot cap,
-        // so a lot can't lose more than MAX_LOSS_PER_LOT_RUPEES (higher premium = smaller loss).
-        slPremium:
-          Math.round(
-            Math.max(0, Math.max(price * (1 - PREMIUM_SL_PCT / 100), price - MAX_LOSS_PER_LOT_RUPEES / o.lotSize)) *
-              100
-          ) / 100,
+        // Stop premium = a straight OPTION_STOP_PCT of the contract's own price.
+        // It is deliberately NOT squeezed to fit a rupee budget: dividing a flat
+        // ₹/lot cap by lot sizes that range 75–700 produced stops of 7.7%–23.8%
+        // that nobody chose, and every one under ~12% lost (2026-07-23 review).
+        // The rupee budget is enforced instead by refusing an over-sized lot —
+        // surfaced here as a warning, blocked for real in risk/gates.ts.
+        slPremium: Math.round(Math.max(0.05, price * (1 - OPTION_STOP_PCT / 100)) * 100) / 100,
         targetPremium: Math.round((price + TF_LOT_TARGET_RUPEES / o.lotSize) * 100) / 100,
         liquidityWarning: warnings.length > 0 ? warnings.join('; ') : null,
       };
