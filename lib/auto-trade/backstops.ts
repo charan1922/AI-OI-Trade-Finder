@@ -78,3 +78,46 @@ export function isRestTargetExecutable(args: {
     args.bidQty >= args.qtyUnits
   );
 }
+
+/**
+ * Can the WHOLE position be sold at the best bid right now?
+ *
+ * This is the honesty test behind the word "executable". A ₹120 bid for 5 units
+ * against 500 held does not make the position worth ₹120/unit — the rest would
+ * sweep down the ladder. Any P&L figure labelled executable must pass this;
+ * anything that only knows the price is a mark, not an exit (PR#16 review).
+ */
+export function isFullPositionBidCovered(args: {
+  bid: number | null;
+  bidSize: number | null;
+  qtyUnits: number;
+}): boolean {
+  return args.bid != null && args.bidSize != null && args.qtyUnits > 0 && args.bidSize >= args.qtyUnits;
+}
+
+/**
+ * Top-of-book resting sizes from a Dhan depth ladder.
+ *
+ * Kept pure and separate from the quote fetcher so CI can prove the mapping:
+ * lib/auto-trade/quotes.ts reaches lib/env, which parses at import and throws
+ * without credentials, so nothing importing it can run in CI.
+ */
+export function topOfBookSizes(depth: {
+  buy?: { quantity?: number }[];
+  sell?: { quantity?: number }[];
+} | null | undefined): { bidQty: number | null; askQty: number | null } {
+  const size = (value: unknown): number | null => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+  return { bidQty: size(depth?.buy?.[0]?.quantity), askQty: size(depth?.sell?.[0]?.quantity) };
+}
+
+/**
+ * Held contracts with no usable quote this pass — the guard is BLIND on these
+ * even when the HTTP request itself succeeded, because their premium stop and
+ * target are both skipped. Pure so the transition is provable in CI.
+ */
+export function blindContractIds(protectedIds: readonly string[], quotedIds: ReadonlySet<string>): string[] {
+  return protectedIds.filter((id) => !quotedIds.has(id));
+}

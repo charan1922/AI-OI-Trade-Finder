@@ -14,6 +14,7 @@
  */
 
 import { bestBidAsk, dhanMarketFeed } from '@/lib/dhan/market-feed';
+import { topOfBookSizes } from './backstops';
 import { prisma } from '@/lib/db';
 import { resolveOptionPrice } from '@/lib/trade-suggest/premiums';
 
@@ -73,15 +74,15 @@ export async function fetchOptionQuotesWithHealth(optSecurityIds: readonly strin
       }
       // Size at the touch, straight from the same depth ladder bestBidAsk()
       // reads its prices from — so price and size always describe one book.
-      const topBid = oq.depth?.buy?.[0];
-      const topAsk = oq.depth?.sell?.[0];
+      // Sizes are only meaningful alongside a valid book, so they follow it.
+      const sizes = book == null ? { bidQty: null, askQty: null } : topOfBookSizes(oq.depth);
       out.quotes.set(String(id), {
         ltp: Math.round(resolved.price * 100) / 100,
         priceSource: resolved.source,
         bid: book?.bid ?? null,
         ask: book?.ask ?? null,
-        bidQty: book == null || topBid?.quantity == null ? null : Number(topBid.quantity),
-        askQty: book == null || topAsk?.quantity == null ? null : Number(topAsk.quantity),
+        bidQty: sizes.bidQty,
+        askQty: sizes.askQty,
         spreadPct: book == null ? null : Math.round(book.spreadPct * 100) / 100,
       });
     }

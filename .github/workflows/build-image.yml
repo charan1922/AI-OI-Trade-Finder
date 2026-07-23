@@ -90,6 +90,11 @@ jobs:
       # scripts/verify-auto-trade.ts, which needs a populated DB and so never ran
       # here — a green deploy proved nothing about it (AT-REVIEW 2026-07-23).
       - run: pnpm exec tsx scripts/verify-auto-target-stream.ts
+      # Auto-trade quote-snapshot STORE round-trip against an isolated throwaway
+      # SQLite DB: the additive bidQty/askQty migration onto a table created
+      # before those columns existed, size round-tripping, batched multi-row
+      # param counts, and 20-session retention (PR#16 review).
+      - run: pnpm exec tsx scripts/verify-auto-trade-store.ts
 
   build:
     needs: validate

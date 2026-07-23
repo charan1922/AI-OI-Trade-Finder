@@ -19,7 +19,7 @@
 import { alerts } from '../alerts';
 import { isPastSquareOff, istMinuteLabel, minuteOfDayIST } from '../config';
 import { exitTrade } from '../execution';
-import { isRestTargetExecutable } from '../backstops';
+import { blindContractIds, isRestTargetExecutable } from '../backstops';
 import { fetchOptionQuotesWithHealth, latestSpotRead, type OptionQuote } from '../quotes';
 import { getAutoTradeSettings } from '../settings';
 import {
@@ -235,7 +235,7 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
     // (the `if (quote)` branch never runs). The FYERS stream does not cover
     // this: it carries the fast TARGET path only, never the stop. Health is
     // therefore keyed to the contracts we must protect, not to the transport.
-    const blindIds = [...protectedOptionIds].filter((id) => !optionQuotes.has(id));
+    const blindIds = blindContractIds([...protectedOptionIds], new Set(optionQuotes.keys()));
     const fullyPriced = batch.sourceOk && blindIds.length === 0;
     const blindSymbols = open
       .filter((trade) => blindIds.includes(String(Number(trade.optSecurityId))))

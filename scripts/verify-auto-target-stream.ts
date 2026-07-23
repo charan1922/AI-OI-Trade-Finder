@@ -13,8 +13,11 @@ import assert from 'node:assert/strict';
 import {
   backstopsFromFill,
   backstopsFromProposalFill,
+  blindContractIds,
+  isFullPositionBidCovered,
   isRestTargetExecutable,
   targetRupeesForPosition,
+  topOfBookSizes,
 } from '../lib/auto-trade/backstops';
 import {
   fyersStreamIsSilent,
@@ -173,6 +176,57 @@ check('silence watchdog fires only past the limit', () => {
     true,
     'total silence on a connected socket is a half-open socket',
   );
+});
+
+// ── Displayed P&L must not overstate what is sellable ──────────────────────
+check('a thin bid is not a full-position exit', () => {
+  // The exact production display bug: auto-target correctly held on a 5-unit
+  // bid, but LIVE P&L still showed the profit as if all 500 units were sellable.
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: 5, qtyUnits: 500 }), false);
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: 500, qtyUnits: 500 }), true);
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: 501, qtyUnits: 500 }), true);
+});
+
+check('unknown size or missing bid is never treated as covered', () => {
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: null, qtyUnits: 500 }), false);
+  assert.equal(isFullPositionBidCovered({ bid: null, bidSize: 500, qtyUnits: 500 }), false);
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: 500, qtyUnits: 0 }), false);
+});
+
+check('the display rule and the auto-target rule agree on coverage', () => {
+  const thin = { bid: 120, bidSize: 5, qtyUnits: 500 };
+  assert.equal(
+    isFullPositionBidCovered(thin),
+    isRestTargetExecutable({ bid: 120, bidQty: 5, targetPremium: 120, qtyUnits: 500 }),
+    'a bid that cannot fill the position must fail BOTH the exit and the display',
+  );
+});
+
+// ── Dhan depth → bidQty/askQty mapping ─────────────────────────────────────
+check('top-of-book sizes come from the first depth level', () => {
+  const sizes = topOfBookSizes({
+    buy: [{ quantity: 750 }, { quantity: 9999 }],
+    sell: [{ quantity: 300 }, { quantity: 8888 }],
+  });
+  assert.equal(sizes.bidQty, 750, 'must use the TOUCH, not a deeper level');
+  assert.equal(sizes.askQty, 300);
+});
+
+check('an absent or zero-size book maps to null, never zero', () => {
+  assert.deepEqual(topOfBookSizes(undefined), { bidQty: null, askQty: null });
+  assert.deepEqual(topOfBookSizes({}), { bidQty: null, askQty: null });
+  assert.deepEqual(topOfBookSizes({ buy: [], sell: [] }), { bidQty: null, askQty: null });
+  // Zero must not become a real size — it would read as "covered" for qty 0.
+  assert.deepEqual(topOfBookSizes({ buy: [{ quantity: 0 }] }), { bidQty: null, askQty: null });
+});
+
+// ── Guard-health transition on a missing contract ──────────────────────────
+check('a held contract missing from a successful response is blind', () => {
+  // The production blocker: HTTP 200, but the held contract has no usable
+  // quote, so its premium stop AND target are both skipped.
+  assert.deepEqual(blindContractIds(['111', '222'], new Set(['111'])), ['222']);
+  assert.deepEqual(blindContractIds(['111', '222'], new Set(['111', '222'])), []);
+  assert.deepEqual(blindContractIds([], new Set()), [], 'no positions is not blindness');
 });
 
 if (process.exitCode === 1) {

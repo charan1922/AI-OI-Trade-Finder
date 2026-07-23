@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fyersDataSocket, type FyersDataSocketInstance } from 'fyers-api-v3';
 import { fyersAppId, getFyersAccessToken } from '@/lib/fyers/auth';
 import { toFyersOptionSymbol } from './brokers/fyers-adapter';
+import { isFullPositionBidCovered } from './backstops';
 import { exitTrade } from './execution';
 import { insertQuoteSnapshots } from './store';
 import type { AutoTrade } from './types';
@@ -38,7 +39,12 @@ export interface LiveTradePnl {
   bid: number | null;
   ask: number | null;
   bidSize: number | null;
+  /** P&L the whole position could actually be sold for. Null unless the best
+   *  bid covers the full quantity — see isFullPositionBidCovered. */
   executablePnlRupees: number | null;
+  /** Indicative mark at the best bid REGARDLESS of size. Useful to watch, but
+   *  it is not an exit price and must never be labelled executable. */
+  markToBestBidPnlRupees: number | null;
   ltpPnlRupees: number | null;
   targetPnlRupees: number;
   updatedAt: string | null;
@@ -54,7 +60,10 @@ export interface FyersPnlStreamStatus {
   lastError: string | null;
   reconnectAttempts: number;
   nextReconnectAt: string | null;
+  /** Sum across tracked trades, only when EVERY position is fully bid-covered. */
   executablePnlRupees: number | null;
+  /** Indicative best-bid mark, ignoring size. Never presented as executable. */
+  markToBestBidPnlRupees: number | null;
   ltpPnlRupees: number | null;
   executablePricedTrades: number;
   trades: LiveTradePnl[];
@@ -571,7 +580,19 @@ export function getFyersPnlStreamStatus(now = Date.now()): FyersPnlStreamStatus 
       bid,
       ask: depthFresh ? tick!.ask : null,
       bidSize: depthFresh ? tick!.bidSize : null,
-      executablePnlRupees: entry != null && bid != null ? Math.round((bid - entry) * qty) : null,
+      // "Executable" means the whole position could actually be sold at this
+      // bid. With a ₹120 bid for 5 units against 500 held, the auto-target
+      // correctly holds — but this figure used to claim the full profit anyway,
+      // so the operator saw a number no market order could realise (PR#16
+      // review). Null when the book cannot cover the position; the indicative
+      // number is still available below, under a name that does not lie.
+      executablePnlRupees:
+        entry != null &&
+        bid != null &&
+        isFullPositionBidCovered({ bid, bidSize: depthFresh ? tick!.bidSize : null, qtyUnits: qty })
+          ? Math.round((bid - entry) * qty)
+          : null,
+      markToBestBidPnlRupees: entry != null && bid != null ? Math.round((bid - entry) * qty) : null,
       ltpPnlRupees: entry != null && ltp != null ? Math.round((ltp - entry) * qty) : null,
       targetPnlRupees: Math.round((trade.targetPremium - (entry ?? trade.entryPremium)) * qty),
       updatedAt: tick == null ? null : new Date(tick.receivedAt).toISOString(),
@@ -579,6 +600,7 @@ export function getFyersPnlStreamStatus(now = Date.now()): FyersPnlStreamStatus 
     });
   }
   const executable = trades.map((trade) => trade.executablePnlRupees);
+  const marks = trades.map((trade) => trade.markToBestBidPnlRupees);
   const ltp = trades.map((trade) => trade.ltpPnlRupees);
   return {
     connected: s.connected,
@@ -592,6 +614,10 @@ export function getFyersPnlStreamStatus(now = Date.now()): FyersPnlStreamStatus 
     executablePnlRupees:
       trades.length > 0 && executable.every((value) => value != null)
         ? executable.reduce<number>((sum, value) => sum + Number(value), 0)
+        : null,
+    markToBestBidPnlRupees:
+      trades.length > 0 && marks.every((value) => value != null)
+        ? marks.reduce<number>((sum, value) => sum + Number(value), 0)
         : null,
     ltpPnlRupees:
       trades.length > 0 && ltp.every((value) => value != null)

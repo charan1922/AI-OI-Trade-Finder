@@ -68,6 +68,7 @@ interface LivePnl {
   bid: number | null;
   ask: number | null;
   executablePnlRupees: number | null;
+  markToBestBidPnlRupees: number | null;
   ltpPnlRupees: number | null;
   targetPnlRupees: number;
   updatedAt: string | null;
@@ -118,6 +119,7 @@ interface ApiResponse {
     connecting: boolean;
     trackedTrades: number;
     executablePnlRupees: number | null;
+    markToBestBidPnlRupees: number | null;
     ltpPnlRupees: number | null;
     executablePricedTrades: number;
     lastMessageAt: string | null;
@@ -778,11 +780,17 @@ export default function AutoTradePage() {
               {data?.pnlStream?.executablePnlRupees == null
                 ? data?.pnlStream?.connecting
                   ? 'connecting…'
-                  : '—'
+                  : data?.pnlStream?.markToBestBidPnlRupees != null
+                    ? `~₹${data.pnlStream.markToBestBidPnlRupees.toLocaleString('en-IN')} (mark)`
+                    : '—'
                 : `${data.pnlStream.executablePnlRupees >= 0 ? '+' : ''}₹${data.pnlStream.executablePnlRupees.toLocaleString('en-IN')}`}
             </div>
             <div className="text-[9px] text-muted-foreground">
-              {data?.pnlStream?.connected
+              {/* An indicative mark is shown ONLY when the bid cannot cover the
+                  whole position, and is labelled as such — never as executable. */}
+              {data?.pnlStream?.executablePnlRupees == null && data?.pnlStream?.markToBestBidPnlRupees != null
+                ? 'best bid too small for full size — indicative only'
+                : data?.pnlStream?.connected
                 ? 'FYERS stream · bid based'
                 : data?.pnlStream?.nextReconnectAt
                   ? `FYERS reconnect ${data.pnlStream.reconnectAttempts} scheduled · 5s REST guard active`
