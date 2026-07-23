@@ -504,6 +504,11 @@ export async function runTradeSuggest(
     optShare: number | null;
     /** True when admitted via the momentum-breakout path (accumulation gates bypassed). */
     momentumPath: boolean;
+    /** True when the OI gate passed ONLY via the breakout bypass (price broke out,
+     *  no OI evidence). Recorded so these admissions are visible in the Trade Log
+     *  — every other permissive path already stamps a reason, this one did not,
+     *  which made the toggle impossible to evaluate (audit 2026-07-23). */
+    breakoutBypassPath: boolean;
     /** Opening 15-min range ÷ settled 5-min ATR (chaotic-open.ts); null = not yet computable. */
     chaosRatio: number | null;
     /** Best ~30-min leaderboard climb (gainers/OI boards); null = no board history. */
@@ -697,6 +702,10 @@ export async function runTradeSuggest(
       nseOiPct,
       optShare,
       momentumPath: momentumOk,
+      // Credit the bypass only when it is what actually opened the door: if the
+      // momentum path also qualified this name, the bypass was not load-bearing
+      // and marking it would overstate the toggle's contribution.
+      breakoutBypassPath: breakoutOk && !momentumOk,
       chaosRatio,
       rankClimb: rankClimbSpots,
       climbPath: climbCatchOk,
@@ -883,6 +892,11 @@ export async function runTradeSuggest(
       ...(s.momentumPath
         ? [
             '⚡ MOMENTUM-BREAKOUT path: no accumulation evidence (low R-Factor / no OI build) — entered on confirmed OR breakout + Supertrend + VWAP + move ≥1.5%. Short-covering profile; expect speed, respect the stop.',
+          ]
+        : []),
+      ...(s.breakoutBypassPath
+        ? [
+            '🚪 BREAKOUT-BYPASS path: both OI gates failed (no futures build, no qualifying NSE combined build) — admitted on a confirmed OR breakout with Supertrend + VWAP agreeing and R-Factor ≥ 3.6. Price led, open interest did not confirm.',
           ]
         : []),
       `R-Factor ${r.rFactor?.toFixed(2)} (${s.direction}, confidence ${((r.rFactorConfidence ?? 0) * 100).toFixed(0)}%)`,

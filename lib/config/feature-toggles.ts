@@ -353,6 +353,49 @@ function isClockNumberSetting(key: string, min: number): boolean {
 const minToHHMM = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 /**
+ * Toggles that are only ever REACHED from inside another toggle's branch.
+ *
+ * A switch listed here, turned ON while its parent is OFF, is unreachable code
+ * wearing the costume of a live permission. It is not drift — both values may
+ * sit at their own defaults — so the drift summary above cannot catch it.
+ *
+ * Found 2026-07-23: `USE_EXTENDED_TREND_BYPASS` was ON while `EXCLUDE_EXTENDED`
+ * had been switched OFF that morning. The bypass only ever runs inside the
+ * `excludeExtended && s.extended` branch in trade-suggest/engine.ts, so it did
+ * nothing at all — while /config showed it enabled. Nothing in the app said so.
+ */
+export const TOGGLE_PARENTS: { child: string; parent: string; why: string }[] = [
+  {
+    child: 'USE_EXTENDED_TREND_BYPASS',
+    parent: 'EXCLUDE_EXTENDED',
+    why: 'the bypass only re-admits names that “Skip already-extended movers” has excluded — with the parent OFF nothing is excluded, so there is nothing to re-admit',
+  },
+];
+
+/**
+ * PURE: bypass switches that are ON but unreachable because the rule they hang
+ * off is OFF. Separate from drift on purpose — this is a *combination* fault,
+ * and both halves can be at their own defaults while the pair is meaningless.
+ */
+export function buildUnreachableToggleWarnings(
+  toggles: Pick<ToggleState, 'key' | 'label' | 'value'>[]
+): string[] {
+  const byKey = new Map(toggles.map((t) => [t.key, t]));
+  const out: string[] = [];
+  for (const link of TOGGLE_PARENTS) {
+    const child = byKey.get(link.child);
+    const parent = byKey.get(link.parent);
+    if (child == null || parent == null) continue;
+    if (child.value && !parent.value) {
+      out.push(
+        `“${child.label}” is ON but does nothing: it only runs inside “${parent.label}”, which is OFF — ${link.why}. Turn the parent back ON to use it, or turn this OFF so the page reflects what is actually running.`
+      );
+    }
+  }
+  return out;
+}
+
+/**
  * PURE: which scanner/trading-relevant settings currently differ from their
  * coded-safe default. Every default IS the safe state; a drifted value is
  * exactly the class of thing that caused the COLPAL 2026-07-20 loss
@@ -387,6 +430,13 @@ export function buildConfigOverrideSummary(
 export async function tradeSuggestConfigOverrideSummary(): Promise<string[]> {
   const [toggles, numbers] = await Promise.all([getAllToggles(), getAllNumberSettings()]);
   return buildConfigOverrideSummary(toggles, numbers);
+}
+
+/** Bypass switches currently ON but unreachable (parent rule OFF). Reported
+ *  alongside the drift summary in the pre-open reminder — an operator reading
+ *  "bypass ON" deserves to know it is inert. */
+export async function unreachableToggleWarnings(): Promise<string[]> {
+  return buildUnreachableToggleWarnings(await getAllToggles());
 }
 
 /** Persist a toggle. Unknown keys are rejected (the registry is the allowlist).

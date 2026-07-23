@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 
-import { getAllNumberSettings, getAllToggles, setNumberSetting, setToggle } from '@/lib/config/feature-toggles';
+import {
+  buildUnreachableToggleWarnings,
+  getAllNumberSettings,
+  getAllToggles,
+  setNumberSetting,
+  setToggle,
+} from '@/lib/config/feature-toggles';
 import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
@@ -11,7 +17,10 @@ export async function GET(req: Request) {
   if (denied) return denied;
   try {
     const [data, numbers] = [await getAllToggles(), await getAllNumberSettings()];
-    return NextResponse.json({ success: true, data, numbers });
+    // Computed server-side: buildUnreachableToggleWarnings lives beside the DB
+    // reader, whose module imports prisma — importing it into the client page
+    // would drag prisma into the browser bundle.
+    return NextResponse.json({ success: true, data, numbers, warnings: buildUnreachableToggleWarnings(data) });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
@@ -30,7 +39,10 @@ export async function POST(req: Request) {
     if (typeof body.value === 'boolean') await setToggle(body.key, body.value);
     else await setNumberSetting(body.key, body.value);
     const [data, numbers] = [await getAllToggles(), await getAllNumberSettings()];
-    return NextResponse.json({ success: true, data, numbers });
+    // Computed server-side: buildUnreachableToggleWarnings lives beside the DB
+    // reader, whose module imports prisma — importing it into the client page
+    // would drag prisma into the browser bundle.
+    return NextResponse.json({ success: true, data, numbers, warnings: buildUnreachableToggleWarnings(data) });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });
   }
