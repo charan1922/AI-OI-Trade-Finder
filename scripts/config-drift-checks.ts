@@ -4,8 +4,9 @@
  * feature is covered in CI, not only claimed (PR#2 review 2026-07-20). Run by
  * both the box bench and the DB-free CI runner (scripts/verify-quant-shadow.ts).
  */
-import { buildConfigOverrideSummary } from '../lib/config/feature-toggles';
+import { buildConfigOverrideSummary, buildUnreachableToggleWarnings } from '../lib/config/feature-toggles';
 import {
+  buildDriftMessage,
   type DriftReminderDeps,
   inDriftReminderWindow,
   runConfigDriftReminderCore,
@@ -170,5 +171,67 @@ export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
     const { deps } = fakeDeps({ mark: async () => false });
     const r = await runConfigDriftReminderCore(deps);
     check('reminder: sent but marker write failed → markedPersisted false (honest)', r.status === 'sent' && r.markedPersisted === false && r.completedToday);
+  }
+
+  // ── Unreachable-bypass detection (a bypass ON while its parent rule is OFF) ──
+  // This is NOT drift: both halves can sit at their own defaults while the pair
+  // is meaningless, which is exactly why the summary above cannot catch it.
+  const tg = (key: string, label: string, value: boolean) => ({ key, label, value });
+  {
+    const w = buildUnreachableToggleWarnings([
+      tg('USE_EXTENDED_TREND_BYPASS', 'Extended-trend bypass', true),
+      tg('EXCLUDE_EXTENDED', 'Skip already-extended movers', false),
+    ]);
+    check(
+      'unreachable: bypass ON + parent OFF is reported (the 2026-07-23 state)',
+      w.length === 1 && w[0].includes('Extended-trend bypass') && w[0].includes('Skip already-extended movers'),
+      w[0]
+    );
+  }
+  {
+    const w = buildUnreachableToggleWarnings([
+      tg('USE_EXTENDED_TREND_BYPASS', 'Extended-trend bypass', true),
+      tg('EXCLUDE_EXTENDED', 'Skip already-extended movers', true),
+    ]);
+    check('unreachable: bypass ON + parent ON is fine', w.length === 0);
+  }
+  {
+    const w = buildUnreachableToggleWarnings([
+      tg('USE_EXTENDED_TREND_BYPASS', 'Extended-trend bypass', false),
+      tg('EXCLUDE_EXTENDED', 'Skip already-extended movers', false),
+    ]);
+    check('unreachable: bypass OFF + parent OFF is fine (nothing claims to be live)', w.length === 0);
+  }
+  {
+    const w = buildUnreachableToggleWarnings([tg('USE_EXTENDED_TREND_BYPASS', 'Extended-trend bypass', true)]);
+    check('unreachable: a missing parent is skipped, not guessed at', w.length === 0);
+  }
+
+  // ── The reminder must carry unreachable warnings, including with zero drift ──
+  {
+    const { deps, calls } = fakeDeps({ getOverrides: async () => [], getUnreachable: async () => ['X is ON but inert'] });
+    const r = await runConfigDriftReminderCore(deps);
+    check(
+      'reminder: no drift but an inert switch → still sends',
+      r.status === 'sent' && calls.sent.length === 1 && calls.sent[0].includes('X is ON but inert')
+    );
+  }
+  {
+    const { deps, calls } = fakeDeps({ getOverrides: async () => [], getUnreachable: async () => [] });
+    const r = await runConfigDriftReminderCore(deps);
+    check('reminder: nothing drifted and nothing inert → still silent', r.status === 'no-drift' && calls.sent.length === 0);
+  }
+  {
+    const { deps } = fakeDeps({});
+    const r = await runConfigDriftReminderCore(deps);
+    check('reminder: an absent getUnreachable dep keeps older callers working', r.status === 'sent');
+  }
+  {
+    const msg = buildDriftMessage(['A: ON (safe default OFF)'], ['B is ON but inert']);
+    check(
+      'message: drift and inert switches are reported as SEPARATE sections',
+      msg.includes('off their safe default') && msg.includes('ON but doing nothing'),
+      msg.split('\n').join(' | ')
+    );
   }
 }

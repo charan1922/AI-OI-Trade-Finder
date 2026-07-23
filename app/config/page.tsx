@@ -84,6 +84,9 @@ export default function ConfigPage() {
   const [toggles, setToggles] = useState<ToggleState[]>([]);
   const [numbers, setNumbers] = useState<NumberState[]>([]);
   const [atNumbers, setAtNumbers] = useState<NumberState[]>([]);
+  /** Bypass switches that are ON but inert because their parent rule is OFF.
+   *  Computed server-side (the builder sits next to a prisma import). */
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +99,7 @@ export default function ConfigPage() {
         if (d.success) {
           setToggles(d.data);
           setNumbers(d.numbers ?? []);
+          setWarnings(d.warnings ?? []);
         } else setError(d.error ?? 'Failed to load');
       })
       .catch((e) => setError(String(e)))
@@ -137,6 +141,7 @@ export default function ConfigPage() {
       if (d.success) {
         setToggles(d.data);
         setNumbers(d.numbers ?? []);
+        setWarnings(d.warnings ?? []);
       } else {
         setError(d.error ?? 'Failed to save');
         revert();
@@ -243,6 +248,23 @@ export default function ConfigPage() {
         {error && (
           <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
+          </div>
+        )}
+
+        {/* A switch that is ON but unreachable because the rule it hangs off is
+            OFF. This is NOT drift — both halves can sit at their own defaults —
+            so the "overridden" count never catches it, and the row below reads
+            as a live permission that is not running. */}
+        {warnings.length > 0 && (
+          <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+            <p className="font-semibold text-amber-700 dark:text-amber-400">
+              {warnings.length === 1 ? 'A switch is ON but doing nothing' : `${warnings.length} switches are ON but doing nothing`}
+            </p>
+            <ul className="mt-1 list-disc space-y-1 pl-5 text-[12px] text-muted-foreground">
+              {warnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
           </div>
         )}
 
