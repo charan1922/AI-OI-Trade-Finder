@@ -170,19 +170,63 @@ The raw audit tables are:
 
 - `rfactor_v2_snapshots`
 - `rfactor_v2_option_snapshots`
+- `rfactor_v2_bucket_owner` — which universe owns each minute
 
 They are created safely with `CREATE TABLE IF NOT EXISTS` on first shadow write,
 extended with `ALTER TABLE ... ADD COLUMN` guards for installs that predate a
 field, and are also declared in the Prisma schema.
 
+## One universe owns a minute, and the database decides it
+
+`activityRank`, `activityPercentile` and `universeSize` are all relative to the
+symbol list that was computed. `/live` sections each poll a different list while
+the scanner polls the full universe, so a minute holding two of them would store
+two incompatible definitions of "rank 1" under identical column names.
+
+A minute is therefore owned by the largest universe seen in it, identified by an
+exact symbol-set fingerprint (`universeKey`). Ownership is read from
+`rfactor_v2_bucket_owner` **inside the same transaction** that deletes and
+replaces the minute — never from a remembered "last bucket", which cannot answer
+the question after a process restart (memory forgets an owner whose rows are
+still in SQLite) or when writes arrive out of clock order (the route awaits
+several I/O steps between stamping its timestamp and firing the write, so a
+larger 10:00 batch can land after a smaller 10:01 one).
+
+Note that `universeSize` counts only the RANKABLE names, while ownership
+compares `inputUniverseSize`, the total computed. They are different numbers and
+are stored separately rather than conflated.
+
+## Versions, and why there are two of them
+
+- `modelVersion` + `configHash` on each snapshot — the engine's scoring
+  definition. The evaluator refuses to average across them.
+- `optionEvidenceVersion` on each option snapshot — the definition of the
+  STORED option fields, versioned independently.
+
+The second exists because same-clock option baselines compare today's
+`premiumValue` against retained ones. `v2.2` redefined that field from
+`LTP × volume` to `VWAP × volume`, so a baseline built from older rows would be
+apples-to-oranges — and the snapshot it fed would still carry the current model
+version, leaving nothing downstream able to detect it. Baselines therefore
+require an exact version match; legacy rows default to `unknown` and never
+qualify, so the dataset self-heals instead of needing a manual purge.
+
 ## Commands
 
 ```text
-pnpm verify:r-factor-v2   # 20 deterministic checks, no DB or network
-pnpm eval:r-factor-v2     # read-only out-of-sample evaluation
+pnpm verify:r-factor-v2         # 31 deterministic checks, no DB or network
+pnpm verify:r-factor-v2-store   # 22 DB round-trip checks, isolated temp SQLite
+pnpm eval:r-factor-v2           # read-only out-of-sample evaluation
 pnpm typecheck
 pnpm lint
 ```
+
+Both verify suites run in CI. The store suite uses a throwaway database in a
+temp directory, so it proves what the pure checks cannot: that the tables and
+their additive columns really create, that the batched SQL parameter counts hold
+past one chunk, that a minute keeps exactly one universe across a process
+restart and out-of-order arrivals, that a failed batch rolls back rather than
+leaving a truncated minute, and that retention keeps the newest 20 sessions.
 
 `eval:r-factor-v2` joins shadow snapshots to retained 5-minute candles and asks
 the only question that matters: when V2 said a name was highly active and leaning
@@ -193,6 +237,15 @@ snapshots are one row per symbol per minute and consecutive rows overlap heavily
 — raw row counts are **not** independent samples and their standard errors would
 be far too small. It reports spot moves only: no option premium, spread, or
 slippage. It accepts `--db=` so it can also run against a pulled production clone.
+
+It refuses rather than quietly averaging incomparable rows. Mixed model versions
+exit 1 with instructions to pin one (`--model-version=`, which also refuses if
+the prefix still spans two config hashes), and any minute holding more than one
+universe is excluded **before** dates, the train/test split and the activity
+thresholds are derived — warning about it after the tables are printed would be
+too late, since every number above would already be built from mixed rows.
+Thresholds come from training sessions only, and horizons are measured from each
+snapshot's exact `capturedAt`, not its floored minute.
 
 ## Why TradeFinder cannot calibrate this
 
