@@ -58,7 +58,7 @@ const AT_CLOCK_DEFS = [
     min: 9 * 60 + 30,
     max: 12 * 60,
     description:
-      'When the AUTO-TRADER may start placing real/paper entry orders (default 09:45 — 5 minutes after the scanner window opens, so the first picks have one settled cycle behind them). This is the ORDER clock; the scanner window above only controls suggestions.',
+      'When the auto-trader may START placing entry orders (paper or real), default 09:45 — 5 minutes after the scan window opens, so the first picks have one settled cycle behind them. This clock controls ORDERS; the scan window above only controls suggestions.',
   },
   {
     key: 'AUTO_TRADE_ENTRY_END_MIN',
@@ -67,7 +67,7 @@ const AT_CLOCK_DEFS = [
     min: 10 * 60,
     max: 14 * 60 + 30,
     description:
-      'Last moment the auto-trader may place a NEW entry order (default 11:00). Exits and stop management continue all day regardless.',
+      'The last time the auto-trader may place a NEW entry order (default 11:00). Exits and stop management keep running all day regardless.',
   },
   {
     key: 'AUTO_TRADE_SQUARE_OFF_MIN',
@@ -76,7 +76,7 @@ const AT_CLOCK_DEFS = [
     min: 14 * 60,
     max: 15 * 60 + 20,
     description:
-      'Everything still open is force-exited at this time (default 15:12), enforced in code — brokers penalty-square intraday positions ~15:26, we act first.',
+      'Everything still open is force-closed at this time (default 15:12). Enforced in code — brokers auto-close intraday positions around 15:26 with a penalty, so we exit first.',
   },
 ] as const;
 
@@ -208,8 +208,8 @@ export default function ConfigPage() {
 
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="mx-auto max-w-7xl p-4 sm:p-6">
-        <header className="mb-6 flex flex-wrap items-end justify-between gap-3">
+      <div className="mx-auto max-w-7xl p-3 sm:p-4">
+        <header className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
               <Settings2 className="size-5 text-muted-foreground" /> Configuration
@@ -272,8 +272,9 @@ export default function ConfigPage() {
           <p className="text-sm text-muted-foreground">No settings registered.</p>
         )}
 
-        {/* Category cards in a responsive grid — 1 col mobile, 2 from lg. */}
-        <div className="grid gap-5 lg:grid-cols-2">
+        {/* Category cards in a responsive grid — 1 col mobile, 2 from lg, 3 from xl
+            so the whole set fits one viewport on a wide screen. */}
+        <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
           {categories.map((cat) => {
             const catToggles = toggles.filter((t) => t.category === cat);
             const catNumbers = allNumbers.filter((n) => n.category === cat);
@@ -282,7 +283,7 @@ export default function ConfigPage() {
               catNumbers.filter((n) => n.value !== n.default).length;
             return (
               <section key={cat} className="flex flex-col overflow-hidden rounded-xl border border-border bg-card">
-                <header className="flex items-center justify-between border-b border-border bg-muted/40 px-4 py-2.5">
+                <header className="flex items-center justify-between border-b border-border bg-muted/40 px-3 py-1.5">
                   <h2 className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">{cat}</h2>
                   <span className="text-[10px] text-muted-foreground tabular-nums">
                     {catToggles.length + catNumbers.length} settings
@@ -376,10 +377,10 @@ function SettingRow({
   control: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 px-4 py-3">
+    <div className="flex items-start justify-between gap-3 px-3 py-1.5">
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-sm font-medium">{label}</span>
+          <span className="text-[13px] font-medium">{label}</span>
           {overridden && (
             <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
               overridden
@@ -399,13 +400,13 @@ function SettingRow({
         </div>
         <Tooltip>
           <TooltipTrigger asChild>
-            <p className="mt-0.5 line-clamp-2 cursor-default text-xs leading-relaxed text-muted-foreground">
+            <p className="mt-0.5 line-clamp-1 cursor-default text-[11px] leading-snug text-muted-foreground">
               {description}
             </p>
           </TooltipTrigger>
           <TooltipContent className="max-w-sm leading-relaxed whitespace-normal">{description}</TooltipContent>
         </Tooltip>
-        <div className="mt-1 flex flex-wrap items-center gap-2">
+        <div className="mt-0.5 flex flex-wrap items-center gap-2">
           <code className="font-mono text-[10px] text-muted-foreground/70">{settingKey}</code>
           {meta && <span className="text-[10px] text-muted-foreground/70">{meta}</span>}
         </div>
