@@ -14,6 +14,7 @@ import {
   backstopsFromFill,
   backstopsFromProposalFill,
   blindContractIds,
+  classifyProtectedContracts,
   isFullPositionBidCovered,
   isRestTargetExecutable,
   targetRupeesForPosition,
@@ -227,6 +228,63 @@ check('a held contract missing from a successful response is blind', () => {
   assert.deepEqual(blindContractIds(['111', '222'], new Set(['111'])), ['222']);
   assert.deepEqual(blindContractIds(['111', '222'], new Set(['111', '222'])), []);
   assert.deepEqual(blindContractIds([], new Set()), [], 'no positions is not blindness');
+});
+
+// ── Which trades this pass is responsible for ──────────────────────────────
+const TODAY = '2026-07-23';
+const trade = (over: Partial<{ entryFillPremium: number | null; date: string; optSecurityId: string }> = {}) => ({
+  entryFillPremium: 120 as number | null,
+  date: TODAY,
+  optSecurityId: '4242',
+  ...over,
+});
+
+check('a ghost row from a previous session is not this pass to protect', () => {
+  // Case A: only yesterday's stale row is open. A transport failure must NOT
+  // count as blindness — six of those would trip the guard-blind latch and
+  // block new entries with no live position at risk.
+  const ghostOnly = classifyProtectedContracts([trade({ date: '2026-07-22' })], TODAY);
+  assert.equal(ghostOnly.protectedTrades.length, 0);
+  assert.deepEqual(ghostOnly.quotableIds, []);
+  assert.equal(ghostOnly.unquotable.length, 0);
+});
+
+check('a current filled trade with an unusable id is reported blind', () => {
+  // Case B: it used to be filtered out of every id set, so no quote was
+  // requested and no blindness recorded — while its stop and target were
+  // skipped exactly as if the guard were blind. It must not fail open.
+  for (const bad of ['', '   ', 'NOT-A-NUMBER', '0', '-5']) {
+    const classified = classifyProtectedContracts([trade({ optSecurityId: bad })], TODAY);
+    assert.equal(classified.protectedTrades.length, 1, `id ${JSON.stringify(bad)} is still a held position`);
+    assert.deepEqual(classified.quotableIds, [], `id ${JSON.stringify(bad)} must not be requested`);
+    assert.equal(classified.unquotable.length, 1, `id ${JSON.stringify(bad)} must be reported blind`);
+  }
+});
+
+check('a current valid row is quotable, and an unfilled row is not protected', () => {
+  const classified = classifyProtectedContracts(
+    [
+      trade({ optSecurityId: '111' }),
+      trade({ optSecurityId: '222', entryFillPremium: null }), // no confirmed fill yet
+      trade({ optSecurityId: '333', date: '2026-07-22' }), // ghost
+    ],
+    TODAY,
+  );
+  assert.deepEqual(classified.quotableIds, ['111']);
+  assert.equal(classified.protectedTrades.length, 1);
+  assert.equal(classified.unquotable.length, 0);
+});
+
+check('a mixed book separates quotable from unquotable current positions', () => {
+  const classified = classifyProtectedContracts(
+    [trade({ optSecurityId: '111' }), trade({ optSecurityId: '' }), trade({ date: '2026-07-22' })],
+    TODAY,
+  );
+  assert.equal(classified.protectedTrades.length, 2, 'both of today’s filled rows must be protected');
+  assert.deepEqual(classified.quotableIds, ['111']);
+  assert.equal(classified.unquotable.length, 1);
+  // Recovery: once every protected contract is quoted, nothing is blind.
+  assert.deepEqual(blindContractIds(classified.quotableIds, new Set(['111'])), []);
 });
 
 if (process.exitCode === 1) {

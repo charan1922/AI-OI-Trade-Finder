@@ -19,7 +19,7 @@
 import { alerts } from '../alerts';
 import { isPastSquareOff, istMinuteLabel, minuteOfDayIST } from '../config';
 import { exitTrade } from '../execution';
-import { blindContractIds, isRestTargetExecutable } from '../backstops';
+import { blindContractIds, classifyProtectedContracts, isRestTargetExecutable } from '../backstops';
 import { fetchOptionQuotesWithHealth, latestSpotRead, type OptionQuote } from '../quotes';
 import { getAutoTradeSettings } from '../settings';
 import {
@@ -209,17 +209,12 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
       .filter((id) => Number.isFinite(id) && id > 0)
       .map(String)
   );
-  // The contracts whose premium stop/target this pass is actually responsible
-  // for: a confirmed fill AND today's row (a previous session's ghost row is
-  // never exited here — reconciliation owns it — so it must not raise a false
-  // blindness alarm either).
-  const protectedOptionIds = new Set(
-    open
-      .filter((trade) => trade.entryFillPremium != null && trade.date === date)
-      .map((trade) => Number(trade.optSecurityId))
-      .filter((id) => Number.isFinite(id) && id > 0)
-      .map(String)
-  );
+  // What this pass is actually responsible for protecting. `unquotable` holds
+  // CURRENT filled trades whose security id cannot be quoted at all — they used
+  // to vanish from every id set and so were never reported blind, even though
+  // their stop and target were skipped just the same.
+  const { protectedTrades, quotableIds, unquotable } = classifyProtectedContracts(open, date);
+  const protectedOptionIds = new Set(quotableIds);
   let optionQuotes: ReadonlyMap<string, OptionQuote> = new Map<string, OptionQuote>();
   let quoteCapturedAt: string | null = null;
   if (!squareOff && attemptedOptionIds.size > 0) {
@@ -236,18 +231,40 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
     // this: it carries the fast TARGET path only, never the stop. Health is
     // therefore keyed to the contracts we must protect, not to the transport.
     const blindIds = blindContractIds([...protectedOptionIds], new Set(optionQuotes.keys()));
-    const fullyPriced = batch.sourceOk && blindIds.length === 0;
-    const blindSymbols = open
-      .filter((trade) => blindIds.includes(String(Number(trade.optSecurityId))))
-      .map((trade) => `${trade.symbol} ${trade.strike}${trade.optionType}`);
+    // Health describes the CURRENT book only. With nothing to protect there is
+    // nothing to be blind about: recording a transport failure against a
+    // ghost-only book would march the guard toward the `guard-blind` latch and
+    // block new entries with no live position at risk (PR#16 re-review).
+    if (protectedTrades.length > 0) {
+      const label = (trade: AutoTrade) => `${trade.symbol} ${trade.strike}${trade.optionType}`;
+      const blindSymbols = [
+        ...protectedTrades.filter((trade) => blindIds.includes(String(Number(trade.optSecurityId)))).map(label),
+        // Unquotable ids can never appear in blindIds — they never reached the
+        // request — so they are named here or nowhere.
+        ...unquotable.map((trade) => `${label(trade)} (unusable security id "${trade.optSecurityId}")`),
+      ];
+      const fullyPriced = batch.sourceOk && blindIds.length === 0 && unquotable.length === 0;
+      actions.push(
+        ...(await recordQuoteHealth(
+          fullyPriced,
+          fullyPriced
+            ? null
+            : (batch.error ??
+                `no usable quote for held contract(s): ${blindSymbols.join(', ') || blindIds.join(', ')}`),
+          protectedTrades.length
+        ))
+      );
+    }
+  } else if (!squareOff && protectedTrades.length > 0) {
+    // Every current position has an unusable security id, so no request was
+    // even possible. That is total blindness, not a quiet pass.
     actions.push(
       ...(await recordQuoteHealth(
-        fullyPriced,
-        fullyPriced
-          ? null
-          : (batch.error ??
-              `no usable quote for held contract(s): ${blindSymbols.join(', ') || blindIds.join(', ')}`),
-        open.length
+        false,
+        `no usable security id for held contract(s): ${unquotable
+          .map((trade) => `${trade.symbol} ${trade.strike}${trade.optionType} ("${trade.optSecurityId}")`)
+          .join(', ')}`,
+        protectedTrades.length
       ))
     );
   }

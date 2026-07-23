@@ -121,3 +121,42 @@ export function topOfBookSizes(depth: {
 export function blindContractIds(protectedIds: readonly string[], quotedIds: ReadonlySet<string>): string[] {
   return protectedIds.filter((id) => !quotedIds.has(id));
 }
+
+/** Minimal shape of a trade needed to decide what this pass must protect. */
+export interface ProtectableTrade {
+  entryFillPremium: number | null;
+  date: string;
+  optSecurityId: string;
+}
+
+/**
+ * Split the open book into what THIS pass is responsible for protecting.
+ *
+ * Two things this must get right, both of which previously went wrong
+ * (PR#16 re-review):
+ *
+ *  - A previous session's ghost row is never exited here (reconciliation owns
+ *    it), so it must not drive guard health either. Counting a transport
+ *    failure against a ghost-only book would march the guard toward the
+ *    `guard-blind` latch and block new entries with NO live position at risk.
+ *
+ *  - A CURRENT filled trade whose optSecurityId is empty or non-numeric cannot
+ *    be quoted at all. Silently dropping it from the id set made it invisible:
+ *    no quote, no blindness recorded, and its premium stop and target skipped —
+ *    exactly the blindness this guard exists to prevent. Those trades are
+ *    returned as `unquotable` so the caller can count them as blind.
+ */
+export function classifyProtectedContracts<T extends ProtectableTrade>(
+  open: readonly T[],
+  date: string
+): { protectedTrades: T[]; quotableIds: string[]; unquotable: T[] } {
+  const protectedTrades = open.filter((trade) => trade.entryFillPremium != null && trade.date === date);
+  const quotableIds: string[] = [];
+  const unquotable: T[] = [];
+  for (const trade of protectedTrades) {
+    const id = Number(trade.optSecurityId);
+    if (Number.isFinite(id) && id > 0) quotableIds.push(String(id));
+    else unquotable.push(trade);
+  }
+  return { protectedTrades, quotableIds, unquotable };
+}

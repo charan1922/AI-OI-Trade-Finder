@@ -768,35 +768,45 @@ export default function AutoTradePage() {
               {today.realizedPnlRupees >= 0 ? '+' : ''}₹{today.realizedPnlRupees.toLocaleString('en-IN')}
             </div>
           </div>
-          <div className="rounded-md border border-border bg-card px-3 py-2">
-            <div className="text-[10px] tracking-wide text-muted-foreground uppercase">Live executable P&amp;L</div>
-            <div
-              className={`text-sm font-bold tabular-nums ${
-                (data?.pnlStream?.executablePnlRupees ?? 0) >= 0
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-red-600 dark:text-red-400'
-              }`}
-            >
-              {data?.pnlStream?.executablePnlRupees == null
-                ? data?.pnlStream?.connecting
-                  ? 'connecting…'
-                  : data?.pnlStream?.markToBestBidPnlRupees != null
-                    ? `~₹${data.pnlStream.markToBestBidPnlRupees.toLocaleString('en-IN')} (mark)`
-                    : '—'
-                : `${data.pnlStream.executablePnlRupees >= 0 ? '+' : ''}₹${data.pnlStream.executablePnlRupees.toLocaleString('en-IN')}`}
-            </div>
-            <div className="text-[9px] text-muted-foreground">
-              {/* An indicative mark is shown ONLY when the bid cannot cover the
-                  whole position, and is labelled as such — never as executable. */}
-              {data?.pnlStream?.executablePnlRupees == null && data?.pnlStream?.markToBestBidPnlRupees != null
-                ? 'best bid too small for full size — indicative only'
-                : data?.pnlStream?.connected
-                ? 'FYERS stream · bid based'
-                : data?.pnlStream?.nextReconnectAt
-                  ? `FYERS reconnect ${data.pnlStream.reconnectAttempts} scheduled · 5s REST guard active`
-                  : '5s REST guard active'}
-            </div>
-          </div>
+          {/* The HEADING follows the number. When the best bid cannot cover the
+              whole position the figure is a mark, not an exit, so the card is
+              retitled rather than showing an indicative value under the word
+              "executable" — and the colour follows the shown number, so a
+              negative mark can never render green (PR#16 re-review). */}
+          {(() => {
+            const stream = data?.pnlStream;
+            const showingMark = stream?.executablePnlRupees == null && stream?.markToBestBidPnlRupees != null;
+            const shownPnl = stream?.executablePnlRupees ?? stream?.markToBestBidPnlRupees ?? null;
+            return (
+              <div className="rounded-md border border-border bg-card px-3 py-2">
+                <div className="text-[10px] tracking-wide text-muted-foreground uppercase">
+                  {showingMark ? 'Live best-bid mark' : 'Live executable P&L'}
+                </div>
+                <div
+                  className={`text-sm font-bold tabular-nums ${
+                    (shownPnl ?? 0) >= 0
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-red-600 dark:text-red-400'
+                  }`}
+                >
+                  {shownPnl == null
+                    ? stream?.connecting
+                      ? 'connecting…'
+                      : '—'
+                    : `${showingMark ? '~' : shownPnl >= 0 ? '+' : ''}₹${shownPnl.toLocaleString('en-IN')}`}
+                </div>
+                <div className="text-[9px] text-muted-foreground">
+                  {showingMark
+                    ? 'best bid too small for full size — indicative only'
+                    : stream?.connected
+                      ? 'FYERS stream · bid based'
+                      : stream?.nextReconnectAt
+                        ? `FYERS reconnect ${stream.reconnectAttempts} scheduled · 5s REST guard active`
+                        : '5s REST guard active'}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
