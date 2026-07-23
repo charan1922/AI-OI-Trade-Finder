@@ -22,8 +22,14 @@
  *   npx tsx scripts/replay-window.ts [date]      — named-variant grid
  *   npx tsx scripts/autoresearch.ts [n] [seed]   — autonomous experiment loop
  */
-import { config } from 'dotenv';
-config({ path: '.env.local' });
+// Node's built-in env loader — no `dotenv` dependency (it is not in package.json
+// and was never installed). try/catch preserves dotenv's silent no-op when the
+// file is absent; process.loadEnvFile throws.
+try {
+  process.loadEnvFile('.env.local');
+} catch {
+  // no .env.local — fall through to whatever is already in the environment
+}
 
 import Database from 'better-sqlite3';
 import { setupScore } from '../app/live/_lib/setup-score';

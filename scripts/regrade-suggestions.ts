@@ -13,8 +13,14 @@
  * With no --date it auto-selects the intersection of pick-dates and candle-dates.
  * Read-only on candles; only rewrites the outcome columns of trade_suggestions.
  */
-import { config } from 'dotenv';
-config({ path: '.env.local' });
+// Node's built-in env loader — no `dotenv` dependency (it is not in package.json
+// and was never installed). try/catch preserves dotenv's silent no-op when the
+// file is absent; process.loadEnvFile throws.
+try {
+  process.loadEnvFile('.env.local');
+} catch {
+  // no .env.local — fall through to whatever is already in the environment
+}
 
 import { prisma } from '../lib/db';
 import { reviewDate } from '../lib/trade-suggest/review';

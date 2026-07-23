@@ -2,8 +2,14 @@
  * Fetch trade details directly from Dhan V2 API using the repo's TOTP auth.
  * Run: npx tsx scripts/get-trades.ts
  */
-import { config } from 'dotenv';
-config({ path: '.env.local' });
+// Node's built-in env loader — no `dotenv` dependency (it is not in package.json
+// and was never installed). try/catch preserves dotenv's silent no-op when the
+// file is absent; process.loadEnvFile throws.
+try {
+  process.loadEnvFile('.env.local');
+} catch {
+  // no .env.local — fall through to whatever is already in the environment
+}
 
 import { getDhanAccessToken } from '../lib/dhan/auth';
 
