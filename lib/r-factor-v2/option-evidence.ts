@@ -7,6 +7,21 @@ import type {
   RFactorV2Direction,
 } from './types';
 
+/**
+ * Version of the OPTION-EVIDENCE definition, independent of the engine's model
+ * version. Bump it whenever a stored field changes meaning — how legs are
+ * selected, or how premiumValue / optionVolume are computed.
+ *
+ * It exists because same-clock baselines compare today's premiumValue against
+ * RETAINED ones. If the definition changed in between, that comparison is
+ * apples-to-oranges, and the snapshot it feeds would still be stamped with the
+ * current model version — so nothing downstream could ever detect it.
+ *
+ * oe2 — premium value switched from LTP x cumulative volume to session VWAP x
+ *       cumulative volume (engine v2.2).
+ */
+export const OPTION_EVIDENCE_VERSION = 'oe2';
+
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 const ratioOrNull = (numerator: number, denominator: number): number | null =>
   denominator > 0 ? numerator / denominator : null;

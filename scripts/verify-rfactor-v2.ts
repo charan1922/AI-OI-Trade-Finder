@@ -559,18 +559,25 @@ async function verifyQuoteGateSerialisation(): Promise<void> {
     assert.deepEqual(order, ['shadow', 'foreground'], 'queue order must be preserved');
   });
 
-  // 3. A shadow request gives up rather than queueing behind a long cooldown.
+  // 3. A shadow request must never dispatch during a cooldown, and must then
+  //    ACTUALLY give up — returning null rather than sitting in the queue.
+  //    The give-up window is shortened so the real result can be asserted; an
+  //    earlier version only observed "still waiting" and claimed more than that.
   gate.__resetQuoteGateForTest({ cooldownUntil: Date.now() + 30_000 });
   const startedAt = Date.now();
-  const gaveUp = await Promise.race([
-    gate.throughQuoteGateLowPriority(async () => 'dispatched'),
-    new Promise((resolve) => setTimeout(() => resolve('still-waiting'), 1_500)),
-  ]);
+  let dispatched = false;
+  const result = await gate.throughQuoteGateLowPriority(async () => {
+    dispatched = true;
+    return 'dispatched';
+  }, 800);
+  const elapsed = Date.now() - startedAt;
   gate.__resetQuoteGateForTest();
 
-  check('a shadow request waits (not dispatches) through a live cooldown', () => {
-    assert.equal(gaveUp, 'still-waiting', 'the shadow request must not dispatch during a cooldown');
-    assert.ok(Date.now() - startedAt < 3_000);
+  check('a shadow request gives up rather than queueing behind a long cooldown', () => {
+    assert.equal(dispatched, false, 'the task must never run while a cooldown is active');
+    assert.equal(result, null, 'give-up must return null, not park in the queue');
+    assert.ok(elapsed >= 800, `should have waited out its give-up window, waited ${elapsed}ms`);
+    assert.ok(elapsed < 5_000, `should not have waited for the full cooldown, waited ${elapsed}ms`);
   });
 }
 

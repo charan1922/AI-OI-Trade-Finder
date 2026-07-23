@@ -114,8 +114,13 @@ export function throughQuoteGate<T>(task: () => Promise<T>): Promise<T> {
  * is why the task it wraps MUST be independently bounded — the gate cannot
  * cancel work it has already started.
  */
-export async function throughQuoteGateLowPriority<T>(task: () => Promise<T>): Promise<T | null> {
-  const giveUpAt = Date.now() + LOW_PRIORITY_GIVE_UP_MS;
+export async function throughQuoteGateLowPriority<T>(
+  task: () => Promise<T>,
+  /** Overridable only so tests can assert the real give-up result quickly
+   *  instead of merely observing that it is still waiting. */
+  giveUpMs: number = LOW_PRIORITY_GIVE_UP_MS,
+): Promise<T | null> {
+  const giveUpAt = Date.now() + giveUpMs;
   while (
     shouldLowPriorityYield({
       foregroundPending: gate.foregroundPending,

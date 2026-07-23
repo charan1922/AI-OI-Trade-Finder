@@ -203,7 +203,14 @@ model RFactorV2Snapshot {
   comparableActivity    Float  @default(0)
   activityPercentile    Float
   activityRank          Int
+  /// Count of RANKABLE names (those meeting the coverage floor).
   universeSize          Int
+  /// Total symbols the computation covered. Ownership of a minute compares this,
+  /// not universeSize — the two are different numbers and must not be conflated.
+  inputUniverseSize     Int    @default(0)
+  /// Fingerprint of the exact symbol set the ranking was computed against. Rank
+  /// and percentile are only comparable within one key.
+  universeKey           String @default("unknown")
   direction             String
   directionScore        Float
   directionConfidence   Float
@@ -216,6 +223,21 @@ model RFactorV2Snapshot {
   @@id([date, bucketTs, symbol])
   @@index([date, symbol, bucketTs])
   @@map("rfactor_v2_snapshots")
+}
+
+/// Which universe owns each minute. Kept in the database, NOT in process memory:
+/// ownership has to survive a restart and must not depend on the order writes
+/// happen to arrive in, since a larger older batch can land after a smaller
+/// newer one.
+model RFactorV2BucketOwner {
+  date              String
+  bucketTs          Int
+  universeKey       String
+  inputUniverseSize Int
+  capturedAt        String
+
+  @@id([date, bucketTs])
+  @@map("rfactor_v2_bucket_owner")
 }
 
 /// Full near-money strike evidence used by R-factor V2 shadow enrichment. One
@@ -238,6 +260,10 @@ model RFactorV2OptionSnapshot {
   optionVolume          Float  @default(0)
   /// Which denominator the retained pace actually used.
   paceBaselineKind      String @default("missing")
+  /// Definition that produced premiumValue, versioned independently of the
+  /// engine. Same-clock baselines compare today's number against RETAINED ones,
+  /// so a row from an older definition must never feed one.
+  optionEvidenceVersion String @default("unknown")
   evidence              String
 
   @@id([date, bucketTs, symbol])

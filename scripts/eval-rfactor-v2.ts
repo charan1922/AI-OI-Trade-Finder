@@ -70,6 +70,8 @@ interface SnapshotRow {
   optionStatus: string;
   modelVersion: string;
   configHash: string;
+  /** Exact symbol set this row's rank/percentile were computed against. */
+  universeKey: string;
 }
 
 const columns = new Set(
@@ -85,7 +87,8 @@ const allSnapshots = db
   .prepare(
     `SELECT date, bucketTs, symbol, capturedAt, oldRFactor, activityScore, comparableActivity,
             comparableCoverage, activityRank, universeSize, direction, directionConfidence, optionStatus,
-            ${optional('ltp', 'NULL')}, ${optional('modelVersion', `'unknown'`)}, ${optional('configHash', `'unknown'`)}
+            ${optional('ltp', 'NULL')}, ${optional('modelVersion', `'unknown'`)}, ${optional('configHash', `'unknown'`)},
+            ${optional('universeKey', `'unknown'`)}
        FROM rfactor_v2_snapshots
       ORDER BY date, bucketTs, symbol`,
   )
@@ -107,7 +110,7 @@ for (const snap of allSnapshots) {
   versionCounts.set(key, (versionCounts.get(key) ?? 0) + 1);
 }
 const requestedVersion = arg('model-version', '');
-let snapshots = allSnapshots;
+let snapshots: SnapshotRow[] = allSnapshots;
 if (requestedVersion !== '') {
   snapshots = allSnapshots.filter((s) => `${s.modelVersion}/${s.configHash}`.startsWith(requestedVersion));
   if (snapshots.length === 0) {
@@ -143,6 +146,31 @@ const evaluatedVersion =
   snapshots.length > 0
     ? `${snapshots[0].modelVersion}/${snapshots[0].configHash}`
     : ([...versionCounts.keys()][0] ?? 'unknown');
+
+// ── Drop internally inconsistent minutes BEFORE anything is derived ─────────
+// A bucket holding two universeKeys has two incompatible definitions of "rank
+// 1" and of universeSize. Warning about it after the tables are printed is too
+// late — the dates, the train/test split and the activity thresholds would all
+// already be computed from contaminated rows.
+const mixedBuckets = new Set<string>();
+if (columns.has('universeKey')) {
+  const seen = new Map<string, Set<string>>();
+  for (const snap of snapshots) {
+    const key = `${snap.date}|${snap.bucketTs}`;
+    const keys = seen.get(key) ?? new Set<string>();
+    keys.add(snap.universeKey);
+    seen.set(key, keys);
+  }
+  for (const [key, keys] of seen) if (keys.size > 1) mixedBuckets.add(key);
+}
+const droppedMixed = snapshots.filter((s) => mixedBuckets.has(`${s.date}|${s.bucketTs}`)).length;
+if (mixedBuckets.size > 0) {
+  snapshots = snapshots.filter((s) => !mixedBuckets.has(`${s.date}|${s.bucketTs}`));
+  if (snapshots.length === 0) {
+    console.error(`Every bucket holds more than one universe (${mixedBuckets.size} minutes). Nothing safe to evaluate.`);
+    process.exit(1);
+  }
+}
 
 // ── Forward spot moves from retained candles ────────────────────────────────
 interface Bar {
@@ -407,17 +435,12 @@ console.log(
 console.log(`model version        : ${evaluatedVersion} (mixed versions are refused, not averaged)`);
 // Ranks are relative to the symbol set they were computed against, so a bucket
 // holding two universes would mean two incompatible definitions of "rank 1".
-const mixedUniverseBuckets = db
-  .prepare(
-    columns.has('universeKey')
-      ? `SELECT COUNT(*) AS n FROM (
-           SELECT date, bucketTs FROM rfactor_v2_snapshots
-            GROUP BY date, bucketTs HAVING COUNT(DISTINCT universeKey) > 1)`
-      : `SELECT 0 AS n`,
-  )
-  .get() as { n: number };
 console.log(
-  `universe integrity   : ${Number(mixedUniverseBuckets.n) === 0 ? 'one universe per minute' : `!! ${mixedUniverseBuckets.n} minute(s) hold MIXED universes — ranks not comparable`}`,
+  `universe integrity   : ${
+    mixedBuckets.size === 0
+      ? 'one universe per minute'
+      : `${mixedBuckets.size} inconsistent minute(s) EXCLUDED before evaluation (${droppedMixed} rows)`
+  }`,
 );
 
 for (const horizon of horizons) {

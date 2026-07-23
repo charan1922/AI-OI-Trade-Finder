@@ -213,6 +213,55 @@ async function main(): Promise<void> {
   );
   check('the superseded smaller universe leaves no rows behind', Number(leftovers[0].n) === 0, `${leftovers[0].n} rows`);
 
+  // ── Ownership must not depend on process memory ───────────────────────────
+  // Simulating a restart: the guard is cleared while SQLite still holds the
+  // minute. A remembered "last bucket" would forget the owner, skip the DELETE,
+  // and let INSERT OR IGNORE merge a second universe into the same bucket.
+  store.resetRFactorV2WriteGuard();
+  const sneaky = universeOf(Array.from({ length: 30 }, (_, i) => `SNEAK${i}`));
+  await store.recordRFactorV2Batch(date, sneaky.oldScores, sneaky.inputs, sneaky.results, minuteThree + 9_000);
+  const afterRestart = await prisma.$queryRawUnsafe<{ keys: number; n: number }[]>(
+    `SELECT COUNT(DISTINCT universeKey) AS keys, COUNT(*) AS n
+       FROM rfactor_v2_snapshots WHERE bucketTs = ?`,
+    bucketThree,
+  );
+  check(
+    'a process restart cannot let a second universe into an owned minute',
+    Number(afterRestart[0].keys) === 1 && Number(afterRestart[0].n) === 100,
+    `${afterRestart[0].keys} key(s), ${afterRestart[0].n} rows`,
+  );
+
+  // Out-of-order arrival: a NEWER minute is written first, then a delayed OLDER
+  // minute lands. The older one must own its own bucket without disturbing the
+  // newer one — a single "last bucket seen" would rewind and corrupt both.
+  store.resetRFactorV2WriteGuard();
+  const minuteNewer = 1_800_000_360_000;
+  const minuteOlder = 1_800_000_300_000;
+  const bucketNewer = Math.floor(minuteNewer / 60_000) * 60;
+  const bucketOlder = Math.floor(minuteOlder / 60_000) * 60;
+  const newerSmall = universeOf(Array.from({ length: 20 }, (_, i) => `NEW${i}`));
+  const olderLarge = universeOf(Array.from({ length: 90 }, (_, i) => `OLD${i}`));
+  await store.recordRFactorV2Batch(date, newerSmall.oldScores, newerSmall.inputs, newerSmall.results, minuteNewer);
+  await store.recordRFactorV2Batch(date, olderLarge.oldScores, olderLarge.inputs, olderLarge.results, minuteOlder);
+  const laterBigger = universeOf(Array.from({ length: 60 }, (_, i) => `LATE${i}`));
+  await store.recordRFactorV2Batch(date, laterBigger.oldScores, laterBigger.inputs, laterBigger.results, minuteNewer + 3_000);
+  const ooo = await prisma.$queryRawUnsafe<{ bucketTs: number; keys: number; n: number }[]>(
+    `SELECT bucketTs, COUNT(DISTINCT universeKey) AS keys, COUNT(*) AS n
+       FROM rfactor_v2_snapshots WHERE bucketTs IN (?, ?) GROUP BY bucketTs ORDER BY bucketTs`,
+    bucketOlder,
+    bucketNewer,
+  );
+  check(
+    'a delayed older minute cannot rewind ownership of a newer one',
+    ooo.length === 2 && ooo.every((row) => Number(row.keys) === 1),
+    ooo.map((r) => `${r.bucketTs}:${r.keys}key/${r.n}rows`).join(' '),
+  );
+  check(
+    'a later larger universe still takes over the newer minute',
+    Number(ooo.find((r) => Number(r.bucketTs) === bucketNewer)?.n) === 60,
+    `${ooo.find((r) => Number(r.bucketTs) === bucketNewer)?.n} rows (expected 60)`,
+  );
+
   // Option evidence: baselines must not mix expiries.
   const optionEvidence = (premiumValue: number, capturedAt: string, expiry: string) => ({
     capturedAt,
@@ -267,6 +316,20 @@ async function main(): Promise<void> {
     'a freshly rolled expiry withholds the baseline instead of mixing regimes',
     rolledBaseline === null,
     `${rolledBaseline}`,
+  );
+
+  // ── Baselines must not mix option-evidence definitions ────────────────────
+  // v2.2 redefined premiumValue from LTP x volume to VWAP x volume. Rows from
+  // the older definition are a different measurement, and a snapshot normalised
+  // against them would still carry today's model version — undetectable later.
+  await prisma.$executeRawUnsafe(
+    `UPDATE rfactor_v2_option_snapshots SET optionEvidenceVersion = 'oe1' WHERE symbol = 'ABC' AND expiry = '2099-05-27'`,
+  );
+  const staleVersionBaseline = await store.loadSameTimeOptionBaseline('ABC', '2099-05-27', '2099-05-05', nowMs);
+  check(
+    'evidence from an older option definition never feeds a baseline',
+    staleVersionBaseline === null,
+    `${staleVersionBaseline} (3 rows exist, but all at oe1)`,
   );
 
   // Retention keeps the newest sessions only.
@@ -336,6 +399,31 @@ async function main(): Promise<void> {
     'the minute ends up owned by exactly ONE universe',
     Number(owned[0].keys) === 1,
     `${owned[0].keys} distinct universeKey values`,
+  );
+
+  // ── Coalescing must be PER MINUTE ─────────────────────────────────────────
+  // A single global pending slot kept whichever payload had most symbols,
+  // regardless of which minute it belonged to — so a delayed larger 10:00
+  // payload evicted a pending smaller 10:01 one and that minute was lost.
+  const crossDate = '2099-08-05';
+  const crossNewer = 1_800_000_720_000;
+  const crossOlder = crossNewer - 60_000;
+  store.resetRFactorV2WriteGuard();
+  const blocker = mk(symbols.slice(0, 3));
+  const newerMinute = mk(symbols.slice(0, 5));
+  const olderBigger = mk(symbols.slice(0, 70));
+  const w1 = store.recordRFactorV2Batch(crossDate, blocker.old, blocker.inputs, blocker.results, crossNewer - 120_000, blocker.ltp);
+  const w2 = store.recordRFactorV2Batch(crossDate, newerMinute.old, newerMinute.inputs, newerMinute.results, crossNewer, newerMinute.ltp);
+  const w3 = store.recordRFactorV2Batch(crossDate, olderBigger.old, olderBigger.inputs, olderBigger.results, crossOlder, olderBigger.ltp);
+  await Promise.all([w1, w2, w3]);
+  const crossBuckets = await prisma.$queryRawUnsafe<{ bucketTs: number; n: number }[]>(
+    `SELECT bucketTs, COUNT(*) AS n FROM rfactor_v2_snapshots WHERE date = ? GROUP BY bucketTs ORDER BY bucketTs`,
+    crossDate,
+  );
+  check(
+    'a larger payload for a DIFFERENT minute cannot evict a pending one',
+    crossBuckets.length === 3,
+    `${crossBuckets.length} minutes stored (expected 3): ${crossBuckets.map((b) => `${b.bucketTs}:${b.n}`).join(' ')}`,
   );
 
   // ── Duplicate symbols must not inflate the universe ────────────────────────

@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { RFACTOR_V2_CONFIG_HASH, RFACTOR_V2_MODEL_VERSION } from './engine';
+import { OPTION_EVIDENCE_VERSION } from './option-evidence';
 import type { OptionActivityEvidence, RFactorV2Input, RFactorV2Result } from './types';
 
 /** Sessions of shadow evidence to retain, matching the candle/rank retention. */
@@ -62,9 +63,32 @@ export async function ensureRFactorV2Tables(): Promise<void> {
   await addColumnIfMissing('rfactor_v2_snapshots', 'configHash', `TEXT NOT NULL DEFAULT 'unknown'`);
   // Which exact symbol set this minute's ranking was computed against.
   await addColumnIfMissing('rfactor_v2_snapshots', 'universeKey', `TEXT NOT NULL DEFAULT 'unknown'`);
+  // Total symbols the ranking was computed over. Distinct from universeSize,
+  // which counts only the RANKABLE subset — ownership compares total input.
+  await addColumnIfMissing('rfactor_v2_snapshots', 'inputUniverseSize', 'INTEGER NOT NULL DEFAULT 0');
   await addColumnIfMissing('rfactor_v2_option_snapshots', 'premiumValue', 'REAL NOT NULL DEFAULT 0');
   await addColumnIfMissing('rfactor_v2_option_snapshots', 'optionVolume', 'REAL NOT NULL DEFAULT 0');
   await addColumnIfMissing('rfactor_v2_option_snapshots', 'paceBaselineKind', `TEXT NOT NULL DEFAULT 'missing'`);
+  // Option evidence carries its OWN version. v2.2 redefined premiumValue from
+  // LTP x volume to VWAP x volume, so a baseline built from older rows would
+  // normalise today's number against an incompatible one — and the resulting
+  // snapshot would still be stamped with the CURRENT model version, hiding it.
+  await addColumnIfMissing(
+    'rfactor_v2_option_snapshots',
+    'optionEvidenceVersion',
+    `TEXT NOT NULL DEFAULT 'unknown'`,
+  );
+
+  // Who owns each minute. Ownership must survive a process restart and must not
+  // depend on the order writes happen to arrive in, so it lives in the database
+  // rather than in a module-level "last bucket I saw".
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS rfactor_v2_bucket_owner (
+      date TEXT NOT NULL, bucketTs INTEGER NOT NULL,
+      universeKey TEXT NOT NULL, inputUniverseSize INTEGER NOT NULL, capturedAt TEXT NOT NULL,
+      PRIMARY KEY (date, bucketTs)
+    )
+  `);
   tablesReady = true;
 }
 
@@ -248,6 +272,12 @@ export async function loadSameTimeOptionBaseline(
   await ensureRFactorV2Tables();
   const targetMinute = istMinuteOfDay(nowMs);
   try {
+    // Scoped to the CURRENT option-evidence definition as well as the expiry.
+    // v2.2 redefined premiumValue from LTP x volume to VWAP x volume, so an
+    // older row is a different measurement — normalising against it would
+    // produce a pace that is wrong in a way nothing downstream could detect,
+    // since the resulting snapshot still carries today's model version.
+    // Legacy rows default to 'unknown' and therefore never qualify.
     const rows = await prisma.$queryRawUnsafe<{ premiumValue: number }[]>(
       `WITH ranked AS (
          SELECT date, premiumValue,
@@ -258,6 +288,7 @@ export async function loadSameTimeOptionBaseline(
                 ABS(CAST((((bucketTs + 19800) % 86400) / 60) AS INTEGER) - ?) AS minuteGap
            FROM rfactor_v2_option_snapshots
           WHERE symbol = ? AND expiry = ? AND date < ? AND premiumValue > 0
+            AND optionEvidenceVersion = ?
        )
        SELECT premiumValue FROM ranked WHERE rn = 1 AND minuteGap <= 15`,
       targetMinute,
@@ -265,6 +296,7 @@ export async function loadSameTimeOptionBaseline(
       symbol,
       expiry,
       date,
+      OPTION_EVIDENCE_VERSION,
     );
     if (rows.length < MIN_SESSIONS_FOR_OPTION_BASELINE) return null;
     return median(rows.map((row) => Number(row.premiumValue)));
@@ -274,7 +306,7 @@ export async function loadSameTimeOptionBaseline(
 }
 
 /** Columns per inserted row — keeps batches under SQLite's 999-variable limit. */
-const SNAPSHOT_COLS = 23;
+const SNAPSHOT_COLS = 24;
 const SNAPSHOT_BATCH_ROWS = 40;
 
 interface PendingWrite {
@@ -287,23 +319,31 @@ interface PendingWrite {
 }
 
 interface WriteGuard {
-  lastBucketTs: number;
-  lastUniverseSize: number;
-  lastUniverseKey: string;
   inFlight: boolean;
-  /** Largest universe that arrived while a write was busy — see below. */
-  pending: PendingWrite | null;
+  /**
+   * Universes that arrived while a write was busy, keyed by `date|bucketTs`.
+   *
+   * A single global slot was wrong: it kept whichever payload had the most
+   * symbols regardless of WHICH MINUTE it belonged to, so a delayed 10:00
+   * 166-name payload would evict a pending 10:01 20-name payload and the 10:01
+   * observation was simply lost. Minutes are independent and each keeps its own
+   * best candidate.
+   */
+  pending: Map<string, PendingWrite>;
+  /** Universes this process already wrote, to skip provably redundant work. */
+  writtenKeys: Set<string>;
 }
 const writeHost = globalThis as unknown as { __rfactorV2Write?: WriteGuard };
 writeHost.__rfactorV2Write ??= {
-  lastBucketTs: 0,
-  lastUniverseSize: 0,
-  lastUniverseKey: '',
   inFlight: false,
-  pending: null,
+  pending: new Map(),
+  writtenKeys: new Set(),
 };
 const writeGuard = writeHost.__rfactorV2Write;
-writeGuard.pending ??= null;
+writeGuard.pending ??= new Map();
+writeGuard.writtenKeys ??= new Set();
+
+const bucketKey = (date: string, bucketTs: number): string => `${date}|${bucketTs}`;
 
 /**
  * Stable fingerprint of the exact symbol set a computation covered. Two equally
@@ -340,6 +380,13 @@ export function universeKeyFor(symbols: string[]): string {
  * exact symbol-set fingerprint. A strictly larger universe replaces the minute
  * wholesale; anything smaller or differently-shaped is dropped rather than
  * interleaved. The result is one internally consistent ranking per bucket.
+ *
+ * Ownership is resolved against the DATABASE inside the replacing transaction,
+ * never against a remembered "last bucket". Process memory cannot answer this:
+ * a restart mid-minute would forget an owner whose rows are still in SQLite,
+ * and writes do not arrive in clock order — the route awaits several I/O steps
+ * between stamping its timestamp and firing this off, so a larger 10:00 write
+ * can land after a smaller 10:01 one.
  */
 export async function recordRFactorV2Batch(
   date: string,
@@ -356,14 +403,21 @@ export async function recordRFactorV2Batch(
   const uniqueInputs = [...new Map(inputs.map((input) => [input.symbol, input])).values()];
   if (uniqueInputs.length === 0) return;
   const payload: PendingWrite = { date, oldScores, inputs: uniqueInputs, results, nowMs, ltpBySymbol };
+  const bucketTs = Math.floor(nowMs / 60_000) * 60;
+  const key = bucketKey(date, bucketTs);
 
-  // Coalesce rather than drop. Returning early on `inFlight` meant the minute
-  // was owned by the largest universe that happened to arrive while the writer
-  // was IDLE — a 166-name scanner result landing during a 20-name section's
-  // write was thrown away, leaving the small section owning the minute.
+  // Already stored this exact universe for this exact minute — nothing to learn.
+  // Only a redundancy short-circuit; it never decides ownership.
+  if (writeGuard.writtenKeys.has(`${key}|${universeKeyFor(uniqueInputs.map((i) => i.symbol))}`)) return;
+
+  // Coalesce rather than drop, PER MINUTE. Returning early on `inFlight` meant
+  // the minute was owned by the largest universe that happened to arrive while
+  // the writer was IDLE — a 166-name scanner result landing during a 20-name
+  // section's write was thrown away.
   if (writeGuard.inFlight) {
-    if (writeGuard.pending == null || uniqueInputs.length > writeGuard.pending.inputs.length) {
-      writeGuard.pending = payload;
+    const existing = writeGuard.pending.get(key);
+    if (existing == null || uniqueInputs.length > existing.inputs.length) {
+      writeGuard.pending.set(key, payload);
     }
     return;
   }
@@ -373,8 +427,11 @@ export async function recordRFactorV2Batch(
     let next: PendingWrite | null = payload;
     while (next != null) {
       await writeUniverseSnapshot(next);
-      next = writeGuard.pending;
-      writeGuard.pending = null;
+      // Drain chronologically so a delayed older minute cannot jump the queue.
+      const queued = [...writeGuard.pending.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+      if (queued.length === 0) break;
+      writeGuard.pending.delete(queued[0][0]);
+      next = queued[0][1];
     }
   } finally {
     writeGuard.inFlight = false;
@@ -387,35 +444,42 @@ async function writeUniverseSnapshot(payload: PendingWrite): Promise<void> {
   const { date, oldScores, inputs, results, nowMs, ltpBySymbol } = payload;
   const bucketTs = Math.floor(nowMs / 60_000) * 60;
   const universeKey = universeKeyFor(inputs.map((input) => input.symbol));
-  const sameBucket = writeGuard.lastBucketTs === bucketTs;
-  // Same exact universe again inside the minute → nothing new to learn.
-  if (sameBucket && universeKey === writeGuard.lastUniverseKey) return;
-  // A smaller or equal-sized-but-different list must not be interleaved with
-  // the minute's owner; its ranks were computed against a different field.
-  if (sameBucket && inputs.length <= writeGuard.lastUniverseSize) return;
 
-  {
-    await ensureRFactorV2Tables();
-    const capturedAt = new Date(nowMs).toISOString();
-    // The takeover DELETE and every INSERT chunk go in ONE transaction. Run
-    // separately, a crash or lock between them would leave the minute empty or
-    // holding only the first chunk — and because every surviving row carries a
-    // single universeKey, the evaluator's mixed-universe check would report
-    // that truncated bucket as perfectly consistent (PR#15 re-review).
-    const ops: ReturnType<typeof prisma.$executeRawUnsafe>[] = [];
-    if (sameBucket && writeGuard.lastUniverseSize > 0) {
-      ops.push(
-        prisma.$executeRawUnsafe(
-          `DELETE FROM rfactor_v2_snapshots WHERE date = ? AND bucketTs = ?`,
-          date,
-          bucketTs,
-        ),
+  await ensureRFactorV2Tables();
+  const capturedAt = new Date(nowMs).toISOString();
+  const rows = inputs.flatMap((input) => {
+    const result = results.get(input.symbol);
+    return result == null ? [] : [{ input, result }];
+  });
+  if (rows.length === 0) return;
+
+  // Ownership decision AND replacement in one interactive transaction. Reading
+  // the current owner from the database is what makes this correct across a
+  // process restart and across out-of-order arrivals; a remembered "last
+  // bucket" answers neither. The DELETE and every INSERT chunk ride the same
+  // transaction, so a crash or lock partway through leaves the previous
+  // universe intact rather than an empty or half-filled minute — which, because
+  // every surviving row would share one universeKey, the evaluator's
+  // consistency check would happily call healthy.
+  await prisma.$transaction(async (tx) => {
+    const owner = await tx.$queryRawUnsafe<{ universeKey: string; inputUniverseSize: number }[]>(
+      `SELECT universeKey, inputUniverseSize FROM rfactor_v2_bucket_owner WHERE date = ? AND bucketTs = ?`,
+      date,
+      bucketTs,
+    );
+    const current = owner[0];
+    if (current != null) {
+      // Same universe already stored, or a smaller/equal-but-different one:
+      // either way this computation adds nothing and must not be interleaved.
+      if (current.universeKey === universeKey) return;
+      if (inputs.length <= Number(current.inputUniverseSize)) return;
+      await tx.$executeRawUnsafe(
+        `DELETE FROM rfactor_v2_snapshots WHERE date = ? AND bucketTs = ?`,
+        date,
+        bucketTs,
       );
     }
-    const rows = inputs.flatMap((input) => {
-      const result = results.get(input.symbol);
-      return result == null ? [] : [{ input, result }];
-    });
+
     for (let start = 0; start < rows.length; start += SNAPSHOT_BATCH_ROWS) {
       const chunk = rows.slice(start, start + SNAPSHOT_BATCH_ROWS);
       const placeholders = chunk.map(() => `(${Array(SNAPSHOT_COLS).fill('?').join(',')})`).join(',');
@@ -434,6 +498,7 @@ async function writeUniverseSnapshot(payload: PendingWrite): Promise<void> {
           result.activityPercentile,
           result.activityRank,
           result.universeSize,
+          inputs.length,
           result.direction,
           result.directionScore,
           result.directionConfidence,
@@ -447,32 +512,40 @@ async function writeUniverseSnapshot(payload: PendingWrite): Promise<void> {
           JSON.stringify(result.factors),
         );
       }
-      ops.push(
-        prisma.$executeRawUnsafe(
-          `INSERT OR IGNORE INTO rfactor_v2_snapshots
+      await tx.$executeRawUnsafe(
+        `INSERT OR IGNORE INTO rfactor_v2_snapshots
           (date,bucketTs,symbol,capturedAt,ltp,oldRFactor,activityScore,rawActivity,comparableActivity,
-           activityPercentile,activityRank,universeSize,direction,directionScore,directionConfidence,
-           coverage,comparableCoverage,optionStatus,modelVersion,configHash,universeKey,inputs,factors)
+           activityPercentile,activityRank,universeSize,inputUniverseSize,direction,directionScore,
+           directionConfidence,coverage,comparableCoverage,optionStatus,modelVersion,configHash,
+           universeKey,inputs,factors)
          VALUES ${placeholders}`,
-          ...params,
-        ),
+        ...params,
       );
     }
-    // All-or-nothing: the previous universe survives intact if anything fails.
-    await prisma.$transaction(ops);
-    writeGuard.lastBucketTs = bucketTs;
-    writeGuard.lastUniverseSize = inputs.length;
-    writeGuard.lastUniverseKey = universeKey;
-  }
+
+    await tx.$executeRawUnsafe(
+      `INSERT INTO rfactor_v2_bucket_owner (date,bucketTs,universeKey,inputUniverseSize,capturedAt)
+       VALUES (?,?,?,?,?)
+       ON CONFLICT(date,bucketTs) DO UPDATE SET
+         universeKey=excluded.universeKey,
+         inputUniverseSize=excluded.inputUniverseSize,
+         capturedAt=excluded.capturedAt`,
+      date,
+      bucketTs,
+      universeKey,
+      inputs.length,
+      capturedAt,
+    );
+  });
+  writeGuard.writtenKeys.add(`${bucketKey(date, bucketTs)}|${universeKey}`);
 }
 
-/** Test seam: drop the process-wide once-per-minute write guard. */
+/** Test seam: drop the process-local redundancy caches. Ownership lives in the
+ *  database, so clearing this can never change which universe owns a minute. */
 export function resetRFactorV2WriteGuard(): void {
-  writeGuard.lastBucketTs = 0;
-  writeGuard.lastUniverseSize = 0;
-  writeGuard.lastUniverseKey = '';
   writeGuard.inFlight = false;
-  writeGuard.pending = null;
+  writeGuard.pending = new Map();
+  writeGuard.writtenKeys = new Set();
 }
 
 export async function recordOptionEvidence(symbol: string, evidence: OptionActivityEvidence): Promise<void> {
@@ -483,13 +556,14 @@ export async function recordOptionEvidence(symbol: string, evidence: OptionActiv
   await prisma.$executeRawUnsafe(
     `INSERT INTO rfactor_v2_option_snapshots
       (date,bucketTs,symbol,capturedAt,expiry,activityScore,direction,directionScore,directionConfidence,
-       premiumValue,optionVolume,paceBaselineKind,evidence)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       premiumValue,optionVolume,paceBaselineKind,optionEvidenceVersion,evidence)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(date,bucketTs,symbol) DO UPDATE SET
        capturedAt=excluded.capturedAt, expiry=excluded.expiry, activityScore=excluded.activityScore,
        direction=excluded.direction, directionScore=excluded.directionScore,
        directionConfidence=excluded.directionConfidence, premiumValue=excluded.premiumValue,
        optionVolume=excluded.optionVolume, paceBaselineKind=excluded.paceBaselineKind,
+       optionEvidenceVersion=excluded.optionEvidenceVersion,
        evidence=excluded.evidence`,
     date,
     bucketTs,
@@ -503,6 +577,7 @@ export async function recordOptionEvidence(symbol: string, evidence: OptionActiv
     evidence.premiumValue,
     evidence.optionVolume,
     evidence.paceBaselineKind,
+    OPTION_EVIDENCE_VERSION,
     JSON.stringify(evidence),
   );
 }
@@ -516,7 +591,7 @@ export async function recordOptionEvidence(symbol: string, evidence: OptionActiv
 export async function pruneRFactorV2Snapshots(): Promise<number> {
   await ensureRFactorV2Tables();
   let deleted = 0;
-  for (const table of ['rfactor_v2_snapshots', 'rfactor_v2_option_snapshots']) {
+  for (const table of ['rfactor_v2_snapshots', 'rfactor_v2_option_snapshots', 'rfactor_v2_bucket_owner']) {
     deleted += await prisma.$executeRawUnsafe(
       `DELETE FROM ${table} WHERE date NOT IN (
          SELECT DISTINCT date FROM ${table} ORDER BY date DESC LIMIT ${RFACTOR_V2_RETENTION_SESSIONS}
