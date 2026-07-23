@@ -10,6 +10,7 @@
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
+    "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
     "db:generate": "prisma generate --config prisma/prisma.config.ts",
     "db:push": "prisma db push --config prisma/prisma.config.ts",
     "db:studio": "prisma studio --config prisma/prisma.config.ts",

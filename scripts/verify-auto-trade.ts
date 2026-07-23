@@ -677,6 +677,8 @@ async function main(): Promise<void> {
       priceSource: 'ltp',
       bid: 24,
       ask: 24.2,
+      bidQty: null,
+      askQty: null,
       spreadPct: 0.83,
       slPremium: 17,
       targetPremium: 22.2,

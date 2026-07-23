@@ -62,6 +62,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:generate
       - run: pnpm typecheck
+      # The root tsconfig excludes scripts/, so the verification benches were
+      # never typechecked — a required field added to EntryGateInput left several
+      # gate fixtures invalid while `pnpm typecheck` stayed green, and it only
+      # surfaced as a runtime FAIL further down this job (PR#18). These benches
+      # assert the money-touching rules; they must not drift from the types.
+      - run: pnpm typecheck:scripts
       - run: pnpm lint
       # DB-free pure checks: quant-shadow math (re-anchor, observed-baseline
       # MFE/MAE, entry-candle exclusion, chgOpen bucketing, sector-rate rank) AND

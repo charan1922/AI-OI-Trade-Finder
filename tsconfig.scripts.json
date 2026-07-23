@@ -1,0 +1,17 @@
+{
+  // The root tsconfig EXCLUDES `scripts/`, so nothing typechecked the benches.
+  //
+  // That is how PR#18 broke CI: making `lotSize`/`askPrice`/`askQty` required on
+  // EntryGateInput left several gate fixtures missing required fields, `tsc
+  // --noEmit` stayed green because it never looked at scripts/, and the mistake
+  // only surfaced as a runtime FAIL in a CI step. These benches assert the
+  // money-touching rules — they are exactly the code that should not drift
+  // silently from the types they test.
+  //
+  // Kept as a SEPARATE project rather than folding scripts/ into the root
+  // include: the Next.js build config owns the app graph, and widening it would
+  // pull tsx-only entrypoints into the production typecheck.
+  "extends": "./tsconfig.json",
+  "include": ["scripts/**/*.ts", "lib/**/*.ts", "next-env.d.ts"],
+  "exclude": ["node_modules"]
+}

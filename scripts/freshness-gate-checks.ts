@@ -24,7 +24,13 @@ const row = (bucketTs: number, updatedAtMs: number): EqBucketStatus => ({ bucket
 
 /** A fresh, otherwise-clean gate input (paper mode, inside the window). */
 const gbase: EntryGateInput = {
-  settings: { ...DEFAULT_SETTINGS, mode: 'paper' },
+  // The per-lot risk ceiling FAILS CLOSED without a lot size, a live ask and
+  // enough displayed size at that ask (PR#18 review), so this fixture must carry
+  // all three or every "should allow" case below would fail for the wrong
+  // reason. The ₹30,000 lot inherently risks ₹7,500 at a 25% stop, hence the
+  // matching ceiling — the ceiling itself is covered with realistic contracts in
+  // scripts/premium-stop-checks.ts; these checks are about candle freshness.
+  settings: { ...DEFAULT_SETTINGS, mode: 'paper', maxRiskPerLotRupees: 10_000 },
   liveEnvEnabled: false,
   marketOpen: true,
   sessionVerified: true,
@@ -37,6 +43,9 @@ const gbase: EntryGateInput = {
   symbolTradedToday: false,
   lots: 1,
   perLotCost: 30_000,
+  lotSize: 500,
+  askPrice: 60,
+  askQty: 500,
   slippagePct: 1,
   spreadPct: 2,
   hasSlSpot: true,
