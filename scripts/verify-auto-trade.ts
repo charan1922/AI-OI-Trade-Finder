@@ -22,6 +22,7 @@ import { executeAutoTradeTool, newPassPolicyState, type ToolRuntime } from '../l
 import { DEFAULT_SETTINGS } from '../lib/auto-trade/config';
 import { getAutoTradeSettings, setAutoTradeSetting } from '../lib/auto-trade/settings';
 import {
+  claimApprovalForPlacement,
   countEntriesToday,
   claimExitOrder,
   dailyRealizedPnl,
@@ -726,6 +727,66 @@ async function main(): Promise<void> {
   await prisma.$executeRawUnsafe(`DELETE FROM auto_quote_snapshots WHERE tradeId = ?`, tradeId);
   await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, date);
   check('store: cleanup', (await countEntriesToday(date)) === 0);
+
+  // ── 4b. Approval re-snapshot + ask-based exposure (PR#18 re-review) ─────────
+  // A pending_approval row carries a PROPOSAL-time ceiling (₹2,500) and ask
+  // (₹42) while the mark is ₹40. Exposure must reserve off the ask; approval
+  // must atomically re-snapshot the APPROVAL-time ceiling/ask; a second click
+  // must not re-win or overwrite.
+  const apDate = '2099-03-03';
+  await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, apDate);
+  const apId = await insertTrade({
+    date: apDate,
+    symbol: 'APSYM',
+    direction: 'bullish',
+    optionType: 'CE',
+    strike: 100,
+    expiryDate: '2099-03-27',
+    lotSize: 200,
+    lots: 1,
+    optSecurityId: '888888',
+    mode: 'approval',
+    broker: 'fyers',
+    status: 'pending_approval',
+    entrySpot: 1000,
+    slSpot: 990,
+    targetSpot: 1020,
+    entryPremium: 40, // ltp/mid mark
+    slPremium: 30,
+    targetPremium: 45.5,
+    approvedMaxRiskPerLotRupees: 2500, // proposal-time ceiling
+    approvedEntryAskPremium: 42, // proposal-time ask (above the mark)
+    aiReasonEntry: 'approval bench',
+  });
+  if (apId == null) throw new Error('approval bench insert unexpectedly failed');
+  const apExpo = await getExposure(apDate);
+  check(
+    'exposure: a pending row reserves off the approved ASK (₹42×200), not the ₹40 mark',
+    apExpo.deployedRupees === 42 * 200,
+    String(apExpo.deployedRupees)
+  );
+  const claimedAp = await claimApprovalForPlacement(apId, { maxRiskPerLotRupees: 3000, entryAskPremium: 44 });
+  check('approval claim: the first caller wins the pending→placing transition', claimedAp === true);
+  const apTrade = await getTrade(apId);
+  check('approval claim: status advanced to placing', apTrade?.status === 'placing');
+  check(
+    'approval claim: ceiling re-snapshotted to the APPROVAL-time value (₹3,000, not the proposal ₹2,500)',
+    apTrade?.approvedMaxRiskPerLotRupees === 3000,
+    String(apTrade?.approvedMaxRiskPerLotRupees)
+  );
+  check(
+    'approval claim: ask re-snapshotted to the fresh approval-time ask (₹44)',
+    apTrade?.approvedEntryAskPremium === 44,
+    String(apTrade?.approvedEntryAskPremium)
+  );
+  const claimedAp2 = await claimApprovalForPlacement(apId, { maxRiskPerLotRupees: 9999, entryAskPremium: 99 });
+  check('approval claim: a second click cannot re-win (row already placing)', claimedAp2 === false);
+  const apTrade2 = await getTrade(apId);
+  check(
+    'approval claim: the losing second click did NOT overwrite the snapshot',
+    apTrade2?.approvedMaxRiskPerLotRupees === 3000 && apTrade2?.approvedEntryAskPremium === 44
+  );
+  await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, apDate);
 
   const guards = await Promise.all([runPositionGuard(date), runPositionGuard(date)]);
   check('guard: concurrent callers coalesce', guards.filter((guard) => guard.coalesced).length === 1);

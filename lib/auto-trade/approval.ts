@@ -14,13 +14,14 @@ import { BLOCK_STALE_AUTO_ENTRY } from '@/lib/priority-refresh/config';
 import { evaluateFreshness, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
 import { getExecutionAdapter } from './brokers';
-import { minuteOfDayIST } from './config';
+import { MAX_RISK_PER_LOT_FALLBACK, minuteOfDayIST } from './config';
 import { placeEntryOrder, type ExecOutcome } from './execution';
 import { fetchOptionQuote } from './quotes';
 import { checkEntryGates } from './risk/gates';
 import { getRiskLatch } from './risk/latch';
 import { isVerifiedTradingDay } from '@/lib/backtest/trading-calendar';
 import {
+  claimApprovalForPlacement,
   countEntriesToday,
   dailyRealizedPnl,
   getExposure,
@@ -90,7 +91,13 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     entryCutoffMin,
     entriesToday: Math.max(0, entriesToday - 1),
     openLots: Math.max(0, exposure.openLots - trade.lots),
-    deployedRupees: Math.max(0, exposure.deployedRupees - Math.round(trade.entryPremium * trade.lotSize * trade.lots)),
+    // Subtract THIS proposal's own reservation on the SAME basis getExposure
+    // reserved it (the ask, else the mark) — otherwise the gate double-counts the
+    // ask-vs-mark gap for this trade against itself (PR#18 re-review).
+    deployedRupees: Math.max(
+      0,
+      exposure.deployedRupees - Math.round((trade.approvedEntryAskPremium ?? trade.entryPremium) * trade.lotSize * trade.lots)
+    ),
     dailyRealizedPnl: pnl,
     symbolTradedToday: false, // this trade IS the symbol's slot
     lots: trade.lots,
@@ -141,7 +148,16 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     };
   }
 
-  const claimed = await transitionTradeStatus(tradeId, 'pending_approval', 'placing');
+  // Claim for placement AND re-snapshot the policy THIS approval gate enforced
+  // (PR#18 re-review): the approval-time ceiling and the fresh ask, not the
+  // stale proposal-time values. Atomic, so two clicks cannot both win and the
+  // refresh cannot land on a row already moved on. Without this, the post-fill
+  // breach check and the exposure reservation would use proposal-time numbers a
+  // setting change or a moved market has since invalidated.
+  const claimed = await claimApprovalForPlacement(tradeId, {
+    maxRiskPerLotRupees: settings.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK,
+    entryAskPremium: fresh?.ask ?? null,
+  });
   if (!claimed) {
     const current = await getTrade(tradeId);
     return {

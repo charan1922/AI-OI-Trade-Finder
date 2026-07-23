@@ -18,7 +18,14 @@ import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generat
 import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types';
 import { alerts } from '../alerts';
 import { getExecutionAdapter } from '../brokers';
-import { CHECK_ORDER_TTL_MS, isEntryWindow, istMinuteLabel, minuteOfDayIST, nowISTClock } from '../config';
+import {
+  CHECK_ORDER_TTL_MS,
+  isEntryWindow,
+  istMinuteLabel,
+  MAX_RISK_PER_LOT_FALLBACK,
+  minuteOfDayIST,
+  nowISTClock,
+} from '../config';
 import { backstopsFromFill, exitTrade, placeEntryOrder, targetRupeesForPosition, type ExecOutcome } from '../execution';
 import { fetchOptionQuote, fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
 import { checkEntryGates, checkStopMove, type EntryGateInput } from '../risk/gates';
@@ -539,10 +546,12 @@ export async function executeAutoTradeTool(
         entryPremium,
         slPremium: configuredBackstops.slPremium,
         targetPremium: configuredBackstops.targetPremium,
-        // Snapshot the per-lot risk ceiling the gate just enforced, so the
-        // post-fill breach check measures against the budget that approved this
-        // order rather than a since-changed setting (PR#18 review).
-        approvedMaxRiskPerLotRupees: rt.settings.maxRiskPerLotRupees ?? null,
+        // Snapshot the risk policy the gate just enforced, so the post-fill
+        // breach check and the exposure reservation measure against what actually
+        // approved THIS order — the per-lot ceiling and the executable ask — not
+        // a since-changed setting or the cheaper ltp/mid mark (PR#18 review).
+        approvedMaxRiskPerLotRupees: rt.settings.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK,
+        approvedEntryAskPremium: input.askPrice ?? null,
         aiReasonEntry: reason,
         entrySectorRank,
         entrySectorCount,

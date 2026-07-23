@@ -12,8 +12,14 @@
  * Wired into scripts/verify-quant-shadow.ts, which the build workflow runs.
  */
 import { checkEntryGates } from '../lib/auto-trade/risk/gates';
-import { backstopsFromProposalFill, riskPerLotRupees, stopPremiumForFill } from '../lib/auto-trade/backstops';
-import { DEFAULT_SETTINGS } from '../lib/auto-trade/config';
+import {
+  backstopsFromProposalFill,
+  effectiveBreachCeiling,
+  fillRiskPerLotRupees,
+  riskPerLotRupees,
+  stopPremiumForFill,
+} from '../lib/auto-trade/backstops';
+import { DEFAULT_SETTINGS, MAX_RISK_PER_LOT_FALLBACK } from '../lib/auto-trade/config';
 import type { EntryGateInput } from '../lib/auto-trade/risk/gates';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
@@ -197,5 +203,42 @@ export function runPremiumStopChecks(check: CheckFn): void {
     'approval drift: a +2.9% move (inside the slippage guard) now breaches it and is REFUSED',
     refused(atApproval),
     `₹${riskPerLotRupees(50.42, 200)} > ₹2,500`
+  );
+
+  // ── 9. Fill-breach ceiling: the SNAPSHOT wins over the live setting ─────────
+  // The re-review found that comparing a fill against the CURRENT setting (not
+  // the ceiling that approved the order) raises false breaches or hides real
+  // ones when the setting moved between gate and fill. These prove the two pure
+  // pieces behind the fix: which ceiling is chosen, and what counts as a breach.
+  check(
+    'breach: the snapshotted ceiling wins over the current setting',
+    effectiveBreachCeiling(2500, 3000, MAX_RISK_PER_LOT_FALLBACK) === 2500,
+    String(effectiveBreachCeiling(2500, 3000, MAX_RISK_PER_LOT_FALLBACK))
+  );
+  check(
+    'breach: no snapshot → fall back to the current setting',
+    effectiveBreachCeiling(null, 3000, MAX_RISK_PER_LOT_FALLBACK) === 3000
+  );
+  check(
+    'breach: no snapshot and no setting → the coded default',
+    effectiveBreachCeiling(null, null, MAX_RISK_PER_LOT_FALLBACK) === MAX_RISK_PER_LOT_FALLBACK
+  );
+  check(
+    'breach: a non-finite snapshot is skipped, not trusted',
+    effectiveBreachCeiling(Number.NaN, 3000, MAX_RISK_PER_LOT_FALLBACK) === 3000
+  );
+  // One fill risking ₹2,800/lot (₹56 fill, 25% stop ₹42, 200 lot) against the two
+  // approval-time snapshots the reviewer described.
+  const breachFill = 56;
+  const breachStop = stopPremiumForFill(breachFill, 25); // ₹42
+  const breachRisk = fillRiskPerLotRupees(breachFill, breachStop, 200); // ₹2,800
+  check('breach: fill risk = (fill − stop) × lot', breachRisk === 2800, `₹${breachRisk}`);
+  check(
+    'breach: ceiling RAISED to ₹3,000 before fill → ₹2,800 fill does NOT latch (no false breach)',
+    breachRisk <= effectiveBreachCeiling(3000, 3000, MAX_RISK_PER_LOT_FALLBACK)
+  );
+  check(
+    'breach: ceiling LEFT at ₹2,500 → ₹2,800 fill IS a breach (latch fires)',
+    breachRisk > effectiveBreachCeiling(2500, 2500, MAX_RISK_PER_LOT_FALLBACK)
   );
 }

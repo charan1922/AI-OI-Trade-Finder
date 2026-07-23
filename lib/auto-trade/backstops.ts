@@ -47,6 +47,31 @@ export function riskPerLotRupees(fill: number, lotSize: number, stopPct: number 
   return Math.round((fill - stopPremiumForFill(fill, stopPct)) * lotSize * 100) / 100;
 }
 
+/** Rupees ONE lot actually risks once the fill and its (re-anchored) stop are
+ *  both known — the post-fill measurement the ceiling-breach check uses. Pure so
+ *  CI can prove it without a fill or a DB. */
+export function fillRiskPerLotRupees(fill: number, slPremium: number, lotSize: number): number {
+  return Math.round((fill - slPremium) * lotSize);
+}
+
+/**
+ * Which per-lot ₹ ceiling the fill-breach check compares against. The ceiling
+ * SNAPSHOTTED on the trade at gate time wins — an operator moving the runtime
+ * setting between the gate and the fill must not hide a real breach or invent a
+ * false one (PR#18 re-review). Only when no snapshot exists (rows written before
+ * the column) does it fall back to the current setting, then the coded default.
+ * Pure + fail-safe: a non-finite value at any tier is skipped.
+ */
+export function effectiveBreachCeiling(
+  snapshot: number | null | undefined,
+  currentSetting: number | null | undefined,
+  fallback: number
+): number {
+  if (snapshot != null && Number.isFinite(snapshot)) return snapshot;
+  if (currentSetting != null && Number.isFinite(currentSetting)) return currentSetting;
+  return fallback;
+}
+
 /** Premium backstops re-anchored to the ACTUAL fill. The target argument is
  * total rupees for this position, so this function works for either per-trade
  * or per-lot policies and any lot count. */

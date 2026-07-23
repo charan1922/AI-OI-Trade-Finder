@@ -132,14 +132,17 @@ export async function attachPremiums(options: OptionPlan[], policy?: PremiumPoli
       // fixed OPTION_STOP_PCT stop it would put more than MAX_RISK_PER_LOT_RUPEES
       // behind that stop. Auto-trade REFUSES this outright (risk/gates.ts); the
       // scanner only warns, so a manual trader still sees the pick and the reason.
-      // Priced off the ASK when there is a book — that is the executable market-BUY
-      // price the gate itself sizes against, so the warning and the refusal agree
-      // (PR#18 review). Falls back to the resolved mark when no ask is quoted.
-      const riskBasis = book?.ask ?? price;
-      const riskAtStop = ((riskBasis * stopPct) / 100) * o.lotSize;
+      // The executable price a market BUY actually lifts: the ASK when there is a
+      // book, else the resolved mark. Both the per-lot COST (affordability) and
+      // the per-lot RISK are sized off this, so the scanner's "fits the budget"
+      // and "risks too much" agree with what auto-trade's gate enforces (PR#18
+      // review + re-review — the affordability filter used the cheaper mark, so a
+      // pick could look affordable here yet be refused there).
+      const executablePrice = book?.ask ?? price;
+      const riskAtStop = ((executablePrice * stopPct) / 100) * o.lotSize;
       if (riskAtStop > maxRiskPerLot)
         warnings.push(
-          `lot risks ₹${Math.round(riskAtStop).toLocaleString('en-IN')} at the ${stopPct}% premium stop (off the ₹${Math.round(riskBasis * 100) / 100} ${book?.ask != null ? 'ask' : 'mark'}) — above the ₹${maxRiskPerLot.toLocaleString('en-IN')} per-lot budget`
+          `lot risks ₹${Math.round(riskAtStop).toLocaleString('en-IN')} at the ${stopPct}% premium stop (off the ₹${Math.round(executablePrice * 100) / 100} ${book?.ask != null ? 'ask' : 'mark'}) — above the ₹${maxRiskPerLot.toLocaleString('en-IN')} per-lot budget`
         );
       const premium: OptionPremium = {
         ltp: Math.round(price * 100) / 100,
@@ -149,7 +152,11 @@ export async function attachPremiums(options: OptionPlan[], policy?: PremiumPoli
         spreadPct: book == null ? null : Math.round(book.spreadPct * 100) / 100,
         volume,
         oi,
-        perLotCost: Math.round(price * o.lotSize * 100) / 100,
+        // Affordability = the EXECUTABLE cost (ask × lot), not the ltp/mid mark ×
+        // lot — the engine skips a pick when this exceeds the capital budget, and
+        // it must agree with auto-trade's ask-based capital gate. `ltp` above
+        // keeps the mark for display/analytics (PR#18 re-review).
+        perLotCost: Math.round(executablePrice * o.lotSize * 100) / 100,
         // Stop premium = a straight OPTION_STOP_PCT of the contract's own price.
         // It is deliberately NOT squeezed to fit a rupee budget: dividing a flat
         // ₹/lot cap by lot sizes that range 75–700 produced stops of 7.7%–23.8%

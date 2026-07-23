@@ -98,6 +98,11 @@ export interface AutoTrade {
    *  on rows written before this snapshot existed → the check falls back to the
    *  current setting. */
   approvedMaxRiskPerLotRupees?: number | null;
+  /** The ASK the entry gate sized against — the executable market-BUY price.
+   *  Pending/placing exposure reserves off this (not the ltp/mid mark) so the
+   *  capital cap is a true hard cap while an order is unresolved. Refreshed to
+   *  the approval-time ask on the approval path. */
+  approvedEntryAskPremium?: number | null;
   /** Actual fills (null until the broker confirms — never fabricated). */
   entryFillPremium: number | null;
   exitFillPremium: number | null;

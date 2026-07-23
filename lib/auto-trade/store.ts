@@ -94,6 +94,7 @@ async function ensureTables(): Promise<void> {
     'shadowMfeR REAL', // max FAVORABLE excursion in R from the OBSERVED fill (candle high/low, observed risk)
     'shadowMaeR REAL', // max ADVERSE excursion in R from the OBSERVED fill (candle high/low, observed risk)
     'approvedMaxRiskPerLotRupees REAL', // per-lot ₹ risk ceiling in force when the order was gated (PR#18 review — the fill-breach check compares against THIS, not the current setting)
+    'approvedEntryAskPremium REAL', // the ASK the gate sized this entry against (PR#18 re-review — pending/placing exposure reserves off this executable price, not the ltp/mid mark)
   ]) {
     if (!existingTradeColumns.has(col.split(' ')[0]))
       await prisma.$executeRawUnsafe(`ALTER TABLE auto_trades ADD COLUMN ${col}`);
@@ -237,6 +238,9 @@ export interface NewTrade {
   /** Per-lot ₹ risk ceiling the entry gate enforced (snapshotted at proposal so
    *  the post-fill breach check compares against the budget that approved it). */
   approvedMaxRiskPerLotRupees?: number | null;
+  /** The ASK the gate sized this entry against — the executable price a market
+   *  BUY lifts. Pending/placing exposure reserves off this, not the ltp/mid mark. */
+  approvedEntryAskPremium?: number | null;
   /** Proposal-time SHADOW context (sector activity rank among scanned sectors) —
    *  written in the insert so it costs no extra round-trip before placement. */
   entrySectorRank?: number | null;
@@ -251,9 +255,9 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
        date, symbol, direction, optionType, strike, expiryDate, lotSize, lots,
        optSecurityId, mode, broker, status, entrySpot, slSpot, targetSpot,
        entryPremium, slPremium, targetPremium, aiReasonEntry,
-       approvedMaxRiskPerLotRupees, entrySectorRank, entrySectorCount, proposedAt, updatedAt
+       approvedMaxRiskPerLotRupees, approvedEntryAskPremium, entrySectorRank, entrySectorCount, proposedAt, updatedAt
      )
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM auto_trades
         WHERE date = ? AND symbol = ?
@@ -280,6 +284,7 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     t.targetPremium,
     t.aiReasonEntry,
     t.approvedMaxRiskPerLotRupees ?? null,
+    t.approvedEntryAskPremium ?? null,
     t.entrySectorRank ?? null,
     t.entrySectorCount ?? null,
     now,
@@ -435,6 +440,39 @@ export async function transitionTradeStatus(
   return rows.length === 1;
 }
 
+/**
+ * Claim a pending approval for placement AND re-snapshot the risk policy the
+ * APPROVAL gate enforced, in one conditional UPDATE (PR#18 re-review).
+ *
+ * The proposal recorded the ceiling/ask in force when the AI first proposed;
+ * approval re-gates minutes later against fresh settings and a fresh quote, so
+ * the fill-breach check and exposure reservation must compare against THOSE, not
+ * the stale proposal-time values. Doing it inside the `pending_approval →
+ * placing` transition means two approval clicks cannot both win, and the refresh
+ * cannot land on a row another pass already moved on. Returns true only for the
+ * single caller that won the transition.
+ */
+export async function claimApprovalForPlacement(
+  id: number,
+  approved: { maxRiskPerLotRupees: number | null; entryAskPremium: number | null }
+): Promise<boolean> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(
+    `UPDATE auto_trades
+       SET status = 'placing',
+           approvedMaxRiskPerLotRupees = ?,
+           approvedEntryAskPremium = ?,
+           updatedAt = ?
+     WHERE id = ? AND status = 'pending_approval'
+     RETURNING id`,
+    approved.maxRiskPerLotRupees,
+    approved.entryAskPremium,
+    new Date().toISOString(),
+    id
+  )) as { id: number | bigint }[];
+  return rows.length === 1;
+}
+
 function rowToTrade(r: Record<string, unknown>): AutoTrade {
   return {
     ...(r as unknown as AutoTrade),
@@ -449,6 +487,7 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     slPremium: Number(r.slPremium),
     targetPremium: Number(r.targetPremium),
     approvedMaxRiskPerLotRupees: r.approvedMaxRiskPerLotRupees == null ? null : Number(r.approvedMaxRiskPerLotRupees),
+    approvedEntryAskPremium: r.approvedEntryAskPremium == null ? null : Number(r.approvedEntryAskPremium),
     entryFillPremium: r.entryFillPremium == null ? null : Number(r.entryFillPremium),
     exitFillPremium: r.exitFillPremium == null ? null : Number(r.exitFillPremium),
     realizedPnlRupees: r.realizedPnlRupees == null ? null : Number(r.realizedPnlRupees),
@@ -551,13 +590,20 @@ export async function symbolTradedToday(date: string, symbol: string): Promise<b
   return rows.length > 0;
 }
 
-/** Lots + premium ₹ reserved by pending, placing, and filled positions. */
+/** Lots + premium ₹ reserved by pending, placing, and filled positions.
+ *
+ * Reservation price precedence (PR#18 re-review): the ACTUAL fill once known,
+ * else the ASK the gate sized against (`approvedEntryAskPremium` — what a market
+ * BUY actually lifts), else the ltp/mid mark as a last resort for rows written
+ * before that column. Reserving a pending/placing row at the mark UNDER-reserved
+ * — the mark is below the ask — so `maxCapitalRupees` was not a true hard cap
+ * while an order sat unresolved. The ask basis makes it one. */
 export async function getExposure(date: string): Promise<{ openLots: number; deployedRupees: number }> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(
     `SELECT
        COALESCE(SUM(lots), 0) AS lots,
-       COALESCE(SUM(COALESCE(entryFillPremium, entryPremium) * lotSize * lots), 0) AS rupees
+       COALESCE(SUM(COALESCE(entryFillPremium, approvedEntryAskPremium, entryPremium) * lotSize * lots), 0) AS rupees
      FROM auto_trades WHERE date = ? AND status IN ('open', 'placing', 'pending_approval')`,
     date
   )) as { lots: number | bigint; rupees: number }[];

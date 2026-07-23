@@ -17,7 +17,7 @@ import {
   MAX_RISK_PER_LOT_FALLBACK,
 } from './config';
 import { getAutoTradeSettings } from './settings';
-import { backstopsFromProposalFill } from './backstops';
+import { backstopsFromProposalFill, effectiveBreachCeiling, fillRiskPerLotRupees } from './backstops';
 import { getAdapterById, getExecutionAdapter } from './brokers';
 import type { BrokerAdapter, OrderTicket } from './brokers/adapter';
 import { ticketQtyUnits } from './brokers/adapter';
@@ -59,6 +59,8 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 export {
   backstopsFromFill,
   backstopsFromProposalFill,
+  effectiveBreachCeiling,
+  fillRiskPerLotRupees,
   isRestTargetExecutable,
   riskPerLotRupees,
   stopPremiumForFill,
@@ -147,12 +149,16 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
   // real breach or manufacture a false one (PR#18 review). Falls back to the
   // current setting only for rows written before the snapshot existed.
   try {
-    let ceiling = trade.approvedMaxRiskPerLotRupees ?? null;
-    if (ceiling == null || !Number.isFinite(ceiling)) {
-      const { maxRiskPerLotRupees } = await getAutoTradeSettings();
-      ceiling = maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK;
-    }
-    const actualRiskPerLot = Math.round((fill - stops.slPremium) * trade.lotSize);
+    // Prefer the ceiling SNAPSHOTTED on the trade (the one that actually
+    // approved this placement); read the live setting only when there is no
+    // snapshot. On the approval path the snapshot is refreshed to the
+    // approval-time ceiling at the moment of the click, so this compares against
+    // exactly what the gate enforced (PR#18 re-review).
+    const snapshot = trade.approvedMaxRiskPerLotRupees ?? null;
+    const currentSetting =
+      snapshot != null && Number.isFinite(snapshot) ? null : (await getAutoTradeSettings()).maxRiskPerLotRupees;
+    const ceiling = effectiveBreachCeiling(snapshot, currentSetting, MAX_RISK_PER_LOT_FALLBACK);
+    const actualRiskPerLot = fillRiskPerLotRupees(fill, stops.slPremium, trade.lotSize);
     if (Number.isFinite(actualRiskPerLot) && actualRiskPerLot > ceiling) {
       const detail =
         `${trade.symbol} ${trade.strike}${trade.optionType}: filled at ₹${fill} (proposal ₹${trade.entryPremium}), ` +
