@@ -84,6 +84,17 @@ jobs:
       # empty-batch / atomic-replace semantics hold — DB behaviour the pure checks
       # and the container smoke test don't exercise (PR#11 re-review).
       - run: pnpm exec tsx scripts/verify-priority-refresh-store.ts
+      # DB-free checks for the CASH-TARGET math and both exit-executability
+      # rules (REST + stream), plus reconnect backoff, token rotation and the
+      # stream silence watchdog. v1.26.0 shipped this money math covered only by
+      # scripts/verify-auto-trade.ts, which needs a populated DB and so never ran
+      # here — a green deploy proved nothing about it (AT-REVIEW 2026-07-23).
+      - run: pnpm exec tsx scripts/verify-auto-target-stream.ts
+      # Auto-trade quote-snapshot STORE round-trip against an isolated throwaway
+      # SQLite DB: the additive bidQty/askQty migration onto a table created
+      # before those columns existed, size round-tripping, batched multi-row
+      # param counts, and 20-session retention (PR#16 review).
+      - run: pnpm exec tsx scripts/verify-auto-trade-store.ts
       # DB-free pure checks for the R-Factor V2 SHADOW engine (activity/direction
       # separation, fixed-denominator coverage, ranking that ignores the
       # shortlist-only option factor, per-stock robust z, peer-excluded sector
@@ -91,8 +102,9 @@ jobs:
       - run: pnpm exec tsx scripts/verify-rfactor-v2.ts
       # R-Factor V2 STORE round-trip against an isolated throwaway SQLite DB:
       # additive columns on a pre-existing table, batched multi-row param counts
-      # past one chunk, the once-per-minute write guard, expiry-scoped option
-      # baselines, and 20-session retention (PR#15 review).
+      # past one chunk, database-backed minute ownership across restarts and
+      # out-of-order arrivals, expiry- and version-scoped option baselines, and
+      # 20-session retention (PR#15 review).
       - run: pnpm exec tsx scripts/verify-rfactor-v2-store.ts
 
   build:

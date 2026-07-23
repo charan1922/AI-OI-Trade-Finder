@@ -15,6 +15,8 @@
     "db:studio": "prisma studio --config prisma/prisma.config.ts",
     "db:pull-prod": "node scripts/db-pull-prod.mjs",
     "db:pull-prod:full": "node scripts/db-pull-prod.mjs --full",
+    "verify:auto-target-stream": "tsx scripts/verify-auto-target-stream.ts",
+    "verify:auto-trade-store": "tsx scripts/verify-auto-trade-store.ts",
     "auto:target-audit": "node scripts/auto-target-audit.mjs --amount=1100 --basis=per_trade",
     "auto:entry-filter-audit": "tsx scripts/auto-entry-filter-audit.ts",
     "verify:r-factor-v2": "tsx scripts/verify-rfactor-v2.ts",

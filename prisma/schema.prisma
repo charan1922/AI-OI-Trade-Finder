@@ -553,6 +553,10 @@ model AutoQuoteSnapshot {
   priceSource   String
   bid           Float?
   ask           Float?
+  /// Displayed size at the touch. A target study cannot tell an executable exit
+  /// from a 5-unit bid that merely printed the right price without these.
+  bidQty        Float?
+  askQty        Float?
   spreadPct     Float?
   slPremium     Float
   targetPremium Float

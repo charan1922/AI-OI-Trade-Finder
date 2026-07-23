@@ -168,7 +168,38 @@ async function ensureTables(): Promise<void> {
   await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS idx_auto_quote_snapshots_date_at ON auto_quote_snapshots(date, capturedAt)`
   );
+  // Size at the touch. Without it a retrospective target study cannot tell an
+  // executable target from a 5-unit bid that merely printed the right price —
+  // which is the whole reason this table exists. Additive for installs that
+  // already created the table.
+  for (const [column, decl] of [
+    ['bidQty', 'REAL'],
+    ['askQty', 'REAL'],
+  ] as const) {
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE auto_quote_snapshots ADD COLUMN ${column} ${decl}`);
+    } catch {
+      // Already present — the only expected failure.
+    }
+  }
   tablesReady = true;
+}
+
+/**
+ * Retention for the quote-snapshot audit trail: keep the newest
+ * AUTO_QUOTE_SNAPSHOT_RETENTION_SESSIONS dates, matching the candle/rank policy.
+ * The guard samples every 5 seconds per open position (~4,500 rows per trade per
+ * session), so without this it becomes the fastest-growing table in the DB.
+ */
+export const AUTO_QUOTE_SNAPSHOT_RETENTION_SESSIONS = 20;
+
+export async function pruneQuoteSnapshots(): Promise<number> {
+  await ensureTables();
+  return prisma.$executeRawUnsafe(
+    `DELETE FROM auto_quote_snapshots WHERE date NOT IN (
+       SELECT DISTINCT date FROM auto_quote_snapshots ORDER BY date DESC LIMIT ${AUTO_QUOTE_SNAPSHOT_RETENTION_SESSIONS}
+     )`
+  );
 }
 
 // ─── Trades ──────────────────────────────────────────────────────────────────
@@ -551,7 +582,7 @@ export type NewAutoQuoteSnapshot = Omit<AutoQuoteSnapshot, 'id'>;
 export async function insertQuoteSnapshots(rows: readonly NewAutoQuoteSnapshot[]): Promise<void> {
   if (rows.length === 0) return;
   await ensureTables();
-  const placeholders = rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+  const placeholders = rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
   const values = rows.flatMap((row) => [
     row.tradeId,
     row.date,
@@ -562,6 +593,8 @@ export async function insertQuoteSnapshots(rows: readonly NewAutoQuoteSnapshot[]
     row.priceSource,
     row.bid,
     row.ask,
+    row.bidQty ?? null,
+    row.askQty ?? null,
     row.spreadPct,
     row.slPremium,
     row.targetPremium,
@@ -569,7 +602,7 @@ export async function insertQuoteSnapshots(rows: readonly NewAutoQuoteSnapshot[]
   await prisma.$executeRawUnsafe(
     `INSERT INTO auto_quote_snapshots
        (tradeId, date, capturedAt, source, optSecurityId, ltp, priceSource,
-        bid, ask, spreadPct, slPremium, targetPremium)
+        bid, ask, bidQty, askQty, spreadPct, slPremium, targetPremium)
      VALUES ${placeholders}`,
     ...values
   );

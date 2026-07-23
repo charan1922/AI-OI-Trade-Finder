@@ -1,0 +1,294 @@
+/**
+ * DB-FREE checks for the cash-target math and the exit-executability rules.
+ *
+ * These shipped to production (v1.26.0) covered only by scripts/verify-auto-trade.ts,
+ * which needs a populated SQLite database and therefore does NOT run in CI — so a
+ * green deploy proved nothing about them (AT-REVIEW 2026-07-23). Everything here
+ * imports only pure modules (lib/auto-trade/backstops.ts and the stream
+ * predicates), so GitHub Actions can gate it on every PR and prod push.
+ *
+ * Run: pnpm exec tsx scripts/verify-auto-target-stream.ts
+ */
+import assert from 'node:assert/strict';
+import {
+  backstopsFromFill,
+  backstopsFromProposalFill,
+  blindContractIds,
+  classifyProtectedContracts,
+  isFullPositionBidCovered,
+  isRestTargetExecutable,
+  targetRupeesForPosition,
+  topOfBookSizes,
+} from '../lib/auto-trade/backstops';
+import {
+  fyersStreamIsSilent,
+  fyersStreamNeedsTokenRotation,
+  fyersStreamReconnectDelayMs,
+  isStreamTargetExecutable,
+  STREAM_SILENCE_LIMIT_MS,
+} from '../lib/auto-trade/fyers-pnl-stream';
+
+let passed = 0;
+function check(name: string, fn: () => void): void {
+  try {
+    fn();
+    passed += 1;
+  } catch (err) {
+    console.error(`FAIL  ${name}\n      ${(err as Error).message}`);
+    process.exitCode = 1;
+  }
+}
+
+// ── Cash-target policy ──────────────────────────────────────────────────────
+check('per-trade target is independent of lot count', () => {
+  const settings = { profitTargetMode: 'per_trade' as const, profitTargetRupees: 1_100 };
+  assert.equal(targetRupeesForPosition(settings, 1), 1_100);
+  assert.equal(targetRupeesForPosition(settings, 3), 1_100);
+});
+
+check('per-lot target scales with lot count', () => {
+  const settings = { profitTargetMode: 'per_lot' as const, profitTargetRupees: 1_100 };
+  assert.equal(targetRupeesForPosition(settings, 1), 1_100);
+  assert.equal(targetRupeesForPosition(settings, 3), 3_300);
+});
+
+check('target premium delivers the requested rupees at the fill', () => {
+  // 125 units, ₹1,100 target → ₹8.80 of premium above the ₹128 fill.
+  const { targetPremium } = backstopsFromFill(128, 125, 1, 1_100);
+  assert.equal(targetPremium, 136.8);
+  assert.equal(Math.round((targetPremium - 128) * 125), 1_100);
+});
+
+check('stop never goes below the floor and respects the per-lot loss cap', () => {
+  const { slPremium } = backstopsFromFill(128, 125, 1, 1_100);
+  assert.ok(slPremium >= 0.05);
+  assert.ok(slPremium < 128, 'a stop at or above the fill would be nonsense');
+});
+
+check('a settings change cannot move a pending trade target', () => {
+  // The proposal snapshotted ₹127 → ₹135.80 (₹1,100 on 125 units). The broker
+  // filled 1 rupee higher, so the target must ride up by exactly 1 rupee — and
+  // must NOT be recomputed from whatever the live setting now says.
+  const { targetPremium } = backstopsFromProposalFill(128, 125, 1, 127, 135.8);
+  assert.equal(targetPremium, 136.8);
+});
+
+check('proposal re-anchor holds for multi-lot positions', () => {
+  const { targetPremium } = backstopsFromProposalFill(50, 100, 2, 50, 55);
+  assert.equal(targetPremium, 55, 'same fill as proposal → same target');
+});
+
+// ── REST target executability (the 2026-07-23 blocker's sibling) ────────────
+check('REST target fires when price AND full size are there', () => {
+  assert.equal(
+    isRestTargetExecutable({ bid: 120, bidQty: 500, targetPremium: 120, qtyUnits: 500 }),
+    true,
+  );
+});
+
+check('REST target does NOT fire on a thin bid at the right price', () => {
+  // The exact production failure: ₹120 showing for 5 units against 500 held.
+  assert.equal(
+    isRestTargetExecutable({ bid: 120, bidQty: 5, targetPremium: 120, qtyUnits: 500 }),
+    false,
+  );
+});
+
+check('REST target does not fire with an unknown book size', () => {
+  assert.equal(
+    isRestTargetExecutable({ bid: 120, bidQty: null, targetPremium: 120, qtyUnits: 500 }),
+    false,
+  );
+  assert.equal(
+    isRestTargetExecutable({ bid: null, bidQty: 500, targetPremium: 120, qtyUnits: 500 }),
+    false,
+  );
+});
+
+check('REST and stream target rules agree on the same book', () => {
+  const book = { bid: 120, bidQty: 500, targetPremium: 120, qtyUnits: 500 };
+  assert.equal(
+    isRestTargetExecutable(book),
+    isStreamTargetExecutable({ ...book, bidSize: book.bidQty, bidAgeMs: 0 }),
+    'the two exit paths must not disagree about what is takeable',
+  );
+  const thin = { bid: 120, bidQty: 5, targetPremium: 120, qtyUnits: 500 };
+  assert.equal(
+    isRestTargetExecutable(thin),
+    isStreamTargetExecutable({ ...thin, bidSize: thin.bidQty, bidAgeMs: 0 }),
+  );
+});
+
+// ── Stream freshness / recovery ─────────────────────────────────────────────
+check('stream target rejects a stale depth tick', () => {
+  assert.equal(
+    isStreamTargetExecutable({ bid: 120, bidSize: 500, targetPremium: 120, qtyUnits: 500, bidAgeMs: 5_000 }),
+    false,
+  );
+});
+
+check('reconnect backoff grows then caps', () => {
+  assert.equal(fyersStreamReconnectDelayMs(0), 1_000);
+  assert.equal(fyersStreamReconnectDelayMs(1), 2_000);
+  assert.equal(fyersStreamReconnectDelayMs(5), 32_000 > 30_000 ? 30_000 : 32_000);
+  assert.equal(fyersStreamReconnectDelayMs(99), 30_000, 'must cap, never grow unbounded');
+  assert.equal(fyersStreamReconnectDelayMs(-3), 1_000, 'nonsense input must not produce a negative delay');
+});
+
+check('token rotation is detected by fingerprint change', () => {
+  assert.equal(fyersStreamNeedsTokenRotation('abc', 'abc'), false);
+  assert.equal(fyersStreamNeedsTokenRotation('abc', 'def'), true);
+  assert.equal(fyersStreamNeedsTokenRotation(null, 'abc'), true, 'unknown state must rotate once');
+});
+
+check('silence watchdog ignores a disconnected or idle stream', () => {
+  const now = 1_000_000_000;
+  assert.equal(
+    fyersStreamIsSilent({ connected: false, trackedSymbols: 2, lastActivityMs: now - 600_000, nowMs: now }),
+    false,
+    'a disconnected socket is the reconnect supervisor’s job, not the watchdog’s',
+  );
+  assert.equal(
+    fyersStreamIsSilent({ connected: true, trackedSymbols: 0, lastActivityMs: now - 600_000, nowMs: now }),
+    false,
+    'no subscriptions means silence is expected',
+  );
+});
+
+check('silence watchdog fires only past the limit', () => {
+  const now = 1_000_000_000;
+  assert.equal(
+    fyersStreamIsSilent({
+      connected: true,
+      trackedSymbols: 2,
+      lastActivityMs: now - (STREAM_SILENCE_LIMIT_MS - 1_000),
+      nowMs: now,
+    }),
+    false,
+    'a quiet contract must not trigger a recycle',
+  );
+  assert.equal(
+    fyersStreamIsSilent({
+      connected: true,
+      trackedSymbols: 2,
+      lastActivityMs: now - (STREAM_SILENCE_LIMIT_MS + 1_000),
+      nowMs: now,
+    }),
+    true,
+    'total silence on a connected socket is a half-open socket',
+  );
+});
+
+// ── Displayed P&L must not overstate what is sellable ──────────────────────
+check('a thin bid is not a full-position exit', () => {
+  // The exact production display bug: auto-target correctly held on a 5-unit
+  // bid, but LIVE P&L still showed the profit as if all 500 units were sellable.
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: 5, qtyUnits: 500 }), false);
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: 500, qtyUnits: 500 }), true);
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: 501, qtyUnits: 500 }), true);
+});
+
+check('unknown size or missing bid is never treated as covered', () => {
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: null, qtyUnits: 500 }), false);
+  assert.equal(isFullPositionBidCovered({ bid: null, bidSize: 500, qtyUnits: 500 }), false);
+  assert.equal(isFullPositionBidCovered({ bid: 120, bidSize: 500, qtyUnits: 0 }), false);
+});
+
+check('the display rule and the auto-target rule agree on coverage', () => {
+  const thin = { bid: 120, bidSize: 5, qtyUnits: 500 };
+  assert.equal(
+    isFullPositionBidCovered(thin),
+    isRestTargetExecutable({ bid: 120, bidQty: 5, targetPremium: 120, qtyUnits: 500 }),
+    'a bid that cannot fill the position must fail BOTH the exit and the display',
+  );
+});
+
+// ── Dhan depth → bidQty/askQty mapping ─────────────────────────────────────
+check('top-of-book sizes come from the first depth level', () => {
+  const sizes = topOfBookSizes({
+    buy: [{ quantity: 750 }, { quantity: 9999 }],
+    sell: [{ quantity: 300 }, { quantity: 8888 }],
+  });
+  assert.equal(sizes.bidQty, 750, 'must use the TOUCH, not a deeper level');
+  assert.equal(sizes.askQty, 300);
+});
+
+check('an absent or zero-size book maps to null, never zero', () => {
+  assert.deepEqual(topOfBookSizes(undefined), { bidQty: null, askQty: null });
+  assert.deepEqual(topOfBookSizes({}), { bidQty: null, askQty: null });
+  assert.deepEqual(topOfBookSizes({ buy: [], sell: [] }), { bidQty: null, askQty: null });
+  // Zero must not become a real size — it would read as "covered" for qty 0.
+  assert.deepEqual(topOfBookSizes({ buy: [{ quantity: 0 }] }), { bidQty: null, askQty: null });
+});
+
+// ── Guard-health transition on a missing contract ──────────────────────────
+check('a held contract missing from a successful response is blind', () => {
+  // The production blocker: HTTP 200, but the held contract has no usable
+  // quote, so its premium stop AND target are both skipped.
+  assert.deepEqual(blindContractIds(['111', '222'], new Set(['111'])), ['222']);
+  assert.deepEqual(blindContractIds(['111', '222'], new Set(['111', '222'])), []);
+  assert.deepEqual(blindContractIds([], new Set()), [], 'no positions is not blindness');
+});
+
+// ── Which trades this pass is responsible for ──────────────────────────────
+const TODAY = '2026-07-23';
+const trade = (over: Partial<{ entryFillPremium: number | null; date: string; optSecurityId: string }> = {}) => ({
+  entryFillPremium: 120 as number | null,
+  date: TODAY,
+  optSecurityId: '4242',
+  ...over,
+});
+
+check('a ghost row from a previous session is not this pass to protect', () => {
+  // Case A: only yesterday's stale row is open. A transport failure must NOT
+  // count as blindness — six of those would trip the guard-blind latch and
+  // block new entries with no live position at risk.
+  const ghostOnly = classifyProtectedContracts([trade({ date: '2026-07-22' })], TODAY);
+  assert.equal(ghostOnly.protectedTrades.length, 0);
+  assert.deepEqual(ghostOnly.quotableIds, []);
+  assert.equal(ghostOnly.unquotable.length, 0);
+});
+
+check('a current filled trade with an unusable id is reported blind', () => {
+  // Case B: it used to be filtered out of every id set, so no quote was
+  // requested and no blindness recorded — while its stop and target were
+  // skipped exactly as if the guard were blind. It must not fail open.
+  for (const bad of ['', '   ', 'NOT-A-NUMBER', '0', '-5']) {
+    const classified = classifyProtectedContracts([trade({ optSecurityId: bad })], TODAY);
+    assert.equal(classified.protectedTrades.length, 1, `id ${JSON.stringify(bad)} is still a held position`);
+    assert.deepEqual(classified.quotableIds, [], `id ${JSON.stringify(bad)} must not be requested`);
+    assert.equal(classified.unquotable.length, 1, `id ${JSON.stringify(bad)} must be reported blind`);
+  }
+});
+
+check('a current valid row is quotable, and an unfilled row is not protected', () => {
+  const classified = classifyProtectedContracts(
+    [
+      trade({ optSecurityId: '111' }),
+      trade({ optSecurityId: '222', entryFillPremium: null }), // no confirmed fill yet
+      trade({ optSecurityId: '333', date: '2026-07-22' }), // ghost
+    ],
+    TODAY,
+  );
+  assert.deepEqual(classified.quotableIds, ['111']);
+  assert.equal(classified.protectedTrades.length, 1);
+  assert.equal(classified.unquotable.length, 0);
+});
+
+check('a mixed book separates quotable from unquotable current positions', () => {
+  const classified = classifyProtectedContracts(
+    [trade({ optSecurityId: '111' }), trade({ optSecurityId: '' }), trade({ date: '2026-07-22' })],
+    TODAY,
+  );
+  assert.equal(classified.protectedTrades.length, 2, 'both of today’s filled rows must be protected');
+  assert.deepEqual(classified.quotableIds, ['111']);
+  assert.equal(classified.unquotable.length, 1);
+  // Recovery: once every protected contract is quoted, nothing is blind.
+  assert.deepEqual(blindContractIds(classified.quotableIds, new Set(['111'])), []);
+});
+
+if (process.exitCode === 1) {
+  console.error('\nauto-target/stream verification FAILED');
+} else {
+  console.log(`auto-target/stream verification passed: ${passed} checks`);
+}
