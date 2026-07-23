@@ -552,6 +552,11 @@ export async function executeAutoTradeTool(
         // a since-changed setting or the cheaper ltp/mid mark (PR#18 review).
         approvedMaxRiskPerLotRupees: rt.settings.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK,
         approvedEntryAskPremium: input.askPrice ?? null,
+        // Enforce the capital cap ATOMICALLY at insert (not only in the gate
+        // pre-check): the row is created only if this ask-based reservation still
+        // fits alongside every other risk-bearing row — race-proof against a
+        // concurrent human approval (PR#18 re-review).
+        maxCapitalRupees: rt.settings.maxCapitalRupees,
         aiReasonEntry: reason,
         entrySectorRank,
         entrySectorCount,
@@ -559,7 +564,9 @@ export async function executeAutoTradeTool(
       if (tradeId == null) {
         const result = {
           placed: false,
-          reasons: [`${symbol} was already claimed or attempted today by another pass`],
+          reasons: [
+            `${symbol} was not opened: it was already claimed/attempted today, or opening it now would exceed the ₹${rt.settings.maxCapitalRupees.toLocaleString('en-IN')} capital cap once concurrent reservations are counted`,
+          ],
         };
         return {
           result,

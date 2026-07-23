@@ -72,6 +72,22 @@ export function effectiveBreachCeiling(
   return fallback;
 }
 
+/**
+ * Would adding one more reservation breach the capital cap? Pure mirror of the
+ * aggregate check the store enforces ATOMICALLY inside its INSERT/UPDATE (the
+ * SQL is the real guard against concurrent approvals; this documents and unit-
+ * tests the arithmetic). `reservedExcludingRupees` is the premium already
+ * reserved by every risk-bearing row EXCEPT the one being decided. Refuses on
+ * strictly `>` the cap — exactly AT the cap is allowed, matching checkEntryGates.
+ */
+export function capitalReservationExceeds(
+  reservedExcludingRupees: number,
+  candidateRupees: number,
+  capRupees: number
+): boolean {
+  return reservedExcludingRupees + candidateRupees > capRupees;
+}
+
 /** Premium backstops re-anchored to the ACTUAL fill. The target argument is
  * total rupees for this position, so this function works for either per-trade
  * or per-lot policies and any lot count. */

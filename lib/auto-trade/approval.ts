@@ -157,13 +157,23 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
   const claimed = await claimApprovalForPlacement(tradeId, {
     maxRiskPerLotRupees: settings.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK,
     entryAskPremium: fresh?.ask ?? null,
+    // The capital cap is re-checked ATOMICALLY inside this claim (not only in the
+    // gate above): if a DIFFERENT approval or AI proposal reserved capital in the
+    // gap between the gate read and here, the aggregate check refuses this one so
+    // two concurrent approvals can't jointly breach the cap (PR#18 re-review).
+    maxCapitalRupees: settings.maxCapitalRupees,
+    date,
   });
   if (!claimed) {
+    // Distinguish the two ways the atomic claim can lose: the row moved on
+    // (someone else claimed/expired it) vs the cap blocked it (row still pending
+    // but the aggregate reservation would exceed maxCapitalRupees).
     const current = await getTrade(tradeId);
-    return {
-      ok: false,
-      message: `approval already claimed; trade is ${current?.status ?? 'missing'}`,
-    };
+    const message =
+      current?.status === 'pending_approval'
+        ? `approval refused: opening this now would exceed the ₹${settings.maxCapitalRupees.toLocaleString('en-IN')} capital cap once other pending/placing reservations are counted — reject a pending proposal or wait for one to resolve, then retry`
+        : `approval already claimed; trade is ${current?.status ?? 'missing'}`;
+    return { ok: false, message };
   }
   const updated = await getTrade(tradeId);
   if (!updated) return { ok: false, message: `trade ${tradeId} vanished` };

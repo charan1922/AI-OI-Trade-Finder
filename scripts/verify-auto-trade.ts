@@ -765,7 +765,12 @@ async function main(): Promise<void> {
     apExpo.deployedRupees === 42 * 200,
     String(apExpo.deployedRupees)
   );
-  const claimedAp = await claimApprovalForPlacement(apId, { maxRiskPerLotRupees: 3000, entryAskPremium: 44 });
+  const claimedAp = await claimApprovalForPlacement(apId, {
+    maxRiskPerLotRupees: 3000,
+    entryAskPremium: 44,
+    maxCapitalRupees: 60_000, // ₹44×200 = ₹8,800, well within — this test is about the snapshot refresh, not the cap
+    date: apDate,
+  });
   check('approval claim: the first caller wins the pending→placing transition', claimedAp === true);
   const apTrade = await getTrade(apId);
   check('approval claim: status advanced to placing', apTrade?.status === 'placing');
@@ -779,7 +784,12 @@ async function main(): Promise<void> {
     apTrade?.approvedEntryAskPremium === 44,
     String(apTrade?.approvedEntryAskPremium)
   );
-  const claimedAp2 = await claimApprovalForPlacement(apId, { maxRiskPerLotRupees: 9999, entryAskPremium: 99 });
+  const claimedAp2 = await claimApprovalForPlacement(apId, {
+    maxRiskPerLotRupees: 9999,
+    entryAskPremium: 99,
+    maxCapitalRupees: 60_000,
+    date: apDate,
+  });
   check('approval claim: a second click cannot re-win (row already placing)', claimedAp2 === false);
   const apTrade2 = await getTrade(apId);
   check(
@@ -787,6 +797,87 @@ async function main(): Promise<void> {
     apTrade2?.approvedMaxRiskPerLotRupees === 3000 && apTrade2?.approvedEntryAskPremium === 44
   );
   await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, apDate);
+
+  // ── 4c. Aggregate capital cap is atomic across DIFFERENT trades (PR#18 re-review) ─
+  // Two pending proposals each fit the ₹60k cap against the OTHER's proposal-time
+  // reservation, but their two FRESH asks together exceed it. Approving both
+  // concurrently must let exactly ONE through; total reserved must stay ≤ cap.
+  const capDate = '2099-04-04';
+  await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, capDate);
+  const mkPending = (symbol: string, sec: string) =>
+    insertTrade({
+      date: capDate,
+      symbol,
+      direction: 'bullish',
+      optionType: 'CE',
+      strike: 100,
+      expiryDate: '2099-04-24',
+      lotSize: 1000,
+      lots: 1,
+      optSecurityId: sec,
+      mode: 'approval',
+      broker: 'fyers',
+      status: 'pending_approval',
+      entrySpot: 1000,
+      slSpot: 990,
+      targetSpot: 1020,
+      entryPremium: 25,
+      slPremium: 19,
+      targetPremium: 30,
+      approvedEntryAskPremium: 25, // proposal ask → reserves ₹25,000 each
+      maxCapitalRupees: 60_000,
+      aiReasonEntry: 'cap race bench',
+    });
+  const capAId = await mkPending('CAPA', '770001');
+  const capBId = await mkPending('CAPB', '770002');
+  check('cap race: both proposals insert (₹25k + ₹25k = ₹50k ≤ ₹60k)', capAId != null && capBId != null, `${capAId},${capBId}`);
+  if (capAId == null || capBId == null) throw new Error('cap race bench insert unexpectedly failed');
+  // Fresh asks rise to ₹31 each (₹31k/lot). Approve both AT ONCE.
+  const claimCap = (id: number) =>
+    claimApprovalForPlacement(id, {
+      maxRiskPerLotRupees: 2500,
+      entryAskPremium: 31,
+      maxCapitalRupees: 60_000,
+      date: capDate,
+    });
+  const capResults = await Promise.all([claimCap(capAId), claimCap(capBId)]);
+  check(
+    'cap race: exactly ONE of two concurrent approvals wins (the other would push ₹62k > ₹60k)',
+    capResults.filter(Boolean).length === 1,
+    `winners=${capResults.filter(Boolean).length}`
+  );
+  const capExpo = await getExposure(capDate);
+  check(
+    'cap race: total reserved stays within the ₹60k cap',
+    capExpo.deployedRupees <= 60_000,
+    `₹${capExpo.deployedRupees}`
+  );
+  // insertTrade also refuses a single row that alone would breach the cap.
+  const soloOverCap = await insertTrade({
+    date: capDate,
+    symbol: 'CAPC',
+    direction: 'bullish',
+    optionType: 'CE',
+    strike: 100,
+    expiryDate: '2099-04-24',
+    lotSize: 1000,
+    lots: 1,
+    optSecurityId: '770003',
+    mode: 'paper',
+    broker: 'paper',
+    status: 'placing',
+    entrySpot: 1000,
+    slSpot: 990,
+    targetSpot: 1020,
+    entryPremium: 68,
+    slPremium: 51,
+    targetPremium: 73,
+    approvedEntryAskPremium: 70, // ₹70 × 1000 = ₹70,000 alone > ₹60k
+    maxCapitalRupees: 60_000,
+    aiReasonEntry: 'cap solo bench',
+  });
+  check('cap: a single lot whose ask cost alone exceeds the cap is refused at insert', soloOverCap == null);
+  await prisma.$executeRawUnsafe(`DELETE FROM auto_trades WHERE date = ?`, capDate);
 
   const guards = await Promise.all([runPositionGuard(date), runPositionGuard(date)]);
   check('guard: concurrent callers coalesce', guards.filter((guard) => guard.coalesced).length === 1);

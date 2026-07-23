@@ -14,6 +14,7 @@
 import { checkEntryGates } from '../lib/auto-trade/risk/gates';
 import {
   backstopsFromProposalFill,
+  capitalReservationExceeds,
   effectiveBreachCeiling,
   fillRiskPerLotRupees,
   riskPerLotRupees,
@@ -240,5 +241,25 @@ export function runPremiumStopChecks(check: CheckFn): void {
   check(
     'breach: ceiling LEFT at ₹2,500 → ₹2,800 fill IS a breach (latch fires)',
     breachRisk > effectiveBreachCeiling(2500, 2500, MAX_RISK_PER_LOT_FALLBACK)
+  );
+
+  // ── 10. Aggregate capital cap — the decision behind the atomic reservation ─
+  // The store enforces this INSIDE the INSERT/UPDATE so concurrent approvals
+  // cannot jointly breach the cap; this covers the pure arithmetic + boundary.
+  check('capital: exactly AT the cap is allowed (₹59,600 ≤ ₹60,000)', capitalReservationExceeds(50_000, 9_600, 60_000) === false);
+  check('capital: exactly ON the cap is allowed (₹60,000 is not > ₹60,000)', capitalReservationExceeds(29_000, 31_000, 60_000) === false);
+  check('capital: ₹1 over the cap is refused', capitalReservationExceeds(29_001, 31_000, 60_000) === true);
+  // The reviewer's race, both halves. Two ₹31k fresh asks, ₹25k already reserved
+  // by the other pending proposal. Checked against LIVE reserved state (what the
+  // atomic SQL sees), the second approval is correctly refused…
+  check(
+    'capital: once one ₹31k approval is placing, the second (₹31k+₹31k) is refused',
+    capitalReservationExceeds(31_000, 31_000, 60_000) === true
+  );
+  // …whereas the OLD read-then-write path compared against the STALE ₹25k
+  // reservation and wrongly allowed it — the exact overshoot the atomic SQL fixes.
+  check(
+    'capital: the stale-read path (₹25k + ₹31k) would have wrongly passed — documents the bug',
+    capitalReservationExceeds(25_000, 31_000, 60_000) === false
   );
 }
