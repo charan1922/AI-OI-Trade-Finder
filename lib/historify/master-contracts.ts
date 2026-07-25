@@ -34,26 +34,70 @@ export type FuturesRangeEntry = SecurityEntry & {
   lotSize: number;
 };
 
-// Process-level flag — skip even the DB check once synced
-let synced = false;
+// Cache the exact calendar date verified. A boolean would stay true across
+// midnight and could authorize yesterday's snapshot in a long-running process.
+let syncedForDate: string | null = null;
 const FNO_SYMBOLS = new Set<string>(fnoUniverse.stocks);
 
 import { todayIST } from '@/lib/dhan/market-feed';
+
+export interface MasterContractQueryClient {
+  $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>;
+}
+
+export interface MasterContractFreshness {
+  expectedSyncDate: string;
+  syncDate: string | null;
+  rowCount: number;
+  distinctSyncDates: number;
+  acceptable: boolean;
+  reason: string | null;
+}
+
+/** Verify that the table is one complete daily snapshot for the requested trade
+ * date. The nightly refresh replaces every row transactionally, so multiple
+ * sync dates indicate a corrupted/manual partial table and fail closed too. */
+export async function getMasterContractFreshness(
+  expectedSyncDate: string,
+  db: MasterContractQueryClient = prisma
+): Promise<MasterContractFreshness> {
+  const rows = await db.$queryRawUnsafe<{ syncDate: string; rowCount: number | bigint }[]>(
+    `SELECT syncDate, COUNT(*) AS rowCount
+       FROM master_contracts
+      GROUP BY syncDate
+      ORDER BY syncDate DESC`
+  );
+  const syncDate = rows[0]?.syncDate == null ? null : String(rows[0].syncDate);
+  const rowCount = rows.reduce((sum, row) => sum + Number(row.rowCount), 0);
+  const distinctSyncDates = rows.length;
+  const acceptable = distinctSyncDates === 1 && rowCount > 0 && syncDate === expectedSyncDate;
+  const reason = acceptable
+    ? null
+    : rowCount === 0
+      ? `master contracts missing for ${expectedSyncDate}`
+      : distinctSyncDates !== 1
+        ? `master contracts contain ${distinctSyncDates} sync dates (latest ${syncDate ?? 'unknown'}); expected one ${expectedSyncDate} snapshot`
+        : `master contracts stale: last sync ${syncDate ?? 'unknown'}, expected ${expectedSyncDate}`;
+  return {
+    expectedSyncDate,
+    syncDate,
+    rowCount,
+    distinctSyncDates,
+    acceptable,
+    reason,
+  };
+}
 
 /**
  * Check if master contracts are synced for today.
  * Does NOT trigger a download — consumers should direct users to the Master Contracts page.
  */
 export async function ensureSynced(): Promise<void> {
-  if (synced) return;
-
   const today = todayIST();
-  const count = await prisma.masterContract.count({
-    where: { syncDate: today },
-  });
-
-  if (count > 0) {
-    synced = true;
+  if (syncedForDate === today) return;
+  const freshness = await getMasterContractFreshness(today);
+  if (freshness.acceptable) {
+    syncedForDate = today;
     return;
   }
 
@@ -258,7 +302,7 @@ export async function forceSync(): Promise<{ count: number; elapsed: string }> {
   const today = todayIST();
   const startMs = Date.now();
   await syncFromDhan(today);
-  synced = true;
+  syncedForDate = today;
   const count = await prisma.masterContract.count();
   return { count, elapsed: `${((Date.now() - startMs) / 1000).toFixed(1)}s` };
 }

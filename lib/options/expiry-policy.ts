@@ -8,13 +8,25 @@
  */
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const RFC3339_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** Accept only an exact ISO calendar date or a complete RFC3339 timestamp.
+ * Contract-master DateTime values arrive through Prisma as timestamps; a valid
+ * date prefix followed by arbitrary text must never become a tradable expiry. */
+export function normalizeIsoDate(raw: string): string | null {
+  const exact = raw.match(ISO_DATE);
+  if (exact) {
+    const epoch = Date.UTC(Number(exact[1]), Number(exact[2]) - 1, Number(exact[3]));
+    return new Date(epoch).toISOString().slice(0, 10) === raw ? raw : null;
+  }
+  if (!RFC3339_TIMESTAMP.test(raw)) return null;
+  const epoch = Date.parse(raw);
+  return Number.isFinite(epoch) ? new Date(epoch).toISOString().slice(0, 10) : null;
+}
 
 function isoDayEpoch(raw: string): number | null {
-  const iso = raw.slice(0, 10);
-  const match = iso.match(ISO_DATE);
-  if (!match) return null;
-  const epoch = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  return new Date(epoch).toISOString().slice(0, 10) === iso ? epoch : null;
+  const iso = normalizeIsoDate(raw);
+  return iso == null ? null : Date.parse(`${iso}T00:00:00.000Z`);
 }
 
 /** Calendar DTE is retained for audit text only; it is NOT the roll rule. */
@@ -76,6 +88,8 @@ export function checkOptionExpiryForEntry(
  * months. Invalid/duplicate rows are harmless; no eligible month means no
  * contract and therefore no trade. */
 export function selectOptionExpiryForEntry(tradeDate: string, expiryDates: readonly string[]): string | null {
-  const ordered = [...new Set(expiryDates.map((expiry) => expiry.slice(0, 10)))].sort();
+  const ordered = [
+    ...new Set(expiryDates.map(normalizeIsoDate).filter((expiry): expiry is string => expiry != null)),
+  ].sort();
   return ordered.find((expiryDate) => checkOptionExpiryForEntry(tradeDate, expiryDate).allow) ?? null;
 }

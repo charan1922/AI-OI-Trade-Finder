@@ -15,10 +15,8 @@
  * origin) on purpose: they carry the Dhan rate gate, F&O gating, OI recording
  * and R-Factor wiring — re-implementing them here would just fork that logic.
  *
- * NOTE: option resolution deliberately does NOT use master-contracts'
- * resolveOptionSecurity() — its ensureSynced() gate throws unless the master
- * was synced today, and this simulator ships pre-loaded contracts (same
- * reasoning as app/api/live/quote/route.ts). We query OPTSTK rows directly.
+ * Money-touching option resolution verifies the exact daily master snapshot
+ * before selecting an executable contract. Stale or mixed snapshots fail closed.
  */
 
 import { setupScore } from '@/app/live/_lib/setup-score';
@@ -28,7 +26,7 @@ import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getEqBucketStatus, getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
 import { evaluateFreshnessBestEffort, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
-import { selectOptionExpiryForEntry } from '@/lib/options/expiry-policy';
+import { resolveStockOptionFromMaster, type StockOptionResolution } from '@/lib/options/stock-option-resolver';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
@@ -207,67 +205,15 @@ async function fetchQuotes(origin: string, symbols: string[]): Promise<LiveQuote
   return (await res.json()) as LiveQuoteResponse;
 }
 
-// ─── Near-ATM contract resolution (direct OPTSTK query, no sync gate) ────────
+// ─── Near-ATM contract resolution (fresh daily OPTSTK snapshot required) ─────
 
 async function resolveAtmOption(
   symbol: string,
   spot: number,
   side: 'CE' | 'PE',
   tradeDate: string
-): Promise<OptionPlan | null> {
-  const expiryRows = await prisma.$queryRawUnsafe<{ expiryDate: string | Date }[]>(
-    `SELECT DISTINCT expiryDate FROM master_contracts
-      WHERE underlying = ? AND instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND optionType = ?
-        AND substr(expiryDate, 1, 10) >= ?
-      ORDER BY expiryDate ASC`,
-    symbol,
-    side,
-    tradeDate
-  );
-  const availableExpiries = expiryRows.map((row) => {
-    const expiry = new Date(row.expiryDate);
-    return Number.isNaN(expiry.getTime())
-      ? String(row.expiryDate).slice(0, 10)
-      : expiry.toISOString().slice(0, 10);
-  });
-  const selectedExpiry = selectOptionExpiryForEntry(tradeDate, availableExpiries);
-  if (!selectedExpiry) return null;
-  const rows = await prisma.$queryRawUnsafe<
-    {
-      securityId: string;
-      symbol: string;
-      lotSize: number;
-      strikePrice: number;
-      expiryDate: string | Date;
-    }[]
-  >(
-    `SELECT securityId, symbol, lotSize, CAST(strikePrice AS REAL) AS strikePrice, expiryDate
-       FROM master_contracts
-      WHERE underlying = ? AND instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND optionType = ?
-        AND substr(expiryDate, 1, 10) = ?
-      ORDER BY ABS(CAST(strikePrice AS REAL) - ?) ASC
-      LIMIT 1`,
-    symbol,
-    side,
-    selectedExpiry,
-    spot
-  );
-  const row = rows[0];
-  if (!row) return null;
-  // master_contracts.expiryDate is DateTime in Prisma — raw queries hand it
-  // back as a JS Date, whose String() is "Tue Jul 28 …". Normalize to ISO.
-  const expiry = new Date(row.expiryDate);
-  return {
-    optionType: side,
-    strike: row.strikePrice,
-    expiryDate: Number.isNaN(expiry.getTime())
-      ? String(row.expiryDate).slice(0, 10)
-      : expiry.toISOString().slice(0, 10),
-    lotSize: Number(row.lotSize),
-    optSecurityId: row.securityId,
-    optSymbol: row.symbol,
-    premium: null, // filled by attachPremiums when a live quote exists
-  };
+): Promise<StockOptionResolution> {
+  return resolveStockOptionFromMaster(prisma, { symbol, spot, side, tradeDate });
 }
 
 // ─── The run ─────────────────────────────────────────────────────────────────
@@ -802,10 +748,21 @@ export async function runTradeSuggest(
     .slice(0, maxPicks + PICK_OVERSAMPLE);
   const factorBaselines = await loadFactorBaselines(shortlist.map((s) => s.row.symbol));
   const sessionFrac = Math.min(1, Math.max(0.02, (istNow().minuteOfDay - (9 * 60 + 15)) / 375));
-  const optionBySymbol = new Map<string, OptionPlan | null>();
+  const optionResolutionBySymbol = new Map<string, StockOptionResolution>();
   for (const s of shortlist) {
     const side: 'CE' | 'PE' = s.direction === 'bullish' ? 'CE' : 'PE';
-    optionBySymbol.set(s.row.symbol, await resolveAtmOption(s.row.symbol, s.row.ltp ?? 0, side, date));
+    const resolved = await resolveAtmOption(s.row.symbol, s.row.ltp ?? 0, side, date);
+    optionResolutionBySymbol.set(s.row.symbol, resolved);
+    if (resolved.resolution.rolled) gated.expiryWeekRoll = (gated.expiryWeekRoll ?? 0) + 1;
+    if (resolved.resolution.status !== 'selected')
+      gated.optionResolutionFailed = (gated.optionResolutionFailed ?? 0) + 1;
+    if (resolved.resolution.status === 'master-stale') gated.staleMaster = (gated.staleMaster ?? 0) + 1;
+    if (resolved.resolution.status === 'no-listed-expiry') gated.noListedExpiry = (gated.noListedExpiry ?? 0) + 1;
+    if (resolved.resolution.status === 'no-eligible-expiry') gated.noEligibleExpiry = (gated.noEligibleExpiry ?? 0) + 1;
+    if (resolved.resolution.status === 'no-strike') gated.noStrike = (gated.noStrike ?? 0) + 1;
+    if (resolved.resolution.status === 'invalid-master-data')
+      gated.invalidMasterData = (gated.invalidMasterData ?? 0) + 1;
+    if (resolved.resolution.status === 'query-error') gated.optionQueryError = (gated.optionQueryError ?? 0) + 1;
   }
   // Display the stop/risk policy that will ACTUALLY fire, not the coded default:
   // both values are runtime-editable on /auto-trade, and the scanner previously
@@ -820,7 +777,9 @@ export async function runTradeSuggest(
     premiumPolicy = undefined; // fall back to the coded defaults inside attachPremiums
   }
   await attachPremiums(
-    [...optionBySymbol.values()].filter((o): o is OptionPlan => o !== null),
+    [...optionResolutionBySymbol.values()]
+      .map((resolved) => resolved.plan)
+      .filter((option): option is OptionPlan => option !== null),
     premiumPolicy
   );
 
@@ -834,8 +793,13 @@ export async function runTradeSuggest(
     const r = s.row;
     const ltp = r.ltp ?? 0;
     const side: 'CE' | 'PE' = s.direction === 'bullish' ? 'CE' : 'PE';
-    const option = optionBySymbol.get(r.symbol) ?? null;
-    if (!option) console.warn(`${TAG} no OPTSTK contract for ${r.symbol} — suggesting without contract details`);
+    const optionResult = optionResolutionBySymbol.get(r.symbol);
+    const option = optionResult?.plan ?? null;
+    const optionResolution = optionResult?.resolution;
+    if (!option)
+      console.warn(
+        `${TAG} no OPTSTK contract for ${r.symbol}: ${optionResolution?.status ?? 'unknown'} — ${optionResolution?.detail ?? 'no resolver metadata'}`
+      );
     if (option?.premium && option.premium.perLotCost > capitalBudget) {
       skippedUnaffordable++;
       console.log(
@@ -1007,6 +971,11 @@ export async function runTradeSuggest(
         ? [`sector confirmation: ${breadth.get(`${s.sector}:${s.direction}`)} ${s.sector} names moving ${s.direction}`]
         : []),
       ...(sectorActivityReason ? [sectorActivityReason] : []),
+      ...(optionResolution?.rolled
+        ? [`option expiry policy: ${optionResolution.detail}`]
+        : optionResolution != null && optionResolution.status !== 'selected'
+          ? [`option contract unavailable (${optionResolution.status}): ${optionResolution.detail}`]
+          : []),
       ...s.setupReasons,
     ];
 
@@ -1031,6 +1000,7 @@ export async function runTradeSuggest(
       direction: s.direction,
       score: Math.round(s.score * 1000) / 1000,
       option,
+      optionResolution,
       plan,
       rFactor: r.rFactor ?? 0,
       rFactorConfidence: r.rFactorConfidence ?? 0,

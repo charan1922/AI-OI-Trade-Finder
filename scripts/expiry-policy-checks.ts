@@ -1,6 +1,7 @@
 /** Pure, DB-free regression matrix for the stock-option expiry roll policy. */
 import {
   checkOptionExpiryForEntry,
+  normalizeIsoDate,
   optionExpiryWeekStart,
   selectOptionExpiryForEntry,
 } from '../lib/options/expiry-policy';
@@ -33,6 +34,17 @@ export function runExpiryPolicyChecks(check: Check): void {
     !checkOptionExpiryForEntry('2026-07-24', null).allow &&
       !checkOptionExpiryForEntry('bad-date', '2026-08-25').allow
   );
+  check(
+    'expiry: a complete Prisma-style RFC3339 DateTime is normalized',
+    normalizeIsoDate('2026-07-28T00:00:00.000Z') === '2026-07-28' &&
+      checkOptionExpiryForEntry('2026-07-27', '2026-07-28T00:00:00.000Z').allow === false
+  );
+  check(
+    'expiry: valid date prefix plus arbitrary garbage fails closed',
+    normalizeIsoDate('2026-07-28garbage') == null &&
+      normalizeIsoDate('2026-07-28-WRONG') == null &&
+      checkOptionExpiryForEntry('2026-07-24', '2026-07-28garbage').allow === false
+  );
 
   const futureExpiryCases = [
     { label: 'August monthly', before: '2026-08-21', inWeek: '2026-08-24', expiryDate: '2026-08-25' },
@@ -43,6 +55,10 @@ export function runExpiryPolicyChecks(check: Check): void {
     // Synthetic Friday expiry proves the algorithm follows the stored date's
     // Monday-Sunday week and does not assume Tuesday.
     { label: 'Friday-shifted monthly', before: '2026-11-20', inWeek: '2026-11-23', expiryDate: '2026-11-27' },
+    // Future-year synthetic dates prove the rule has no hard-coded 2026/month
+    // table: it always derives the Monday from the exchange-provided expiry.
+    { label: '2027 future monthly', before: '2027-07-23', inWeek: '2027-07-26', expiryDate: '2027-07-29' },
+    { label: '2028 future monthly', before: '2028-07-21', inWeek: '2028-07-24', expiryDate: '2028-07-27' },
   ];
   for (const expiryCase of futureExpiryCases) {
     check(

@@ -39,6 +39,11 @@ async function ensureTables(): Promise<void> {
       lotSize          INTEGER NOT NULL,
       lots             INTEGER NOT NULL,
       optSecurityId    TEXT NOT NULL,
+      nearestListedExpiry TEXT,
+      expiryRolled         INTEGER,
+      expiryRollReason     TEXT,
+      expiryCalendarDte    INTEGER,
+      masterSyncDate       TEXT,
       mode             TEXT NOT NULL,
       broker           TEXT NOT NULL,
       status           TEXT NOT NULL,
@@ -95,6 +100,11 @@ async function ensureTables(): Promise<void> {
     'shadowMaeR REAL', // max ADVERSE excursion in R from the OBSERVED fill (candle high/low, observed risk)
     'approvedMaxRiskPerLotRupees REAL', // per-lot ₹ risk ceiling in force when the order was gated (PR#18 review — the fill-breach check compares against THIS, not the current setting)
     'approvedEntryAskPremium REAL', // the ASK the gate sized this entry against (PR#18 re-review — pending/placing exposure reserves off this executable price, not the ltp/mid mark)
+    'nearestListedExpiry TEXT',
+    'expiryRolled INTEGER',
+    'expiryRollReason TEXT',
+    'expiryCalendarDte INTEGER',
+    'masterSyncDate TEXT',
   ]) {
     if (!existingTradeColumns.has(col.split(' ')[0]))
       await prisma.$executeRawUnsafe(`ALTER TABLE auto_trades ADD COLUMN ${col}`);
@@ -225,6 +235,11 @@ export interface NewTrade {
   lotSize: number;
   lots: number;
   optSecurityId: string;
+  nearestListedExpiry?: string | null;
+  expiryRolled?: boolean | null;
+  expiryRollReason?: 'EXPIRY_WEEK' | null;
+  expiryCalendarDte?: number | null;
+  masterSyncDate?: string | null;
   mode: AutoTrade['mode'];
   broker: string;
   status: TradeStatus;
@@ -273,11 +288,12 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
   const rows = (await prisma.$queryRawUnsafe(
     `INSERT INTO auto_trades (
        date, symbol, direction, optionType, strike, expiryDate, lotSize, lots,
-       optSecurityId, mode, broker, status, entrySpot, slSpot, targetSpot,
+       optSecurityId, nearestListedExpiry, expiryRolled, expiryRollReason, expiryCalendarDte,
+       masterSyncDate, mode, broker, status, entrySpot, slSpot, targetSpot,
        entryPremium, slPremium, targetPremium, aiReasonEntry,
        approvedMaxRiskPerLotRupees, approvedEntryAskPremium, entrySectorRank, entrySectorCount, proposedAt, updatedAt
      )
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM auto_trades
         WHERE date = ? AND symbol = ?
@@ -294,6 +310,11 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     t.lotSize,
     t.lots,
     t.optSecurityId,
+    t.nearestListedExpiry ?? null,
+    t.expiryRolled == null ? null : t.expiryRolled ? 1 : 0,
+    t.expiryRollReason ?? null,
+    t.expiryCalendarDte ?? null,
+    t.masterSyncDate ?? null,
     t.mode,
     t.broker,
     t.status,
@@ -524,6 +545,11 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     strike: Number(r.strike),
     lotSize: Number(r.lotSize),
     lots: Number(r.lots),
+    nearestListedExpiry: r.nearestListedExpiry == null ? null : String(r.nearestListedExpiry),
+    expiryRolled: r.expiryRolled == null ? null : Number(r.expiryRolled) === 1,
+    expiryRollReason: r.expiryRollReason === 'EXPIRY_WEEK' ? 'EXPIRY_WEEK' : null,
+    expiryCalendarDte: r.expiryCalendarDte == null ? null : Number(r.expiryCalendarDte),
+    masterSyncDate: r.masterSyncDate == null ? null : String(r.masterSyncDate),
     entrySpot: Number(r.entrySpot),
     slSpot: r.slSpot == null ? null : Number(r.slSpot),
     targetSpot: r.targetSpot == null ? null : Number(r.targetSpot),
