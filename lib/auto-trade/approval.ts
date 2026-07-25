@@ -83,6 +83,8 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
   const freshness = evaluateFreshness(bucketStatus, requiredBucketTs);
   const verdict = checkEntryGates({
     settings,
+    tradeDate: date,
+    expiryDate: trade.expiryDate,
     liveEnvEnabled: isAutoTradeLiveEnabled(),
     marketOpen: isMarketHours(),
     sessionVerified,

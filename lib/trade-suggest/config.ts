@@ -264,8 +264,6 @@ export const CAPITAL_BUDGET = 60_000;
 /** How many extra ranked survivors to premium-quote as affordability fallbacks. */
 export const PICK_OVERSAMPLE = 3;
 
-/** Skip contracts expiring within this many days (theta burn near expiry). */
-export const MIN_DTE = 3;
 
 /** Reward:risk multiple for the spot target (entry ± N × risk). */
 export const TARGET_RR = 2;

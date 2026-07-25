@@ -28,6 +28,7 @@ import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getEqBucketStatus, getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
 import { evaluateFreshnessBestEffort, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
+import { selectOptionExpiryForEntry } from '@/lib/options/expiry-policy';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
@@ -45,7 +46,6 @@ import {
   MAX_PICKS,
   MAX_SPREAD_PCT,
   MIN_CONFIDENCE,
-  MIN_DTE,
   MIN_NSE_OI_PCT,
   MIN_OI_LEVEL,
   MIN_OPT_PREMIUM_CR,
@@ -209,8 +209,29 @@ async function fetchQuotes(origin: string, symbols: string[]): Promise<LiveQuote
 
 // ─── Near-ATM contract resolution (direct OPTSTK query, no sync gate) ────────
 
-async function resolveAtmOption(symbol: string, spot: number, side: 'CE' | 'PE'): Promise<OptionPlan | null> {
-  const minExpiry = new Date(Date.now() + MIN_DTE * 24 * 60 * 60 * 1000).toISOString();
+async function resolveAtmOption(
+  symbol: string,
+  spot: number,
+  side: 'CE' | 'PE',
+  tradeDate: string
+): Promise<OptionPlan | null> {
+  const expiryRows = await prisma.$queryRawUnsafe<{ expiryDate: string | Date }[]>(
+    `SELECT DISTINCT expiryDate FROM master_contracts
+      WHERE underlying = ? AND instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND optionType = ?
+        AND substr(expiryDate, 1, 10) >= ?
+      ORDER BY expiryDate ASC`,
+    symbol,
+    side,
+    tradeDate
+  );
+  const availableExpiries = expiryRows.map((row) => {
+    const expiry = new Date(row.expiryDate);
+    return Number.isNaN(expiry.getTime())
+      ? String(row.expiryDate).slice(0, 10)
+      : expiry.toISOString().slice(0, 10);
+  });
+  const selectedExpiry = selectOptionExpiryForEntry(tradeDate, availableExpiries);
+  if (!selectedExpiry) return null;
   const rows = await prisma.$queryRawUnsafe<
     {
       securityId: string;
@@ -223,16 +244,12 @@ async function resolveAtmOption(symbol: string, spot: number, side: 'CE' | 'PE')
     `SELECT securityId, symbol, lotSize, CAST(strikePrice AS REAL) AS strikePrice, expiryDate
        FROM master_contracts
       WHERE underlying = ? AND instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND optionType = ?
-        AND expiryDate = (
-          SELECT MIN(expiryDate) FROM master_contracts
-           WHERE underlying = ? AND instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND expiryDate >= ?
-        )
+        AND substr(expiryDate, 1, 10) = ?
       ORDER BY ABS(CAST(strikePrice AS REAL) - ?) ASC
       LIMIT 1`,
     symbol,
     side,
-    symbol,
-    minExpiry,
+    selectedExpiry,
     spot
   );
   const row = rows[0];
@@ -788,7 +805,7 @@ export async function runTradeSuggest(
   const optionBySymbol = new Map<string, OptionPlan | null>();
   for (const s of shortlist) {
     const side: 'CE' | 'PE' = s.direction === 'bullish' ? 'CE' : 'PE';
-    optionBySymbol.set(s.row.symbol, await resolveAtmOption(s.row.symbol, s.row.ltp ?? 0, side));
+    optionBySymbol.set(s.row.symbol, await resolveAtmOption(s.row.symbol, s.row.ltp ?? 0, side, date));
   }
   // Display the stop/risk policy that will ACTUALLY fire, not the coded default:
   // both values are runtime-editable on /auto-trade, and the scanner previously

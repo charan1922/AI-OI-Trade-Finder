@@ -286,6 +286,8 @@ async function buildGateInput(
   return {
     input: {
       settings: rt.settings,
+      tradeDate: rt.date,
+      expiryDate: pick.option?.expiryDate ?? null,
       liveEnvEnabled: state.liveEnvEnabled,
       marketOpen: state.marketOpen,
       sessionVerified,
