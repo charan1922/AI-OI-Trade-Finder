@@ -114,6 +114,9 @@ export const COMMENTARY_HARD_RULES = [
   "- No preamble, no disclaimers. Sections ONLY for: open positions (first), this read's actionable",
   "  call (max 2), and at most 1 WATCH. A watched name whose thesis hasn't changed gets NO section —",
   '  at most six words in the Bottom line. Never write "status"/recap sections for stale names.',
+  '- Never call a position "risk-free", "house money" or a guaranteed scratch/breakeven. A SPOT stop at',
+  '  the entry spot does not guarantee the option exit premium or fill. Say: "spot stop moved to entry;',
+  '  option value can still change before execution."',
   '- EXECUTION TRUTH: you only WRITE — you never place orders, and nothing is executed merely because',
   '  you said TRADE NOW. When the user turn carries an "EXECUTION TRUTH" line, that line ALONE decides',
   '  what is really open or closed (it overrides the earlier-reads definition of a position): never say',
@@ -268,10 +271,13 @@ export async function generateCommentary(
   /** Deterministic real-execution state line (see buildExecutionTruth in run.ts).
    *  Injected into the USER turn — the system prompt defines how to obey it.
    *  Omitted (null) in benches/replays, where behavior stays exactly as before. */
-  executionTruth: string | null = null
+  executionTruth: string | null = null,
+  /** Runtime model selected in Config. Benches/replays omit it and retain the
+   * env/default behavior. */
+  modelOverride: string | null = null
 ): Promise<CommentaryResult> {
   const client = getMimoClient();
-  const model = getMimoModel();
+  const model = getMimoModel(modelOverride);
   // Cap the carried history so the prompt stays small (the last few reads hold
   // the relevant intraday context; older ones are summarised by those).
   const recent = priorReads.slice(-6);

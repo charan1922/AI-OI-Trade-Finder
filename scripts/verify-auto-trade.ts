@@ -18,9 +18,16 @@ import { parseFiniteNumber } from '../lib/auto-trade/brokers/adapter';
 import { safeJson, toFyersOptionSymbol } from '../lib/auto-trade/brokers/fyers-adapter';
 import { checkEntryGates, checkStopMove } from '../lib/auto-trade/risk/gates';
 import { getRiskLatch } from '../lib/auto-trade/risk/latch';
-import { executeAutoTradeTool, newPassPolicyState, type ToolRuntime } from '../lib/auto-trade/tools/execute';
+import {
+  buildScanContext,
+  executeAutoTradeTool,
+  newPassPolicyState,
+  type ToolRuntime,
+} from '../lib/auto-trade/tools/execute';
 import { DEFAULT_SETTINGS } from '../lib/auto-trade/config';
-import { getAutoTradeSettings, setAutoTradeSetting } from '../lib/auto-trade/settings';
+import { getAutoTradeSettings, SETTING_DEFS, setAutoTradeSetting } from '../lib/auto-trade/settings';
+import { AUTO_TRADE_MANAGEMENT_TOOLS, AUTO_TRADE_TOOLS } from '../lib/auto-trade/tools/defs';
+import type { SuggestResponse } from '../lib/trade-suggest/types';
 import {
   claimApprovalForPlacement,
   countEntriesToday,
@@ -97,6 +104,84 @@ async function main(): Promise<void> {
   modeUpdatedAtToRestore = modeRows[0]?.updatedAt ?? null;
   const realOpen = await getOpenTrades();
   if (realOpen.length > 0) throw new Error(`verification refuses to run with ${realOpen.length} real open trade(s)`);
+  const fullToolNames = AUTO_TRADE_TOOLS.map((tool) => tool.name);
+  const managementToolNames = AUTO_TRADE_MANAGEMENT_TOOLS.map((tool) => tool.name);
+  check(
+    'AI tools: full entry path retains all trading actions',
+    ['check_order', 'place_entry_order', 'modify_stop', 'exit_position'].every((name) => fullToolNames.includes(name)),
+    fullToolNames.join(',')
+  );
+  check(
+    'AI tools: management-only path exposes exactly the four position tools',
+    JSON.stringify(managementToolNames) ===
+      JSON.stringify(['get_quote', 'get_open_positions', 'modify_stop', 'exit_position']),
+    managementToolNames.join(',')
+  );
+  check('AI tools: redundant record_note is absent', !fullToolNames.includes('record_note'));
+
+  const fixturePick = (symbol: string, direction: 'bullish' | 'bearish') => ({
+    symbol,
+    direction,
+    score: 80,
+    option: null,
+    plan: { entrySpot: 1_500, slSpot: 1_480, targetSpot: 1_540 },
+    rFactor: 70,
+    rFactorConfidence: 75,
+    oiLevel: 65,
+    oiUrgency: 60,
+    orBreakout: true,
+    tfBreakout: null,
+    extended: false,
+    factors: null,
+    reasons: ['fixture'],
+  });
+  const contextFixture = {
+    window: { active: false, opensAt: '09:45 IST', closesAt: '11:00 IST', nowIST: '12:30' },
+    tilt: { up: 1, down: 1, flat: 0, basis: 'since-open', lean: 'neutral' },
+    scanned: 2,
+    gated: {},
+    suggestions: [fixturePick('INFY', 'bullish'), fixturePick('TCS', 'bearish')],
+    tracked: [
+      { symbol: 'INFY', side: 'CE', direction: 'bullish', entrySpot: 1_500, slSpot: 1_480, targetSpot: 1_540, ltp: 1_510 },
+      { symbol: 'TCS', side: 'PE', direction: 'bearish', entrySpot: 3_000, slSpot: 3_030, targetSpot: 2_940, ltp: 2_990 },
+    ],
+  } as unknown as SuggestResponse;
+  const fullContext = buildScanContext(contextFixture) as { picks?: { symbol: string }[] };
+  const compactContext = buildScanContext(contextFixture, {
+    entryEnabled: false,
+    managedSymbols: ['infy'],
+  }) as {
+    mode?: string;
+    openPositionSignals?: { symbol: string }[];
+    trackedOpenPositions?: { symbol: string; liveSpot: number | null }[];
+  };
+  check(
+    'AI context: entry-enabled path keeps every candidate',
+    fullContext.picks?.map((pick) => pick.symbol).join(',') === 'INFY,TCS'
+  );
+  check(
+    'AI context: management-only path removes unrelated candidates',
+    compactContext.mode === 'position-management-only' &&
+      compactContext.openPositionSignals?.map((pick) => pick.symbol).join(',') === 'INFY' &&
+      compactContext.trackedOpenPositions?.map((position) => position.symbol).join(',') === 'INFY'
+  );
+  check(
+    'AI context: managed position retains its live spot signal',
+    compactContext.trackedOpenPositions?.[0]?.liveSpot === 1_510
+  );
+  const mimoModelSetting = SETTING_DEFS.find((setting) => setting.key === 'mimoModel');
+  check(
+    'settings: both MiMo 2.5 tiers validate exactly',
+    mimoModelSetting?.parse('mimo-v2.5') === 'mimo-v2.5' &&
+      mimoModelSetting.parse('mimo-v2.5-pro') === 'mimo-v2.5-pro'
+  );
+  let invalidMimoRejected = false;
+  try {
+    mimoModelSetting?.parse('mimo-v2.5-typo');
+  } catch {
+    invalidMimoRejected = true;
+  }
+  check('settings: an unknown MiMo model is rejected', invalidMimoRejected);
   const streamTick = parseFyersPnlTick({
     symbol: 'NSE:TEST26JUL100CE',
     ltp: 20.1,

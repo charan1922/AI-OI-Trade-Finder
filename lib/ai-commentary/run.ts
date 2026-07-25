@@ -77,12 +77,13 @@ export async function runAndStoreCommentary(
   // Carry forward TODAY's earlier reads so this is the next turn of a running
   // conversation (oldest first). New day → empty → a fresh conversation.
   const today = todayIST();
+  const settings = await getAutoTradeSettings();
   const priorToday = await tstep('commentary: load prior reads', () => getCommentary({ date: today, limit: 30 }));
   const priorReads = priorToday.map((r) => r.text).reverse(); // store returns newest-first
 
   const c = await tstep(
     'commentary: MiMo generate',
-    async () => generateCommentary(result, priorReads, await buildExecutionTruth(today)),
+    async () => generateCommentary(result, priorReads, await buildExecutionTruth(today), settings.mimoModel),
     (r) => `${r.model} · ${(r.promptTokens ?? 0).toLocaleString('en-IN')}+${(r.completionTokens ?? 0).toLocaleString('en-IN')} tok`
   );
   // Prompt-versioning stamp: record the system prompt used (new row only when
@@ -113,7 +114,6 @@ export async function runAndStoreCommentary(
     const previousText = priorToday[0]?.text ?? null;
     const tgT0 = Date.now();
     try {
-      const settings = await getAutoTradeSettings();
       if (settings.telegramAlerts) {
         await sendCommentaryToTelegram(c.text, previousText);
       }

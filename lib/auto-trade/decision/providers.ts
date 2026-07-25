@@ -20,6 +20,8 @@ import type { NeutralToolDef } from '../tools/defs';
 
 export interface ToolLoopRequest {
   provider: AiProvider;
+  /** Runtime MiMo tier. Ignored by Azure; falls back to env/default when absent. */
+  mimoModel?: string;
   system: string;
   user: string;
   tools: NeutralToolDef[];
@@ -134,7 +136,7 @@ async function runAzureLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<
 
 async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<ToolLoopResult> {
   const client = getMimoClient();
-  const model = getMimoModel();
+  const model = getMimoModel(req.mimoModel);
   const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = req.tools.map((t) => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.parameters },

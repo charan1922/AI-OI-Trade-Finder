@@ -38,7 +38,7 @@ import { AUTO_TRADER_SYSTEM } from './decision/system-prompt';
 import { runPositionGuard } from './risk/position-guard';
 import { getAutoTradeSettings } from './settings';
 import { countEntriesToday, getOpenTrades, insertDecision } from './store';
-import { AUTO_TRADE_TOOLS } from './tools/defs';
+import { AUTO_TRADE_MANAGEMENT_TOOLS, AUTO_TRADE_TOOLS } from './tools/defs';
 import { buildInitialDecisionContext, executeAutoTradeTool, newPassPolicyState, type ToolRuntime } from './tools/execute';
 
 const TAG = '[AutoTrade]';
@@ -213,16 +213,28 @@ export async function runAutoTradePass(
     const now = nowISTClock();
     // Build routine context in parallel before the first model call. Reuse the
     // guard's batched quotes so positions do not issue another Dhan request.
-    const [initialContext, previousRows, timeContext] = await tstep('AI: build context', () =>
-      Promise.all([
-        buildInitialDecisionContext(rt, {
-          optionQuotes: guard.optionQuotes,
-          attemptedOptionIds: guard.attemptedOptionIds,
-          spotBySymbol: guard.spotBySymbol,
-        }),
-        getCommentary({ date, limit: 1 }),
-        commentaryTimeContext(now),
-      ])
+    const contextMode = entryPossible ? 'entry+management' : 'management-only';
+    const [initialContext, previousRows, timeContext] = await tstep(
+      'AI: build context',
+      () =>
+        Promise.all([
+          buildInitialDecisionContext(
+            rt,
+            {
+              optionQuotes: guard.optionQuotes,
+              attemptedOptionIds: guard.attemptedOptionIds,
+              spotBySymbol: guard.spotBySymbol,
+            },
+            {
+              entryEnabled: entryPossible,
+              managedSymbols: openTrades.map((trade) => trade.symbol),
+            }
+          ),
+          getCommentary({ date, limit: 1 }),
+          commentaryTimeContext(now),
+        ]),
+      ([context, rows]) =>
+        `${contextMode} · context ${JSON.stringify(context).length.toLocaleString('en-IN')} chars · prior read ${(rows[0]?.text.length ?? 0).toLocaleString('en-IN')} chars`
     );
     const previousRead = previousRows[0]?.text ?? null;
     const user = JSON.stringify({
@@ -232,21 +244,25 @@ export async function runAutoTradePass(
       previousRead,
       ...(timeContext ? { timeContext } : {}),
       instruction:
-        'Use the loaded context immediately. Do not call get_account_state, get_open_positions, or get_scan_picks unless a field is missing or you need a deliberate refresh. Manage positions first, then consider at most one entry, then end with the day-thread read.',
+        entryPossible
+          ? 'Use the loaded context immediately. Do not call get_account_state, get_open_positions, or get_scan_picks unless a field is missing or you need a deliberate refresh. Manage positions first, then consider at most one entry, then end with the day-thread read.'
+          : 'ENTRY ACTIONS ARE UNAVAILABLE THIS PASS. Manage only the loaded open positions. Their option quote was fetched by the guard this pass; refresh only if the loaded data is missing or an immediate exit depends on it. If HOLD needs no tool action, write the final day-thread read directly—do not call a note/audit tool.',
     });
+    const tools = entryPossible ? AUTO_TRADE_TOOLS : AUTO_TRADE_MANAGEMENT_TOOLS;
     const result = await tstep(
       'AI: decision loop',
       () =>
         runToolLoop({
           provider: settings.aiProvider,
+          mimoModel: settings.mimoModel,
           system: AUTO_TRADER_SYSTEM,
           user,
-          tools: AUTO_TRADE_TOOLS,
+          tools,
           execute: (name, args) => executeAutoTradeTool(rt, name, args),
         }),
       // Per-call breakdown: WHERE the loop's time went (model vs tools) + cost.
       (r) =>
-        `${r.model} · ${(r.promptTokens ?? 0).toLocaleString('en-IN')}+${(r.completionTokens ?? 0).toLocaleString('en-IN')} tok · ${r.spans.map((s) => `${s.name} ${(s.ms / 1000).toFixed(1)}s`).join(' · ')}`
+        `${contextMode} · ${tools.length} tools · ${r.spans.filter((s) => s.name.startsWith('model call')).length} model call(s) · ${r.model} · ${(r.promptTokens ?? 0).toLocaleString('en-IN')}+${(r.completionTokens ?? 0).toLocaleString('en-IN')} tok · ${r.spans.map((s) => `${s.name} ${(s.ms / 1000).toFixed(1)}s`).join(' · ')}`
     );
     const preloadedReads = new Set(['get_account_state', 'get_open_positions', 'get_scan_picks']);
     const redundantReadTools = result.trace.filter((step) => preloadedReads.has(step.name)).length;

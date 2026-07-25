@@ -16,11 +16,12 @@ import { prisma } from '@/lib/db';
 import { env } from '@/lib/env';
 import { isTelegramConfigured } from '@/lib/telegram';
 import { DEFAULT_SETTINGS } from './config';
-import type { AiProvider, AutoTradeSettings, BrokerId, ProfitTargetMode, TradeMode } from './types';
+import type { AiProvider, AutoTradeSettings, BrokerId, MimoModel, ProfitTargetMode, TradeMode } from './types';
 
 const MODES: TradeMode[] = ['off', 'paper', 'approval', 'live'];
 const BROKERS: BrokerId[] = ['fyers', 'dhan'];
 const PROVIDERS: AiProvider[] = ['azure', 'mimo'];
+const MIMO_MODELS: MimoModel[] = ['mimo-v2.5', 'mimo-v2.5-pro'];
 const PROFIT_TARGET_MODES: ProfitTargetMode[] = ['per_trade', 'per_lot'];
 
 interface SettingDef {
@@ -89,6 +90,14 @@ export const SETTING_DEFS: SettingDef[] = [
     serialize: String,
     label: 'Decision AI',
     description: 'azure = the Trade Assistant deployment (proven tool-calling) · mimo = the commentary model.',
+  },
+  {
+    key: 'mimoModel',
+    parse: (raw) => oneOf(raw, MIMO_MODELS, 'mimoModel'),
+    serialize: String,
+    label: 'MiMo model',
+    description:
+      'mimo-v2.5-pro = quality-first default · mimo-v2.5 = lower-cost tier. Applies to auto-trade decisions and standalone trade commentary from the next pass.',
   },
   {
     key: 'killSwitch',

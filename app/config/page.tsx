@@ -31,6 +31,9 @@ interface NumberState {
   updatedAt: string | null;
 }
 
+type AtMimoModel = 'mimo-v2.5' | 'mimo-v2.5-pro';
+const AT_MIMO_SETTING_KEY = 'AUTO_TRADE_MIMO_MODEL';
+
 /** Time-of-day settings (IST minutes from midnight) get an HH:MM editor
  *  instead of a ±1 stepper. Heuristic: key ends in _MIN and the range sits in
  *  clock territory (min ≥ 06:00) — matches the WINDOW_ and COMMENTARY_ time
@@ -84,6 +87,8 @@ export default function ConfigPage() {
   const [toggles, setToggles] = useState<ToggleState[]>([]);
   const [numbers, setNumbers] = useState<NumberState[]>([]);
   const [atNumbers, setAtNumbers] = useState<NumberState[]>([]);
+  const [atMimoModel, setAtMimoModel] = useState<AtMimoModel>(AT_DEFAULTS.mimoModel);
+  const [atSettingsLoaded, setAtSettingsLoaded] = useState(false);
   /** Bypass switches that are ON but inert because their parent rule is OFF.
    *  Computed server-side (the builder sits next to a prisma import). */
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -109,21 +114,26 @@ export default function ConfigPage() {
     fetch('/api/auto-trade', { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => {
-        const s = d?.settings as Record<string, number> | undefined;
+        const s = d?.settings as Record<string, unknown> | undefined;
         if (!d?.success || !s) return;
+        if (s.mimoModel === 'mimo-v2.5' || s.mimoModel === 'mimo-v2.5-pro') setAtMimoModel(s.mimoModel);
         setAtNumbers(
-          AT_CLOCK_DEFS.map((def) => ({
-            key: def.key,
-            label: def.label,
-            description: def.description,
-            category: 'Entry & Exit Times',
-            default: AT_DEFAULTS[def.settingKey],
-            min: def.min,
-            max: def.max,
-            value: s[def.settingKey] ?? AT_DEFAULTS[def.settingKey],
-            updatedAt: null,
-          }))
+          AT_CLOCK_DEFS.map((def) => {
+            const storedValue = s[def.settingKey];
+            return {
+              key: def.key,
+              label: def.label,
+              description: def.description,
+              category: 'Entry & Exit Times',
+              default: AT_DEFAULTS[def.settingKey],
+              min: def.min,
+              max: def.max,
+              value: typeof storedValue === 'number' ? storedValue : AT_DEFAULTS[def.settingKey],
+              updatedAt: null,
+            };
+          })
         );
+        setAtSettingsLoaded(true);
       })
       .catch(() => {});
   }, []);
@@ -198,13 +208,39 @@ export default function ConfigPage() {
     void save(key, value, () => setNumbers(before));
   }
 
+  async function saveAtMimoModel(value: AtMimoModel) {
+    const before = atMimoModel;
+    setAtMimoModel(value);
+    setSaving(AT_MIMO_SETTING_KEY);
+    setError(null);
+    try {
+      const res = await fetch('/api/auto-trade/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'mimoModel', value }),
+      });
+      const d = await res.json();
+      if (!d.success) {
+        setError(d.error ?? 'Failed to save');
+        setAtMimoModel(before);
+      }
+    } catch (e) {
+      setError(String(e));
+      setAtMimoModel(before);
+    } finally {
+      setSaving(null);
+    }
+  }
+
   const allNumbers = useMemo(() => [...numbers, ...atNumbers], [numbers, atNumbers]);
   const categories = useMemo(
     () => [...new Set([...toggles.map((t) => t.category), ...allNumbers.map((n) => n.category)])],
     [toggles, allNumbers]
   );
   const overriddenCount =
-    toggles.filter((t) => t.value !== t.default).length + allNumbers.filter((n) => n.value !== n.default).length;
+    toggles.filter((t) => t.value !== t.default).length +
+    allNumbers.filter((n) => n.value !== n.default).length +
+    (atSettingsLoaded && atMimoModel !== AT_DEFAULTS.mimoModel ? 1 : 0);
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -221,7 +257,7 @@ export default function ConfigPage() {
           {!loading && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span className="rounded-md border border-border bg-card px-2 py-1 tabular-nums">
-                {toggles.length + allNumbers.length} settings
+                {toggles.length + allNumbers.length + (atSettingsLoaded ? 1 : 0)} settings
               </span>
               <span
                 className={cn(
@@ -275,6 +311,48 @@ export default function ConfigPage() {
         {/* Category cards in a responsive grid — 1 col mobile, 2 from lg, 3 from xl
             so the whole set fits one viewport on a wide screen. */}
         <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+          {atSettingsLoaded && (
+            <section className="flex flex-col overflow-hidden rounded-xl border border-border bg-card">
+              <header className="flex items-center justify-between border-b border-border bg-muted/40 px-3 py-1.5">
+                <h2 className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">AI Models</h2>
+                <span className="text-[10px] text-muted-foreground tabular-nums">1 setting</span>
+              </header>
+              <SettingRow
+                label="Trade commentary MiMo"
+                settingKey={AT_MIMO_SETTING_KEY}
+                description="MiMo 2.5 Pro remains the quality-first default. MiMo 2.5 is the lower-cost option. The selection applies to both auto-trade decisions and standalone commentary from the next pass."
+                overridden={atMimoModel !== AT_DEFAULTS.mimoModel}
+                onReset={
+                  readOnly || atMimoModel === AT_DEFAULTS.mimoModel
+                    ? undefined
+                    : () => void saveAtMimoModel(AT_DEFAULTS.mimoModel)
+                }
+                control={
+                  <div className="flex gap-1">
+                    {([
+                      ['mimo-v2.5-pro', '2.5 Pro'],
+                      ['mimo-v2.5', '2.5'],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        disabled={saving === AT_MIMO_SETTING_KEY || readOnly}
+                        onClick={() => void saveAtMimoModel(value)}
+                        className={cn(
+                          'rounded border px-2 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50',
+                          atMimoModel === value
+                            ? 'border-primary bg-primary text-primary-foreground'
+                            : 'border-border bg-background hover:bg-muted'
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                }
+              />
+            </section>
+          )}
           {categories.map((cat) => {
             const catToggles = toggles.filter((t) => t.category === cat);
             const catNumbers = allNumbers.filter((n) => n.category === cat);

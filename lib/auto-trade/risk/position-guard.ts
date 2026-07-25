@@ -115,7 +115,9 @@ function spotExitReason(trade: AutoTrade, spot: number): string | null {
 /** Consecutive exit failures before escalating to a loud warning. */
 const EXIT_FAILURE_ESCALATE = 3;
 
-/** Trailing stop: once premium gains this %, move SL to entry (risk-free). */
+/** Trailing stop: once premium gains this %, move the premium SL to the entry
+ * reference. A market exit can still slip below it, so this reduces risk but
+ * never guarantees a scratch. */
 const TRAIL_STOP_TRIGGER_PCT = 30;
 
 /** SHADOW-only R level at which an R-based rule would protect near breakeven —
@@ -369,8 +371,9 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
           }
 
           // Trailing stop: once premium gains TRAIL_STOP_TRIGGER_PCT%, tighten
-          // SL to entry fill price (risk-free trade). Only tightens — never
-          // loosens. Gain measured on the executable side (bid when available).
+          // SL to the entry reference. This reduces option-price risk but does
+          // not guarantee the market-sell fill. Only tightens — never loosens.
+          // Gain is measured on the executable side (bid when available).
           if (!reason && trade.entryFillPremium > 0) {
             const gainPct = ((stopPx - trade.entryFillPremium) / trade.entryFillPremium) * 100;
             if (gainPct >= TRAIL_STOP_TRIGGER_PCT && trade.slPremium < trade.entryFillPremium) {

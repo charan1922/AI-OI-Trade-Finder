@@ -13,8 +13,8 @@ import { env, hasMimo } from '@/lib/env';
 
 export const MIMO_DEFAULT_MODEL = 'mimo-v2.5-pro';
 
-export function getMimoModel(): string {
-  return env.MIMO_MODEL || MIMO_DEFAULT_MODEL;
+export function getMimoModel(runtimeModel?: string | null): string {
+  return runtimeModel || env.MIMO_MODEL || MIMO_DEFAULT_MODEL;
 }
 
 /** Build a configured MiMo client. Throws a clear error if unconfigured. */

@@ -112,8 +112,33 @@ function trimPick(s: TradeSuggestion): Record<string, unknown> {
 }
 
 /** Scanner context small enough to include directly in the model's first turn. */
-export function buildScanContext(scan: SuggestResponse | null): Record<string, unknown> {
+export function buildScanContext(
+  scan: SuggestResponse | null,
+  options: { entryEnabled?: boolean; managedSymbols?: readonly string[] } = {}
+): Record<string, unknown> {
   if (!scan) return { note: 'no scan this cycle; manage open positions only', picks: [] };
+  if (options.entryEnabled === false) {
+    const managed = new Set((options.managedSymbols ?? []).map((symbol) => symbol.toUpperCase()));
+    return {
+      mode: 'position-management-only',
+      window: scan.window,
+      tilt: scan.tilt,
+      openPositionSignals: (scan.suggestions ?? [])
+        .filter((suggestion) => managed.has(suggestion.symbol.toUpperCase()))
+        .map(trimPick),
+      trackedOpenPositions: (scan.tracked ?? [])
+        .filter((tracked) => managed.has(tracked.symbol.toUpperCase()))
+        .map((tracked) => ({
+          symbol: tracked.symbol,
+          direction: tracked.direction,
+          side: tracked.side,
+          entrySpot: tracked.entrySpot,
+          slSpot: tracked.slSpot,
+          targetSpot: tracked.targetSpot,
+          liveSpot: tracked.ltp,
+        })),
+    };
+  }
   return {
     window: scan.window,
     scanned: scan.scanned,
@@ -153,6 +178,7 @@ export async function buildAccountState(
     mode: s.mode,
     broker: s.mode === 'paper' ? 'paper' : s.broker,
     aiProvider: s.aiProvider,
+    mimoModel: s.mimoModel,
     killSwitch: s.killSwitch,
     liveEnvEnabled: isAutoTradeLiveEnabled(),
     marketOpen: isMarketHours(),
@@ -223,6 +249,10 @@ export async function buildOpenPositionsContext(
         slPremium: trade.slPremium,
         targetPremium: trade.targetPremium,
         livePremium: quote?.ltp ?? null,
+        liveBid: quote?.bid ?? null,
+        liveAsk: quote?.ask ?? null,
+        liveSpreadPct: quote?.spreadPct ?? null,
+        quoteFreshThisPass: quote != null,
         liveSpot: spot,
         spotPointsFromEntry: spot != null ? Math.round((spot - trade.entrySpot) * 100) / 100 : null,
         openedAt: trade.openedAt,
@@ -234,14 +264,15 @@ export async function buildOpenPositionsContext(
 
 export async function buildInitialDecisionContext(
   rt: ToolRuntime,
-  seed: PositionMarketSeed = {}
+  seed: PositionMarketSeed = {},
+  options: { entryEnabled?: boolean; managedSymbols?: readonly string[] } = {}
 ): Promise<{
   accountState: AccountState;
   openPositions: Record<string, unknown>[];
   scan: Record<string, unknown>;
 }> {
   const [accountState, openPositions] = await Promise.all([buildAccountState(rt), buildOpenPositionsContext(rt, seed)]);
-  return { accountState, openPositions, scan: buildScanContext(rt.scan) };
+  return { accountState, openPositions, scan: buildScanContext(rt.scan, options) };
 }
 
 /** Assemble the gate input for one pick, with a FRESH premium quote (the
@@ -721,14 +752,6 @@ export async function executeAutoTradeTool(
           ok: outcome.ok,
           summary: `${trade.symbol}: ${outcome.message}`,
         },
-      };
-    }
-
-    if (name === 'record_note') {
-      const note = String(args.note ?? '').slice(0, 500);
-      return {
-        result: { recorded: true },
-        trace: { name, args, ok: true, summary: note },
       };
     }
 

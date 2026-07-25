@@ -104,7 +104,8 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
     name: 'modify_stop',
     description:
       'TIGHTEN the spot stop of an open position (bullish: only upward, bearish: only downward — loosening ' +
-      'is rejected in code). Use after real progress to protect gains, e.g. move to breakeven after +1R.',
+      'is rejected in code). Use after real progress to reduce spot risk. A spot stop at the entry spot ' +
+      'does not guarantee option-premium breakeven or a scratch fill.',
     parameters: {
       type: 'object',
       properties: {
@@ -136,18 +137,10 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
       additionalProperties: false,
     },
   },
-  {
-    name: 'record_note',
-    description:
-      'Log a short reasoning note to the audit trail when you deliberately do NOTHING (no entry clears ' +
-      'the bar, holding through noise). Keeps the decision record complete.',
-    parameters: {
-      type: 'object',
-      properties: {
-        note: { type: 'string', description: 'One or two sentences.' },
-      },
-      required: ['note'],
-      additionalProperties: false,
-    },
-  },
 ];
+
+/** Once no entry is possible this pass, do not keep paying to describe entry
+ * tools the model cannot use. The final decision text is already the durable
+ * audit record, so a separate record_note round trip is intentionally absent. */
+const MANAGEMENT_TOOL_NAMES = new Set(['get_quote', 'get_open_positions', 'modify_stop', 'exit_position']);
+export const AUTO_TRADE_MANAGEMENT_TOOLS = AUTO_TRADE_TOOLS.filter((tool) => MANAGEMENT_TOOL_NAMES.has(tool.name));
