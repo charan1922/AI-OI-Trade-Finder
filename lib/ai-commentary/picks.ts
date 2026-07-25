@@ -6,6 +6,7 @@
  * the trade-suggest page). Pure data — no React.
  */
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
+import type { DecisionOpenPosition } from '@/lib/auto-trade/decision/context-policy';
 
 export type ChipTone = 'good' | 'warn' | 'info';
 export interface Chip {
@@ -14,6 +15,8 @@ export interface Chip {
   tone: ChipTone;
 }
 export interface StoredPick {
+  /** Absent on legacy rows; those are scanner candidates. */
+  kind?: 'candidate' | 'position';
   symbol: string;
   side: string; // CE / PE
   strike: number | null;
@@ -87,6 +90,7 @@ export function buildPicks(result: SuggestResponse): StoredPick[] {
     if (f?.onOiSpurtList) chips.push({ label: 'OI list', value: 'yes', tone: 'good' });
 
     return {
+      kind: 'candidate',
       symbol: p.symbol,
       side: p.option?.optionType ?? (bull ? 'CE' : 'PE'),
       strike: p.option?.strike ?? null,
@@ -102,6 +106,47 @@ export function buildPicks(result: SuggestResponse): StoredPick[] {
       slBasis: p.plan.slBasis,
       premium: p.option?.premium?.ltp ?? null,
       perLotCost: p.option?.premium?.perLotCost ?? null,
+      chips,
+    };
+  });
+}
+
+/**
+ * Management-only audit cards come from the exact openPositions supplied to
+ * the model, never from a fresh scanner contract or its original plan.
+ */
+export function buildOpenPositionPicks(openPositions: readonly DecisionOpenPosition[]): StoredPick[] {
+  return openPositions.map((position) => {
+    const chips: Chip[] = [];
+    if (position.entryFillPremium != null) {
+      chips.push({ label: 'Fill', value: `₹${fmt(position.entryFillPremium)}`, tone: 'info' });
+    }
+    if (position.liveBid != null) chips.push({ label: 'Bid', value: `₹${fmt(position.liveBid)}`, tone: 'info' });
+    if (position.liveAsk != null) chips.push({ label: 'Ask', value: `₹${fmt(position.liveAsk)}`, tone: 'info' });
+    if (position.liveSpreadPct != null) {
+      chips.push({
+        label: 'Spread',
+        value: `${fmt(position.liveSpreadPct)}%`,
+        tone: position.liveSpreadPct <= 3 ? 'good' : 'warn',
+      });
+    }
+    return {
+      kind: 'position',
+      symbol: position.symbol,
+      side: position.optionType,
+      strike: position.strike,
+      expiry: position.expiryDate,
+      lot: position.lotSize,
+      direction: position.direction,
+      score: 0,
+      changePctOpen: null,
+      extended: false,
+      entrySpot: position.entrySpot,
+      slSpot: position.slSpot,
+      targetSpot: position.targetSpot,
+      slBasis: 'current',
+      premium: position.livePremium,
+      perLotCost: null,
       chips,
     };
   });

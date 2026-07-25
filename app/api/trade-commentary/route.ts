@@ -36,6 +36,7 @@ export async function GET(req: Request) {
       success: true,
       configured: hasMimo(),
       model: getMimoModel(settings.mimoModel),
+      decisionProvider: settings.aiProvider,
       date,
       rows,
       timelines,

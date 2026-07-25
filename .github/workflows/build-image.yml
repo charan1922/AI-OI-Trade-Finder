@@ -89,6 +89,11 @@ jobs:
       # stale-candle ENTRY gate (fresh→allow, stale/missing→reject, block OFF→
       # existing gates decide). Same reproducible `pnpm exec tsx` runner.
       - run: pnpm exec tsx scripts/verify-freshness-gate.ts
+      # DB-free contract for AI context/tool selection: management passes see
+      # only held-symbol signals and one authoritative held plan; commentary
+      # cards match that context; global blockers suppress entry tools; MiMo
+      # runtime/env model selection is allowlisted and migration-safe.
+      - run: pnpm exec tsx scripts/verify-ai-decision-context.ts
       # Priority-refresh STORE round-trip against an isolated throwaway SQLite DB
       # (chdir to a temp dir first): proves the tables create, the Prisma
       # transaction + SQL param counts work, timestamps round-trip, and the

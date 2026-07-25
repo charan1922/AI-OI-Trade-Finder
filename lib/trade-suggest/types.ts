@@ -217,6 +217,30 @@ export interface TrackedPosition {
   suggestedAt: string;
 }
 
+/**
+ * Current thesis evidence for an earlier suggestion, recomputed even when the
+ * symbol no longer survives today's suggestion gates. The auto-trader filters
+ * this to actual open symbols and uses it only as supporting evidence; the
+ * held contract and mutable plan remain authoritative in openPositions.
+ */
+export interface ManagedPositionSignal {
+  symbol: string;
+  direction: 'bullish' | 'bearish';
+  changePctOpen: number | null;
+  rFactor: number | null;
+  confidence: number | null;
+  oiLevel: number | null;
+  oiUrgency: number | null;
+  nseOiPct: number | null;
+  combinedOiSlope30m: number | null;
+  vwapAligned: boolean | null;
+  supertrendAligned: boolean | null;
+  orBreakout: boolean | null;
+  tfBreakout: BreakoutSignal | null;
+  sectorAligned: boolean | null;
+  dataAsOfMs: number | null;
+}
+
 /** A persisted suggestion read back from trade_suggestions. */
 export interface StoredSuggestion {
   date: string;
@@ -297,6 +321,8 @@ export interface SuggestResponse {
   earlierToday: StoredSuggestion[];
   /** Earlier calls + live price — the position-management feed (see TrackedPosition). */
   tracked?: TrackedPosition[];
+  /** Current thesis evidence for tracked names, independent of suggestion gates. */
+  managedPositionSignals?: ManagedPositionSignal[];
   note?: string;
   error?: string;
 }

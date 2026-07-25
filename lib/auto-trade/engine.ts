@@ -13,9 +13,9 @@
  * are gate-blocked, so the AI pass is skipped entirely to save tokens.
  */
 
-import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/dhan/market-feed';
 import { hasAzureConfig } from '@/lib/ai-assistant/azure-client';
-import { buildPicks } from '@/lib/ai-commentary/picks';
+import { buildOpenPositionPicks, buildPicks } from '@/lib/ai-commentary/picks';
 import { getCommentary, insertCommentary } from '@/lib/ai-commentary/store';
 import { hasMimo } from '@/lib/env';
 import { recordPromptVersion } from '@/lib/prompts/store';
@@ -27,19 +27,25 @@ import {
   reconcileUnresolvedOrders as reconcileOrdersSafely,
   scanForOrphanBrokerPositions,
 } from './execution';
-import { isEntryWindow, nowISTClock } from './config';
+import { nowISTClock } from './config';
 import { runToolLoop } from './decision/providers';
 import { commentaryTimeContext } from '@/lib/ai-commentary/generate';
-import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
-import { getNumberSetting } from '@/lib/config/feature-toggles';
 import type { CycleTimelineRecorder } from '@/lib/ops/cycle-timeline';
 import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
-import { AUTO_TRADER_SYSTEM } from './decision/system-prompt';
+import { AUTO_TRADER_MANAGEMENT_SYSTEM, AUTO_TRADER_SYSTEM } from './decision/system-prompt';
+import { composeDecisionContext, filterPreviousReadForManagement } from './decision/context-policy';
 import { runPositionGuard } from './risk/position-guard';
 import { getAutoTradeSettings } from './settings';
-import { countEntriesToday, getOpenTrades, insertDecision } from './store';
+import { getOpenTrades, insertDecision } from './store';
 import { AUTO_TRADE_MANAGEMENT_TOOLS, AUTO_TRADE_TOOLS } from './tools/defs';
-import { buildInitialDecisionContext, executeAutoTradeTool, newPassPolicyState, type ToolRuntime } from './tools/execute';
+import {
+  buildAccountState,
+  buildEntryConsideration,
+  buildOpenPositionsContext,
+  executeAutoTradeTool,
+  newPassPolicyState,
+  type ToolRuntime,
+} from './tools/execute';
 
 const TAG = '[AutoTrade]';
 const ENGINE_LEASE = 'auto-trade-engine-pass';
@@ -170,21 +176,11 @@ export async function runAutoTradePass(
 
     // 4. AI pass — only when there is something to decide.
     const openTrades = await getOpenTrades();
-    const entriesToday = await countEntriesToday(date);
-    const entryCutoffMin = await getNumberSetting(
-      'COMMENTARY_ENTRY_CUTOFF_MIN',
-      COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT
-    ).catch(() => COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT);
-    const effectiveEntryEndMin = Math.min(settings.entryEndMin, entryCutoffMin - 1, settings.squareOffMin - 1);
-    const entryPossible =
-      isMarketHours() &&
-      isEntryWindow(undefined, settings.entryStartMin, effectiveEntryEndMin) &&
-      entriesToday < settings.maxTradesPerDay &&
-      (scan?.suggestions?.length ?? 0) > 0;
-    if (openTrades.length === 0 && !entryPossible) {
+    const hasEntryCandidate = (scan?.suggestions?.length ?? 0) > 0;
+    if (openTrades.length === 0 && !hasEntryCandidate) {
       return {
         ran: true,
-        reason: 'nothing to decide (no positions, no entry opportunity)',
+        reason: 'nothing to decide (no positions and no scanner candidate)',
         guardActions,
         commentaryStored: false,
       };
@@ -213,49 +209,72 @@ export async function runAutoTradePass(
     const now = nowISTClock();
     // Build routine context in parallel before the first model call. Reuse the
     // guard's batched quotes so positions do not issue another Dhan request.
-    const contextMode = entryPossible ? 'entry+management' : 'management-only';
-    const [initialContext, previousRows, timeContext] = await tstep(
+    const [contextInputs, previousRows, timeContext] = await tstep(
       'AI: build context',
       () =>
         Promise.all([
-          buildInitialDecisionContext(
-            rt,
-            {
+          Promise.all([
+            buildAccountState(rt),
+            buildOpenPositionsContext(rt, {
               optionQuotes: guard.optionQuotes,
               attemptedOptionIds: guard.attemptedOptionIds,
               spotBySymbol: guard.spotBySymbol,
-            },
-            {
-              entryEnabled: entryPossible,
-              managedSymbols: openTrades.map((trade) => trade.symbol),
-            }
-          ),
+            }),
+          ]).then(async ([accountState, openPositions]) => ({
+            accountState,
+            openPositions,
+            entryConsideration: await buildEntryConsideration(rt, accountState),
+          })),
           getCommentary({ date, limit: 1 }),
           commentaryTimeContext(now),
         ]),
-      ([context, rows]) =>
-        `${contextMode} · context ${JSON.stringify(context).length.toLocaleString('en-IN')} chars · prior read ${(rows[0]?.text.length ?? 0).toLocaleString('en-IN')} chars`
+      ([inputs, rows]) =>
+        `context inputs ${JSON.stringify(inputs).length.toLocaleString('en-IN')} chars · prior read ${(rows[0]?.text.length ?? 0).toLocaleString('en-IN')} chars`
     );
+    const entryEnabled = contextInputs.entryConsideration.allowed;
+    if (contextInputs.openPositions.length === 0 && !entryEnabled) {
+      return {
+        ran: true,
+        reason: `nothing to decide (${contextInputs.entryConsideration.reasons.join('; ')})`,
+        guardActions,
+        commentaryStored: false,
+      };
+    }
+    const contextMode = entryEnabled ? 'entry+management' : 'management-only';
+    const initialContext = composeDecisionContext({
+      accountState: contextInputs.accountState,
+      openPositions: contextInputs.openPositions,
+      scan,
+      entryEnabled,
+      entryBlockReasons: contextInputs.entryConsideration.reasons,
+    });
     const previousRead = previousRows[0]?.text ?? null;
+    const modelPreviousRead = entryEnabled
+      ? previousRead
+      : filterPreviousReadForManagement(
+          previousRead,
+          initialContext.openPositions.map((position) => position.symbol)
+        );
+    const systemPrompt = entryEnabled ? AUTO_TRADER_SYSTEM : AUTO_TRADER_MANAGEMENT_SYSTEM;
     const user = JSON.stringify({
       nowIST: now,
       date,
       contextAlreadyLoaded: initialContext,
-      previousRead,
+      previousRead: modelPreviousRead,
       ...(timeContext ? { timeContext } : {}),
       instruction:
-        entryPossible
+        entryEnabled
           ? 'Use the loaded context immediately. Do not call get_account_state, get_open_positions, or get_scan_picks unless a field is missing or you need a deliberate refresh. Manage positions first, then consider at most one entry, then end with the day-thread read.'
           : 'ENTRY ACTIONS ARE UNAVAILABLE THIS PASS. Manage only the loaded open positions. Their option quote was fetched by the guard this pass; refresh only if the loaded data is missing or an immediate exit depends on it. If HOLD needs no tool action, write the final day-thread read directly—do not call a note/audit tool.',
     });
-    const tools = entryPossible ? AUTO_TRADE_TOOLS : AUTO_TRADE_MANAGEMENT_TOOLS;
+    const tools = entryEnabled ? AUTO_TRADE_TOOLS : AUTO_TRADE_MANAGEMENT_TOOLS;
     const result = await tstep(
       'AI: decision loop',
       () =>
         runToolLoop({
           provider: settings.aiProvider,
           mimoModel: settings.mimoModel,
-          system: AUTO_TRADER_SYSTEM,
+          system: systemPrompt,
           user,
           tools,
           execute: (name, args) => executeAutoTradeTool(rt, name, args),
@@ -282,17 +301,22 @@ export async function runAutoTradePass(
     // `previousRead` (fetched above for the AI thread) doubles as the
     // near-duplicate baseline for the Telegram push below.
     let commentaryStored = false;
+    const commentaryPicks = entryEnabled
+      ? scan
+        ? buildPicks(scan)
+        : []
+      : buildOpenPositionPicks(initialContext.openPositions);
     const commentaryT0 = Date.now();
     try {
-      const promptVersion = await recordPromptVersion('auto-trader', AUTO_TRADER_SYSTEM);
+      const promptVersion = await recordPromptVersion('auto-trader', systemPrompt);
       const commentaryId = await insertCommentary({
         date,
         asOf: scan?.window?.nowIST ? `${date} ${scan.window.nowIST}` : new Date().toISOString(),
         windowActive: Boolean(scan?.window?.active),
-        picksCount: scan?.suggestions?.length ?? 0,
+        picksCount: commentaryPicks.length,
         model: result.model,
         text: result.text,
-        picks: scan ? buildPicks(scan) : [],
+        picks: commentaryPicks,
         promptTokens: result.promptTokens,
         completionTokens: result.completionTokens,
         promptKey: 'auto-trader',
@@ -314,15 +338,15 @@ export async function runAutoTradePass(
       // Retry once before falling back — the DB may have been briefly locked
       console.warn(`${TAG} commentary store failed, retrying once: ${(err as Error).message}`);
       try {
-        const promptVersion = await recordPromptVersion('auto-trader', AUTO_TRADER_SYSTEM);
+        const promptVersion = await recordPromptVersion('auto-trader', systemPrompt);
         const commentaryId = await insertCommentary({
           date,
           asOf: scan?.window?.nowIST ? `${date} ${scan.window.nowIST}` : new Date().toISOString(),
           windowActive: Boolean(scan?.window?.active),
-          picksCount: scan?.suggestions?.length ?? 0,
+          picksCount: commentaryPicks.length,
           model: result.model,
           text: result.text,
-          picks: scan ? buildPicks(scan) : [],
+          picks: commentaryPicks,
           promptTokens: result.promptTokens,
           completionTokens: result.completionTokens,
           promptKey: 'auto-trader',

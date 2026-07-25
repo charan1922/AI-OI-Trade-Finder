@@ -5,7 +5,7 @@
  *   azure — Azure OpenAI Responses API (mirrors lib/ai-assistant/assistant.ts:
  *           echo the model's full output back, reasoning items included).
  *   mimo  — Xiaomi MiMo chat.completions with `tools` (OpenAI-compatible;
- *           reasoning model — budget covers thinking + answer, read `content`).
+ *           thinking explicitly disabled for stable multi-round tool use).
  *
  * Both loops execute tools SEQUENTIALLY (they share the Dhan/broker rate
  * gates) and stop on a plain-text answer or the step cap.
@@ -134,9 +134,30 @@ async function runAzureLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<
 
 // ─── MiMo (chat.completions + tools) ─────────────────────────────────────────
 
-async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<ToolLoopResult> {
-  const client = getMimoClient();
-  const model = getMimoModel(req.mimoModel);
+export const MIMO_TOOL_THINKING = { type: 'disabled' } as const;
+
+type MimoChatBody = OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming & {
+  thinking: typeof MIMO_TOOL_THINKING;
+};
+
+function disableMimoThinking(
+  body: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming
+): MimoChatBody {
+  // Xiaomi's OpenAI-compatible endpoint accepts this provider extension at the
+  // top level. The upstream OpenAI type does not declare provider extensions,
+  // but the SDK serializes the supplied body verbatim (proved by CI's mocked
+  // HTTP transport test in verify-ai-decision-context.ts).
+  return { ...body, thinking: MIMO_TOOL_THINKING };
+}
+
+/** Exported only to contract-test the serialized MiMo HTTP exchange without a
+ * real API call. Production uses the wrapper below with the configured client. */
+export async function runMimoLoopWithClient(
+  req: ToolLoopRequest,
+  client: OpenAI,
+  model: string,
+  signal: AbortSignal
+): Promise<ToolLoopResult> {
   const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = req.tools.map((t) => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -153,16 +174,16 @@ async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<T
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
     const modelT0 = Date.now();
     const res = await client.chat.completions.create(
-      {
+      disableMimoThinking({
         model,
         messages,
         tools,
         tool_choice: 'auto',
         temperature: 0.2,
-        // Reasoning model: thinking bills against this too (same budget logic
-        // as lib/ai-commentary/generate.ts — an exhausted budget = empty content).
+        // Tool calls run with thinking disabled, so this budget is available to
+        // the actual calls and final audit read rather than hidden reasoning.
         max_tokens: 6000,
-      },
+      }),
       { timeout: 90_000, signal },
     );
     spans.push({ name: `model call #${step + 1}`, ms: Date.now() - modelT0 });
@@ -192,7 +213,7 @@ async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<T
   // Step cap hit — one final call with tools removed to force a summary.
   const finalT0 = Date.now();
   const final = await client.chat.completions.create(
-    { model, messages, temperature: 0.2, max_tokens: 6000 },
+    disableMimoThinking({ model, messages, temperature: 0.2, max_tokens: 6000 }),
     { timeout: 90_000, signal },
   );
   spans.push({ name: 'model call (forced final)', ms: Date.now() - finalT0 });
@@ -200,6 +221,10 @@ async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<T
   completionTokens += final.usage?.completion_tokens ?? 0;
   const text = (final.choices?.[0]?.message?.content ?? '').trim();
   return { text: text || '(no summary produced)', model, trace, promptTokens, completionTokens, spans };
+}
+
+async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<ToolLoopResult> {
+  return runMimoLoopWithClient(req, getMimoClient(), getMimoModel(req.mimoModel), signal);
 }
 
 export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {

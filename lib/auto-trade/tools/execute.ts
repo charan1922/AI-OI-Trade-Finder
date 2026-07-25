@@ -33,6 +33,12 @@ import { getRiskLatch } from '../risk/latch';
 import { getAutoTradeSettings } from '../settings';
 import { isVerifiedTradingDay } from '@/lib/backtest/trading-calendar';
 import {
+  buildScanContext,
+  evaluateEntryConsideration,
+  type DecisionOpenPosition,
+  type EntryConsideration,
+} from '../decision/context-policy';
+import {
   countEntriesToday,
   dailyRealizedPnl,
   getExposure,
@@ -75,79 +81,6 @@ function findPick(rt: ToolRuntime, symbol: string): TradeSuggestion | null {
 }
 
 /** Compact, grounded view of one pick (mirrors the commentary trim). */
-function trimPick(s: TradeSuggestion): Record<string, unknown> {
-  return {
-    symbol: s.symbol,
-    direction: s.direction,
-    side: s.option?.optionType ?? (s.direction === 'bullish' ? 'CE' : 'PE'),
-    strike: s.option?.strike ?? null,
-    expiry: s.option?.expiryDate ?? null,
-    score: s.score,
-    rFactor: s.rFactor,
-    confidence: s.rFactorConfidence,
-    oiLevel: s.oiLevel,
-    oiUrgency: s.oiUrgency,
-    orBreakout: s.orBreakout,
-    tfBreakout: s.tfBreakout && {
-      grade: s.tfBreakout.grade,
-      direction: s.tfBreakout.direction,
-    },
-    extended: s.extended,
-    entrySpot: s.plan.entrySpot,
-    slSpot: s.plan.slSpot,
-    targetSpot: s.plan.targetSpot,
-    premium: s.option?.premium?.ltp ?? null,
-    perLotCost: s.option?.premium?.perLotCost ?? null,
-    liquidityWarning: s.option?.premium?.liquidityWarning ?? null,
-    factors: s.factors && {
-      vwapAligned: s.factors.vwapAligned,
-      supertrendAligned: s.factors.supertrendAligned,
-      combinedOiSlope30m: s.factors.combinedOiSlope30m,
-      sectorAligned: s.factors.sectorAligned,
-    },
-    reasons: s.reasons,
-    /** Enterable at all: contract + live premium + a spot stop must exist. */
-    eligible: Boolean(s.option?.premium && s.plan.slSpot != null),
-  };
-}
-
-/** Scanner context small enough to include directly in the model's first turn. */
-export function buildScanContext(
-  scan: SuggestResponse | null,
-  options: { entryEnabled?: boolean; managedSymbols?: readonly string[] } = {}
-): Record<string, unknown> {
-  if (!scan) return { note: 'no scan this cycle; manage open positions only', picks: [] };
-  if (options.entryEnabled === false) {
-    const managed = new Set((options.managedSymbols ?? []).map((symbol) => symbol.toUpperCase()));
-    return {
-      mode: 'position-management-only',
-      window: scan.window,
-      tilt: scan.tilt,
-      openPositionSignals: (scan.suggestions ?? [])
-        .filter((suggestion) => managed.has(suggestion.symbol.toUpperCase()))
-        .map(trimPick),
-      trackedOpenPositions: (scan.tracked ?? [])
-        .filter((tracked) => managed.has(tracked.symbol.toUpperCase()))
-        .map((tracked) => ({
-          symbol: tracked.symbol,
-          direction: tracked.direction,
-          side: tracked.side,
-          entrySpot: tracked.entrySpot,
-          slSpot: tracked.slSpot,
-          targetSpot: tracked.targetSpot,
-          liveSpot: tracked.ltp,
-        })),
-    };
-  }
-  return {
-    window: scan.window,
-    scanned: scan.scanned,
-    gated: scan.gated,
-    tilt: scan.tilt,
-    picks: (scan.suggestions ?? []).map(trimPick),
-  };
-}
-
 export async function buildAccountState(
   rt: ToolRuntime,
   options: { includeBrokerFunds?: boolean } = {}
@@ -205,6 +138,44 @@ export async function buildAccountState(
   };
 }
 
+/**
+ * Decide whether this pass can expose entry tools/context using pass-wide
+ * deterministic gates. Quote, spread, slippage and per-contract affordability
+ * stay deferred to check_order because they require a selected contract.
+ */
+export async function buildEntryConsideration(
+  rt: ToolRuntime,
+  accountState: AccountState
+): Promise<EntryConsideration> {
+  const suggestions = rt.scan?.suggestions ?? [];
+  const [latch, exchangeSessionVerified, staleEntryProtectionEnabled] = await Promise.all([
+    getRiskLatch(),
+    isVerifiedTradingDay(rt.date),
+    getToggle('BLOCK_STALE_AUTO_ENTRY', BLOCK_STALE_AUTO_ENTRY),
+  ]);
+
+  let freshCandidateAvailable = suggestions.length > 0;
+  if (staleEntryProtectionEnabled && suggestions.length > 0) {
+    const requiredBucketTs = requiredCompletedBucket(Date.now());
+    const freshness = await Promise.all(
+      suggestions.map(async (suggestion) => {
+        const status = await getEqBucketStatus(suggestion.symbol, rt.date, requiredBucketTs);
+        return evaluateFreshness(status, requiredBucketTs).fresh;
+      })
+    );
+    freshCandidateAvailable = freshness.some(Boolean);
+  }
+
+  return evaluateEntryConsideration({
+    accountState,
+    hasEntryCandidate: suggestions.length > 0,
+    exchangeSessionVerified,
+    riskLatchReasons: latch.blocked ? latch.reasons.map((reason) => `${reason.key} (${reason.detail})`) : [],
+    staleEntryProtectionEnabled,
+    freshCandidateAvailable,
+  });
+}
+
 export interface PositionMarketSeed {
   optionQuotes?: ReadonlyMap<string, OptionQuote>;
   attemptedOptionIds?: ReadonlySet<string>;
@@ -219,7 +190,7 @@ export interface PositionMarketSeed {
 export async function buildOpenPositionsContext(
   rt: ToolRuntime,
   seed: PositionMarketSeed = {}
-): Promise<Record<string, unknown>[]> {
+): Promise<DecisionOpenPosition[]> {
   const open = await getOpenTrades();
   const quotes = new Map(seed.optionQuotes ?? []);
   const missingIds = open
@@ -241,6 +212,10 @@ export async function buildOpenPositionsContext(
         symbol: trade.symbol,
         direction: trade.direction,
         contract: `${trade.strike}${trade.optionType}`,
+        strike: trade.strike,
+        optionType: trade.optionType,
+        expiryDate: trade.expiryDate,
+        lotSize: trade.lotSize,
         lots: trade.lots,
         entrySpot: trade.entrySpot,
         slSpot: trade.slSpot,
@@ -260,19 +235,6 @@ export async function buildOpenPositionsContext(
       };
     })
   );
-}
-
-export async function buildInitialDecisionContext(
-  rt: ToolRuntime,
-  seed: PositionMarketSeed = {},
-  options: { entryEnabled?: boolean; managedSymbols?: readonly string[] } = {}
-): Promise<{
-  accountState: AccountState;
-  openPositions: Record<string, unknown>[];
-  scan: Record<string, unknown>;
-}> {
-  const [accountState, openPositions] = await Promise.all([buildAccountState(rt), buildOpenPositionsContext(rt, seed)]);
-  return { accountState, openPositions, scan: buildScanContext(rt.scan, options) };
 }
 
 /** Assemble the gate input for one pick, with a FRESH premium quote (the
