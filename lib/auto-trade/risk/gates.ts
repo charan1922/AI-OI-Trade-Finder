@@ -137,6 +137,10 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
   // test fixtures without the fields on the long-standing defaults.
   const entryStart = s.entryStartMin ?? ENTRY_START_MIN;
   const entryEnd = s.entryEndMin ?? ENTRY_END_MIN;
+  // Callers pass /config's COMMENTARY_ENTRY_CUTOFF_MIN here. The name is a
+  // historical accident — it is a HARD cutoff on real orders, not a commentary
+  // preference, and it can close the window EARLIER than settings.entryEndMin.
+  // Omitted (older fixtures) means "no extra cutoff", never "block".
   const cutoff = x.entryCutoffMin ?? Number.POSITIVE_INFINITY;
   const hardEnd = Math.min(entryEnd, cutoff - 1, s.squareOffMin - 1);
   if (x.minuteIST < entryStart || x.minuteIST > hardEnd) {

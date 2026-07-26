@@ -70,7 +70,7 @@ const AT_CLOCK_DEFS = [
     min: 10 * 60,
     max: 14 * 60 + 30,
     description:
-      'The last time the auto-trader may place a NEW entry order (default 11:00). Exits and stop management keep running all day regardless.',
+      'The last time the auto-trader may place a NEW entry order (default 11:00) — unless the “Hard fresh-entry cutoff” below is EARLIER, in which case that one wins: the gate takes whichever comes first. Exits and stop management keep running all day regardless.',
   },
   {
     key: 'AUTO_TRADE_SQUARE_OFF_MIN',
