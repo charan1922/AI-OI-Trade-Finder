@@ -102,7 +102,22 @@ export interface InsertCommentary {
   completionTokens: number | null;
   promptKey?: string | null;
   promptVersion?: number | null;
+  /** True when a real open/placing/closed trade was in the model's context.
+   *  OMITTING IT MEANS PRIVATE, not public — a writer that forgets to classify
+   *  itself must not publish the operator's book to viewers. Every caller
+   *  should still set it explicitly; the default is the backstop, not the API. */
   containsExecutionState?: boolean;
+}
+
+/**
+ * Storage encoding for the viewer-visibility flag. An UNSET flag means the
+ * writer did not classify itself, which must store PRIVATE — publishing the
+ * operator's book because a caller forgot a field is the failure mode this
+ * whole column exists to prevent. Exported (rather than inlined in the INSERT)
+ * so the DB-free suite can assert the default without a database.
+ */
+export function executionStateFlag(containsExecutionState?: boolean): 0 | 1 {
+  return (containsExecutionState ?? true) ? 1 : 0;
 }
 
 /** Inserts one narration; returns the new row's id (links cycle timelines). */
@@ -124,7 +139,10 @@ export async function insertCommentary(row: InsertCommentary): Promise<number> {
     row.completionTokens,
     row.promptKey ?? null,
     row.promptVersion ?? null,
-    row.containsExecutionState ? 1 : 0,
+    // Fail-private on omission. Matches the legacy-row backfill
+    // (ALTER ... DEFAULT 1) and map()'s null handling, so "we don't know" reads
+    // the same at every layer.
+    executionStateFlag(row.containsExecutionState),
     new Date().toISOString(),
   )) as { id: number | bigint }[];
   return Number(rows[0]?.id ?? 0);
