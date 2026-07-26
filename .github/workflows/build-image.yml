@@ -28,7 +28,11 @@ on:
   push:
     branches: [prod]
   pull_request:
-    branches: [main] # PRs: validate + build the image + smoke-test it (never pushed)
+    # PRs: validate + build the image + smoke-test it (never pushed). `prod` is
+    # included so the RELEASE PR (main → prod) gets a pre-merge run of its own —
+    # without it the deploy PR showed zero checks and the only validation of the
+    # exact deployed tree happened AFTER the merge had already started publishing.
+    branches: [main, prod]
   workflow_dispatch: {} # lets you trigger a build by hand from the Actions tab
 
 # Least-privilege default for every job: read-only. The build job re-grants the

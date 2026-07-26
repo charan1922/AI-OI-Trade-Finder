@@ -402,16 +402,34 @@ async function syncFromDhan(today: string): Promise<void> {
        FROM master_contracts
       WHERE instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND expiryDate IS NOT NULL`
   );
+  const parsedOptStkEntries = entries.filter((e) => e.instrument === 'OPTSTK' && e.segment === 'NSE_FNO');
   const coverage = checkOptionMonthCoverage(
     today,
-    entries
-      .filter((e) => e.instrument === 'OPTSTK' && e.segment === 'NSE_FNO')
-      .map((e) => e.expiryDate?.toISOString().slice(0, 10) ?? null),
+    parsedOptStkEntries.map((e) => e.expiryDate?.toISOString().slice(0, 10) ?? null),
     existingOptStkExpiries.map((r) => r.expiryDate)
   );
   if (!coverage.ok) {
     throw new Error(
       `master-contracts sync aborted: ${coverage.reason}; refusing to replace a good table (existing ${existingCount} rows kept) — investigate the CSV before re-syncing`,
+    );
+  }
+  // Guard 4 — UNDERLYING coverage. Guard 3 catches a whole series going missing,
+  // but a file truncated part-way through still lists every month while dozens of
+  // symbols silently lose their options (they then resolve to no-listed-expiry and
+  // vanish from the pick list). Underlyings do NOT churn like strikes do — the
+  // count sits at ~210 — so the same 10% rule the stable instruments use is safe.
+  const parsedOptStkUnderlyings = new Set(
+    parsedOptStkEntries.map((e) => e.underlying).filter((u): u is string => u != null && u !== '')
+  ).size;
+  const existingOptStkUnderlyingRows = await prisma.$queryRawUnsafe<{ n: number | bigint }[]>(
+    `SELECT COUNT(DISTINCT underlying) AS n
+       FROM master_contracts
+      WHERE instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND underlying IS NOT NULL AND underlying <> ''`
+  );
+  const existingOptStkUnderlyings = Number(existingOptStkUnderlyingRows[0]?.n ?? 0);
+  if (existingOptStkUnderlyings > 0 && parsedOptStkUnderlyings < existingOptStkUnderlyings * 0.9) {
+    throw new Error(
+      `master-contracts sync aborted: option underlyings dropped ${existingOptStkUnderlyings}→${parsedOptStkUnderlyings} (>10%) — the download is truncated; existing ${existingCount} rows kept`,
     );
   }
 
