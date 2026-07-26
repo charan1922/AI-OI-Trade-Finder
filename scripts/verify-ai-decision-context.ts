@@ -308,9 +308,24 @@ check('viewer trade-suggest response hides held-position membership without muta
 });
 
 check('viewer commentary redacts management text and exact position cards only', () => {
+  // containsExecutionState is now explicit on both rows: an absent flag means
+  // "the writer could not tell" and is deliberately treated as private, so a
+  // public fixture has to say so (PR#22 re-review).
   const rows = [
-    { promptKey: 'auto-trader', text: 'INFY exact fill/stop/target', picks: [{ symbol: 'INFY' }], picksCount: 1 },
-    { promptKey: 'trade-commentary', text: 'Public scanner read', picks: [{ symbol: 'TCS' }], picksCount: 1 },
+    {
+      promptKey: 'auto-trader',
+      containsExecutionState: true,
+      text: 'INFY exact fill/stop/target',
+      picks: [{ symbol: 'INFY' }],
+      picksCount: 1,
+    },
+    {
+      promptKey: 'trade-commentary',
+      containsExecutionState: false,
+      text: 'Public scanner read',
+      picks: [{ symbol: 'TCS' }],
+      picksCount: 1,
+    },
   ];
   const viewerRows = commentaryForRole(rows, true);
   assert.equal(viewerRows[0].picksCount, 0);
@@ -318,6 +333,40 @@ check('viewer commentary redacts management text and exact position cards only',
   assert.doesNotMatch(viewerRows[0].text, /INFY|fill|stop|target/i);
   assert.equal(viewerRows[1].text, 'Public scanner read');
   assert.equal(commentaryForRole(rows, false)[0].text, 'INFY exact fill/stop/target');
+});
+
+check('viewer redaction keys off execution state, not promptKey', () => {
+  // The standalone fallback narrator runs whenever the auto-trader does not
+  // (kill switch, mode off, AI failure). It receives the EXECUTION TRUTH line
+  // naming the held contract and its premiums, yet stores itself as an ordinary
+  // 'trade-commentary' row — so the old promptKey test published it (PR#22
+  // re-review).
+  const rows = [
+    {
+      promptKey: 'trade-commentary',
+      containsExecutionState: true,
+      text: '### INFY — HOLD. Open at ₹50, stop ₹37.50.',
+      picks: [{ symbol: 'INFY' }],
+      picksCount: 1,
+    },
+    {
+      promptKey: 'trade-commentary',
+      containsExecutionState: false,
+      text: 'Nothing was traded today — scanner read only.',
+      picks: [{ symbol: 'TCS' }],
+      picksCount: 1,
+    },
+    // Written before the flag existed / caller could not tell → must be private.
+    { promptKey: 'trade-commentary', text: 'Legacy row that may name a position', picks: [], picksCount: 0 },
+  ];
+  const viewer = commentaryForRole(rows, true);
+  assert.doesNotMatch(JSON.stringify(viewer[0]), /INFY|50|37\.5/);
+  assert.deepEqual(viewer[0].picks, []);
+  assert.equal(viewer[1].text, 'Nothing was traded today — scanner read only.');
+  assert.match(viewer[2].text, /operator only/);
+  // The operator still sees all three unchanged.
+  assert.match(commentaryForRole(rows, false)[0].text, /INFY — HOLD/);
+  assert.match(commentaryForRole(rows, false)[2].text, /Legacy row/);
 });
 
 check('viewer cycle timelines keep step timings but lose the position-guard detail', () => {

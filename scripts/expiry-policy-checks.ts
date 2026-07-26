@@ -3,6 +3,8 @@ import {
   activeOptionExpiryMonths,
   checkOptionExpiryForEntry,
   checkOptionMonthCoverage,
+  checkOptionSeriesCoverage,
+  checkOptionUnderlyingCoverage,
   normalizeIsoDate,
   optionExpiryWeekStart,
   selectOptionExpiryForEntry,
@@ -149,5 +151,112 @@ export function runExpiryPolicyChecks(check: Check): void {
   check(
     'coverage: a fully expired baseline is not treated as a shrink',
     checkOptionMonthCoverage('2026-10-01', ['2026-10-27'], stored).ok
+  );
+  check(
+    'coverage: EQUAL COUNT but a different month — Jul/Sep/Oct vs Jul/Aug/Sep — is refused',
+    (() => {
+      const v = checkOptionMonthCoverage('2026-07-27', ['2026-07-28', '2026-09-29', '2026-10-27'], stored);
+      return !v.ok && v.reason?.includes('2026-08-25') === true;
+    })(),
+    checkOptionMonthCoverage('2026-07-27', ['2026-07-28', '2026-09-29', '2026-10-27'], stored).reason ?? 'no reason'
+  );
+
+  // Per-symbol / per-side coverage. The aggregate guards above cannot see ONE
+  // stock losing ONE month on ONE side — and that is exactly what the resolver
+  // would roll past during expiry week, because it only ever queries that
+  // symbol and that side.
+  const series = (underlying: string, optionType: string, expiryDate: string) => ({
+    underlying,
+    optionType,
+    expiryDate,
+  });
+  const fullBook = [
+    series('INFY', 'CE', '2026-07-28'),
+    series('INFY', 'PE', '2026-07-28'),
+    series('INFY', 'CE', '2026-08-25'),
+    series('INFY', 'PE', '2026-08-25'),
+    series('INFY', 'CE', '2026-09-29'),
+    series('INFY', 'PE', '2026-09-29'),
+    series('TCS', 'CE', '2026-07-28'),
+    series('TCS', 'CE', '2026-08-25'),
+    series('TCS', 'CE', '2026-09-29'),
+  ];
+  check('series: an identical download passes', checkOptionSeriesCoverage('2026-07-27', fullBook, fullBook).ok);
+  check(
+    'series: THE BUG — INFY August CE missing while every GLOBAL month still exists is refused',
+    (() => {
+      const damaged = fullBook.filter((r) => !(r.underlying === 'INFY' && r.optionType === 'CE' && r.expiryDate === '2026-08-25'));
+      const global = checkOptionMonthCoverage('2026-07-27', damaged.map((r) => r.expiryDate), fullBook.map((r) => r.expiryDate));
+      const v = checkOptionSeriesCoverage('2026-07-27', damaged, fullBook);
+      // The aggregate guard is blind to it — that is the whole point.
+      return global.ok && !v.ok && v.missing.includes('INFY|CE|2026-08');
+    })()
+  );
+  check(
+    'series: INFY August CE missing is caught even though INFY August PE remains',
+    (() => {
+      const damaged = fullBook.filter((r) => !(r.underlying === 'INFY' && r.optionType === 'CE' && r.expiryDate === '2026-08-25'));
+      const v = checkOptionSeriesCoverage('2026-07-27', damaged, fullBook);
+      return !v.ok && v.missing.length === 1 && v.missing[0] === 'INFY|CE|2026-08';
+    })()
+  );
+  check(
+    'series: a holiday moving 25-Aug to 24-Aug is the SAME series, not a missing one',
+    checkOptionSeriesCoverage(
+      '2026-07-27',
+      fullBook.map((r) => (r.expiryDate === '2026-08-25' ? { ...r, expiryDate: '2026-08-24' } : r)),
+      fullBook
+    ).ok
+  );
+  check(
+    'series: the normal cycle (July expires, October listed) passes',
+    checkOptionSeriesCoverage(
+      '2026-07-29',
+      [
+        ...fullBook.filter((r) => r.expiryDate !== '2026-07-28'),
+        series('INFY', 'CE', '2026-10-27'),
+        series('INFY', 'PE', '2026-10-27'),
+        series('TCS', 'CE', '2026-10-27'),
+      ],
+      fullBook
+    ).ok
+  );
+  check(
+    'series: a whole stock de-listed from F&O is allowed (mass loss is the underlying-count guard)',
+    checkOptionSeriesCoverage('2026-07-27', fullBook.filter((r) => r.underlying !== 'TCS'), fullBook).ok
+  );
+  check(
+    'series: RFC3339 master timestamps match plain dates',
+    checkOptionSeriesCoverage(
+      '2026-07-27',
+      fullBook.map((r) => ({ ...r, expiryDate: `${r.expiryDate}T09:00:00.000Z` })),
+      fullBook
+    ).ok
+  );
+  check(
+    'series: rows with a malformed side or expiry are ignored, never counted as coverage',
+    !checkOptionSeriesCoverage(
+      '2026-07-27',
+      [
+        ...fullBook.filter((r) => !(r.underlying === 'INFY' && r.optionType === 'CE' && r.expiryDate === '2026-08-25')),
+        series('INFY', 'XX', '2026-08-25'),
+        series('INFY', 'CE', '2026-08-25-WRONG'),
+      ],
+      fullBook
+    ).ok
+  );
+  check('series: first sync with no baseline is allowed', checkOptionSeriesCoverage('2026-07-27', fullBook, []).ok);
+
+  check(
+    'underlyings: an exact match and a small dip both pass, a >10% collapse is refused',
+    checkOptionUnderlyingCoverage(210, 210).ok &&
+      checkOptionUnderlyingCoverage(200, 210).ok &&
+      !checkOptionUnderlyingCoverage(150, 210).ok &&
+      checkOptionUnderlyingCoverage(5, 0).ok
+  );
+  check(
+    'underlyings: the refusal names both counts',
+    checkOptionUnderlyingCoverage(150, 210).reason?.includes('210→150') === true,
+    checkOptionUnderlyingCoverage(150, 210).reason ?? 'no reason'
   );
 }

@@ -25,6 +25,7 @@ export async function ensureCommentaryTable(): Promise<void> {
       picksJson        TEXT    DEFAULT '[]',
       promptTokens     INTEGER,
       completionTokens INTEGER,
+      containsExecutionState INTEGER NOT NULL DEFAULT 0,
       createdAt        TEXT    NOT NULL
     )
   `);
@@ -48,6 +49,22 @@ export async function ensureCommentaryTable(): Promise<void> {
   } catch {
     /* column already exists */
   }
+  // Deterministic privacy flag (PR#22 re-review): 1 when this narration was
+  // generated with a real EXECUTION TRUTH line (an actual open/placing/closed
+  // trade). Viewer redaction keys off THIS, not off promptKey — the standalone
+  // fallback narrator also receives real position state but stores itself as an
+  // ordinary 'trade-commentary' row, so a promptKey test let it through.
+  try {
+    await prisma.$executeRawUnsafe(
+      // DEFAULT 1 backfills EXISTING rows as private: they were written before
+      // the flag existed and may narrate a real position, so they must not be
+      // published to viewers by the act of adding a column. Every new insert
+      // passes an explicit value, so the default only ever touches legacy rows.
+      `ALTER TABLE trade_commentary ADD COLUMN containsExecutionState INTEGER NOT NULL DEFAULT 1`
+    );
+  } catch {
+    /* column already exists */
+  }
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_trade_commentary_date ON trade_commentary (date, id)`);
   tableReady = true;
 }
@@ -67,6 +84,9 @@ export interface CommentaryRow {
    *  rows from before versioning existed). */
   promptKey: string | null;
   promptVersion: number | null;
+  /** True when a real open/placing/closed trade was in the model's context.
+   *  Drives viewer redaction; see commentaryForRole in lib/auth/trading-privacy. */
+  containsExecutionState: boolean;
   createdAt: string;
 }
 
@@ -82,6 +102,7 @@ export interface InsertCommentary {
   completionTokens: number | null;
   promptKey?: string | null;
   promptVersion?: number | null;
+  containsExecutionState?: boolean;
 }
 
 /** Inserts one narration; returns the new row's id (links cycle timelines). */
@@ -89,8 +110,8 @@ export async function insertCommentary(row: InsertCommentary): Promise<number> {
   await ensureCommentaryTable();
   const rows = (await prisma.$queryRawUnsafe(
     `INSERT INTO trade_commentary
-       (date, asOf, windowActive, picksCount, model, text, picksJson, promptTokens, completionTokens, promptKey, promptVersion, createdAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (date, asOf, windowActive, picksCount, model, text, picksJson, promptTokens, completionTokens, promptKey, promptVersion, containsExecutionState, createdAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      RETURNING id`,
     row.date,
     row.asOf,
@@ -103,6 +124,7 @@ export async function insertCommentary(row: InsertCommentary): Promise<number> {
     row.completionTokens,
     row.promptKey ?? null,
     row.promptVersion ?? null,
+    row.containsExecutionState ? 1 : 0,
     new Date().toISOString(),
   )) as { id: number | bigint }[];
   return Number(rows[0]?.id ?? 0);
@@ -121,18 +143,28 @@ interface RawRow {
   completionTokens: number | null;
   promptKey: string | null;
   promptVersion: number | null;
+  /** SQLite stores 0/1; map() converts it, exactly like windowActive. */
+  containsExecutionState: number | null;
   createdAt: string;
 }
 
 function map(r: RawRow): CommentaryRow {
-  const { picksJson, windowActive, ...rest } = r;
+  const { picksJson, windowActive, containsExecutionState, ...rest } = r;
   let picks: StoredPick[] = [];
   try {
     picks = picksJson ? (JSON.parse(picksJson) as StoredPick[]) : [];
   } catch {
     picks = [];
   }
-  return { ...rest, windowActive: windowActive === 1, picks };
+  return {
+    ...rest,
+    windowActive: windowActive === 1,
+    // Legacy rows predate the column and read null — treat them as PRIVATE.
+    // A row written before the flag existed may still narrate a real position,
+    // so defaulting to public would re-open the very leak this closes.
+    containsExecutionState: containsExecutionState == null || containsExecutionState === 1,
+    picks,
+  };
 }
 
 /** The latest date that has any commentary (newest session). Null when empty. */

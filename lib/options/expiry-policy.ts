@@ -127,17 +127,105 @@ export function checkOptionMonthCoverage(
   // No usable baseline (first sync, or every stored month has expired) — the
   // absolute row floors are the only guard available, and they already ran.
   if (existingMonths.length === 0) return { ok: true, parsedMonths, existingMonths, reason: null };
-  if (parsedMonths.length >= existingMonths.length) {
-    return { ok: true, parsedMonths, existingMonths, reason: null };
-  }
-  const missing = existingMonths.filter((month) => !parsedMonths.includes(month));
+  // Compare MEMBERSHIP, not counts. Counting passed July/Aug/Sep → July/Sep/Oct
+  // (3 vs 3) even though August had vanished — the exact hole this guard exists
+  // to close (PR#22 re-review). Months are keyed YYYY-MM so an exchange holiday
+  // moving 25-Aug to 24-Aug is the same series, not a missing one.
+  const parsedKeys = new Set(parsedMonths.map((month) => month.slice(0, 7)));
+  const missing = existingMonths.filter((month) => !parsedKeys.has(month.slice(0, 7)));
+  if (missing.length === 0) return { ok: true, parsedMonths, existingMonths, reason: null };
   return {
     ok: false,
     parsedMonths,
     existingMonths,
     reason:
-      `option expiry coverage shrank ${existingMonths.length}→${parsedMonths.length} unexpired months ` +
-      `(missing ${missing.join(', ') || 'unknown'}) — a listed series is absent from this download`,
+      `option expiry coverage lost ${missing.length} of ${existingMonths.length} unexpired month(s) ` +
+      `(missing ${missing.join(', ')}) — a listed series is absent from this download`,
+  };
+}
+
+/** One contract-master option row, reduced to what coverage needs. */
+export interface OptionSeriesRow {
+  underlying: string | null | undefined;
+  optionType: string | null | undefined;
+  expiryDate: string | null | undefined;
+}
+
+/** `UNDERLYING|CE|YYYY-MM` for every still-tradable series in the rows. */
+export function activeOptionSeries(tradeDate: string, rows: readonly OptionSeriesRow[]): Set<string> {
+  const tradeEpoch = isoDayEpoch(tradeDate);
+  const series = new Set<string>();
+  if (tradeEpoch == null) return series;
+  for (const row of rows) {
+    const underlying = row.underlying?.trim();
+    const side = row.optionType?.trim().toUpperCase();
+    if (!underlying || (side !== 'CE' && side !== 'PE') || row.expiryDate == null) continue;
+    const iso = normalizeIsoDate(row.expiryDate);
+    if (iso == null) continue;
+    const epoch = isoDayEpoch(iso);
+    if (epoch == null || epoch < tradeEpoch) continue;
+    series.add(`${underlying}|${side}|${iso.slice(0, 7)}`);
+  }
+  return series;
+}
+
+/**
+ * PER-SYMBOL, PER-SIDE completeness — the check the aggregate guards cannot make.
+ *
+ * A download can keep every global expiry month, every underlying and 60k+ rows
+ * while ONE stock quietly loses ONE month on ONE side. The resolver only ever
+ * looks at that stock and that side, so during expiry week it would skip the
+ * missing next month and select the one after it — precisely the wrong-contract
+ * outcome these guards exist to prevent (PR#22 re-review).
+ *
+ * An underlying that disappears ENTIRELY is not flagged here: that is what a
+ * legitimate F&O de-listing looks like, and mass loss is already caught by the
+ * underlying-count guard. Only a stock that is still present yet lost a series
+ * is treated as a damaged download.
+ */
+export function checkOptionSeriesCoverage(
+  tradeDate: string,
+  parsedRows: readonly OptionSeriesRow[],
+  existingRows: readonly OptionSeriesRow[]
+): { ok: boolean; missing: string[]; parsedSeries: number; existingSeries: number; reason: string | null } {
+  const parsed = activeOptionSeries(tradeDate, parsedRows);
+  const existing = activeOptionSeries(tradeDate, existingRows);
+  const parsedUnderlyings = new Set([...parsed].map((key) => key.split('|')[0]));
+  const missing = [...existing]
+    .filter((key) => !parsed.has(key) && parsedUnderlyings.has(key.split('|')[0]))
+    .sort();
+  if (missing.length === 0) {
+    return { ok: true, missing, parsedSeries: parsed.size, existingSeries: existing.size, reason: null };
+  }
+  const shown = missing.slice(0, 5).join(', ');
+  return {
+    ok: false,
+    missing,
+    parsedSeries: parsed.size,
+    existingSeries: existing.size,
+    reason:
+      `${missing.length} listed option series vanished for symbols that are still in the file ` +
+      `(e.g. ${shown}${missing.length > 5 ? ', …' : ''}) — the download is damaged, not a de-listing`,
+  };
+}
+
+/**
+ * Option UNDERLYING coverage. Strikes churn daily, but the set of stocks with
+ * listed options does not (~210), so the same 10% rule the stable instruments
+ * use is safe here and catches a file truncated part-way through.
+ */
+export function checkOptionUnderlyingCoverage(
+  parsedUnderlyings: number,
+  existingUnderlyings: number,
+  minRetainRatio = 0.9
+): { ok: boolean; reason: string | null } {
+  if (existingUnderlyings <= 0) return { ok: true, reason: null };
+  if (parsedUnderlyings >= existingUnderlyings * minRetainRatio) return { ok: true, reason: null };
+  return {
+    ok: false,
+    reason:
+      `option underlyings dropped ${existingUnderlyings}→${parsedUnderlyings} ` +
+      `(>${Math.round((1 - minRetainRatio) * 100)}%) — the download is truncated`,
   };
 }
 
