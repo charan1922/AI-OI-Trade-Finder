@@ -52,6 +52,7 @@ import { runConfigDriftChecks } from './config-drift-checks';
 import { runPremiumStopChecks } from './premium-stop-checks';
 import { runGradeChecks } from './grade-checks';
 import { runProfitProtectChecks } from './profit-protect-checks';
+import { runExpiryPolicyChecks } from './expiry-policy-checks';
 import { ensureSuggestionsTable, getSuggestions, recordOutcome } from '../lib/trade-suggest/store';
 import { todayIST } from '../lib/dhan/market-feed';
 import { hasRequiredEqBar } from '../lib/fyers/poller';
@@ -155,6 +156,8 @@ async function main(): Promise<void> {
     // matching ceiling to isolate the OTHER gates. The risk ceiling itself is
     // covered with realistic contracts in scripts/premium-stop-checks.ts.
     settings: { ...DEFAULT_SETTINGS, mode: 'paper' as const, maxRiskPerLotRupees: 10_000 },
+    tradeDate: '2099-01-01',
+    expiryDate: '2099-01-28',
     liveEnvEnabled: false,
     marketOpen: true,
     sessionVerified: true,
@@ -182,6 +185,14 @@ async function main(): Promise<void> {
     candleFresh: true,
   };
   check('gates: clean entry allowed', checkEntryGates(base).allow);
+  runExpiryPolicyChecks(check);
+  check(
+    'gates: the placement gate itself rejects the 27-Jul near-month contract',
+    !checkEntryGates({ ...base, tradeDate: '2026-07-27', expiryDate: '2026-07-28' }).allow &&
+      checkEntryGates({ ...base, tradeDate: '2026-07-27', expiryDate: '2026-07-28' }).reasons.some((reason) =>
+        reason.includes('use the next-month contract')
+      )
+  );
   const oneLotTarget = backstopsFromFill(127, 125, 1, targetRupeesForPosition(DEFAULT_SETTINGS, 1)).targetPremium;
   check('target: default ₹1,100 per trade maps to premium ₹135.80', oneLotTarget === 135.8, String(oneLotTarget));
   const twoLotTradeTarget = backstopsFromFill(

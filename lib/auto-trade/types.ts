@@ -78,6 +78,13 @@ export interface AutoTrade {
   lotSize: number;
   lots: number;
   optSecurityId: string;
+  /** Contract-master selection audit captured before entry. Measurement only:
+   * these fields never change sizing, stops or exits. */
+  nearestListedExpiry: string | null;
+  expiryRolled: boolean | null;
+  expiryRollReason: 'EXPIRY_WEEK' | null;
+  expiryCalendarDte: number | null;
+  masterSyncDate: string | null;
   mode: TradeMode;
   broker: string; // 'paper' | BrokerId
   status: TradeStatus;

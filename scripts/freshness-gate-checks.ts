@@ -31,6 +31,8 @@ const gbase: EntryGateInput = {
   // matching ceiling — the ceiling itself is covered with realistic contracts in
   // scripts/premium-stop-checks.ts; these checks are about candle freshness.
   settings: { ...DEFAULT_SETTINGS, mode: 'paper', maxRiskPerLotRupees: 10_000 },
+  tradeDate: '2099-01-01',
+  expiryDate: '2099-01-28',
   liveEnvEnabled: false,
   marketOpen: true,
   sessionVerified: true,

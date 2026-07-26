@@ -76,6 +76,11 @@ jobs:
       # downloads an unpinned tsx each run) — reproducible + no runtime fetch
       # (PR#6 review). It resolves the tsconfig @/ path aliases like the box does.
       - run: pnpm exec tsx scripts/verify-quant-shadow.ts
+      # Real stock-option resolver boundary against an isolated SQLite database:
+      # Prisma DateTime round-trip, CE/PE + selected-month SQL, nearest-strike
+      # row identity, expiry-week rollover, no-next-month fail-closed behavior,
+      # and stale/mixed master snapshot rejection (PR#21 review).
+      - run: pnpm exec tsx scripts/verify-option-resolver-store.ts
       # DB-free pure checks for the capped priority-refresh planner (round-robin
       # fairness, Tier 0/1/2 tiering, the 40-unique cap, sector promotion inside
       # the cap). Same reproducible `pnpm exec tsx` runner as above.

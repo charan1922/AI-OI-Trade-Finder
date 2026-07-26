@@ -286,6 +286,8 @@ async function buildGateInput(
   return {
     input: {
       settings: rt.settings,
+      tradeDate: rt.date,
+      expiryDate: pick.option?.expiryDate ?? null,
       liveEnvEnabled: state.liveEnvEnabled,
       marketOpen: state.marketOpen,
       sessionVerified,
@@ -537,6 +539,11 @@ export async function executeAutoTradeTool(
         lotSize: pick.option.lotSize,
         lots,
         optSecurityId: pick.option.optSecurityId,
+        nearestListedExpiry: pick.optionResolution?.nearestListedExpiry ?? null,
+        expiryRolled: pick.optionResolution?.rolled ?? null,
+        expiryRollReason: pick.optionResolution?.rollReason ?? null,
+        expiryCalendarDte: pick.optionResolution?.calendarDte ?? null,
+        masterSyncDate: pick.optionResolution?.masterSyncDate ?? null,
         mode: rt.settings.mode,
         broker: rt.settings.mode === 'paper' ? 'paper' : rt.settings.broker,
         status,

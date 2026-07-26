@@ -43,6 +43,11 @@ export async function ensureSuggestionsTable(): Promise<void> {
       targetSpot    REAL,
       lotSize       INTEGER DEFAULT 0,
       optSecurityId TEXT    DEFAULT '',
+      nearestListedExpiry TEXT,
+      expiryRolled       INTEGER,
+      expiryRollReason   TEXT,
+      expiryCalendarDte  INTEGER,
+      masterSyncDate     TEXT,
       sector        TEXT    DEFAULT '',
       rFactor       REAL    DEFAULT 0,
       confidence    REAL    DEFAULT 0,
@@ -74,7 +79,16 @@ export async function ensureSuggestionsTable(): Promise<void> {
   // protectShadow: JSON blob of profit-protection counterfactual R per rule
   // (profit-protect.ts), computed same-day while candles exist — MEASUREMENT
   // ONLY, never changes a live exit. Nullable; legacy rows stay null.
-  for (const col of ['spotOutcome TEXT', 'spotOutcomeR REAL', 'protectShadow TEXT']) {
+  for (const col of [
+    'spotOutcome TEXT',
+    'spotOutcomeR REAL',
+    'protectShadow TEXT',
+    'nearestListedExpiry TEXT',
+    'expiryRolled INTEGER',
+    'expiryRollReason TEXT',
+    'expiryCalendarDte INTEGER',
+    'masterSyncDate TEXT',
+  ]) {
     if (!cols.has(col.split(' ')[0])) await prisma.$executeRawUnsafe(`ALTER TABLE trade_suggestions ADD COLUMN ${col}`);
   }
   tableReady = true;
@@ -90,9 +104,10 @@ export async function upsertSuggestions(date: string, picks: TradeSuggestion[], 
     await prisma.$executeRawUnsafe(
       `INSERT INTO trade_suggestions
          (date, symbol, optionType, strike, expiryDate, spotAtSuggest, slSpot, targetSpot, lotSize,
-          optSecurityId, sector, rFactor, confidence, oiLevel, oiUrgency, score, rank, reasons,
+          optSecurityId, nearestListedExpiry, expiryRolled, expiryRollReason, expiryCalendarDte,
+          masterSyncDate, sector, rFactor, confidence, oiLevel, oiUrgency, score, rank, reasons,
           premiumAtSuggest, premiumSl, premiumTarget, suggestedAt, lastSeenAt, timesSeen)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
        ON CONFLICT(date, symbol, optionType) DO UPDATE SET
          lastSeenAt = excluded.lastSeenAt,
          timesSeen = timesSeen + 1,
@@ -102,7 +117,12 @@ export async function upsertSuggestions(date: string, picks: TradeSuggestion[], 
          oiUrgency = excluded.oiUrgency,
          score = excluded.score,
          rank = excluded.rank,
-         reasons = excluded.reasons`,
+         reasons = excluded.reasons,
+         nearestListedExpiry = excluded.nearestListedExpiry,
+         expiryRolled = excluded.expiryRolled,
+         expiryRollReason = excluded.expiryRollReason,
+         expiryCalendarDte = excluded.expiryCalendarDte,
+         masterSyncDate = excluded.masterSyncDate`,
       date,
       p.symbol,
       p.option.optionType,
@@ -113,6 +133,11 @@ export async function upsertSuggestions(date: string, picks: TradeSuggestion[], 
       p.plan.targetSpot,
       p.option.lotSize,
       p.option.optSecurityId,
+      p.optionResolution?.nearestListedExpiry ?? null,
+      p.optionResolution?.rolled == null ? null : p.optionResolution.rolled ? 1 : 0,
+      p.optionResolution?.rollReason ?? null,
+      p.optionResolution?.calendarDte ?? null,
+      p.optionResolution?.masterSyncDate ?? null,
       p.sector,
       p.rFactor,
       p.rFactorConfidence,
@@ -146,6 +171,11 @@ function rowToStored(r: Record<string, unknown>): StoredSuggestion {
     targetSpot: toNumOrNull(r.targetSpot),
     lotSize: toNum(r.lotSize),
     optSecurityId: String(r.optSecurityId ?? ''),
+    nearestListedExpiry: r.nearestListedExpiry == null ? null : String(r.nearestListedExpiry),
+    expiryRolled: r.expiryRolled == null ? null : Number(r.expiryRolled) === 1,
+    expiryRollReason: r.expiryRollReason === 'EXPIRY_WEEK' ? 'EXPIRY_WEEK' : null,
+    expiryCalendarDte: toNumOrNull(r.expiryCalendarDte),
+    masterSyncDate: r.masterSyncDate == null ? null : String(r.masterSyncDate),
     sector: String(r.sector ?? ''),
     rFactor: toNum(r.rFactor),
     confidence: toNum(r.confidence),
@@ -259,6 +289,15 @@ export interface SuggestStats {
   legacyReviewed: number;
   byRank: { rank: number; n: number; hits: number }[];
   byScoreBucket: { bucket: string; n: number; hits: number }[];
+  /** Separate expectancy for ordinary near-month entries vs contracts selected
+   * by the expiry-week rollover. Legacy rows remain visibly unclassified. */
+  byExpiryBucket: {
+    bucket: 'near-month' | 'expiry-week-roll' | 'legacy-unclassified';
+    suggestions: number;
+    honestReviewed: number;
+    hits: number;
+    avgOutcomeR: number | null;
+  }[];
 }
 
 /**
@@ -270,7 +309,8 @@ export async function getStats(days = 30): Promise<SuggestStats> {
   await ensureSuggestionsTable();
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
-    `SELECT optionType, score, rank, maxUpPct, maxDownPct, closePct, spotOutcome, spotOutcomeR, outcomeAt
+    `SELECT optionType, score, rank, maxUpPct, maxDownPct, closePct, spotOutcome, spotOutcomeR,
+            expiryRolled, expiryCalendarDte, outcomeAt
        FROM trade_suggestions WHERE date >= ?`,
     since,
   );
@@ -314,6 +354,45 @@ export async function getStats(days = 30): Promise<SuggestStats> {
     .filter((r) => r.spotOutcomeR != null)
     .map((r) => Number(r.spotOutcomeR))
     .filter((n) => Number.isFinite(n));
+  type ExpiryBucket = SuggestStats['byExpiryBucket'][number]['bucket'];
+  const expiryBucket = (row: Record<string, unknown>): ExpiryBucket =>
+    row.expiryRolled == null
+      ? 'legacy-unclassified'
+      : Number(row.expiryRolled) === 1
+        ? 'expiry-week-roll'
+        : 'near-month';
+  const byExpiry = new Map<
+    ExpiryBucket,
+    {
+      suggestions: number;
+      honestReviewed: number;
+      hits: number;
+      rSum: number;
+      rCount: number;
+    }
+  >();
+  for (const row of rows) {
+    const bucket = expiryBucket(row);
+    const acc = byExpiry.get(bucket) ?? {
+      suggestions: 0,
+      honestReviewed: 0,
+      hits: 0,
+      rSum: 0,
+      rCount: 0,
+    };
+    acc.suggestions++;
+    byExpiry.set(bucket, acc);
+  }
+  for (const row of honestRows) {
+    const bucket = expiryBucket(row);
+    const acc = byExpiry.get(bucket)!;
+    acc.honestReviewed++;
+    if (isHit(row)) acc.hits++;
+    if (row.spotOutcomeR != null && Number.isFinite(Number(row.spotOutcomeR))) {
+      acc.rSum += Number(row.spotOutcomeR);
+      acc.rCount++;
+    }
+  }
 
   return {
     days,
@@ -329,6 +408,13 @@ export async function getStats(days = 30): Promise<SuggestStats> {
     legacyReviewed,
     byRank: [...byRank.entries()].sort((a, b) => a[0] - b[0]).map(([rank, v]) => ({ rank, ...v })),
     byScoreBucket: [...byBucket.entries()].map(([bucket, v]) => ({ bucket, ...v })),
+    byExpiryBucket: [...byExpiry.entries()].map(([bucket, v]) => ({
+      bucket,
+      suggestions: v.suggestions,
+      honestReviewed: v.honestReviewed,
+      hits: v.hits,
+      avgOutcomeR: v.rCount === 0 ? null : Math.round((v.rSum / v.rCount) * 100) / 100,
+    })),
   };
 }
 

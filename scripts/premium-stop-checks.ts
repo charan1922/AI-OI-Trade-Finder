@@ -30,6 +30,8 @@ export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 function passingGate(over: Partial<EntryGateInput> = {}): EntryGateInput {
   return {
     settings: { ...DEFAULT_SETTINGS, mode: 'paper' as const },
+    tradeDate: '2099-01-01',
+    expiryDate: '2099-01-28',
     liveEnvEnabled: false,
     marketOpen: true,
     sessionVerified: true,

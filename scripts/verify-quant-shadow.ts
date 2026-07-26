@@ -12,6 +12,7 @@ import { runConfigDriftChecks } from './config-drift-checks';
 import { runPremiumStopChecks } from './premium-stop-checks';
 import { runGradeChecks } from './grade-checks';
 import { runProfitProtectChecks } from './profit-protect-checks';
+import { runExpiryPolicyChecks } from './expiry-policy-checks';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
   runPremiumStopChecks(check);
   runGradeChecks(check);
   runProfitProtectChecks(check);
+  runExpiryPolicyChecks(check);
   console.log(`\n${failures === 0 ? '✅ all pure checks passed' : `❌ ${failures} check(s) FAILED`}`);
   process.exit(failures === 0 ? 0 : 1);
 }

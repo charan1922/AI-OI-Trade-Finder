@@ -7,6 +7,7 @@
  */
 
 import { riskPerLotRupees } from '../backstops';
+import { checkOptionExpiryForEntry } from '@/lib/options/expiry-policy';
 import {
   ENTRY_END_MIN,
   ENTRY_START_MIN,
@@ -20,6 +21,10 @@ import type { AutoTradeSettings, GateVerdict } from '../types';
 
 export interface EntryGateInput {
   settings: AutoTradeSettings;
+  /** Date of this entry attempt and the exact contract expiry (YYYY-MM-DD).
+   * Required so a stale proposal cannot bypass the expiry-week roll rule. */
+  tradeDate: string;
+  expiryDate: string | null;
   /** Second key for live mode: env AUTO_TRADE_LIVE_ENABLED === 'true'. */
   liveEnvEnabled: boolean;
   marketOpen: boolean;
@@ -126,6 +131,8 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
   if (x.riskLatchReasons.length > 0) {
     reasons.push(`risk latch active: ${x.riskLatchReasons.join('; ')} — clear it on /auto-trade after resolving`);
   }
+  const expiryVerdict = checkOptionExpiryForEntry(x.tradeDate, x.expiryDate);
+  if (!expiryVerdict.allow && expiryVerdict.reason) reasons.push(expiryVerdict.reason);
   // Window bounds come from settings (clamped in settings.ts); ?? keeps older
   // test fixtures without the fields on the long-standing defaults.
   const entryStart = s.entryStartMin ?? ENTRY_START_MIN;

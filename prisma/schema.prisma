@@ -29,6 +29,17 @@ model MasterContract {
   @@map("master_contracts")
 }
 
+model MasterContractSnapshot {
+  syncDate    String   @id
+  totalRows   Int
+  stableRows  Int
+  optStkRows  Int
+  completedAt DateTime
+  sourceHash  String
+
+  @@map("master_contract_snapshots")
+}
+
 model BhavcopyDay {
   id          Int    @id @default(autoincrement())
   date        String
@@ -342,6 +353,11 @@ model TradeSuggestion {
   targetSpot    Float?
   lotSize       Int     @default(0)
   optSecurityId String  @default("")
+  nearestListedExpiry String?
+  expiryRolled         Int?
+  expiryRollReason     String?
+  expiryCalendarDte    Int?
+  masterSyncDate       String?
   sector        String  @default("")
   rFactor       Float   @default(0)
   confidence    Float   @default(0)
@@ -459,6 +475,13 @@ model AutoTrade {
   // The ask the gate sized against — pending/placing exposure reserves off this
   // executable price, not the ltp/mid mark (PR#18 re-review).
   approvedEntryAskPremium     Float?
+  // Contract-selection audit. These fields make rollover trades measurable as
+  // a separate economic bucket from ordinary near-month entries.
+  nearestListedExpiry String?
+  expiryRolled         Int?
+  expiryRollReason     String?
+  expiryCalendarDte    Int?
+  masterSyncDate       String?
   entryFillPremium  Float?
   exitFillPremium   Float?
   exitReason        String?

@@ -5,14 +5,22 @@
  * All lookups hit the DB (indexed) — no 100MB CSV download on every restart.
  */
 
+import { createHash } from 'node:crypto';
 import fnoUniverse from '@/lib/data/fno_stocks_list.json';
 import { prisma } from '@/lib/db';
+import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 
 const MASTER_CSV_URL = 'https://images.dhan.co/api-data/api-scrip-master.csv';
 
 // Only sync instruments needed for R-Factor: equity OHLC + stock/index futures
 const KEEP_SEGMENTS = new Set(['NSE_EQ', 'NSE_FNO']);
 const KEEP_INSTRUMENTS = new Set(['EQUITY', 'FUTSTK', 'FUTIDX', 'OPTSTK']);
+const STABLE_INSTRUMENTS = new Set(['EQUITY', 'FUTSTK', 'FUTIDX']);
+const MIN_TOTAL_ROWS = 1000;
+const MIN_STABLE_ROWS = 1000;
+const MIN_OPTSTK_ROWS = 1;
+const MASTER_SYNC_LEASE = 'master-contracts-sync';
+const MASTER_SYNC_LEASE_TTL_MS = 120_000;
 
 export type SecurityEntry = {
   securityId: string;
@@ -34,26 +42,161 @@ export type FuturesRangeEntry = SecurityEntry & {
   lotSize: number;
 };
 
-// Process-level flag — skip even the DB check once synced
-let synced = false;
+// Cache the exact calendar date verified. A boolean would stay true across
+// midnight and could authorize yesterday's snapshot in a long-running process.
+let syncedForDate: string | null = null;
 const FNO_SYMBOLS = new Set<string>(fnoUniverse.stocks);
 
 import { todayIST } from '@/lib/dhan/market-feed';
+
+export interface MasterContractQueryClient {
+  $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>;
+}
+
+export interface MasterContractFreshness {
+  expectedSyncDate: string;
+  syncDate: string | null;
+  rowCount: number;
+  distinctSyncDates: number;
+  stableRows: number;
+  optStkRows: number;
+  manifest: {
+    syncDate: string;
+    totalRows: number;
+    stableRows: number;
+    optStkRows: number;
+    completedAt: string;
+    sourceHash: string;
+  } | null;
+  state: 'fresh' | 'missing' | 'stale' | 'incomplete';
+  acceptable: boolean;
+  reason: string | null;
+}
+
+/** Verify that the table is one complete daily snapshot for the requested trade
+ * date. The nightly refresh replaces every row transactionally, so multiple
+ * sync dates indicate a corrupted/manual partial table and fail closed too. */
+export async function getMasterContractFreshness(
+  expectedSyncDate: string,
+  db: MasterContractQueryClient = prisma
+): Promise<MasterContractFreshness> {
+  const rows = await db.$queryRawUnsafe<
+    {
+      syncDate: string;
+      rowCount: number | bigint;
+      stableRows: number | bigint;
+      optStkRows: number | bigint;
+    }[]
+  >(
+    `SELECT syncDate,
+            COUNT(*) AS rowCount,
+            SUM(CASE WHEN instrument IN ('EQUITY', 'FUTSTK', 'FUTIDX') THEN 1 ELSE 0 END) AS stableRows,
+            SUM(CASE WHEN instrument = 'OPTSTK' AND segment = 'NSE_FNO' THEN 1 ELSE 0 END) AS optStkRows
+       FROM master_contracts
+      GROUP BY syncDate
+      ORDER BY syncDate DESC`
+  );
+  const syncDate = rows[0]?.syncDate == null ? null : String(rows[0].syncDate);
+  const rowCount = rows.reduce((sum, row) => sum + Number(row.rowCount), 0);
+  const stableRows = rows.reduce((sum, row) => sum + Number(row.stableRows), 0);
+  const optStkRows = rows.reduce((sum, row) => sum + Number(row.optStkRows), 0);
+  const distinctSyncDates = rows.length;
+  let manifest: MasterContractFreshness['manifest'] = null;
+  try {
+    const manifestRows = await db.$queryRawUnsafe<
+      {
+        syncDate: string;
+        totalRows: number | bigint;
+        stableRows: number | bigint;
+        optStkRows: number | bigint;
+        completedAt: string;
+        sourceHash: string;
+      }[]
+    >(
+      `SELECT syncDate, totalRows, stableRows, optStkRows, completedAt, sourceHash
+         FROM master_contract_snapshots
+        WHERE syncDate = ?
+        LIMIT 1`,
+      expectedSyncDate
+    );
+    const stored = manifestRows[0];
+    if (stored) {
+      manifest = {
+        syncDate: String(stored.syncDate),
+        totalRows: Number(stored.totalRows),
+        stableRows: Number(stored.stableRows),
+        optStkRows: Number(stored.optStkRows),
+        completedAt: String(stored.completedAt),
+        sourceHash: String(stored.sourceHash),
+      };
+    }
+  } catch (error) {
+    // Existing databases do not have the manifest table until the first sync
+    // on this version. Treat that as incomplete; any other query failure must
+    // surface rather than silently authorizing a snapshot.
+    if (!(error instanceof Error) || !/no such table: master_contract_snapshots/i.test(error.message)) throw error;
+  }
+
+  let state: MasterContractFreshness['state'];
+  let reason: string | null;
+  if (rowCount === 0) {
+    state = 'missing';
+    reason = `master contracts missing for ${expectedSyncDate}`;
+  } else if (distinctSyncDates === 1 && syncDate !== expectedSyncDate) {
+    state = 'stale';
+    reason = `master contracts stale: last sync ${syncDate ?? 'unknown'}, expected ${expectedSyncDate}`;
+  } else if (distinctSyncDates !== 1) {
+    state = 'incomplete';
+    reason = `master contracts contain ${distinctSyncDates} sync dates (latest ${syncDate ?? 'unknown'}); expected one completed ${expectedSyncDate} snapshot`;
+  } else if (manifest == null) {
+    state = 'incomplete';
+    reason = `master contracts ${expectedSyncDate} snapshot has no completed manifest`;
+  } else if (
+    manifest.syncDate !== expectedSyncDate ||
+    manifest.totalRows !== rowCount ||
+    manifest.stableRows !== stableRows ||
+    manifest.optStkRows !== optStkRows
+  ) {
+    state = 'incomplete';
+    reason = `master contracts ${expectedSyncDate} counts do not match completed manifest (table ${rowCount}/${stableRows}/${optStkRows}, manifest ${manifest.totalRows}/${manifest.stableRows}/${manifest.optStkRows})`;
+  } else if (
+    rowCount < MIN_TOTAL_ROWS ||
+    stableRows < MIN_STABLE_ROWS ||
+    optStkRows < MIN_OPTSTK_ROWS ||
+    manifest.completedAt.trim() === '' ||
+    manifest.sourceHash.trim() === ''
+  ) {
+    state = 'incomplete';
+    reason = `master contracts ${expectedSyncDate} completed manifest failed sanity floors (total ${rowCount}, stable ${stableRows}, OPTSTK ${optStkRows})`;
+  } else {
+    state = 'fresh';
+    reason = null;
+  }
+  const acceptable = state === 'fresh';
+  return {
+    expectedSyncDate,
+    syncDate,
+    rowCount,
+    distinctSyncDates,
+    stableRows,
+    optStkRows,
+    manifest,
+    state,
+    acceptable,
+    reason,
+  };
+}
 
 /**
  * Check if master contracts are synced for today.
  * Does NOT trigger a download — consumers should direct users to the Master Contracts page.
  */
 export async function ensureSynced(): Promise<void> {
-  if (synced) return;
-
   const today = todayIST();
-  const count = await prisma.masterContract.count({
-    where: { syncDate: today },
-  });
-
-  if (count > 0) {
-    synced = true;
+  if (syncedForDate === today) return;
+  const freshness = await getMasterContractFreshness(today);
+  if (freshness.acceptable) {
+    syncedForDate = today;
     return;
   }
 
@@ -187,6 +330,30 @@ async function syncFromDhan(today: string): Promise<void> {
     });
   }
 
+  // The database identity is (securityId, segment). Collapse byte-for-byte
+  // duplicate CSV rows before insertion, but reject conflicting duplicates:
+  // INSERT OR IGNORE used to hide those collisions and could silently drop a
+  // contract while still stamping the table with today's date.
+  const uniqueEntries = new Map<string, (typeof entries)[number]>();
+  for (const entry of entries) {
+    const key = `${entry.securityId}\u0000${entry.segment}`;
+    const previous = uniqueEntries.get(key);
+    if (previous == null) {
+      uniqueEntries.set(key, entry);
+      continue;
+    }
+    const canonical = (value: (typeof entries)[number]) =>
+      JSON.stringify({
+        ...value,
+        expiryDate: value.expiryDate?.toISOString() ?? null,
+      });
+    if (canonical(previous) !== canonical(entry)) {
+      throw new Error(`master-contracts sync aborted: conflicting duplicate identity ${entry.securityId}/${entry.segment}`);
+    }
+  }
+  entries.length = 0;
+  entries.push(...uniqueEntries.values());
+
   // Row-count sanity (C3, forensic audit): a truncated download / changed CSV
   // format must never wipe a good table. Two guards:
   //   1. Absolute floor — a near-empty parse is always a broken download.
@@ -197,13 +364,18 @@ async function syncFromDhan(today: string): Promise<void> {
   //      contracts over 22 days aborted every nightly sync and froze the whole
   //      table 22 days stale). Equities + futures don't churn, so they are the
   //      honest truncation signal.
-  const STABLE = new Set(['EQUITY', 'FUTSTK', 'FUTIDX']);
-  const parsedStable = entries.reduce((n, e) => (STABLE.has(e.instrument) ? n + 1 : n), 0);
+  const parsedStable = entries.reduce((n, e) => (STABLE_INSTRUMENTS.has(e.instrument) ? n + 1 : n), 0);
+  const parsedOptStk = entries.reduce(
+    (n, e) => (e.instrument === 'OPTSTK' && e.segment === 'NSE_FNO' ? n + 1 : n),
+    0
+  );
   const existingCount = await prisma.masterContract.count();
-  const existingStable = await prisma.masterContract.count({ where: { instrument: { in: [...STABLE] } } });
-  if (entries.length < 1000 || parsedStable < 1000) {
+  const existingStable = await prisma.masterContract.count({
+    where: { instrument: { in: [...STABLE_INSTRUMENTS] } },
+  });
+  if (entries.length < MIN_TOTAL_ROWS || parsedStable < MIN_STABLE_ROWS || parsedOptStk < MIN_OPTSTK_ROWS) {
     throw new Error(
-      `master-contracts sync aborted: parsed ${entries.length} rows (${parsedStable} stable) — CSV truncated or format changed; existing ${existingCount} rows kept`,
+      `master-contracts sync aborted: parsed ${entries.length} rows (${parsedStable} stable, ${parsedOptStk} OPTSTK) — CSV truncated or format changed; existing ${existingCount} rows kept`,
     );
   }
   if (existingStable > 0 && parsedStable < existingStable * 0.9) {
@@ -213,12 +385,23 @@ async function syncFromDhan(today: string): Promise<void> {
   }
 
   console.log(`[MasterContracts] Parsed ${entries.length} entries, inserting into DB...`);
+  const sourceHash = createHash('sha256').update(text).digest('hex');
 
   // DELETE + re-insert inside ONE transaction: a crash mid-sync used to leave
   // an empty table until a human noticed. Now the old rows survive any failure.
   const CHUNK_SIZE = 500;
   await prisma.$transaction(
     async (tx) => {
+      await tx.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS master_contract_snapshots (
+          syncDate    TEXT PRIMARY KEY,
+          totalRows   INTEGER NOT NULL,
+          stableRows  INTEGER NOT NULL,
+          optStkRows  INTEGER NOT NULL,
+          completedAt TEXT NOT NULL,
+          sourceHash  TEXT NOT NULL
+        )
+      `);
       // Clear all rows before re-inserting — ensures syncDate is always today
       await tx.$executeRawUnsafe('DELETE FROM master_contracts');
       for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
@@ -235,13 +418,48 @@ async function syncFromDhan(today: string): Promise<void> {
           .join(',');
 
         await tx.$executeRawUnsafe(
-          `INSERT OR IGNORE INTO master_contracts (id, securityId, symbol, exchange, segment, instrument, name, underlying, expiryDate, lotSize, strikePrice, optionType, syncDate) VALUES ${values}`,
+          `INSERT INTO master_contracts (id, securityId, symbol, exchange, segment, instrument, name, underlying, expiryDate, lotSize, strikePrice, optionType, syncDate) VALUES ${values}`,
         );
 
         if ((i / CHUNK_SIZE) % 50 === 0 && i > 0) {
           console.log(`[MasterContracts] Inserted ${i}/${entries.length}...`);
         }
       }
+
+      const countRows = await tx.$queryRawUnsafe<
+        { totalRows: number | bigint; stableRows: number | bigint; optStkRows: number | bigint }[]
+      >(
+        `SELECT COUNT(*) AS totalRows,
+                SUM(CASE WHEN instrument IN ('EQUITY', 'FUTSTK', 'FUTIDX') THEN 1 ELSE 0 END) AS stableRows,
+                SUM(CASE WHEN instrument = 'OPTSTK' AND segment = 'NSE_FNO' THEN 1 ELSE 0 END) AS optStkRows
+           FROM master_contracts
+          WHERE syncDate = ?`,
+        today
+      );
+      const totalRows = Number(countRows[0]?.totalRows ?? 0);
+      const stableRows = Number(countRows[0]?.stableRows ?? 0);
+      const optStkRows = Number(countRows[0]?.optStkRows ?? 0);
+      if (totalRows !== entries.length || stableRows !== parsedStable || optStkRows !== parsedOptStk) {
+        throw new Error(
+          `master-contracts post-insert proof failed: expected ${entries.length}/${parsedStable}/${parsedOptStk}, stored ${totalRows}/${stableRows}/${optStkRows}`
+        );
+      }
+      await tx.$executeRawUnsafe(
+        `INSERT INTO master_contract_snapshots (syncDate, totalRows, stableRows, optStkRows, completedAt, sourceHash)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(syncDate) DO UPDATE SET
+           totalRows = excluded.totalRows,
+           stableRows = excluded.stableRows,
+           optStkRows = excluded.optStkRows,
+           completedAt = excluded.completedAt,
+           sourceHash = excluded.sourceHash`,
+        today,
+        totalRows,
+        stableRows,
+        optStkRows,
+        new Date().toISOString(),
+        sourceHash
+      );
     },
     { timeout: 180_000, maxWait: 15_000 },
   );
@@ -257,10 +475,54 @@ async function syncFromDhan(today: string): Promise<void> {
 export async function forceSync(): Promise<{ count: number; elapsed: string }> {
   const today = todayIST();
   const startMs = Date.now();
-  await syncFromDhan(today);
-  synced = true;
-  const count = await prisma.masterContract.count();
-  return { count, elapsed: `${((Date.now() - startMs) / 1000).toFixed(1)}s` };
+  if (!(await tryAcquireRuntimeLease(MASTER_SYNC_LEASE, MASTER_SYNC_LEASE_TTL_MS))) {
+    throw new Error('master-contracts sync already in progress on another server');
+  }
+  const renewal = setInterval(() => {
+    void tryAcquireRuntimeLease(MASTER_SYNC_LEASE, MASTER_SYNC_LEASE_TTL_MS);
+  }, 30_000);
+  renewal.unref?.();
+  try {
+    await syncFromDhan(today);
+    const freshness = await getMasterContractFreshness(today);
+    if (!freshness.acceptable) {
+      throw new Error(`master-contracts sync committed without a valid manifest: ${freshness.reason ?? 'unknown'}`);
+    }
+    syncedForDate = today;
+    return { count: freshness.rowCount, elapsed: `${((Date.now() - startMs) / 1000).toFixed(1)}s` };
+  } finally {
+    clearInterval(renewal);
+    await releaseRuntimeLease(MASTER_SYNC_LEASE);
+  }
+}
+
+export interface MasterContractCatchUpResult {
+  refreshed: boolean;
+  freshness: MasterContractFreshness;
+  sync: { count: number; elapsed: string } | null;
+}
+
+/** One-shot catch-up used at boot and before live capture. Dependency injection
+ * keeps the stale->sync->verify safety sequence executable in CI without
+ * downloading Dhan's large production CSV. The production sync is forceSync(),
+ * which owns the cross-process lease above. */
+export async function repairMasterContractsForDate(
+  expectedSyncDate: string,
+  dependencies: {
+    readFreshness?: (date: string) => Promise<MasterContractFreshness>;
+    sync?: () => Promise<{ count: number; elapsed: string }>;
+  } = {}
+): Promise<MasterContractCatchUpResult> {
+  const readFreshness = dependencies.readFreshness ?? ((date: string) => getMasterContractFreshness(date));
+  const sync = dependencies.sync ?? forceSync;
+  const before = await readFreshness(expectedSyncDate);
+  if (before.acceptable) return { refreshed: false, freshness: before, sync: null };
+  const syncResult = await sync();
+  const after = await readFreshness(expectedSyncDate);
+  if (!after.acceptable) {
+    throw new Error(`master-contracts catch-up did not produce a complete snapshot: ${after.reason ?? 'unknown'}`);
+  }
+  return { refreshed: true, freshness: after, sync: syncResult };
 }
 
 /**

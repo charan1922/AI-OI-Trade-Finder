@@ -49,6 +49,30 @@ export interface OptionPlan {
   premium: OptionPremium | null;
 }
 
+export type OptionResolutionStatus =
+  | 'selected'
+  | 'invalid-request'
+  | 'master-stale'
+  | 'master-incomplete'
+  | 'no-listed-expiry'
+  | 'no-eligible-expiry'
+  | 'no-strike'
+  | 'invalid-master-data'
+  | 'query-error';
+
+/** Auditable output from the contract-master boundary. It explains both a
+ * successful month roll and a fail-closed non-resolution. */
+export interface OptionExpiryResolution {
+  status: OptionResolutionStatus;
+  selectedExpiry: string | null;
+  nearestListedExpiry: string | null;
+  rolled: boolean;
+  rollReason: 'EXPIRY_WEEK' | null;
+  calendarDte: number | null;
+  masterSyncDate: string | null;
+  detail: string;
+}
+
 /** Spot-level trade plan. Premium-level numbers are never fabricated. */
 export interface SpotPlan {
   entrySpot: number;
@@ -127,6 +151,9 @@ export interface TradeSuggestion {
   direction: 'bullish' | 'bearish';
   score: number;
   option: OptionPlan | null; // null if no OPTSTK contract resolved (suggestion still shown)
+  /** Structured contract-selection audit. Optional only for legacy fixtures and
+   * rows created before the expiry-week policy existed. */
+  optionResolution?: OptionExpiryResolution;
   plan: SpotPlan;
   // Signal snapshot at suggestion time
   rFactor: number;
@@ -202,6 +229,11 @@ export interface StoredSuggestion {
   targetSpot: number | null;
   lotSize: number;
   optSecurityId: string;
+  nearestListedExpiry: string | null;
+  expiryRolled: boolean | null;
+  expiryRollReason: 'EXPIRY_WEEK' | null;
+  expiryCalendarDte: number | null;
+  masterSyncDate: string | null;
   sector: string;
   rFactor: number;
   confidence: number;
