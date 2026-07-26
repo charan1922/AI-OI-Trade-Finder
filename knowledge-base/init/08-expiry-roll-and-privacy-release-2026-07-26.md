@@ -451,7 +451,7 @@ Two days is a good sign, not yet a pattern.
 
 ---
 
-# Addendum — 27 July 2026: roll verified on real data, plus two follow-up PRs
+# Addendum — 27 July 2026: roll verified on real data, plus a follow-up PR
 
 Written the morning the roll first fires. Everything below is measured, not
 predicted.
@@ -543,7 +543,7 @@ contract lookup is a separate query; and `checkOptionExpiryForEntry()` re-checks
 the contract's own expiry inside the order gate as the last step before money
 moves.
 
-## PR #25 — a configuration label that was lying
+## PR #27, part 1 — a configuration label that was lying
 
 `/config` had a setting called **"Commentary entry cutoff"**, described as only
 affecting what the AI writes. It is also a hard block on real orders:
@@ -566,7 +566,7 @@ cutoff to its default.
 The review's alternative — remove the cutoff from the gate — was rejected. That
 loosens a working safety rail to fix a naming problem.
 
-## PR #26 — commentary rows were stored as public
+## PR #27, part 2 — commentary rows were stored as public
 
 The **reading** side already failed private. The **writing** side did not: an
 omitted flag stored `0` (public), and both auto-trader writes omitted it. So the
@@ -586,8 +586,7 @@ explicitly, and a test pins all three cases. No trading code touched.
 | Question | Answer |
 |---|---|
 | What is production running? | `88ede7f` |
-| Is PR #25 in `main` or `prod`? | No / No |
-| Is PR #26 in `main` or `prod`? | No / No |
+| Is PR #27 in `main` or `prod`? | No / No |
 | What does `main` have beyond `prod`? | One commit — this document. No code. |
 
 Both branches: `typecheck`, `typecheck:scripts`, `lint`,
