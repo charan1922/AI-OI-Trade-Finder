@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import OpenAI from 'openai';
 import { buildOpenPositionPicks } from '../lib/ai-commentary/picks';
 import { MIMO_DEFAULT_MODEL, resolveMimoModel } from '../lib/ai-commentary/client';
-import { commentaryForRole, tradeSuggestForRole } from '../lib/auth/trading-privacy';
+import { commentaryForRole, timelinesForRole, tradeSuggestForRole } from '../lib/auth/trading-privacy';
 import {
   buildScanContext,
   composeDecisionContext,
@@ -318,6 +318,38 @@ check('viewer commentary redacts management text and exact position cards only',
   assert.doesNotMatch(viewerRows[0].text, /INFY|fill|stop|target/i);
   assert.equal(viewerRows[1].text, 'Public scanner read');
   assert.equal(commentaryForRole(rows, false)[0].text, 'INFY exact fill/stop/target');
+});
+
+check('viewer cycle timelines keep step timings but lose the position-guard detail', () => {
+  // Real shape: the guard step joins its action lines, which name the held
+  // contract and its premiums. Redacting the commentary card while leaking the
+  // same facts through a timeline tooltip would defeat the whole redaction.
+  const timelines = [
+    {
+      date: '2026-07-24',
+      steps: [
+        { name: 'scan (trade-suggest)', ms: 1639, ok: true, detail: '68 scanned · 10 pick(s)' },
+        {
+          name: 'position guard',
+          ms: 42,
+          ok: true,
+          detail: 'INFY 1020PE: premium stop hit (bid ₹9.35 ≤ ₹9.42) · exited −₹680',
+        },
+      ],
+    },
+  ];
+  const viewer = timelinesForRole(timelines, true);
+  const serialized = JSON.stringify(viewer);
+  assert.doesNotMatch(serialized, /INFY|1020PE|9\.35|680/);
+  assert.equal(viewer[0].steps[1].detail, undefined);
+  // Operational value is preserved: names, durations and ok flags survive.
+  assert.equal(viewer[0].steps[1].name, 'position guard');
+  assert.equal(viewer[0].steps[1].ms, 42);
+  assert.equal(viewer[0].steps[1].ok, true);
+  assert.equal(viewer[0].steps.length, 2);
+  // The operator still sees everything, and the source object is not mutated.
+  assert.match(timelinesForRole(timelines, false)[0].steps[1].detail ?? '', /INFY 1020PE/);
+  assert.match(timelines[0].steps[1].detail, /INFY 1020PE/);
 });
 
 function mimoHttpClient(

@@ -1,6 +1,8 @@
 /** Pure, DB-free regression matrix for the stock-option expiry roll policy. */
 import {
+  activeOptionExpiryMonths,
   checkOptionExpiryForEntry,
+  checkOptionMonthCoverage,
   normalizeIsoDate,
   optionExpiryWeekStart,
   selectOptionExpiryForEntry,
@@ -94,5 +96,58 @@ export function runExpiryPolicyChecks(check: Check): void {
   check(
     'expiry selection: no eligible listed month means no contract',
     selectOptionExpiryForEntry('2026-09-28', listed) == null
+  );
+
+  // Month-coverage guard. A row-count floor cannot catch a missing SERIES: one
+  // month is only ~1/3 of the option rows, so a truncated CSV still parses
+  // "large" while the resolver quietly rolls past the intended next month.
+  const stored = ['2026-07-28', '2026-08-25', '2026-09-29'];
+  check(
+    'coverage: expired months are excluded from the count',
+    activeOptionExpiryMonths('2026-07-29', stored).join(',') === '2026-08-25,2026-09-29'
+  );
+  check(
+    'coverage: an identical download passes',
+    checkOptionMonthCoverage('2026-07-27', stored, stored).ok
+  );
+  check(
+    'coverage: THE BUG — August missing from the download is refused, so the resolver cannot skip to September',
+    (() => {
+      const v = checkOptionMonthCoverage('2026-07-27', ['2026-07-28', '2026-09-29'], stored);
+      return !v.ok && v.reason?.includes('2026-08-25') === true;
+    })(),
+    checkOptionMonthCoverage('2026-07-27', ['2026-07-28', '2026-09-29'], stored).reason ?? 'no reason'
+  );
+  check(
+    'coverage: the normal cycle (July expires, October is listed) passes',
+    checkOptionMonthCoverage('2026-07-29', ['2026-08-25', '2026-09-29', '2026-10-27'], stored).ok
+  );
+  check(
+    'coverage: the far month listed a day late does NOT false-abort the sync',
+    checkOptionMonthCoverage('2026-07-29', ['2026-08-25', '2026-09-29'], stored).ok
+  );
+  check(
+    'coverage: a duplicated month is not counted twice',
+    !checkOptionMonthCoverage('2026-07-27', ['2026-07-28', '2026-07-28', '2026-09-29'], stored).ok
+  );
+  check(
+    'coverage: malformed expiry strings are ignored, not trusted as a month',
+    !checkOptionMonthCoverage('2026-07-27', ['2026-07-28', '2026-08-25-WRONG', '2026-09-29'], stored).ok
+  );
+  check(
+    'coverage: RFC3339 master timestamps normalize to the same month',
+    checkOptionMonthCoverage(
+      '2026-07-27',
+      ['2026-07-28T09:00:00.000Z', '2026-08-25T09:00:00.000Z', '2026-09-29T09:00:00.000Z'],
+      stored
+    ).ok
+  );
+  check(
+    'coverage: first sync (no stored baseline) is allowed — row floors are the only guard there',
+    checkOptionMonthCoverage('2026-07-27', ['2026-08-25'], []).ok
+  );
+  check(
+    'coverage: a fully expired baseline is not treated as a shrink',
+    checkOptionMonthCoverage('2026-10-01', ['2026-10-27'], stored).ok
   );
 }

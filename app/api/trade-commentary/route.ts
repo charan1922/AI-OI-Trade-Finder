@@ -8,7 +8,7 @@ import { getCycleTimelines } from '@/lib/ops/cycle-timeline';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
 import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import { isReadOnlyRequest } from '@/lib/auth/server';
-import { commentaryForRole } from '@/lib/auth/trading-privacy';
+import { commentaryForRole, timelinesForRole } from '@/lib/auth/trading-privacy';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,6 +34,7 @@ export async function GET(req: Request) {
     // Per-cycle step timings for the same session — the page pairs each read
     // with its cycle (timeline.commentaryId) and lists no-read cycles too.
     const timelines = await getCycleTimelines(date).catch(() => []);
+    const readOnly = isReadOnlyRequest(req);
     return NextResponse.json({
       success: true,
       configured: hasMimo(),
@@ -41,8 +42,10 @@ export async function GET(req: Request) {
       modelConfigurationError: settings.mimoModelConfigurationError,
       decisionProvider: settings.aiProvider,
       date,
-      rows: commentaryForRole(rows, isReadOnlyRequest(req)),
-      timelines,
+      rows: commentaryForRole(rows, readOnly),
+      // Guard/reconcile step details name the held contract and its premiums —
+      // redact them for viewers or the commentary redaction above is pointless.
+      timelines: timelinesForRole(timelines, readOnly),
     });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });

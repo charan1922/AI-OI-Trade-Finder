@@ -84,6 +84,63 @@ export function checkOptionExpiryForEntry(
   return { allow: true, dte, reason: null };
 }
 
+/** Distinct still-tradable expiry months in a set of contract-master expiries.
+ * Expired dates are excluded so a legitimate month roll-off does not look like
+ * a missing month. */
+export function activeOptionExpiryMonths(
+  tradeDate: string,
+  expiryDates: readonly (string | null | undefined)[]
+): string[] {
+  const tradeEpoch = isoDayEpoch(tradeDate);
+  if (tradeEpoch == null) return [];
+  const active = new Set<string>();
+  for (const raw of expiryDates) {
+    if (raw == null) continue;
+    const iso = normalizeIsoDate(raw);
+    if (iso == null) continue;
+    const epoch = isoDayEpoch(iso);
+    if (epoch != null && epoch >= tradeEpoch) active.add(iso);
+  }
+  return [...active].sort();
+}
+
+/**
+ * Completeness guard for a freshly parsed contract master.
+ *
+ * A row-count floor cannot catch the dangerous truncation: losing ONE monthly
+ * series is only ~1/3 of the option rows, so the parse still looks large — but
+ * the resolver would then skip the intended next month and silently select the
+ * one after it. The honest signal is COVERAGE: a download must list at least as
+ * many still-tradable expiry months as the snapshot it is about to replace.
+ *
+ * Expired months are excluded on both sides, so the normal cycle (the near
+ * month expires, a new far month is listed) can never trip this — and it does
+ * not trip either if the exchange lists the new far month a day late.
+ */
+export function checkOptionMonthCoverage(
+  tradeDate: string,
+  parsedExpiries: readonly (string | null | undefined)[],
+  existingExpiries: readonly (string | null | undefined)[]
+): { ok: boolean; parsedMonths: string[]; existingMonths: string[]; reason: string | null } {
+  const parsedMonths = activeOptionExpiryMonths(tradeDate, parsedExpiries);
+  const existingMonths = activeOptionExpiryMonths(tradeDate, existingExpiries);
+  // No usable baseline (first sync, or every stored month has expired) — the
+  // absolute row floors are the only guard available, and they already ran.
+  if (existingMonths.length === 0) return { ok: true, parsedMonths, existingMonths, reason: null };
+  if (parsedMonths.length >= existingMonths.length) {
+    return { ok: true, parsedMonths, existingMonths, reason: null };
+  }
+  const missing = existingMonths.filter((month) => !parsedMonths.includes(month));
+  return {
+    ok: false,
+    parsedMonths,
+    existingMonths,
+    reason:
+      `option expiry coverage shrank ${existingMonths.length}→${parsedMonths.length} unexpired months ` +
+      `(missing ${missing.join(', ') || 'unknown'}) — a listed series is absent from this download`,
+  };
+}
+
 /** Pick the nearest eligible expiry from the contract master's available
  * months. Invalid/duplicate rows are harmless; no eligible month means no
  * contract and therefore no trade. */
