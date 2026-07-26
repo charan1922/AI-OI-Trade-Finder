@@ -51,7 +51,7 @@ import {
   EXTENDED_BYPASS_REQUIRE_SUPERTREND,
   EXTENDED_SCORE_MULT,
   MAX_PICKS,
-  MAX_SPREAD_PCT,
+  SUGGESTION_MAX_SPREAD_PCT,
   MIN_CONFIDENCE,
   MIN_NSE_OI_PCT,
   MIN_OI_LEVEL,
@@ -672,7 +672,7 @@ export function replayVariant(
 
       // ── The engine's gate sequence, verbatim order (thresholds from variant) ──
       const verdict = setupScore(row);
-      if (verdict.level === 'illiquid' || row.spreadPct == null || row.spreadPct > MAX_SPREAD_PCT) {
+      if (verdict.level === 'illiquid' || row.spreadPct == null || row.spreadPct > SUGGESTION_MAX_SPREAD_PCT) {
         bump('illiquid');
         continue;
       }

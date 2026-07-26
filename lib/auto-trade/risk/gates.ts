@@ -14,7 +14,7 @@ import {
   istMinuteLabel,
   MAX_ENTRY_SLIPPAGE_PCT,
   MAX_RISK_PER_LOT_FALLBACK,
-  MAX_SPREAD_PCT,
+  ORDER_ENTRY_MAX_SPREAD_PCT,
   OPTION_STOP_PCT_FALLBACK,
 } from '../config';
 import type { AutoTradeSettings, GateVerdict } from '../types';
@@ -109,7 +109,7 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
     ['settings.squareOffMin', s.squareOffMin],
     ['settings.entryStartMin', s.entryStartMin ?? ENTRY_START_MIN],
     ['settings.entryEndMin', s.entryEndMin ?? ENTRY_END_MIN],
-    ['settings.maxSpreadPct', s.maxSpreadPct ?? MAX_SPREAD_PCT],
+    ['settings.maxSpreadPct', s.maxSpreadPct ?? ORDER_ENTRY_MAX_SPREAD_PCT],
     ['settings.optionStopPct', s.optionStopPct ?? OPTION_STOP_PCT_FALLBACK],
     ['settings.maxRiskPerLotRupees', s.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK],
   ];
@@ -235,7 +235,7 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
       `premium moved ${x.slippagePct.toFixed(1)}% since the scan quote (> ${MAX_ENTRY_SLIPPAGE_PCT}% slippage guard)`
     );
   }
-  const maxSpread = s.maxSpreadPct ?? MAX_SPREAD_PCT;
+  const maxSpread = s.maxSpreadPct ?? ORDER_ENTRY_MAX_SPREAD_PCT;
   if (x.spreadPct == null || !Number.isFinite(x.spreadPct) || x.spreadPct < 0) {
     reasons.push('option spread unavailable — liquidity cannot be verified');
   } else if (x.spreadPct > maxSpread) {

@@ -183,7 +183,7 @@ function scanAtTick(tick: number): SuggestResponse {
 
     // Engine gate sequence, production thresholds.
     const verdict = setupScore(row);
-    if (verdict.level === 'illiquid' || row.spreadPct == null || row.spreadPct > cfg.MAX_SPREAD_PCT) {
+    if (verdict.level === 'illiquid' || row.spreadPct == null || row.spreadPct > cfg.SUGGESTION_MAX_SPREAD_PCT) {
       bump('illiquid');
       continue;
     }
