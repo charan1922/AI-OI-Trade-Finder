@@ -13,6 +13,7 @@ have to rely on old chat history.
 - `init/05-live-loss-review-2026-07-22.md` — production evidence for the losing streak, tag comparison, and the local cash-target hotfix.
 - `init/06-rfactor-v2-shadow.md` — the shadow activity/direction engine.
 - `init/07-premium-stop-review-2026-07-23.md` — why the premium stop was resized to the option itself, the SRF proof case, the replay verdict and its limits, the 10-setting configuration drift, and the toggle audit. **Supersedes the stop-loss half of `05`.**
+- `init/08-expiry-roll-and-privacy-release-2026-07-26.md` — the 26 July production release in plain English: the expiry-week contract roll (first fires Monday 27 July), the AI-config bug that could have switched off the stop-loss, three read-only-viewer position leaks, the four damaged-download checks, restart recovery, what was measured versus reasoned, a mistake caught in review, and the seven remaining gaps. **LIVE on `prod` at `88ede7f`.**
 
 ## Maintenance rule
 
