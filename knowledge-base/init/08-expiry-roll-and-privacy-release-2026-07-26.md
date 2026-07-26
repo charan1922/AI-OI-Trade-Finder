@@ -448,3 +448,162 @@ The trading edge is unchanged. 23 and 24 July produced +₹4,445 across 8 trades
 with 6 wins. That is two days. The average win (₹1,123) and average loss (₹1,145)
 are almost equal, so the result depends entirely on the win rate holding up.
 Two days is a good sign, not yet a pattern.
+
+---
+
+# Addendum — 27 July 2026: roll verified on real data, plus two follow-up PRs
+
+Written the morning the roll first fires. Everything below is measured, not
+predicted.
+
+## The roll was replayed against the real contract file before the open
+
+The actual policy functions were run against the real `master_contracts`
+snapshot (`syncDate 2026-07-26`, 210 F&O underlyings, 70,616 option rows):
+
+| Trade date | What the code picks |
+|---|---|
+| Fri 24 July | **28 July** (4 days left) for all 210 names |
+| **Mon 27 July** | **25 August** (29 days left) for **208** names |
+| Tue 28 July | 25 August for 208 names |
+| Wed 29 July | 25 August for 208 names |
+
+The July contract itself, day by day:
+
+```
+2026-07-24 -> allowed
+2026-07-27 -> REFUSED: expires this calendar week on 2026-07-28 — use next month
+2026-07-28 -> REFUSED: same
+2026-07-29 -> REFUSED: contract expired on 2026-07-28
+```
+
+**The roll works.** It flips on Monday, not on expiry day, which is the whole
+point of the change.
+
+### The two names that get refused entirely
+
+`EXIDEIND` and `NUVAMA` have **only** the 28 July contract listed — no August,
+no September, and their futures are July-only too. So from Monday they have no
+eligible contract and the code refuses them.
+
+That is the correct, safe outcome (refuse rather than guess), and it is 2 names
+out of 210. Coverage across the universe:
+
+| Months listed | Underlyings |
+|---|---|
+| 3 (normal) | 207 |
+| 2 | 1 |
+| 1 (untradable from Monday) | 2 |
+
+If either name later starts trading normally on the exchange while still showing
+one month here, that is a download problem — check `/trading-lab/master-contracts`
+before assuming it is an exchange decision.
+
+## The "build an expiry calendar table" proposal — declined, with numbers
+
+An architecture review suggested replacing the contract-file logic with a small
+hand-maintained expiry table ("last Tuesday of the month"), on the belief that
+we scan 70,000 rows on every trade.
+
+**We do not.** Measured on the real database:
+
+| Step | Cost |
+|---|---|
+| Get a symbol's listed expiries | **0.427 ms** (warm, averaged over 1,000 calls) |
+| Get the nearest strike + security ID + lot size | **0.199 ms** |
+| **Total per symbol** | **~0.63 ms** |
+
+The query plan confirms it uses an index and never scans the table:
+
+```
+SEARCH master_contracts USING INDEX
+  master_contracts_underlying_expiryDate_optionType_strikePrice_idx (underlying=?)
+```
+
+For INFY it returns three dates — `2026-07-28, 2026-08-25, 2026-09-29` — which
+is *exactly* the table the review wanted written by hand. The exchange already
+sends it, through Dhan, every day.
+
+Three reasons it was declined:
+
+1. **It creates a second opinion you can never act on.** If the table says
+   25 August and the contract says 24 August, you must buy the contract. A
+   source you always overrule is not a source.
+2. **"Last Tuesday" is an exchange rule that has changed before.** Hard-coding
+   it means it breaks silently, on a day you are holding something.
+3. **It would not remove any work.** Step 2 (strike, security ID, lot size)
+   still needs the same table.
+
+The 70,616 figure is real but belongs to the once-a-day download integrity
+check, which never runs during a trade.
+
+The separation the review asked for already exists:
+`selectOptionExpiryForEntry()` is a pure function with no database access; the
+contract lookup is a separate query; and `checkOptionExpiryForEntry()` re-checks
+the contract's own expiry inside the order gate as the last step before money
+moves.
+
+## PR #25 — a configuration label that was lying
+
+`/config` had a setting called **"Commentary entry cutoff"**, described as only
+affecting what the AI writes. It is also a hard block on real orders:
+
+```
+hardEnd = min(entry window close, this cutoff − 1 min, square-off − 1 min)
+```
+
+Both the AI path and the human-approval path load it before placing an order.
+
+**It is not biting today.** Entry close is 12:15 and the cutoff caps at 12:29,
+so the tighter one — your own setting — wins. The trap is widening the entry
+window past 12:29 and being silently capped anyway.
+
+Fixed by renaming the label to **"Hard fresh-entry cutoff — blocks REAL orders"**
+and spelling out the interaction on both clock settings. The stored key was left
+alone on purpose: renaming it would orphan the saved value and silently reset the
+cutoff to its default.
+
+The review's alternative — remove the cutoff from the gate — was rejected. That
+loosens a working safety rail to fix a naming problem.
+
+## PR #26 — commentary rows were stored as public
+
+The **reading** side already failed private. The **writing** side did not: an
+omitted flag stored `0` (public), and both auto-trader writes omitted it. So the
+rows containing real fills, stop moves and open premiums were stored as public.
+
+**Nothing leaked**, because redaction separately checks
+`promptKey === 'auto-trader'` and caught every one. But that is a lucky second
+check, not the design — `containsExecutionState` is the field the redaction is
+named for, and removing the redundant check in a future tidy-up would have
+published the book.
+
+Fixed: an unclassified writer now stores private, both writers say so
+explicitly, and a test pins all three cases. No trading code touched.
+
+## Proof that none of this can affect today's session
+
+| Question | Answer |
+|---|---|
+| What is production running? | `88ede7f` |
+| Is PR #25 in `main` or `prod`? | No / No |
+| Is PR #26 in `main` or `prod`? | No / No |
+| What does `main` have beyond `prod`? | One commit — this document. No code. |
+
+Both branches: `typecheck`, `typecheck:scripts`, `lint`,
+`verify-quant-shadow`, `verify-auto-trade`, `verify-ai-decision-context` all
+green locally, and CI reports `validate: success` and `build: success` on both
+head commits.
+
+Neither is deployed. Today's session runs the same code as 24 July, plus the
+expiry roll that was already live in `88ede7f`.
+
+## Local database caution discovered today
+
+The local `trade_commentary` table has 753 rows and **no
+`containsExecutionState` column** — the column is added lazily on first write,
+and local has not run that path. Production added it on its first commentary
+write after the release.
+
+So for this table, local is **not** a mirror of production. Do not use a local
+schema check to conclude anything about the live one.
