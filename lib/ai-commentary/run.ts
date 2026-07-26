@@ -78,6 +78,12 @@ export async function runAndStoreCommentary(
   // conversation (oldest first). New day → empty → a fresh conversation.
   const today = todayIST();
   const settings = await getAutoTradeSettings();
+  if (settings.mimoModelConfigurationError) {
+    return {
+      generated: false,
+      reason: `${settings.mimoModelConfigurationError} — commentary skipped until a valid model is saved or deployed`,
+    };
+  }
   const priorToday = await tstep('commentary: load prior reads', () => getCommentary({ date: today, limit: 30 }));
   const priorReads = priorToday.map((r) => r.text).reverse(); // store returns newest-first
 

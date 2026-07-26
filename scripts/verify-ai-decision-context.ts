@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import OpenAI from 'openai';
 import { buildOpenPositionPicks } from '../lib/ai-commentary/picks';
 import { MIMO_DEFAULT_MODEL, resolveMimoModel } from '../lib/ai-commentary/client';
+import { commentaryForRole, tradeSuggestForRole } from '../lib/auth/trading-privacy';
 import {
   buildScanContext,
   composeDecisionContext,
@@ -297,6 +298,26 @@ check('MiMo model resolution preserves env migration and validates every source'
   assert.equal(resolveMimoModel('mimo-v2.5-pro', 'mimo-v2.5'), 'mimo-v2.5-pro');
   assert.throws(() => resolveMimoModel('mimo-v2.5-typo', null), /Unsupported MiMo model/);
   assert.throws(() => resolveMimoModel(null, 'mimo-v2.5-typo'), /Unsupported MiMo model/);
+});
+
+check('viewer trade-suggest response hides held-position membership without mutating the internal scan', () => {
+  const viewerResult = tradeSuggestForRole(scan, true);
+  assert.equal(viewerResult.managedPositionSignals, undefined);
+  assert.equal(scan.managedPositionSignals?.[0]?.symbol, 'INFY');
+  assert.equal(tradeSuggestForRole(scan, false).managedPositionSignals?.[0]?.symbol, 'INFY');
+});
+
+check('viewer commentary redacts management text and exact position cards only', () => {
+  const rows = [
+    { promptKey: 'auto-trader', text: 'INFY exact fill/stop/target', picks: [{ symbol: 'INFY' }], picksCount: 1 },
+    { promptKey: 'trade-commentary', text: 'Public scanner read', picks: [{ symbol: 'TCS' }], picksCount: 1 },
+  ];
+  const viewerRows = commentaryForRole(rows, true);
+  assert.equal(viewerRows[0].picksCount, 0);
+  assert.deepEqual(viewerRows[0].picks, []);
+  assert.doesNotMatch(viewerRows[0].text, /INFY|fill|stop|target/i);
+  assert.equal(viewerRows[1].text, 'Public scanner read');
+  assert.equal(commentaryForRole(rows, false)[0].text, 'INFY exact fill/stop/target');
 });
 
 function mimoHttpClient(

@@ -35,7 +35,8 @@ import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease
 import { AUTO_TRADER_MANAGEMENT_SYSTEM, AUTO_TRADER_SYSTEM } from './decision/system-prompt';
 import { composeDecisionContext, filterPreviousReadForManagement } from './decision/context-policy';
 import { runPositionGuard } from './risk/position-guard';
-import { getAutoTradeSettings } from './settings';
+import { sendCriticalAlert } from './alerts';
+import { activeAiConfigurationIssue, getAutoTradeSettings } from './settings';
 import { getOpenTrades, insertDecision } from './store';
 import { AUTO_TRADE_MANAGEMENT_TOOLS, AUTO_TRADE_TOOLS } from './tools/defs';
 import {
@@ -67,7 +68,10 @@ export interface AutoTradePassOutcome {
 
 // One pass at a time per process (poller serializes its own captures; this
 // also covers a manual "Run pass" overlapping the autonomous one).
-const g = globalThis as unknown as { __autoTradePassRunning?: boolean };
+const g = globalThis as unknown as {
+  __autoTradePassRunning?: boolean;
+  __autoTradeMimoConfigAlert?: string;
+};
 
 /** True while a full engine pass is in flight — the fast guard loop
  *  (guard-loop.ts) skips its tick rather than double-running the guard. */
@@ -162,6 +166,28 @@ export async function runAutoTradePass(
       });
     }
 
+    const aiConfigurationIssue = activeAiConfigurationIssue(settings);
+    if (aiConfigurationIssue && g.__autoTradeMimoConfigAlert !== aiConfigurationIssue) {
+      const summary = `${aiConfigurationIssue} — MiMo AI pass disabled; reconciliation and deterministic guard remain active`;
+      console.error(`${TAG} ${summary}`);
+      sendCriticalAlert(`🚨 AUTO-TRADE AI MISCONFIGURED: ${summary}`);
+      try {
+        await insertDecision({
+          date,
+          pass: 'system',
+          provider: settings.aiProvider,
+          model: null,
+          summary,
+          toolTrace: [],
+          promptTokens: null,
+          completionTokens: null,
+        });
+      } catch (error) {
+        console.warn(`${TAG} AI configuration audit insert failed: ${(error as Error).message}`);
+      }
+      g.__autoTradeMimoConfigAlert = aiConfigurationIssue;
+    }
+
     if (settings.mode === 'off' || settings.killSwitch) {
       return {
         ran: true,
@@ -169,6 +195,15 @@ export async function runAutoTradePass(
           settings.mode === 'off'
             ? 'new entries off — reconciliation and guard only'
             : 'kill switch on — reconciliation and guard only',
+        guardActions,
+        commentaryStored: false,
+      };
+    }
+
+    if (aiConfigurationIssue) {
+      return {
+        ran: true,
+        reason: `${aiConfigurationIssue} — AI pass skipped (guard still ran)`,
         guardActions,
         commentaryStored: false,
       };

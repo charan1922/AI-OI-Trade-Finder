@@ -111,6 +111,9 @@ jobs:
       # before those columns existed, size round-tripping, batched multi-row
       # param counts, and 20-session retention (PR#16 review).
       - run: pnpm exec tsx scripts/verify-auto-trade-store.ts
+      # Invalid MiMo model configuration must not disable risk settings or the
+      # deterministic guard. Runs against isolated SQLite with no stored model.
+      - run: pnpm exec tsx scripts/verify-auto-trade-settings-safety.ts
       # DB-free pure checks for the R-Factor V2 SHADOW engine (activity/direction
       # separation, fixed-denominator coverage, ranking that ignores the
       # shortlist-only option factor, per-stock robust z, peer-excluded sector

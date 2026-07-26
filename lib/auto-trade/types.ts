@@ -28,6 +28,9 @@ export interface AutoTradeSettings {
   /** Runtime-selectable MiMo tier used by both auto-trade decisions and the
    *  standalone commentary fallback. Pro remains the quality-first default. */
   mimoModel: MimoModel;
+  /** Deployment-level model error. Risk settings remain usable and the
+   * deterministic guard remains active; only a MiMo AI pass is skipped. */
+  mimoModelConfigurationError: string | null;
   /** Instant halt for NEW orders. Open positions keep being guarded to exit. */
   killSwitch: boolean;
   /** Hard cap on entries per day (user rule: max 2 real trades). */

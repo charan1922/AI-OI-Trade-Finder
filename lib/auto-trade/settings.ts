@@ -13,9 +13,9 @@
  */
 
 import { prisma } from '@/lib/db';
-import { env } from '@/lib/env';
+import { env, MIMO_MODEL_ENV_ERROR } from '@/lib/env';
 import { isTelegramConfigured } from '@/lib/telegram';
-import { MIMO_MODELS, resolveMimoModel } from '@/lib/ai-commentary/client';
+import { MIMO_DEFAULT_MODEL, MIMO_MODELS } from '@/lib/ai-commentary/client';
 import { DEFAULT_SETTINGS } from './config';
 import type { AiProvider, AutoTradeSettings, BrokerId, ProfitTargetMode, TradeMode } from './types';
 
@@ -219,6 +219,25 @@ export const SETTING_DEFS: SettingDef[] = [
 
 const defByKey = new Map(SETTING_DEFS.map((d) => [d.key, d]));
 let tableReady = false;
+let mimoEnvironmentWarningLogged = false;
+
+function applyEnvironmentMimoModel(settings: AutoTradeSettings, storedModelIsValid: boolean): void {
+  if (storedModelIsValid) {
+    settings.mimoModelConfigurationError = null;
+    return;
+  }
+  settings.mimoModel = env.MIMO_MODEL ?? MIMO_DEFAULT_MODEL;
+  settings.mimoModelConfigurationError = MIMO_MODEL_ENV_ERROR;
+  if (MIMO_MODEL_ENV_ERROR && !mimoEnvironmentWarningLogged) {
+    mimoEnvironmentWarningLogged = true;
+    console.error(`[AutoTradeSettings] ${MIMO_MODEL_ENV_ERROR}; using ${MIMO_DEFAULT_MODEL} for display only`);
+  }
+}
+
+/** A model configuration fault blocks the affected AI pass, never risk code. */
+export function activeAiConfigurationIssue(settings: AutoTradeSettings): string | null {
+  return settings.aiProvider === 'mimo' ? settings.mimoModelConfigurationError : null;
+}
 
 function assertClockOrder(settings: AutoTradeSettings): void {
   if (settings.entryStartMin >= settings.entryEndMin) {
@@ -263,7 +282,7 @@ export async function getAutoTradeSettings(): Promise<AutoTradeSettings> {
         // Invalid stored value → keep the default for that key
       }
     }
-    if (!storedMimoModel) out.mimoModel = resolveMimoModel(null, env.MIMO_MODEL);
+    applyEnvironmentMimoModel(out, storedMimoModel);
     try {
       assertClockOrder(out);
     } catch {
@@ -273,7 +292,9 @@ export async function getAutoTradeSettings(): Promise<AutoTradeSettings> {
     }
     return out;
   } catch {
-    return { ...DEFAULT_SETTINGS, mimoModel: resolveMimoModel(null, env.MIMO_MODEL) };
+    const fallback = { ...DEFAULT_SETTINGS };
+    applyEnvironmentMimoModel(fallback, false);
+    return fallback;
   }
 }
 

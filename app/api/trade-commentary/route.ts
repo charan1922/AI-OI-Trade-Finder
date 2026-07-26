@@ -7,6 +7,8 @@ import { getCommentary, getLatestCommentaryDate } from '@/lib/ai-commentary/stor
 import { getCycleTimelines } from '@/lib/ops/cycle-timeline';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
 import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
+import { isReadOnlyRequest } from '@/lib/auth/server';
+import { commentaryForRole } from '@/lib/auth/trading-privacy';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -36,9 +38,10 @@ export async function GET(req: Request) {
       success: true,
       configured: hasMimo(),
       model: getMimoModel(settings.mimoModel),
+      modelConfigurationError: settings.mimoModelConfigurationError,
       decisionProvider: settings.aiProvider,
       date,
-      rows,
+      rows: commentaryForRole(rows, isReadOnlyRequest(req)),
       timelines,
     });
   } catch (error) {
