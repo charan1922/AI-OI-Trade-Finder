@@ -42,7 +42,7 @@ import {
   EXTENDED_BYPASS_MIN_RFACTOR,
   EXTENDED_BYPASS_REQUIRE_SUPERTREND,
   MAX_PICKS,
-  MAX_SPREAD_PCT,
+  SUGGESTION_MAX_SPREAD_PCT,
   MIN_CONFIDENCE,
   MIN_NSE_OI_PCT,
   MIN_OI_LEVEL,
@@ -554,7 +554,7 @@ export async function runTradeSuggest(
       continue;
     }
     const verdict = setupScore(row);
-    if (verdict.level === 'illiquid' || row.spreadPct == null || row.spreadPct > MAX_SPREAD_PCT) {
+    if (verdict.level === 'illiquid' || row.spreadPct == null || row.spreadPct > SUGGESTION_MAX_SPREAD_PCT) {
       gated.illiquid++;
       continue;
     }

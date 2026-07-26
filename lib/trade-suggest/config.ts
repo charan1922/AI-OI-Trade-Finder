@@ -164,7 +164,14 @@ export const RANK_CLIMB_MIN_SPOTS = 1;
  *  at least be net-positive on the day (ADANIENSOL sat at 1–2%). */
 export const RANK_CLIMB_MIN_NSE_OI_PCT = 1;
 
-export const MAX_SPREAD_PCT = 0.3; // execution-cost ceiling (matches setup-score)
+/** Bid-ask spread ceiling on the UNDERLYING EQUITY, as % of mid — a candidate
+ *  wider than this is too costly to trade and never becomes a suggestion
+ *  (matches setup-score). Do NOT confuse with the two OPTION spread limits:
+ *  OPTION_WARN_SPREAD_PCT (2, warns) below, and ORDER_ENTRY_MAX_SPREAD_PCT
+ *  (3, refuses the order) in lib/auto-trade/config.ts. Three different
+ *  instruments, three different jobs — they were all called MAX_SPREAD_PCT
+ *  until the naming was split. */
+export const SUGGESTION_MAX_SPREAD_PCT = 0.3;
 /**
  * Third TF pillar: turnover ≥ 1.2× its (time-adjusted) 20-day average.
  * The R-Factor turnover score is clamp((ratio−1)/2, 0, 1), so 1.2× ⇔ 0.1 —
@@ -233,8 +240,10 @@ export const MAX_RISK_PER_LOT_RUPEES = 2500;
 /** TF-style profit objective per lot (₹) — translated to a premium target. */
 export const TF_LOT_TARGET_RUPEES = 5000;
 /** Option-liquidity warnings: bid-ask spread of the OPTION itself above this %
- *  of mid, or zero traded volume, flags the contract as hard to execute. */
-export const MAX_OPT_SPREAD_PCT = 2;
+ *  of mid, or zero traded volume, flags the contract as hard to execute.
+ *  WARNS only — the refusal happens at ORDER_ENTRY_MAX_SPREAD_PCT (3) in
+ *  lib/auto-trade/config.ts. Warn first, then enforce. */
+export const OPTION_WARN_SPREAD_PCT = 2;
 
 /** Composite score weights (sum 1.0) — applied to normalized [0,1] components.
  *  Price action / opening-range breakout raised to co-lead 2026-07-03 (user

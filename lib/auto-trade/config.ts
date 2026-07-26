@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS: AutoTradeSettings = {
   dailyLossHaltRupees: 5_000, // 2 × the ₹2.5k/lot risk ceiling — then stop for the day
   profitTargetMode: 'per_trade', // fixed cash profit for the whole position
   profitTargetRupees: 1_100, // requested default; editable without a redeploy
-  maxSpreadPct: 3, // option bid-ask ceiling — see MAX_SPREAD_PCT below for the evidence
+  maxSpreadPct: 3, // option bid-ask ceiling — see ORDER_ENTRY_MAX_SPREAD_PCT below for the evidence
   approvalTtlMin: 15, // a pending approval is stale after 3 poller cycles
   telegramAlerts: true, // send auto-trade alerts + commentary to Telegram
   entryStartMin: 9 * 60 + 45, // user rule: entries 09:45–11:00 IST
@@ -88,9 +88,15 @@ export const MAX_ENTRY_SLIPPAGE_PCT = 4;
  *  refused it — the old 8% code gate would have passed both, violating "the
  *  AI proposes, code disposes". Every actual entry (HYUNDAI/MANKIND/
  *  PATANJALI/SRF) fired no liquidity warning (≤2%), so 3 blocks the junk
- *  without touching a single real trade. Scanner warns at 2 (MAX_OPT_SPREAD_PCT)
- *  → gate blocks above 3: warn first, then enforce. */
-export const MAX_SPREAD_PCT = DEFAULT_SETTINGS.maxSpreadPct;
+ *  without touching a single real trade. Scanner warns at 2 (OPTION_WARN_SPREAD_PCT)
+ *  → gate blocks above 3: warn first, then enforce.
+ *
+ *  This is the OPTION's spread and it REFUSES the order. The scanner's
+ *  SUGGESTION_MAX_SPREAD_PCT (0.3) is a different instrument entirely — the
+ *  underlying equity — and the numbers are not comparable. Both were called
+ *  MAX_SPREAD_PCT until the naming was split; a reader seeing 0.3 next to 3
+ *  reasonably assumed one of them was wrong. */
+export const ORDER_ENTRY_MAX_SPREAD_PCT = DEFAULT_SETTINGS.maxSpreadPct;
 
 /** How long to poll a live broker order for a fill before leaving it to the
  *  next cycle's reconcile step (MARKET orders on liquid near-ATM strikes fill
