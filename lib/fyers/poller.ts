@@ -50,6 +50,7 @@ const TICK_OFFSET_MS = 10_000; // fire 10s after the grid boundary so the closed
 const PRIORITY_HISTORY_CONCURRENCY = 3;
 const POLLER_LEASE = 'fyers-poller';
 const POLLER_LEASE_TTL_MS = 90_000;
+const MASTER_CATCH_UP_RETRY_MS = 60 * 60_000;
 
 /**
  * True on the ONE deployed server that owns the autonomous jobs — the
@@ -197,6 +198,64 @@ function getState(): PollerState {
 }
 
 /**
+ * Prove today's Dhan master snapshot before the live decision path can use it.
+ * The sync itself owns a dedicated cross-process lease in master-contracts.ts,
+ * so startup, nightly refresh and rolling deploys cannot replace the table in
+ * parallel. A failed attempt is retried hourly; resolvers remain fail-closed
+ * against the stale/incomplete manifest between attempts.
+ */
+export async function catchUpMasterContractsForToday(forceAttempt = false): Promise<boolean> {
+  if (!isAutonomousServer()) return true;
+  const state = getState();
+  const date = todayIST();
+  try {
+    const { getMasterContractFreshness, repairMasterContractsForDate } = await import(
+      '@/lib/historify/master-contracts'
+    );
+    const before = await getMasterContractFreshness(date);
+    if (before.acceptable) {
+      state.lastMasterContractsDate = date;
+      return true;
+    }
+    if (
+      !forceAttempt &&
+      state.lastMasterContractsAttemptMs != null &&
+      Date.now() - state.lastMasterContractsAttemptMs < MASTER_CATCH_UP_RETRY_MS
+    ) {
+      return false;
+    }
+    state.lastMasterContractsAttemptMs = Date.now();
+    console.warn(`${TAG} master-contracts catch-up required: ${before.reason ?? 'snapshot not fresh'}`);
+    const repaired = await repairMasterContractsForDate(date);
+    const count = repaired.freshness.rowCount;
+    const elapsed = repaired.sync?.elapsed ?? 'already current';
+    state.lastMasterContractsDate = date;
+    state.lastMasterContractsAttemptMs = null;
+    console.log(`${TAG} master-contracts catch-up completed: ${count} rows in ${elapsed}`);
+    if (state.lastMasterContractsAlertDate === date) {
+      state.lastMasterContractsAlertDate = null;
+      const { sendCriticalAlert } = await import('@/lib/auto-trade/alerts');
+      sendCriticalAlert(`✅ Master-contract snapshot restored for ${date}: ${count} verified rows`);
+    }
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`${TAG} master-contracts catch-up failed; new entries remain blocked: ${message}`);
+    if (state.lastMasterContractsAlertDate !== date) {
+      state.lastMasterContractsAlertDate = date;
+      try {
+        const { sendCriticalAlert } = await import('@/lib/auto-trade/alerts');
+        sendCriticalAlert(`🚨 Master-contract catch-up failed for ${date}; new option entries are blocked: ${message.slice(0, 200)}`);
+      } catch {
+        // Critical alerting logs its own no-channel state; startup must continue
+        // so reconciliation and the deterministic position guard can run.
+      }
+    }
+    return false;
+  }
+}
+
+/**
  * NSE holiday lookup (table maintained by lib/backtest/trading-calendar.ts).
  * FAILS CLOSED for the trading path (C2, forensic audit): an EMPTY table cannot
  * clear a date — a fresh deploy that never seeded holidays used to trade
@@ -336,6 +395,11 @@ export async function runFyersCycle(
   try {
     const today = todayIST();
     const date = summary.date;
+    // A server may start after 09:15 with yesterday's snapshot. Retry the
+    // startup catch-up before live capture (hourly on failure). Candle capture
+    // may continue, but every option resolver remains blocked until this proves
+    // today's manifest.
+    if (!opts.dateOverride && isAutonomousServer()) await catchUpMasterContractsForToday();
     // Live OI only makes sense for "now" — skip when backfilling a past date or
     // when the market is closed (the current wall-clock bucket would sit outside
     // the session and create an orphan row).

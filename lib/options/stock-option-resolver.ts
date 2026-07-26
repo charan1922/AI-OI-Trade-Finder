@@ -75,7 +75,11 @@ export async function resolveStockOptionFromMaster(
     const freshness = await getMasterContractFreshness(tradeDate, db);
     masterSyncDate = freshness.syncDate;
     if (!freshness.acceptable) {
-      return failed('master-stale', freshness.reason ?? 'master contracts freshness check failed', masterSyncDate);
+      return failed(
+        freshness.state === 'incomplete' ? 'master-incomplete' : 'master-stale',
+        freshness.reason ?? 'master contracts freshness check failed',
+        masterSyncDate
+      );
     }
 
     const expiryRows = await db.$queryRawUnsafe<{ expiryDate: unknown }[]>(

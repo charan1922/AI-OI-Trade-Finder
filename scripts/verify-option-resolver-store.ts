@@ -34,6 +34,7 @@ function teardown(): void {
 async function main(): Promise<void> {
   const { prisma } = await import('../lib/db');
   const { resolveStockOptionFromMaster } = await import('../lib/options/stock-option-resolver');
+  const { repairMasterContractsForDate } = await import('../lib/historify/master-contracts');
 
   await prisma.$executeRawUnsafe(`
     CREATE TABLE master_contracts (
@@ -54,6 +55,86 @@ async function main(): Promise<void> {
   `);
   await prisma.$executeRawUnsafe(
     `CREATE UNIQUE INDEX master_contract_identity ON master_contracts(securityId, segment)`
+  );
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE master_contract_snapshots (
+      syncDate TEXT PRIMARY KEY,
+      totalRows INTEGER NOT NULL,
+      stableRows INTEGER NOT NULL,
+      optStkRows INTEGER NOT NULL,
+      completedAt TEXT NOT NULL,
+      sourceHash TEXT NOT NULL
+    )
+  `);
+
+  const writeManifest = async (date: string): Promise<void> => {
+    const counts = await prisma.$queryRawUnsafe<
+      { totalRows: number | bigint; stableRows: number | bigint; optStkRows: number | bigint }[]
+    >(
+      `SELECT COUNT(*) AS totalRows,
+              SUM(CASE WHEN instrument IN ('EQUITY', 'FUTSTK', 'FUTIDX') THEN 1 ELSE 0 END) AS stableRows,
+              SUM(CASE WHEN instrument = 'OPTSTK' AND segment = 'NSE_FNO' THEN 1 ELSE 0 END) AS optStkRows
+         FROM master_contracts
+        WHERE syncDate = ?`,
+      date
+    );
+    const current = counts[0];
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO master_contract_snapshots (syncDate, totalRows, stableRows, optStkRows, completedAt, sourceHash)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(syncDate) DO UPDATE SET
+         totalRows=excluded.totalRows, stableRows=excluded.stableRows,
+         optStkRows=excluded.optStkRows, completedAt=excluded.completedAt,
+         sourceHash=excluded.sourceHash`,
+      date,
+      Number(current?.totalRows ?? 0),
+      Number(current?.stableRows ?? 0),
+      Number(current?.optStkRows ?? 0),
+      `${date}T01:00:00.000Z`,
+      'fixture-sha256'
+    );
+  };
+
+  const staleFixture = {
+    expectedSyncDate: '2026-07-27',
+    syncDate: '2026-07-26',
+    rowCount: 1007,
+    distinctSyncDates: 1,
+    stableRows: 1000,
+    optStkRows: 7,
+    manifest: null,
+    state: 'stale' as const,
+    acceptable: false,
+    reason: 'fixture stale',
+  };
+  const freshFixture = {
+    ...staleFixture,
+    syncDate: '2026-07-27',
+    manifest: {
+      syncDate: '2026-07-27',
+      totalRows: 1007,
+      stableRows: 1000,
+      optStkRows: 7,
+      completedAt: '2026-07-27T01:00:00.000Z',
+      sourceHash: 'fixture-sha256',
+    },
+    state: 'fresh' as const,
+    acceptable: true,
+    reason: null,
+  };
+  let freshnessReads = 0;
+  let syncCalls = 0;
+  const catchUp = await repairMasterContractsForDate('2026-07-27', {
+    readFreshness: async () => (++freshnessReads === 1 ? staleFixture : freshFixture),
+    sync: async () => {
+      syncCalls++;
+      return { count: 1007, elapsed: 'fixture' };
+    },
+  });
+  check(
+    'startup catch-up refreshes a stale snapshot once and verifies the committed manifest',
+    catchUp.refreshed && syncCalls === 1 && freshnessReads === 2 && catchUp.freshness.acceptable,
+    JSON.stringify({ catchUp, syncCalls, freshnessReads })
   );
 
   const syncDate = '2026-07-24';
@@ -91,6 +172,47 @@ async function main(): Promise<void> {
       row('TCS-JUL-3500-CE', 'TCS-Jul2026-3500-CE', 'TCS', '2026-07-28', 3500, 'CE', 175),
     ],
   });
+  await prisma.masterContract.createMany({
+    data: Array.from({ length: 1000 }, (_, index) => ({
+      securityId: `EQ-${index + 1}`,
+      symbol: `EQ${index + 1}`,
+      exchange: 'NSE',
+      segment: 'NSE_EQ',
+      instrument: 'EQUITY',
+      name: `Fixture equity ${index + 1}`,
+      underlying: null,
+      expiryDate: null,
+      lotSize: 1,
+      strikePrice: null,
+      optionType: null,
+      syncDate,
+    })),
+  });
+  await writeManifest(syncDate);
+
+  await prisma.$executeRawUnsafe('DROP TABLE master_contract_snapshots');
+  const noManifestTable = await resolveStockOptionFromMaster(prisma, {
+    symbol: 'RELIANCE',
+    side: 'CE',
+    spot: 2980,
+    tradeDate: syncDate,
+  });
+  check(
+    'an upgraded database without a snapshot-manifest table fails closed',
+    noManifestTable.plan === null && noManifestTable.resolution.status === 'master-incomplete',
+    JSON.stringify(noManifestTable.resolution)
+  );
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE master_contract_snapshots (
+      syncDate TEXT PRIMARY KEY,
+      totalRows INTEGER NOT NULL,
+      stableRows INTEGER NOT NULL,
+      optStkRows INTEGER NOT NULL,
+      completedAt TEXT NOT NULL,
+      sourceHash TEXT NOT NULL
+    )
+  `);
+  await writeManifest(syncDate);
 
   const prismaDate = await prisma.masterContract.findFirstOrThrow({
     where: { securityId: 'REL-JUL-3000-CE' },
@@ -123,6 +245,7 @@ async function main(): Promise<void> {
   );
 
   await prisma.masterContract.updateMany({ data: { syncDate: '2026-07-27' } });
+  await writeManifest('2026-07-27');
   const expiryWeek = await resolveStockOptionFromMaster(prisma, {
     symbol: 'RELIANCE',
     side: 'CE',
@@ -145,6 +268,29 @@ async function main(): Promise<void> {
       expiryWeek.plan.lotSize === 500,
     JSON.stringify(expiryWeek.plan)
   );
+
+  await prisma.masterContract.deleteMany({
+    where: { expiryDate: new Date('2026-08-25T00:00:00.000Z') },
+  });
+  const partialSameDay = await resolveStockOptionFromMaster(prisma, {
+    symbol: 'RELIANCE',
+    side: 'CE',
+    spot: 3000,
+    tradeDate: '2026-07-27',
+  });
+  check(
+    'same-day partial snapshot is rejected instead of jumping from July to September',
+    partialSameDay.plan === null && partialSameDay.resolution.status === 'master-incomplete',
+    JSON.stringify(partialSameDay.resolution)
+  );
+  await prisma.masterContract.createMany({
+    data: [
+      row('REL-AUG-2950-CE', 'RELIANCE-Aug2026-2950-CE', 'RELIANCE', '2026-08-25', 2950, 'CE', 500),
+      row('REL-AUG-3050-CE', 'RELIANCE-Aug2026-3050-CE', 'RELIANCE', '2026-08-25', 3050, 'CE', 250),
+      row('REL-AUG-3000-PE', 'RELIANCE-Aug2026-3000-PE', 'RELIANCE', '2026-08-25', 3000, 'PE', 375),
+    ].map((entry) => ({ ...entry, syncDate: '2026-07-27' })),
+  });
+  await writeManifest('2026-07-27');
 
   if (expiryWeek.plan == null) throw new Error('expiry-week fixture did not resolve a plan');
   // Production already has this table. Start from its pre-rollover shape so the
@@ -291,6 +437,7 @@ async function main(): Promise<void> {
   );
 
   await prisma.masterContract.updateMany({ data: { syncDate: '2026-08-24' } });
+  await writeManifest('2026-08-24');
   const augustWeek = await resolveStockOptionFromMaster(prisma, {
     symbol: 'RELIANCE',
     side: 'CE',
@@ -319,6 +466,7 @@ async function main(): Promise<void> {
   );
 
   await prisma.masterContract.updateMany({ data: { syncDate: '2026-08-24' } });
+  await writeManifest('2026-08-24');
   await prisma.masterContract.update({
     where: {
       securityId_segment: { securityId: 'REL-SEP-3000-CE', segment: 'NSE_FNO' },
@@ -333,7 +481,7 @@ async function main(): Promise<void> {
   });
   check(
     'mixed snapshot dates are rejected as a partial/corrupt master',
-    mixed.plan === null && mixed.resolution.status === 'master-stale',
+    mixed.plan === null && mixed.resolution.status === 'master-incomplete',
     JSON.stringify(mixed.resolution)
   );
 

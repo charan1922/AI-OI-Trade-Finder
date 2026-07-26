@@ -53,6 +53,7 @@ export type OptionResolutionStatus =
   | 'selected'
   | 'invalid-request'
   | 'master-stale'
+  | 'master-incomplete'
   | 'no-listed-expiry'
   | 'no-eligible-expiry'
   | 'no-strike'

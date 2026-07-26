@@ -30,8 +30,12 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.error(`[Boot] holiday calendar seeding FAILED (trading path will fail closed): ${(err as Error).message}`);
   }
-  const { startFyersPoller } = await import('./lib/fyers/poller');
-  startFyersPoller();
+  const { catchUpMasterContractsForToday, startFyersPoller } = await import('./lib/fyers/poller');
+  // Start protection first, then begin an independent snapshot catch-up even
+  // when the process starts after market open. The live cycle also checks it
+  // before capture; resolvers remain fail-closed while the download is running.
   const { startGuardLoop } = await import('./lib/auto-trade/guard-loop');
   startGuardLoop();
+  void catchUpMasterContractsForToday(true);
+  startFyersPoller();
 }

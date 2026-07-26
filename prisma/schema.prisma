@@ -29,6 +29,17 @@ model MasterContract {
   @@map("master_contracts")
 }
 
+model MasterContractSnapshot {
+  syncDate    String   @id
+  totalRows   Int
+  stableRows  Int
+  optStkRows  Int
+  completedAt DateTime
+  sourceHash  String
+
+  @@map("master_contract_snapshots")
+}
+
 model BhavcopyDay {
   id          Int    @id @default(autoincrement())
   date        String

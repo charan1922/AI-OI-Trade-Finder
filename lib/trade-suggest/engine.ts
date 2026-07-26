@@ -757,6 +757,8 @@ export async function runTradeSuggest(
     if (resolved.resolution.status !== 'selected')
       gated.optionResolutionFailed = (gated.optionResolutionFailed ?? 0) + 1;
     if (resolved.resolution.status === 'master-stale') gated.staleMaster = (gated.staleMaster ?? 0) + 1;
+    if (resolved.resolution.status === 'master-incomplete')
+      gated.incompleteMaster = (gated.incompleteMaster ?? 0) + 1;
     if (resolved.resolution.status === 'no-listed-expiry') gated.noListedExpiry = (gated.noListedExpiry ?? 0) + 1;
     if (resolved.resolution.status === 'no-eligible-expiry') gated.noEligibleExpiry = (gated.noEligibleExpiry ?? 0) + 1;
     if (resolved.resolution.status === 'no-strike') gated.noStrike = (gated.noStrike ?? 0) + 1;
