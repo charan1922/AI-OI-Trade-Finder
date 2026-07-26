@@ -11,6 +11,7 @@
 export type TradeMode = 'off' | 'paper' | 'approval' | 'live';
 export type BrokerId = 'fyers' | 'dhan';
 export type AiProvider = 'azure' | 'mimo';
+export type MimoModel = 'mimo-v2.5' | 'mimo-v2.5-pro';
 export type ProfitTargetMode = 'per_trade' | 'per_lot';
 export type OrderSide = 'BUY' | 'SELL';
 
@@ -24,6 +25,12 @@ export interface AutoTradeSettings {
   broker: BrokerId;
   /** Which model runs the decision loop (both are wired; A/B from the UI). */
   aiProvider: AiProvider;
+  /** Runtime-selectable MiMo tier used by both auto-trade decisions and the
+   *  standalone commentary fallback. Pro remains the quality-first default. */
+  mimoModel: MimoModel;
+  /** Deployment-level model error. Risk settings remain usable and the
+   * deterministic guard remains active; only a MiMo AI pass is skipped. */
+  mimoModelConfigurationError: string | null;
   /** Instant halt for NEW orders. Open positions keep being guarded to exit. */
   killSwitch: boolean;
   /** Hard cap on entries per day (user rule: max 2 real trades). */
@@ -237,6 +244,7 @@ export interface AccountState {
   mode: TradeMode;
   broker: string;
   aiProvider: AiProvider;
+  mimoModel: MimoModel;
   killSwitch: boolean;
   liveEnvEnabled: boolean;
   marketOpen: boolean;

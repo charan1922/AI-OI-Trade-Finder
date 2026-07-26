@@ -13,6 +13,7 @@ interface Chip {
   tone: ChipTone;
 }
 interface StoredPick {
+  kind?: 'candidate' | 'position';
   symbol: string;
   side: string;
   strike: number | null;
@@ -66,6 +67,7 @@ interface ApiResponse {
   success: boolean;
   configured?: boolean;
   model?: string;
+  decisionProvider?: 'azure' | 'mimo';
   rows?: CommentaryRow[];
   timelines?: CycleTimeline[];
   error?: string;
@@ -192,6 +194,7 @@ function Stat({ label, value, cls = '' }: { label: string; value: number | null;
 // One pick: name + badge, its pills, and its plan — grouped as one unit.
 function PickBlock({ p }: { p: StoredPick }) {
   const bull = p.direction === 'bullish';
+  const isPosition = p.kind === 'position';
   return (
     <div className="border-t border-border/50 pt-2 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
@@ -199,11 +202,11 @@ function PickBlock({ p }: { p: StoredPick }) {
         <span
           className={`rounded px-1 py-px text-[10px] font-bold ${bull ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300'}`}
         >
-          BUY {p.strike != null ? `${p.strike} ${p.side}` : p.side}
+          {isPosition ? 'OPEN' : 'BUY'} {p.strike != null ? `${p.strike} ${p.side}` : p.side}
         </span>
         {p.expiry && <span className="text-[9px] text-muted-foreground">exp {p.expiry}{p.lot ? ` · lot ${p.lot}` : ''}</span>}
         <span className="ml-auto text-[9.5px] text-muted-foreground">
-          score {p.score.toFixed(3)}
+          {!isPosition && <>score {p.score.toFixed(3)}</>}
           {p.changePctOpen != null && (
             <span className={p.changePctOpen >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
               {' '}· {p.changePctOpen >= 0 ? '+' : ''}
@@ -361,9 +364,12 @@ export default function TradeCommentaryPage() {
         <h1 className="text-base font-bold text-foreground sm:text-lg">Trade Commentary</h1>
         <span
           className="rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary"
-          title="Powered exclusively by Xiaomi MiMo — no OpenAI/Azure. The picks are deterministic; MiMo only narrates them."
+          title="Model used when standalone narration runs. Autonomous decision rows may use the configured decision AI instead."
         >
-          ⚡ Xiaomi MiMo · {data?.model ?? 'mimo-v2.5-pro'}
+          ⚡ Standalone · Xiaomi MiMo · {data?.model ?? 'mimo-v2.5-pro'}
+        </span>
+        <span className="rounded-full border px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+          Decision AI · {data?.decisionProvider === 'mimo' ? 'MiMo' : 'Azure'}
         </span>
         <div className="ml-auto flex items-center gap-2">
           {/* Viewers don't see operator actions at all (server 403s them anyway). */}
@@ -393,8 +399,9 @@ export default function TradeCommentaryPage() {
       <p className="text-[11px] leading-relaxed text-muted-foreground">
         A running per-day narration of the deterministic scan picks — each read builds on the day’s earlier ones (what
         broke out, what held, what’s new); each new day starts fresh. Generated in-process during market hours (per the
-        /config window), so it fills even when the app isn’t open. Narration by <strong>Xiaomi MiMo</strong>; it only
-        describes what the scanner computed and never places orders. Not financial advice.
+        /config window), so it fills even when the app isn’t open. Standalone reads use <strong>Xiaomi MiMo</strong>;
+        autonomous rows use the configured decision AI and may act only through deterministic trading gates. Each row
+        shows the model that actually produced it. Not financial advice.
       </p>
 
       <PriorityShadowPanel />
@@ -438,6 +445,7 @@ export default function TradeCommentaryPage() {
             const r = item.row;
             const cycleTimeline = timelineByCommentary.get(r.id);
             const picks = r.picks ?? [];
+            const positionCards = picks.length > 0 && picks.every((pick) => pick.kind === 'position');
             const split = splitByStock(r.text, picks.map((p) => p.symbol));
             const structured = Object.keys(split.perStock).length > 0;
             return (
@@ -453,6 +461,9 @@ export default function TradeCommentaryPage() {
                       <Sparkles className="h-2.5 w-2.5" />
                     </span>
                     <span className="font-semibold text-foreground">{fmtTime(r.asOf)} IST</span>
+                    <span className="rounded-full bg-muted/60 px-1.5 py-0.5 text-[9px] font-medium">
+                      this read · {r.model}
+                    </span>
                     {r.windowActive && (
                       <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
                         in window
@@ -467,7 +478,7 @@ export default function TradeCommentaryPage() {
                       </span>
                     )}
                     <span className={r.promptTokens != null || r.completionTokens != null ? '' : 'ml-auto'}>
-                      {r.picksCount} pick{r.picksCount === 1 ? '' : 's'}
+                      {r.picksCount} {positionCards ? 'position' : 'pick'}{r.picksCount === 1 ? '' : 's'}
                     </span>
                   </div>
 

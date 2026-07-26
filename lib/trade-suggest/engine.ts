@@ -66,6 +66,7 @@ import {
   WINDOW_START_MIN,
 } from '@/lib/trade-suggest/config';
 import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
+import { getOpenTrades } from '@/lib/auto-trade/store';
 import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
 import {
   discoverCandidateSnapshot,
@@ -296,9 +297,14 @@ export async function runTradeSuggest(
   // (Jul-10 lesson: "OFSS, KPITTECH — DROPPED from screen entirely" left the
   // narrator blind on open calls). ≤ a handful of extra symbols in the same
   // single batched Dhan request — no extra API calls.
-  const earlierToday = await getSuggestions(date);
+  const [earlierToday, openAutoTrades] = await Promise.all([getSuggestions(date), getOpenTrades()]);
   for (const e of earlierToday) {
     if (!sectorBySymbol.has(e.symbol)) sectorBySymbol.set(e.symbol, e.sector ?? '');
+  }
+  for (const trade of openAutoTrades) {
+    if (!sectorBySymbol.has(trade.symbol)) {
+      sectorBySymbol.set(trade.symbol, earlierToday.find((earlier) => earlier.symbol === trade.symbol)?.sector ?? '');
+    }
   }
   const symbols = [...sectorBySymbol.keys()];
   base.scanned = symbols.length;
@@ -413,6 +419,65 @@ export async function runTradeSuggest(
         }))
         .filter((t) => t.sector)
     ).map((a) => [a.sector, a])
+  );
+
+  // Current thesis evidence for earlier suggestions is built independently of
+  // the survivor pipeline below. A held name often disappears precisely because
+  // its OI/trend/breakout weakened; management must see that deterioration even
+  // when the scanner correctly refuses to suggest a fresh entry.
+  base.managedPositionSignals = await Promise.all(
+    openAutoTrades.map(async (trade) => {
+      const row = quotes.rows.find((candidate) => candidate.symbol === trade.symbol) ?? null;
+      const direction = trade.direction;
+      const bars = await getFyersCandles(trade.symbol, date, 'EQ').catch(() => [] as StoredFyersBar[]);
+      const session = deriveSessionContext(bars);
+      const liveSpot = row?.ltp ?? null;
+      const vw = sessionVwap(bars);
+      const st = supertrend(bars);
+      const orBreakout =
+        liveSpot == null || !session.openRangeComplete
+          ? null
+          : direction === 'bullish'
+            ? session.openRangeHigh != null && liveSpot > session.openRangeHigh
+            : session.openRangeLow != null && liveSpot < session.openRangeLow;
+      const nseOiPct = nseOiRowMap.get(trade.symbol)?.changeInOiPct ?? null;
+      let combinedOiSlope30m: number | null = null;
+      try {
+        combinedOiSlope30m = combinedOiSlope(
+          await getNseOiSeries(trade.symbol, date),
+          Math.floor(Date.now() / 1000)
+        );
+      } catch (error) {
+        console.warn(`${TAG} managed OI slope failed for ${trade.symbol}: ${(error as Error).message}`);
+      }
+      const tradeSector = sectorBySymbol.get(trade.symbol) ?? '';
+      const sector = sectorAgg.get(tradeSector) ?? null;
+      const sectorAligned =
+        sector == null || Math.abs(sector.weightedPct) < 0.1
+          ? null
+          : direction === 'bullish'
+            ? sector.weightedPct > 0
+            : sector.weightedPct < 0;
+      return {
+        symbol: trade.symbol,
+        direction,
+        changePctOpen: row?.changePctOpen ?? null,
+        rFactor: row?.rFactor ?? null,
+        confidence: row?.rFactorConfidence ?? null,
+        oiLevel: row?.oiLevel ?? null,
+        oiUrgency: row?.oiUrgency ?? null,
+        nseOiPct,
+        combinedOiSlope30m,
+        vwapAligned:
+          liveSpot == null || vw == null ? null : direction === 'bullish' ? liveSpot > vw : liveSpot < vw,
+        supertrendAligned:
+          st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down',
+        orBreakout,
+        tfBreakout: row?.breakout ?? null,
+        sectorAligned,
+        dataAsOfMs: base.marketDataAsOfMs ?? null,
+      };
+    })
   );
 
   // 3. Detect market regime (once per scan, using first available symbol as

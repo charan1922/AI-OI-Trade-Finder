@@ -13,8 +13,9 @@
  */
 
 import { prisma } from '@/lib/db';
-import { env } from '@/lib/env';
+import { env, MIMO_MODEL_ENV_ERROR } from '@/lib/env';
 import { isTelegramConfigured } from '@/lib/telegram';
+import { MIMO_DEFAULT_MODEL, MIMO_MODELS } from '@/lib/ai-commentary/client';
 import { DEFAULT_SETTINGS } from './config';
 import type { AiProvider, AutoTradeSettings, BrokerId, ProfitTargetMode, TradeMode } from './types';
 
@@ -41,7 +42,7 @@ function intInRange(raw: string, min: number, max: number, label: string): numbe
   return n;
 }
 
-function oneOf<T extends string>(raw: string, allowed: T[], label: string): T {
+function oneOf<T extends string>(raw: string, allowed: readonly T[], label: string): T {
   if (!allowed.includes(raw as T)) throw new Error(`${label} must be one of: ${allowed.join(', ')}`);
   return raw as T;
 }
@@ -89,6 +90,14 @@ export const SETTING_DEFS: SettingDef[] = [
     serialize: String,
     label: 'Decision AI',
     description: 'azure = the Trade Assistant deployment (proven tool-calling) · mimo = the commentary model.',
+  },
+  {
+    key: 'mimoModel',
+    parse: (raw) => oneOf(raw, MIMO_MODELS, 'mimoModel'),
+    serialize: String,
+    label: 'MiMo model',
+    description:
+      'mimo-v2.5-pro = quality-first default · mimo-v2.5 = lower-cost tier. Applies to auto-trade decisions and standalone trade commentary from the next pass. Until this is saved once, a valid existing MIMO_MODEL environment choice is preserved.',
   },
   {
     key: 'killSwitch',
@@ -210,6 +219,25 @@ export const SETTING_DEFS: SettingDef[] = [
 
 const defByKey = new Map(SETTING_DEFS.map((d) => [d.key, d]));
 let tableReady = false;
+let mimoEnvironmentWarningLogged = false;
+
+function applyEnvironmentMimoModel(settings: AutoTradeSettings, storedModelIsValid: boolean): void {
+  if (storedModelIsValid) {
+    settings.mimoModelConfigurationError = null;
+    return;
+  }
+  settings.mimoModel = env.MIMO_MODEL ?? MIMO_DEFAULT_MODEL;
+  settings.mimoModelConfigurationError = MIMO_MODEL_ENV_ERROR;
+  if (MIMO_MODEL_ENV_ERROR && !mimoEnvironmentWarningLogged) {
+    mimoEnvironmentWarningLogged = true;
+    console.error(`[AutoTradeSettings] ${MIMO_MODEL_ENV_ERROR}; using ${MIMO_DEFAULT_MODEL} for display only`);
+  }
+}
+
+/** A model configuration fault blocks the affected AI pass, never risk code. */
+export function activeAiConfigurationIssue(settings: AutoTradeSettings): string | null {
+  return settings.aiProvider === 'mimo' ? settings.mimoModelConfigurationError : null;
+}
 
 function assertClockOrder(settings: AutoTradeSettings): void {
   if (settings.entryStartMin >= settings.entryEndMin) {
@@ -242,16 +270,19 @@ export async function getAutoTradeSettings(): Promise<AutoTradeSettings> {
       value: string;
     }[];
     const out: AutoTradeSettings = { ...DEFAULT_SETTINGS };
+    let storedMimoModel = false;
     for (const row of rows) {
       const def = defByKey.get(row.key as keyof AutoTradeSettings);
       if (!def) continue;
       try {
         // Assigning through the keyof union needs one widening cast.
         (out as unknown as Record<string, unknown>)[def.key] = def.parse(row.value);
+        if (def.key === 'mimoModel') storedMimoModel = true;
       } catch {
         // Invalid stored value → keep the default for that key
       }
     }
+    applyEnvironmentMimoModel(out, storedMimoModel);
     try {
       assertClockOrder(out);
     } catch {
@@ -261,7 +292,9 @@ export async function getAutoTradeSettings(): Promise<AutoTradeSettings> {
     }
     return out;
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    const fallback = { ...DEFAULT_SETTINGS };
+    applyEnvironmentMimoModel(fallback, false);
+    return fallback;
   }
 }
 

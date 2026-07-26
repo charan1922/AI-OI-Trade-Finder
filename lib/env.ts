@@ -1,5 +1,12 @@
 import { z } from 'zod';
 
+const mimoModelEnvSchema = z.enum(['mimo-v2.5', 'mimo-v2.5-pro']);
+const rawMimoModel = process.env.MIMO_MODEL?.trim();
+export const MIMO_MODEL_ENV_ERROR =
+  rawMimoModel && !mimoModelEnvSchema.safeParse(rawMimoModel).success
+    ? `MIMO_MODEL "${rawMimoModel}" is invalid; allowed values: mimo-v2.5, mimo-v2.5-pro`
+    : null;
+
 const envSchema = z.object({
   DHAN_CLIENT_ID: z.string().optional(),
   DHAN_ACCESS_TOKEN: z.string().optional(),
@@ -49,7 +56,10 @@ const envSchema = z.object({
   // of the deterministic scan picks. Reasoning model; see lib/ai-commentary/.
   MIMO_API_KEY: z.string().optional(),
   MIMO_BASE_URL: z.string().optional(),
-  MIMO_MODEL: z.string().optional(), // default 'mimo-v2.5-pro'
+  // Enum-validated, but a typo must not abort module loading: deterministic
+  // reconciliation/guarding cannot depend on an AI model identifier. The raw
+  // validation error above remains available for settings + critical alerts.
+  MIMO_MODEL: mimoModelEnvSchema.optional().catch(undefined), // default 'mimo-v2.5-pro'
   // Second key for auto-trade LIVE mode (lib/auto-trade/): the /auto-trade page
   // can select mode 'live', but real autonomous orders stay blocked until this
   // is ALSO 'true' — a deliberate two-key safety on real money.

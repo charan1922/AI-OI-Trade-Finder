@@ -18,7 +18,11 @@ import { parseFiniteNumber } from '../lib/auto-trade/brokers/adapter';
 import { safeJson, toFyersOptionSymbol } from '../lib/auto-trade/brokers/fyers-adapter';
 import { checkEntryGates, checkStopMove } from '../lib/auto-trade/risk/gates';
 import { getRiskLatch } from '../lib/auto-trade/risk/latch';
-import { executeAutoTradeTool, newPassPolicyState, type ToolRuntime } from '../lib/auto-trade/tools/execute';
+import {
+  executeAutoTradeTool,
+  newPassPolicyState,
+  type ToolRuntime,
+} from '../lib/auto-trade/tools/execute';
 import { DEFAULT_SETTINGS } from '../lib/auto-trade/config';
 import { getAutoTradeSettings, setAutoTradeSetting } from '../lib/auto-trade/settings';
 import {

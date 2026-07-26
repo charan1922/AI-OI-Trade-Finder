@@ -3,6 +3,8 @@ import { runTradeSuggest } from '@/lib/trade-suggest/engine';
 import { computeEodLeaderboard } from '@/lib/trade-suggest/eod-leaderboard';
 import { reviewToday } from '@/lib/trade-suggest/review';
 import { getProtectionStats, getStats, getSuggestionHistory } from '@/lib/trade-suggest/store';
+import { isReadOnlyRequest } from '@/lib/auth/server';
+import { tradeSuggestForRole } from '@/lib/auth/trading-privacy';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,7 +46,7 @@ export async function GET(req: Request) {
     }
     const force = url.searchParams.get('force') === '1';
     const result = await runTradeSuggest(url.origin, { force });
-    return NextResponse.json(result);
+    return NextResponse.json(tradeSuggestForRole(result, isReadOnlyRequest(req)));
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }

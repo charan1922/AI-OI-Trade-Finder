@@ -10,11 +10,30 @@
  */
 import OpenAI from 'openai';
 import { env, hasMimo } from '@/lib/env';
+import type { MimoModel } from '@/lib/auto-trade/types';
 
-export const MIMO_DEFAULT_MODEL = 'mimo-v2.5-pro';
+export const MIMO_MODELS = ['mimo-v2.5', 'mimo-v2.5-pro'] as const satisfies readonly MimoModel[];
+export const MIMO_DEFAULT_MODEL: MimoModel = 'mimo-v2.5-pro';
 
-export function getMimoModel(): string {
-  return env.MIMO_MODEL || MIMO_DEFAULT_MODEL;
+export function isAllowedMimoModel(value: string | null | undefined): value is MimoModel {
+  return MIMO_MODELS.includes(value as MimoModel);
+}
+
+/** Runtime setting wins; an existing valid env choice seeds deployments that
+ * have not stored the new setting yet. Unknown identifiers fail explicitly. */
+export function resolveMimoModel(
+  runtimeModel?: string | null,
+  environmentModel?: string | null
+): MimoModel {
+  const selected = runtimeModel?.trim() || environmentModel?.trim() || MIMO_DEFAULT_MODEL;
+  if (!isAllowedMimoModel(selected)) {
+    throw new Error(`Unsupported MiMo model "${selected}". Allowed: ${MIMO_MODELS.join(', ')}`);
+  }
+  return selected;
+}
+
+export function getMimoModel(runtimeModel?: string | null): MimoModel {
+  return resolveMimoModel(runtimeModel, env.MIMO_MODEL);
 }
 
 /** Build a configured MiMo client. Throws a clear error if unconfigured. */

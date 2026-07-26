@@ -30,6 +30,8 @@ export const DEFAULT_SETTINGS: AutoTradeSettings = {
   mode: 'off',
   broker: 'fyers',
   aiProvider: 'azure',
+  mimoModel: 'mimo-v2.5-pro', // quality-first default; operator may choose lower-cost 2.5 at runtime
+  mimoModelConfigurationError: null,
   killSwitch: false,
   maxTradesPerDay: 2, // user rule: max 2 real trades a day
   maxOpenLots: 2, // user rule: max 2 lots at once

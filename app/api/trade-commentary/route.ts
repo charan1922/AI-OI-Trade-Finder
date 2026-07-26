@@ -6,6 +6,9 @@ import { runAndStoreCommentary } from '@/lib/ai-commentary/run';
 import { getCommentary, getLatestCommentaryDate } from '@/lib/ai-commentary/store';
 import { getCycleTimelines } from '@/lib/ops/cycle-timeline';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
+import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
+import { isReadOnlyRequest } from '@/lib/auth/server';
+import { commentaryForRole } from '@/lib/auth/trading-privacy';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,11 +30,20 @@ export async function GET(req: Request) {
     const date = explicit ?? (isMarketHours() ? todayIST() : ((await getLatestCommentaryDate()) ?? todayIST()));
     const limitParam = Number(url.searchParams.get('limit'));
     const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 30;
-    const rows = await getCommentary({ date, limit });
+    const [rows, settings] = await Promise.all([getCommentary({ date, limit }), getAutoTradeSettings()]);
     // Per-cycle step timings for the same session — the page pairs each read
     // with its cycle (timeline.commentaryId) and lists no-read cycles too.
     const timelines = await getCycleTimelines(date).catch(() => []);
-    return NextResponse.json({ success: true, configured: hasMimo(), model: getMimoModel(), date, rows, timelines });
+    return NextResponse.json({
+      success: true,
+      configured: hasMimo(),
+      model: getMimoModel(settings.mimoModel),
+      modelConfigurationError: settings.mimoModelConfigurationError,
+      decisionProvider: settings.aiProvider,
+      date,
+      rows: commentaryForRole(rows, isReadOnlyRequest(req)),
+      timelines,
+    });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
