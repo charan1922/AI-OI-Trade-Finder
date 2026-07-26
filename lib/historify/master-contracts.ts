@@ -8,7 +8,11 @@
 import { createHash } from 'node:crypto';
 import fnoUniverse from '@/lib/data/fno_stocks_list.json';
 import { prisma } from '@/lib/db';
-import { checkOptionMonthCoverage } from '@/lib/options/expiry-policy';
+import {
+  checkOptionMonthCoverage,
+  checkOptionSeriesCoverage,
+  checkOptionUnderlyingCoverage,
+} from '@/lib/options/expiry-policy';
 import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 
 const MASTER_CSV_URL = 'https://images.dhan.co/api-data/api-scrip-master.csv';
@@ -397,41 +401,48 @@ async function syncFromDhan(today: string): Promise<void> {
   // is only ~1/3 of the option rows, so guard 1 still passes; but the resolver
   // would then roll past the intended next month into the one after it. Compare
   // still-tradable expiry months against the snapshot being replaced.
-  const existingOptStkExpiries = await prisma.$queryRawUnsafe<{ expiryDate: string | null }[]>(
-    `SELECT DISTINCT substr(expiryDate, 1, 10) AS expiryDate
+  // ONE read of the stored option series — the baseline for all three coverage
+  // guards below. DISTINCT keeps it to ~1,300 rows (210 underlyings x CE/PE x 3
+  // months), not the 70k contract rows.
+  const existingSeriesRows = await prisma.$queryRawUnsafe<
+    { underlying: string | null; optionType: string | null; expiryDate: string | null }[]
+  >(
+    `SELECT DISTINCT underlying, optionType, substr(expiryDate, 1, 10) AS expiryDate
        FROM master_contracts
       WHERE instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND expiryDate IS NOT NULL`
   );
   const parsedOptStkEntries = entries.filter((e) => e.instrument === 'OPTSTK' && e.segment === 'NSE_FNO');
+  const parsedSeriesRows = parsedOptStkEntries.map((e) => ({
+    underlying: e.underlying,
+    optionType: e.optionType,
+    expiryDate: e.expiryDate?.toISOString().slice(0, 10) ?? null,
+  }));
+  const abort = (reason: string): never => {
+    throw new Error(
+      `master-contracts sync aborted: ${reason}; refusing to replace a good table (existing ${existingCount} rows kept) — investigate the CSV before re-syncing`,
+    );
+  };
   const coverage = checkOptionMonthCoverage(
     today,
-    parsedOptStkEntries.map((e) => e.expiryDate?.toISOString().slice(0, 10) ?? null),
-    existingOptStkExpiries.map((r) => r.expiryDate)
+    parsedSeriesRows.map((r) => r.expiryDate),
+    existingSeriesRows.map((r) => r.expiryDate)
   );
-  if (!coverage.ok) {
-    throw new Error(
-      `master-contracts sync aborted: ${coverage.reason}; refusing to replace a good table (existing ${existingCount} rows kept) — investigate the CSV before re-syncing`,
-    );
-  }
-  // Guard 4 — UNDERLYING coverage. Guard 3 catches a whole series going missing,
-  // but a file truncated part-way through still lists every month while dozens of
-  // symbols silently lose their options (they then resolve to no-listed-expiry and
-  // vanish from the pick list). Underlyings do NOT churn like strikes do — the
-  // count sits at ~210 — so the same 10% rule the stable instruments use is safe.
-  const parsedOptStkUnderlyings = new Set(
-    parsedOptStkEntries.map((e) => e.underlying).filter((u): u is string => u != null && u !== '')
+  if (!coverage.ok) abort(coverage.reason ?? 'option expiry coverage shrank');
+  // Guard 4 — UNDERLYING coverage: a file truncated part-way through still lists
+  // every month while dozens of symbols silently lose their options.
+  const parsedUnderlyings = new Set(
+    parsedSeriesRows.map((r) => r.underlying).filter((u): u is string => u != null && u !== '')
   ).size;
-  const existingOptStkUnderlyingRows = await prisma.$queryRawUnsafe<{ n: number | bigint }[]>(
-    `SELECT COUNT(DISTINCT underlying) AS n
-       FROM master_contracts
-      WHERE instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND underlying IS NOT NULL AND underlying <> ''`
-  );
-  const existingOptStkUnderlyings = Number(existingOptStkUnderlyingRows[0]?.n ?? 0);
-  if (existingOptStkUnderlyings > 0 && parsedOptStkUnderlyings < existingOptStkUnderlyings * 0.9) {
-    throw new Error(
-      `master-contracts sync aborted: option underlyings dropped ${existingOptStkUnderlyings}→${parsedOptStkUnderlyings} (>10%) — the download is truncated; existing ${existingCount} rows kept`,
-    );
-  }
+  const existingUnderlyings = new Set(
+    existingSeriesRows.map((r) => r.underlying).filter((u): u is string => u != null && u !== '')
+  ).size;
+  const underlyingCoverage = checkOptionUnderlyingCoverage(parsedUnderlyings, existingUnderlyings);
+  if (!underlyingCoverage.ok) abort(underlyingCoverage.reason ?? 'option underlyings dropped');
+  // Guard 5 — PER-SYMBOL, PER-SIDE coverage. Guards 3 and 4 are aggregates: they
+  // both pass while ONE stock loses ONE month on ONE side, which is exactly what
+  // the resolver would then roll past during expiry week (PR#22 re-review).
+  const seriesCoverage = checkOptionSeriesCoverage(today, parsedSeriesRows, existingSeriesRows);
+  if (!seriesCoverage.ok) abort(seriesCoverage.reason ?? 'option series coverage shrank');
 
   console.log(`[MasterContracts] Parsed ${entries.length} entries, inserting into DB...`);
   const sourceHash = createHash('sha256').update(text).digest('hex');

@@ -33,7 +33,18 @@ export interface RunCommentaryOutcome {
  * matching hard rule lives in COMMENTARY_HARD_RULES. Never throws — a store
  * hiccup falls back to null (read behaves exactly as before).
  */
-export async function buildExecutionTruth(date: string): Promise<string | null> {
+export interface ExecutionTruth {
+  line: string | null;
+  /** True when at least one REAL trade (open/placing/closed) is in the line.
+   *  The narration built from it is operator-only — it names the contract and
+   *  its premiums, and the standalone narrator stores itself as an ordinary
+   *  'trade-commentary' row, so promptKey alone cannot classify it (PR#22
+   *  re-review). Defaults to TRUE on a lookup failure: if we cannot prove the
+   *  book is empty, we must not publish. */
+  hasRealPositions: boolean;
+}
+
+export async function buildExecutionTruth(date: string): Promise<ExecutionTruth> {
   try {
     const trades = await getTradesByDate(date);
     const real = trades.filter((t) => ['open', 'placing', 'closed'].includes(t.status));
@@ -49,13 +60,15 @@ export async function buildExecutionTruth(date: string): Promise<string | null> 
               return `${c}: order in flight (not yet confirmed)`;
             })
             .join(' · ');
-    return (
-      'EXECUTION TRUTH (deterministic, from code — the ONLY source of real position state; names absent ' +
-      `here were NEVER traded today): ${body}`
-    );
+    return {
+      line:
+        'EXECUTION TRUTH (deterministic, from code — the ONLY source of real position state; names absent ' +
+        `here were NEVER traded today): ${body}`,
+      hasRealPositions: real.length > 0,
+    };
   } catch (err) {
     console.warn(`[Commentary] execution-truth lookup failed: ${(err as Error).message}`);
-    return null;
+    return { line: null, hasRealPositions: true };
   }
 }
 
@@ -87,9 +100,10 @@ export async function runAndStoreCommentary(
   const priorToday = await tstep('commentary: load prior reads', () => getCommentary({ date: today, limit: 30 }));
   const priorReads = priorToday.map((r) => r.text).reverse(); // store returns newest-first
 
+  const executionTruth = await buildExecutionTruth(today);
   const c = await tstep(
     'commentary: MiMo generate',
-    async () => generateCommentary(result, priorReads, await buildExecutionTruth(today), settings.mimoModel),
+    async () => generateCommentary(result, priorReads, executionTruth.line, settings.mimoModel),
     (r) => `${r.model} · ${(r.promptTokens ?? 0).toLocaleString('en-IN')}+${(r.completionTokens ?? 0).toLocaleString('en-IN')} tok`
   );
   // Prompt-versioning stamp: record the system prompt used (new row only when
@@ -108,6 +122,8 @@ export async function runAndStoreCommentary(
       completionTokens: c.completionTokens,
       promptKey: 'trade-commentary',
       promptVersion,
+      // Operator-only when a real position was in the model's context.
+      containsExecutionState: executionTruth.hasRealPositions,
     })
   );
   timeline?.setCommentaryId(commentaryId);
