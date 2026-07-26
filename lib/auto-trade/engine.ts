@@ -356,6 +356,11 @@ export async function runAutoTradePass(
         completionTokens: result.completionTokens,
         promptKey: 'auto-trader',
         promptVersion,
+        // The auto-trader ALWAYS narrates the operator's real book (open
+        // positions, fills, stop moves), so every row it writes is operator-only.
+        // trading-privacy.ts also treats promptKey 'auto-trader' as private; this
+        // makes the stored flag agree instead of relying on that second check.
+        containsExecutionState: true,
       });
       timeline?.setCommentaryId(commentaryId);
       commentaryStored = true;
@@ -386,6 +391,7 @@ export async function runAutoTradePass(
           completionTokens: result.completionTokens,
           promptKey: 'auto-trader',
           promptVersion,
+          containsExecutionState: true, // retry path — same classification as above
         });
         timeline?.setCommentaryId(commentaryId);
         commentaryStored = true;
