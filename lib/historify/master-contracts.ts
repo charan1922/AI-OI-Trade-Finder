@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto';
 import fnoUniverse from '@/lib/data/fno_stocks_list.json';
 import { prisma } from '@/lib/db';
+import { checkOptionMonthCoverage } from '@/lib/options/expiry-policy';
 import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 
 const MASTER_CSV_URL = 'https://images.dhan.co/api-data/api-scrip-master.csv';
@@ -18,7 +19,16 @@ const KEEP_INSTRUMENTS = new Set(['EQUITY', 'FUTSTK', 'FUTIDX', 'OPTSTK']);
 const STABLE_INSTRUMENTS = new Set(['EQUITY', 'FUTSTK', 'FUTIDX']);
 const MIN_TOTAL_ROWS = 1000;
 const MIN_STABLE_ROWS = 1000;
+/** Freshness floor: the STORED table must not be option-empty. Kept minimal on
+ * purpose — completeness of a stored snapshot is proved by the manifest count
+ * match, not by an absolute number, and a large floor here only makes fixtures
+ * harder without adding safety. */
 const MIN_OPTSTK_ROWS = 1;
+/** Parse floor: a real Dhan CSV carries ~70k stock-option rows and the THINNEST
+ * single monthly series alone is ~14k (measured 2026-07-26). 10k therefore only
+ * fires on a near-total loss of the option section — no false-block risk — while
+ * the month-coverage guard below catches the subtler "one series missing" case. */
+const MIN_PARSED_OPTSTK_ROWS = 10_000;
 const MASTER_SYNC_LEASE = 'master-contracts-sync';
 const MASTER_SYNC_LEASE_TTL_MS = 120_000;
 
@@ -373,7 +383,7 @@ async function syncFromDhan(today: string): Promise<void> {
   const existingStable = await prisma.masterContract.count({
     where: { instrument: { in: [...STABLE_INSTRUMENTS] } },
   });
-  if (entries.length < MIN_TOTAL_ROWS || parsedStable < MIN_STABLE_ROWS || parsedOptStk < MIN_OPTSTK_ROWS) {
+  if (entries.length < MIN_TOTAL_ROWS || parsedStable < MIN_STABLE_ROWS || parsedOptStk < MIN_PARSED_OPTSTK_ROWS) {
     throw new Error(
       `master-contracts sync aborted: parsed ${entries.length} rows (${parsedStable} stable, ${parsedOptStk} OPTSTK) — CSV truncated or format changed; existing ${existingCount} rows kept`,
     );
@@ -381,6 +391,27 @@ async function syncFromDhan(today: string): Promise<void> {
   if (existingStable > 0 && parsedStable < existingStable * 0.9) {
     throw new Error(
       `master-contracts sync aborted: stable instruments dropped ${existingStable}→${parsedStable} (>10%) — refusing to replace a good table; investigate the CSV before re-syncing`,
+    );
+  }
+  // Guard 3 — option-series COVERAGE, not row count. Losing one monthly series
+  // is only ~1/3 of the option rows, so guard 1 still passes; but the resolver
+  // would then roll past the intended next month into the one after it. Compare
+  // still-tradable expiry months against the snapshot being replaced.
+  const existingOptStkExpiries = await prisma.$queryRawUnsafe<{ expiryDate: string | null }[]>(
+    `SELECT DISTINCT substr(expiryDate, 1, 10) AS expiryDate
+       FROM master_contracts
+      WHERE instrument = 'OPTSTK' AND segment = 'NSE_FNO' AND expiryDate IS NOT NULL`
+  );
+  const coverage = checkOptionMonthCoverage(
+    today,
+    entries
+      .filter((e) => e.instrument === 'OPTSTK' && e.segment === 'NSE_FNO')
+      .map((e) => e.expiryDate?.toISOString().slice(0, 10) ?? null),
+    existingOptStkExpiries.map((r) => r.expiryDate)
+  );
+  if (!coverage.ok) {
+    throw new Error(
+      `master-contracts sync aborted: ${coverage.reason}; refusing to replace a good table (existing ${existingCount} rows kept) — investigate the CSV before re-syncing`,
     );
   }
 
