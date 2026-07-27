@@ -20,7 +20,8 @@ import { getMimoClient, getMimoModel } from './client';
  *
  * DESPITE THE NAME, THIS IS NOT COMMENTARY-ONLY. The auto-trade entry gate
  * folds the same setting into `hardEnd` (lib/auto-trade/risk/gates.ts), so it
- * hard-blocks REAL orders on both the AI and human-approval paths. The
+ * hard-blocks new entry ORDERS on both the AI and human-approval paths — and
+ * with no mode branch, so paper entries stop too, not just live ones. The
  * /trade-suggest scanner is the only thing genuinely unaffected — it keeps
  * surfacing candidates; the gate is what refuses to buy them. Renaming the key
  * would orphan the stored /config row, so the label carries the warning

@@ -25,7 +25,12 @@ export async function ensureCommentaryTable(): Promise<void> {
       picksJson        TEXT    DEFAULT '[]',
       promptTokens     INTEGER,
       completionTokens INTEGER,
-      containsExecutionState INTEGER NOT NULL DEFAULT 0,
+      -- DEFAULT 1 = PRIVATE, matching the ALTER backfill below and
+      -- executionStateFlag(). A row that reaches SQLite without a classification
+      -- must not be published to viewers, and that has to hold on a FRESH
+      -- install too — this shipped as 0 while the ALTER said 1, so the same code
+      -- had two privacy defaults depending on the database's age.
+      containsExecutionState INTEGER NOT NULL DEFAULT 1,
       createdAt        TEXT    NOT NULL
     )
   `);
@@ -103,10 +108,12 @@ export interface InsertCommentary {
   promptKey?: string | null;
   promptVersion?: number | null;
   /** True when a real open/placing/closed trade was in the model's context.
-   *  OMITTING IT MEANS PRIVATE, not public — a writer that forgets to classify
-   *  itself must not publish the operator's book to viewers. Every caller
-   *  should still set it explicitly; the default is the backstop, not the API. */
-  containsExecutionState?: boolean;
+   *  REQUIRED: a writer must state whether it saw the operator's book — that is
+   *  a decision, not a default. `executionStateFlag()` still fails private for
+   *  callers TypeScript cannot police (raw JS, future dynamic writers), but an
+   *  ordinary caller can no longer forget the field, which is how both
+   *  auto-trader inserts came to store 0/public. */
+  containsExecutionState: boolean;
 }
 
 /**
@@ -115,6 +122,9 @@ export interface InsertCommentary {
  * operator's book because a caller forgot a field is the failure mode this
  * whole column exists to prevent. Exported (rather than inlined in the INSERT)
  * so the DB-free suite can assert the default without a database.
+ *
+ * The parameter stays OPTIONAL even though InsertCommentary's field is required:
+ * the type stops ordinary callers forgetting it, this stops everything else.
  */
 export function executionStateFlag(containsExecutionState?: boolean): 0 | 1 {
   return (containsExecutionState ?? true) ? 1 : 0;
@@ -139,9 +149,10 @@ export async function insertCommentary(row: InsertCommentary): Promise<number> {
     row.completionTokens,
     row.promptKey ?? null,
     row.promptVersion ?? null,
-    // Fail-private on omission. Matches the legacy-row backfill
-    // (ALTER ... DEFAULT 1) and map()'s null handling, so "we don't know" reads
-    // the same at every layer.
+    // Fail-private on omission. Matches the CREATE TABLE default, the legacy-row
+    // backfill (ALTER ... DEFAULT 1) and map()'s null handling, so "we don't
+    // know" reads the same at every layer — proven end-to-end against a real
+    // SQLite table by scripts/verify-commentary-store.ts.
     executionStateFlag(row.containsExecutionState),
     new Date().toISOString(),
   )) as { id: number | bigint }[];

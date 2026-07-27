@@ -380,9 +380,13 @@ a glance.
    far-away strikes would produce a very out-of-the-money option. This existed
    before this release; the new checks make it much less likely but do not remove
    it. A distance limit is the next safety check to add.
-5. **`insertCommentary()` treats a missing privacy stamp as public.** No leak
-   today, because both writers set it correctly. But it fails the wrong way, which
-   is the same bug class fixed twice above. One-line fix.
+5. ~~**`insertCommentary()` treats a missing privacy stamp as public.**~~
+   **CLOSED by PR #27** — see the addendum below. Two corrections to what this
+   item originally said: the writers were **not** all setting it correctly (both
+   auto-trader inserts omitted the field), and it was not a one-line fix — the
+   `CREATE TABLE` default said public while the `ALTER TABLE` backfill said
+   private, so a fresh install and an upgraded one disagreed. Left visible rather
+   than deleted, because the wrong diagnosis is the part worth remembering.
 6. **`forceSync()` has no in-process lock.** The database lock lets the same
    process re-acquire its own lock, so two calls inside one process could both
    run, and the first to finish releases the lock while the second is still
@@ -537,6 +541,35 @@ Three reasons it was declined:
 The 70,616 figure is real but belongs to the once-a-day download integrity
 check, which never runs during a trade.
 
+### Raised again in review: "so refuse the trade when they disagree?"
+
+A later review read reason 1 above and proposed the opposite rule — if the
+calendar and the contract file disagree about an expiry date, refuse the entry
+and alert. **Declined, and worth writing down so it is not re-proposed a third
+time.**
+
+`fno_expiry_calendar` is not an independent feed. It is seeded from a hardcoded
+list of 24 dates in `lib/backtest/expiry-calendar.ts` (the file says
+"user-provided"), it ends at December 2026, and its holiday preponements —
+30 March, 23 November — were typed in by hand. Its job is clipping option-OI
+baselines to the right expiry cycle, not resolving contracts for orders.
+
+So "refuse on disagreement" lets a hand-typed constant veto the exchange. When
+those two disagree, the stale one is almost always the hand-typed list. The
+failure it would create: NSE prepones August for a holiday, the broker file is
+right, the list is a month behind, and **no entry is allowed at all** until
+somebody edits source and redeploys. That is the same silent-breakage risk as
+reason 2, arrived at from the other direction.
+
+The real protection against a bad contract file already shipped in this release
+and is stronger: the per-`STOCK + CE/PE + MONTH` coverage check, the 10,000-row
+floor, the same-transaction fingerprint, and `checkOptionExpiryForEntry()`
+re-checking the contract's own expiry inside the order gate.
+
+**If the disagreement is ever wired up, it should ALERT, never block.** It is a
+useful signal — it means either the download is stale or the hardcoded list needs
+its next year added — but neither of those is a reason to stop trading.
+
 The separation the review asked for already exists:
 `selectOptionExpiryForEntry()` is a pure function with no database access; the
 contract lookup is a separate query; and `checkOptionExpiryForEntry()` re-checks
@@ -580,6 +613,32 @@ published the book.
 
 Fixed: an unclassified writer now stores private, both writers say so
 explicitly, and a test pins all three cases. No trading code touched.
+
+Review found one more layer that was still failing the wrong way. The pure test
+could only see the helper function, and the **table definition disagreed with
+it**: a freshly created table declared the column `DEFAULT 0` (public) while the
+upgrade path for older databases used `DEFAULT 1` (private). Same code, two
+different privacy defaults depending on whether the database was new or upgraded
+— and no DB-free check could ever have seen it.
+
+Both now say private, and `scripts/verify-commentary-store.ts` proves it against
+a real throwaway SQLite database on **both** paths (fresh table and legacy
+upgrade), so the claim is verified rather than reasoned. The TypeScript field is
+now required too: a writer has to state whether it saw the operator's book.
+
+## PR #27, part 3 — three different limits were all called `MAX_SPREAD_PCT`
+
+Not a bug; a name that invited one. Three separate ceilings shared a name across
+two files, and a reader seeing `0.3` next to `3` reasonably assumed one was
+wrong. They measure different instruments and do different things:
+
+| Now called | Value | Instrument | What it does |
+|---|---|---|---|
+| `SUGGESTION_MAX_SPREAD_PCT` | 0.3% | the underlying stock | candidate never becomes a suggestion |
+| `OPTION_WARN_SPREAD_PCT` | 2% | the option itself | warns on the plan; trade still allowed |
+| `ORDER_ENTRY_MAX_SPREAD_PCT` | 3% | the option itself | the entry gate REFUSES the order |
+
+Renaming only. Every value is unchanged, so no behaviour moved.
 
 ## Proof that none of this can affect today's session
 

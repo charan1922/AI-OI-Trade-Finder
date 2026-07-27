@@ -43,8 +43,10 @@ Real quoted numbers — never fabricated:
   (`PREMIUM_SL_PCT = 40`, the Indian option-buying convention).
 - `targetPremium` — the premium level that books ~₹5,000 on one lot
   (`TF_LOT_TARGET_RUPEES = 5000`).
-- `liquidityWarning` — non-null when the option spread is wide (> `MAX_OPT_SPREAD_PCT
-  = 2%` of mid) or volume is zero. Surface it prominently: slippage risk.
+- `liquidityWarning` — non-null when the option spread is wide (> `OPTION_WARN_SPREAD_PCT
+  = 2%` of mid) or volume is zero. Surface it prominently: slippage risk. This
+  only WARNS; the auto-trade entry gate separately REFUSES the order above
+  `ORDER_ENTRY_MAX_SPREAD_PCT = 3%`.
 
 If `premium` is null the quote wasn't available — plan is spot-terms only; tell
 the user to check the premium on the broker.

@@ -212,7 +212,7 @@ export const NUMBER_DEFS: NumberDef[] = [
   },
   {
     key: 'COMMENTARY_ENTRY_CUTOFF_MIN',
-    label: 'Hard fresh-entry cutoff (min IST) — blocks REAL orders',
+    label: 'Hard new-entry cutoff (min IST) — blocks entries in ALL modes',
     category: 'Entry & Exit Times',
     // Default mirrors COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT in
     // lib/ai-commentary/generate.ts (kept a literal here to avoid an import
@@ -221,7 +221,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 11 * 60,
     max: 15 * 60,
     description:
-      'Two jobs, one time (default 750 = 12:30). (1) The AI commentary stops suggesting fresh entries and switches to managing/exiting open positions. (2) It is ALSO a hard backstop on real orders: the auto-trade entry gate uses min(entry window close, this − 1 min, square-off − 1 min), so entries stop at whichever comes FIRST. Widening “Entry window closes” on /auto-trade past this time will NOT extend trading — raise this too. The /auto-trade page always shows the resulting effective close time.',
+      'Two jobs, one time (default 750 = 12:30). (1) The AI commentary stops suggesting new entries and switches to managing/exiting open positions. (2) It is ALSO a hard backstop on ORDERS: the auto-trade entry gate uses min(entry window close, this − 1 min, square-off − 1 min), so entries stop at whichever comes FIRST. The gate does not look at the trading mode, so this blocks PAPER entries exactly as it blocks live and approval ones. Widening “Auto-trade entries close” below past this time will NOT extend trading — raise this too. The /auto-trade page always shows the resulting effective close time. Unrelated to the stale-candle freshness gate.',
   },
   {
     key: 'PRIORITY_PER_FEED',

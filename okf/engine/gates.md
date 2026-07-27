@@ -23,7 +23,7 @@ map for transparency.
 | Futures OI level | `MIN_OI_LEVEL` | **≥ 1.1×** | OI ÷ 20-day avg — the TF minimum fingerprint |
 | — OR NSE combined OI | `MIN_NSE_OI_PCT` | **≥ 5%** | alternate path for options-led builds |
 | Turnover | `MIN_TURNOVER_SCORE` | factor score **≥ 0.1** | = 1.2× the 20-day avg (the 3rd TF pillar) |
-| Spread | `MAX_SPREAD_PCT` | **≤ 0.3%** of mid | execution-cost ceiling |
+| Spread | `SUGGESTION_MAX_SPREAD_PCT` | **≤ 0.3%** of mid | execution-cost ceiling on the UNDERLYING equity (not the option) |
 | Bias | — | non-neutral | must be a clear buy or sell |
 | Price agreement | — | price must agree with the bias | bullish → up / breakout; bearish → mirrored |
 | Extended | `EXCLUDE_EXTENDED` | **true** → hard-skip | movers already ≥3% from open are excluded |

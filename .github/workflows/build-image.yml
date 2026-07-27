@@ -118,6 +118,12 @@ jobs:
       # Invalid MiMo model configuration must not disable risk settings or the
       # deterministic guard. Runs against isolated SQLite with no stored model.
       - run: pnpm exec tsx scripts/verify-auto-trade-settings-safety.ts
+      # trade_commentary STORE round-trip against an isolated throwaway SQLite DB:
+      # the viewer-privacy flag must store PRIVATE on BOTH installation paths —
+      # a freshly CREATEd table and a legacy table upgraded by the additive ALTER.
+      # The pure helper check cannot see the DDL, and the DDL disagreed with it:
+      # CREATE said DEFAULT 0 (public) while ALTER said 1 (PR#27 re-review).
+      - run: pnpm exec tsx scripts/verify-commentary-store.ts
       # DB-free pure checks for the R-Factor V2 SHADOW engine (activity/direction
       # separation, fixed-denominator coverage, ranking that ignores the
       # shortlist-only option factor, per-stock robust z, peer-excluded sector
