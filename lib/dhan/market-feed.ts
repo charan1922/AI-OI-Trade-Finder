@@ -239,19 +239,26 @@ export async function fetchOptionExpiries(
   if (cached != null && cached.expiresAt > Date.now()) return cached.value;
   const token = await getDhanAccessToken();
   const clientId = env.DHAN_CLIENT_ID!;
-  const resp = await throughQuoteGate(() =>
-    fetch('https://api.dhan.co/v2/optionchain/expirylist', {
-      method: 'POST',
-      headers: {
-        'access-token': token,
-        'client-id': clientId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        UnderlyingScrip: underlyingSecId,
-        UnderlyingSeg: underlyingSeg,
+  // Counted against the option-chain sub-limit. Dhan documents the 1-per-3s rule
+  // for the option-chain API without stating whether the expiry-list sibling
+  // shares that budget, so we spend the safe side of the ambiguity: over-spacing
+  // costs one ≤3.2s wait roughly twice a day (this result is cached 6h), while
+  // under-spacing risks a 429 whose cooldown freezes ALL quote traffic.
+  const resp = await throughQuoteGate(
+    () =>
+      fetch('https://api.dhan.co/v2/optionchain/expirylist', {
+        method: 'POST',
+        headers: {
+          'access-token': token,
+          'client-id': clientId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          UnderlyingScrip: underlyingSecId,
+          UnderlyingSeg: underlyingSeg,
+        }),
       }),
-    })
+    { optionChain: true }
   );
   if (resp.status === 429) noteQuote429();
   if (!resp.ok) {
@@ -314,20 +321,25 @@ async function fetchOptionChainGreeksSnapshot(
 ): Promise<OptionChainGreeksSnapshot | null> {
   const token = await getDhanAccessToken();
   const clientId = env.DHAN_CLIENT_ID!;
-  const resp = await throughQuoteGate(() =>
-    fetch('https://api.dhan.co/v2/optionchain', {
-      method: 'POST',
-      headers: {
-        'access-token': token,
-        'client-id': clientId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        UnderlyingScrip: underlyingSecId,
-        UnderlyingSeg: 'IDX_I',
-        Expiry: expiry,
+  const resp = await throughQuoteGate(
+    () =>
+      fetch('https://api.dhan.co/v2/optionchain', {
+        method: 'POST',
+        headers: {
+          'access-token': token,
+          'client-id': clientId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          UnderlyingScrip: underlyingSecId,
+          UnderlyingSeg: 'IDX_I',
+          Expiry: expiry,
+        }),
       }),
-    })
+    // Same endpoint, same 1-per-3s sub-limit as the shadow chain — a foreground
+    // caller that skipped this flag would neither wait for nor stamp the shared
+    // option-chain clock, leaving the rule enforceable only in one direction.
+    { optionChain: true }
   );
   if (resp.status === 429) noteQuote429();
   if (!resp.ok) {
@@ -479,6 +491,7 @@ export async function fetchDetailedOptionChainShadow(
       },
       SHADOW_REQUEST_TIMEOUT_MS,
     ),
+    { optionChain: true },
   ).catch((error: unknown) => {
     if (isAbortError(error)) {
       console.warn(`[Dhan] shadow optionchain timed out after ${SHADOW_REQUEST_TIMEOUT_MS}ms for secId=${underlyingSecId}`);
@@ -521,21 +534,24 @@ export async function fetchOptionChain(underlyingSecId: number, expiry: string):
   const clientId = env.DHAN_CLIENT_ID!;
 
   // Option chain is a Quote-API endpoint sharing the same per-account 1 req/sec
-  // limit as marketfeed/quote — gate it so it can't collide with live polls.
-  const resp = await throughQuoteGate(() =>
-    fetch('https://api.dhan.co/v2/optionchain', {
-      method: 'POST',
-      headers: {
-        'access-token': token,
-        'client-id': clientId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        UnderlyingScrip: underlyingSecId,
-        UnderlyingSeg: 'NSE_FNO',
-        Expiry: expiry,
+  // limit as marketfeed/quote — gate it so it can't collide with live polls —
+  // and it additionally carries its own 1-per-3s interval (optionChain: true).
+  const resp = await throughQuoteGate(
+    () =>
+      fetch('https://api.dhan.co/v2/optionchain', {
+        method: 'POST',
+        headers: {
+          'access-token': token,
+          'client-id': clientId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          UnderlyingScrip: underlyingSecId,
+          UnderlyingSeg: 'NSE_FNO',
+          Expiry: expiry,
+        }),
       }),
-    })
+    { optionChain: true }
   );
 
   if (resp.status === 429) noteQuote429();
