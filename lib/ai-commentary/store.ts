@@ -123,11 +123,18 @@ export interface InsertCommentary {
  * whole column exists to prevent. Exported (rather than inlined in the INSERT)
  * so the DB-free suite can assert the default without a database.
  *
- * The parameter stays OPTIONAL even though InsertCommentary's field is required:
+ * The parameter is `unknown` even though InsertCommentary's field is required:
  * the type stops ordinary callers forgetting it, this stops everything else.
+ *
+ * ONLY A LITERAL `false` MEANS PUBLIC. The first cut tested truthiness
+ * (`(v ?? true) ? 1 : 0`), which covers undefined/null but publishes every other
+ * falsy value — `0`, `''` and `NaN` all stored 0/PUBLIC, from exactly the raw-JS
+ * callers this function claims to protect (PR#27 re-review). Publishing on a
+ * value nobody meant to send is the failure this guard exists to prevent, so
+ * anything that is not an explicit `false` fails private.
  */
-export function executionStateFlag(containsExecutionState?: boolean): 0 | 1 {
-  return (containsExecutionState ?? true) ? 1 : 0;
+export function executionStateFlag(value: unknown): 0 | 1 {
+  return value === false ? 0 : 1;
 }
 
 /** Inserts one narration; returns the new row's id (links cycle timelines). */
@@ -188,10 +195,14 @@ function map(r: RawRow): CommentaryRow {
   return {
     ...rest,
     windowActive: windowActive === 1,
-    // Legacy rows predate the column and read null — treat them as PRIVATE.
-    // A row written before the flag existed may still narrate a real position,
-    // so defaulting to public would re-open the very leak this closes.
-    containsExecutionState: containsExecutionState == null || containsExecutionState === 1,
+    // ONLY an exact stored 0 reads as public — the mirror of executionStateFlag's
+    // "only a literal false is public". Legacy rows predate the column and read
+    // null; a row written before the flag existed may still narrate a real
+    // position, so defaulting to public would re-open the very leak this closes.
+    // Testing `=== 1` instead published anything unexpected — 2, -1, a driver
+    // handing back the string "1" — which is backwards for a corrupt value
+    // (PR#27 re-review).
+    containsExecutionState: containsExecutionState !== 0,
     picks,
   };
 }

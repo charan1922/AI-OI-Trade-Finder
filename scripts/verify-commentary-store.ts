@@ -172,6 +172,37 @@ async function main(): Promise<void> {
     executionStateFlag(undefined) === 1 && executionStateFlag(true) === 1 && executionStateFlag(false) === 0
   );
 
+  // Only a LITERAL false may mean public. Truthiness testing published every
+  // other falsy value — 0, '' and NaN — from exactly the untyped callers this
+  // helper claims to cover.
+  const falsyButNotFalse: [string, unknown][] = [
+    ['0', 0],
+    ["''", ''],
+    ['NaN', Number.NaN],
+    ["'false'", 'false'],
+    ['null', null],
+    ['undefined', undefined],
+  ];
+  const leaked = falsyButNotFalse.filter(([, v]) => executionStateFlag(v) === 0).map(([label]) => label);
+  check(
+    'only a literal false is public — no other falsy value leaks',
+    leaked.length === 0,
+    leaked.length ? `these stored PUBLIC: ${leaked.join(', ')}` : ''
+  );
+
+  // Same rule on the way OUT: a corrupt stored value must read private, not
+  // public. Written straight past insertCommentary(), which is the only way a
+  // non-0/1 value can reach the column.
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO trade_commentary (date, asOf, windowActive, picksCount, model, text, picksJson, containsExecutionState, createdAt)
+     VALUES (?, ?, 1, 0, 'corrupt', 'value that is neither 0 nor 1', '[]', 2, ?)`,
+    date,
+    `${date} 09:58`,
+    new Date().toISOString()
+  );
+  const corrupt = (await getCommentary({ date, limit: 20 })).find((r) => r.model === 'corrupt');
+  check('a corrupt stored flag (2) reads PRIVATE, not public', corrupt?.containsExecutionState === true);
+
   // ── 4. The LEGACY upgrade path also lands on private ────────────────────────
   // Build a pre-flag database, then hand it to a CHILD running this same file so
   // the store's real ALTER — not a copy of it pasted here — decides the value.

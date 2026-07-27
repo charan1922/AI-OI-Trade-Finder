@@ -531,7 +531,11 @@ sends it, through Dhan, every day.
 Three reasons it was declined:
 
 1. **It creates a second opinion you can never act on.** If the table says
-   25 August and the contract says 24 August, you must buy the contract. A
+   25 August and the contract says 24 August, you buy the contract — *provided
+   today's contract file has passed its own freshness and integrity checks*. If
+   it has not, nothing is bought at all: `ensureSynced()` and the resolver refuse
+   on a stale, incomplete or unfingerprinted snapshot, and that refusal is
+   independent of anything the calendar says. A
    source you always overrule is not a source.
 2. **"Last Tuesday" is an exchange rule that has changed before.** Hard-coding
    it means it breaks silently, on a day you are holding something.
@@ -568,7 +572,21 @@ re-checking the contract's own expiry inside the order gate.
 
 **If the disagreement is ever wired up, it should ALERT, never block.** It is a
 useful signal — it means either the download is stale or the hardcoded list needs
-its next year added — but neither of those is a reason to stop trading.
+its next year added — but a hand-typed array disagreeing is not, by itself, a
+reason to stop trading.
+
+**Read that narrowly.** It applies only to *disagreement with the calendar*. A
+stale or damaged contract file absolutely does stop new entries, and still
+should: `ensureSynced()` refuses a snapshot that is not from today, and the
+resolver refuses on `master-stale` / `master-incomplete` before it looks at any
+expiry at all. Those blocks are independent of the calendar and are not being
+softened here. The rule is:
+
+| Situation | What should happen |
+|---|---|
+| Contract file stale, incomplete, or fails its fingerprint | **BLOCK** — already does |
+| Contract file healthy, calendar disagrees on a date | **ALERT** — trust the exchange's file |
+| Calendar has run out of future dates | **ALERT** — it needs its next year typed in |
 
 The separation the review asked for already exists:
 `selectOptionExpiryForEntry()` is a pure function with no database access; the
@@ -591,7 +609,9 @@ Both the AI path and the human-approval path load it before placing an order.
 so the tighter one — your own setting — wins. The trap is widening the entry
 window past 12:29 and being silently capped anyway.
 
-Fixed by renaming the label to **"Hard fresh-entry cutoff — blocks REAL orders"**
+Fixed by renaming the label to **"Hard new-entry cutoff (min IST) — blocks
+entries in ALL modes"** — the gate never looks at the trading mode, so this
+stops **paper** entries exactly as it stops live and approval ones —
 and spelling out the interaction on both clock settings. The stored key was left
 alone on purpose: renaming it would orphan the saved value and silently reset the
 cutoff to its default.
@@ -625,6 +645,28 @@ Both now say private, and `scripts/verify-commentary-store.ts` proves it against
 a real throwaway SQLite database on **both** paths (fresh table and legacy
 upgrade), so the claim is verified rather than reasoned. The TypeScript field is
 now required too: a writer has to state whether it saw the operator's book.
+
+A third review pass found the guard was still too generous on both sides, in the
+same way. It asked "is this value truthy?" when it should have asked "is this
+value exactly the one that means public?":
+
+| Value reaching the guard | Old result | Now |
+|---|---|---|
+| `0`, `''`, `NaN` on the way IN | **published** | private |
+| `2`, `-1`, the text `"1"` on the way OUT | **published** | private |
+
+Nothing sent those values — every current writer passes a real true/false. But a
+guard whose comment promises to protect untyped callers has to actually do it.
+Now only a literal `false` going in, and only an exact stored `0` coming out,
+mean public. Anything unrecognised is treated as private. Both rules were checked
+by putting the old logic back and watching the tests go red, and the failure
+message names the leaking values rather than just saying "failed".
+
+**Not added: a `CHECK (containsExecutionState IN (0,1))` constraint**, though it
+was suggested. SQLite cannot add a constraint to an existing table without
+rebuilding it, so a fresh install would get the check and every upgraded one
+would not — reintroducing exactly the fresh-versus-upgraded split this section is
+about. The two runtime guards above cover the same risk on both paths equally.
 
 ## PR #27, part 3 — three different limits were all called `MAX_SPREAD_PCT`
 
