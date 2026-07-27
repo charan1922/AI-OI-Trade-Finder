@@ -7,7 +7,19 @@
  * apart, and a 429 trips an escalating cooldown that pauses ALL quote traffic so
  * the penalty box can clear instead of being poked again. Option-chain requests
  * additionally observe their endpoint's own stricter sub-limit — see
- * OPTIONCHAIN_MIN_INTERVAL_MS; nothing else is slowed by it.
+ * OPTIONCHAIN_MIN_INTERVAL_MS.
+ *
+ * TWO LANES, ONE EXECUTION SLOT (dispatchPump below): a plain marketfeed call
+ * (`plainQueue`) and an option-chain call (`chainQueue`) are admitted into
+ * separate FIFOs, but only one request is ever actually in flight — the pump
+ * always prefers an eligible plain-lane head over an eligible chain-lane head.
+ * This matters because the option-chain sub-limit can leave a chain call
+ * genuinely INELIGIBLE to dispatch for up to 3.2s; without lane separation, a
+ * money-path quote that queued up behind that (still-waiting) chain call would
+ * be forced to wait out someone else's stricter interval even though the quote
+ * itself carries no such restriction (reproduced in scripts/verify-rfactor-v2.ts:
+ * a plain quote queued right behind a not-yet-eligible chain call was held for
+ * ~4.5s before lane separation existed — PR#29 review).
  *
  * State lives on globalThis (not a module `let`): Turbopack HMR re-evaluates
  * modules on every hot reload — and separate route bundles can hold their own
@@ -46,6 +58,8 @@ const QUOTE_BACKOFF_MAX_MS = 30_000; // cap the escalation
  * Callers that pass no flag — marketfeed/quote and marketfeed/ohlc, i.e. the
  * live-quote money path — are completely unaffected: the term drops out of the
  * dispatch-target Math.max and their spacing stays exactly QUOTE_MIN_INTERVAL_MS.
+ * They are ALSO never queued behind a chain call that hasn't reached this
+ * interval yet — see the pump-lane note in the module doc above.
  */
 export const OPTIONCHAIN_MIN_INTERVAL_MS = 3200;
 
@@ -61,16 +75,36 @@ export const LOW_PRIORITY_GIVE_UP_MS = 15_000;
 
 /**
  * Hard ceiling on a measurement-only request once dispatched. It shares the
- * serial queue with live quotes, so an unbounded shadow request would wedge the
- * queue and make a money-path quote wait behind it forever.
+ * execution slot with live quotes, so an unbounded shadow request would wedge
+ * the pump and make a money-path quote wait behind it forever.
  */
 export const SHADOW_REQUEST_TIMEOUT_MS = 5_000;
 
+/**
+ * How often the pump re-checks eligibility while neither lane's head is ready
+ * to dispatch yet. Small relative to QUOTE_MIN_INTERVAL_MS/OPTIONCHAIN_MIN_INTERVAL_MS
+ * (seconds-scale), so this adds only negligible slop while letting a plain quote
+ * that arrives mid-wait for a chain call be noticed and dispatched promptly
+ * instead of waiting out the chain call's full remaining interval.
+ */
+const PUMP_POLL_MS = 50;
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** One admitted-but-not-yet-dispatched request. Wraps task execution so the
+ *  pump can await it without ever throwing (errors route to the caller's own
+ *  promise via reject, not by rejecting the pump loop). */
+type QueueItem = () => Promise<void>;
+
 interface QuoteGateState {
-  /** Tail of the serial chain; each new task appends. Never rejects. */
-  tail: Promise<unknown>;
+  /** FIFO of admitted plain (non-option-chain) requests — always preferred by
+   *  the pump over the chain lane once its head is eligible. */
+  plainQueue: QueueItem[];
+  /** FIFO of admitted option-chain requests. */
+  chainQueue: QueueItem[];
+  /** True while dispatchPump()'s loop is actively running, so concurrent
+   *  enqueues don't start a second overlapping pump. */
+  pumping: boolean;
   /** When the last task was dispatched (start-to-start spacing anchor). */
   lastDispatchAt: number;
   /** No task dispatches before this time — set/extended by a 429. */
@@ -88,7 +122,9 @@ interface QuoteGateState {
 
 const gateHost = globalThis as unknown as { __dhanQuoteGate?: QuoteGateState };
 gateHost.__dhanQuoteGate ??= {
-  tail: Promise.resolve(),
+  plainQueue: [],
+  chainQueue: [],
+  pumping: false,
   lastDispatchAt: 0,
   cooldownUntil: 0,
   lastOptionChainDispatchAt: 0,
@@ -98,10 +134,13 @@ gateHost.__dhanQuoteGate ??= {
 const gate = gateHost.__dhanQuoteGate;
 gate.foregroundPending ??= 0;
 gate.lastOptionChainDispatchAt ??= 0;
+gate.plainQueue ??= [];
+gate.chainQueue ??= [];
+gate.pumping ??= false;
 
 /**
- * Earliest time the next dispatch may go out. Shared by both gates so the
- * foreground and low-priority paths can never drift apart on the rules.
+ * Earliest time a dispatch of this kind may go out, computed fresh from current
+ * gate state (never a caller's stale estimate).
  */
 function dispatchTargetAt(optionChain: boolean): number {
   return Math.max(
@@ -117,6 +156,65 @@ function dispatchTargetAt(optionChain: boolean): number {
 function stampDispatch(optionChain: boolean): void {
   gate.lastDispatchAt = Date.now();
   if (optionChain) gate.lastOptionChainDispatchAt = gate.lastDispatchAt;
+}
+
+/**
+ * The one execution loop: repeatedly picks the next eligible item — plain lane
+ * first — and runs it to completion before considering another. This is the
+ * sole place a real dispatch happens, so "only one Dhan call in flight" and
+ * "plain quotes never wait out a chain call's sub-limit" both fall out of one
+ * small loop instead of needing separate machinery.
+ *
+ * Deliberately does NOT shift the chain lane's head and sleep for its whole
+ * remaining wait in one uninterruptible step — that would re-create exactly the
+ * bug this replaces (a later, immediately-eligible plain quote stuck behind an
+ * earlier chain call that isn't ready yet). Polling in small increments means a
+ * newly-arrived plain request is picked up within PUMP_POLL_MS instead of after
+ * the chain call's full interval elapses.
+ */
+async function dispatchPump(): Promise<void> {
+  if (gate.pumping) return;
+  gate.pumping = true;
+  try {
+    for (;;) {
+      const now = Date.now();
+      if (gate.plainQueue.length > 0 && dispatchTargetAt(false) <= now) {
+        const next = gate.plainQueue.shift()!;
+        stampDispatch(false);
+        await next();
+        continue;
+      }
+      if (gate.chainQueue.length > 0 && dispatchTargetAt(true) <= now) {
+        const next = gate.chainQueue.shift()!;
+        stampDispatch(true);
+        await next();
+        continue;
+      }
+      if (gate.plainQueue.length === 0 && gate.chainQueue.length === 0) return;
+      await sleep(PUMP_POLL_MS);
+    }
+  } finally {
+    gate.pumping = false;
+  }
+}
+
+/** Wrap a task so the pump can run it without ever throwing — the outer promise
+ *  the caller holds carries the real result/error via resolve/reject. */
+function admit<T>(task: () => Promise<T>): { promise: Promise<T>; run: QueueItem } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  const run: QueueItem = async () => {
+    try {
+      resolve(await task());
+    } catch (error) {
+      reject(error);
+    }
+  };
+  return { promise, run };
 }
 
 /**
@@ -153,22 +251,16 @@ export function shouldLowPriorityYield(args: {
  * per-account limit no matter how many tabs / routes call in.
  *
  * Pass `{ optionChain: true }` for a /v2/optionchain-family request so it also
- * observes and stamps that endpoint's stricter interval.
+ * observes and stamps that endpoint's stricter interval — and joins the chain
+ * lane, so it can never delay a plain call queued behind it (see dispatchPump).
  */
 export function throughQuoteGate<T>(task: () => Promise<T>, opts: QuoteGateOptions = {}): Promise<T> {
   const optionChain = opts.optionChain === true;
   gate.foregroundPending++;
-  const run = gate.tail.then(async (): Promise<T> => {
-    const wait = dispatchTargetAt(optionChain) - Date.now();
-    if (wait > 0) await sleep(wait);
-    stampDispatch(optionChain);
-    return task();
-  });
-  gate.tail = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run.finally(() => {
+  const { promise, run } = admit(task);
+  (optionChain ? gate.chainQueue : gate.plainQueue).push(run);
+  void dispatchPump();
+  return promise.finally(() => {
     gate.foregroundPending = Math.max(0, gate.foregroundPending - 1);
   });
 }
@@ -178,9 +270,9 @@ export function throughQuoteGate<T>(task: () => Promise<T>, opts: QuoteGateOptio
  * Waits for the foreground queue to drain, for a quiet interval, and for any
  * cooldown to expire. Returns null rather than queueing if that takes too long.
  *
- * A quote arriving after dispatch can still wait behind this ONE request, which
- * is why the task it wraps MUST be independently bounded — the gate cannot
- * cancel work it has already started.
+ * A quote arriving after admission can still wait behind ONE already-committed
+ * request from the same lane, which is why the task it wraps MUST be
+ * independently bounded — the pump cannot cancel work it has already started.
  */
 export async function throughQuoteGateLowPriority<T>(
   task: () => Promise<T>,
@@ -205,27 +297,13 @@ export async function throughQuoteGateLowPriority<T>(
     if (Date.now() >= giveUpAt) return null;
     await sleep(250);
   }
-  const run = gate.tail.then(async (): Promise<T> => {
-    const wait = dispatchTargetAt(optionChain) - Date.now();
-    if (wait > 0) await sleep(wait);
-    stampDispatch(optionChain);
-    return task();
-  });
-  // The tail advances only when `run` genuinely settles.
-  //
-  // It previously raced `run` against a fixed sleep started at QUEUE time rather
-  // than at dispatch. Since `run` also waits out `cooldownUntil` — up to 30s
-  // after a 429 — the race released the tail after ~6.5s while the task was
-  // still parked. A foreground quote then chained onto an already-resolved tail,
-  // both waited on the same cooldown independently, and both could dispatch
-  // together, re-triggering the very 429 the cooldown existed to prevent.
-  // Serialisation is the whole point of this queue, so nothing may bypass it;
-  // the task is bounded at its own layer by fetchJsonWithTimeout.
-  gate.tail = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run;
+  // Admission (not dispatch) commits here. A foreground plain call that arrives
+  // after this point still cannot be delayed by it: dispatchPump always prefers
+  // an eligible plainQueue head over a chainQueue head, even one admitted first.
+  const { promise, run } = admit(task);
+  (optionChain ? gate.chainQueue : gate.plainQueue).push(run);
+  void dispatchPump();
+  return promise;
 }
 
 /** A 429 was seen — escalate the cooldown so every subsequent dispatch waits it out. */
@@ -247,7 +325,9 @@ export function quoteCooldownRemainingMs(): number {
 
 /** Test seam. Never called by application code. */
 export function __resetQuoteGateForTest(overrides: Partial<QuoteGateState> = {}): void {
-  gate.tail = Promise.resolve();
+  gate.plainQueue = [];
+  gate.chainQueue = [];
+  gate.pumping = false;
   gate.lastDispatchAt = 0;
   gate.cooldownUntil = 0;
   gate.lastOptionChainDispatchAt = 0;

@@ -502,10 +502,15 @@ async function verifyStalledBodyTimeout(): Promise<void> {
 await verifyStalledBodyTimeout();
 
 // ── The shadow gate must never break Dhan request serialisation ─────────────
-// The gate previously handed `gate.tail` a race between the real task and a
-// fixed sleep started at QUEUE time. Because the task also waits out a 429
-// cooldown, the tail could resolve while the task was still parked — letting a
-// foreground quote dispatch concurrently and re-trigger the 429.
+// History: the gate once raced a shared `gate.tail` promise against a fixed
+// sleep started at QUEUE time. Because the task also waited out a 429 cooldown,
+// the tail could resolve while the task was still parked — letting a foreground
+// quote dispatch concurrently and re-trigger the 429. The gate was later
+// rewritten around a single dispatch pump with plain/chain lanes (see
+// lib/dhan/quote-gate.ts); checks 1-3 below guard the serialisation and
+// cooldown behaviour that motivated that original fix, 4-6 guard the
+// option-chain sub-limit scoping, and 7 guards the plain-lane priority that
+// keeps a not-yet-eligible chain call from delaying a money-path quote.
 async function verifyQuoteGateSerialisation(): Promise<void> {
   const gate = await import('@/lib/dhan/quote-gate');
 
@@ -670,6 +675,53 @@ async function verifyQuoteGateSerialisation(): Promise<void> {
     assert.ok(
       quoteGap < gate.OPTIONCHAIN_MIN_INTERVAL_MS,
       `the option-chain sub-limit delayed a live quote by ${quoteGap}ms — it must bind option-chain calls only`,
+    );
+  });
+
+  // 7. PR#29 review finding: a plain money-path quote that arrives WHILE an
+  //    earlier-admitted option-chain call is still waiting out its own 3.2s
+  //    sub-limit must dispatch on its own ordinary schedule, not queue behind
+  //    that chain call's full remaining wait. Reproduced against the prior
+  //    single-FIFO design: chain1 dispatches immediately, chain2 is admitted
+  //    ~100ms later (still ~3.1s from eligible), and a plain quote arrives a
+  //    further ~100ms after that — while chain2 was genuinely ineligible. Under
+  //    the old design the quote was held until AFTER chain2 dispatched (~4.5s);
+  //    lane separation must let it go at its own ~1.5s spacing instead.
+  gate.__resetQuoteGateForTest();
+  const raceT0 = Date.now();
+  const raceAt: Record<string, number> = {};
+  const chain1 = gate.throughQuoteGate(
+    async () => {
+      raceAt.chain1 = Date.now() - raceT0;
+    },
+    { optionChain: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const chain2 = gate.throughQuoteGate(
+    async () => {
+      raceAt.chain2 = Date.now() - raceT0;
+    },
+    { optionChain: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const raceQuote = gate.throughQuoteGate(async () => {
+    raceAt.quote = Date.now() - raceT0;
+  });
+  await Promise.all([chain1, chain2, raceQuote]);
+  gate.__resetQuoteGateForTest();
+
+  check('a plain quote is never held behind a not-yet-eligible option-chain call', () => {
+    assert.ok(
+      raceAt.quote < raceAt.chain2,
+      `quote (${raceAt.quote}ms) must dispatch before the still-waiting chain2 (${raceAt.chain2}ms)`,
+    );
+    assert.ok(
+      raceAt.quote < gate.OPTIONCHAIN_MIN_INTERVAL_MS,
+      `quote dispatched at ${raceAt.quote}ms — must not wait out chain2's ${gate.OPTIONCHAIN_MIN_INTERVAL_MS}ms sub-limit`,
+    );
+    assert.ok(
+      raceAt.chain2 >= gate.OPTIONCHAIN_MIN_INTERVAL_MS - 20,
+      `chain2 must still respect its own sub-limit relative to chain1 (dispatched at ${raceAt.chain2}ms)`,
     );
   });
 }
