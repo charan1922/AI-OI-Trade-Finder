@@ -16,7 +16,16 @@ import { getMimoClient, getMimoModel } from './client';
  * spend its words on managing/exiting (default 12:30). Deterministic and
  * injected into the USER turn each read — the battle-tested system prompt
  * stays byte-identical. Runtime-tunable from /config
- * (COMMENTARY_ENTRY_CUTOFF_MIN); the scanner's own entry gates are unaffected.
+ * (COMMENTARY_ENTRY_CUTOFF_MIN).
+ *
+ * DESPITE THE NAME, THIS IS NOT COMMENTARY-ONLY. The auto-trade entry gate
+ * folds the same setting into `hardEnd` (lib/auto-trade/risk/gates.ts), so it
+ * hard-blocks new entry ORDERS on both the AI and human-approval paths — and
+ * with no mode branch, so paper entries stop too, not just live ones. The
+ * /trade-suggest scanner is the only thing genuinely unaffected — it keeps
+ * surfacing candidates; the gate is what refuses to buy them. Renaming the key
+ * would orphan the stored /config row, so the label carries the warning
+ * instead. Change this value knowing it moves the money path.
  */
 export const COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT = 12 * 60 + 30;
 

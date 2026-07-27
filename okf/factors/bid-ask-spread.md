@@ -39,7 +39,12 @@ score     = clamp(1 − spreadPct / 0.3, 0, 1)   # SPREAD_CAP_PCT = 0.3
 This factor needs a live order book, so it is **unavailable on the bhavcopy /
 EOD path** and on the point-in-time replay (5-min candles carry no book). The
 engine renormalizes it out when absent. The trade-suggest engine separately
-hard-gates on `MAX_SPREAD_PCT = 0.3` — see [engine/gates.md](../engine/gates.md).
+hard-gates on `SUGGESTION_MAX_SPREAD_PCT = 0.3` — see
+[engine/gates.md](../engine/gates.md). That constant is the UNDERLYING equity's
+spread; the two OPTION spread limits (`OPTION_WARN_SPREAD_PCT` = 2 warns,
+`ORDER_ENTRY_MAX_SPREAD_PCT` = 3 refuses the order) are different instruments
+and the numbers are not comparable. All three were called `MAX_SPREAD_PCT` until
+the names were split.
 
 ## Related
 

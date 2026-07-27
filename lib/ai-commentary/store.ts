@@ -25,7 +25,12 @@ export async function ensureCommentaryTable(): Promise<void> {
       picksJson        TEXT    DEFAULT '[]',
       promptTokens     INTEGER,
       completionTokens INTEGER,
-      containsExecutionState INTEGER NOT NULL DEFAULT 0,
+      -- DEFAULT 1 = PRIVATE, matching the ALTER backfill below and
+      -- executionStateFlag(). A row that reaches SQLite without a classification
+      -- must not be published to viewers, and that has to hold on a FRESH
+      -- install too — this shipped as 0 while the ALTER said 1, so the same code
+      -- had two privacy defaults depending on the database's age.
+      containsExecutionState INTEGER NOT NULL DEFAULT 1,
       createdAt        TEXT    NOT NULL
     )
   `);
@@ -102,7 +107,34 @@ export interface InsertCommentary {
   completionTokens: number | null;
   promptKey?: string | null;
   promptVersion?: number | null;
-  containsExecutionState?: boolean;
+  /** True when a real open/placing/closed trade was in the model's context.
+   *  REQUIRED: a writer must state whether it saw the operator's book — that is
+   *  a decision, not a default. `executionStateFlag()` still fails private for
+   *  callers TypeScript cannot police (raw JS, future dynamic writers), but an
+   *  ordinary caller can no longer forget the field, which is how both
+   *  auto-trader inserts came to store 0/public. */
+  containsExecutionState: boolean;
+}
+
+/**
+ * Storage encoding for the viewer-visibility flag. An UNSET flag means the
+ * writer did not classify itself, which must store PRIVATE — publishing the
+ * operator's book because a caller forgot a field is the failure mode this
+ * whole column exists to prevent. Exported (rather than inlined in the INSERT)
+ * so the DB-free suite can assert the default without a database.
+ *
+ * The parameter is `unknown` even though InsertCommentary's field is required:
+ * the type stops ordinary callers forgetting it, this stops everything else.
+ *
+ * ONLY A LITERAL `false` MEANS PUBLIC. The first cut tested truthiness
+ * (`(v ?? true) ? 1 : 0`), which covers undefined/null but publishes every other
+ * falsy value — `0`, `''` and `NaN` all stored 0/PUBLIC, from exactly the raw-JS
+ * callers this function claims to protect (PR#27 re-review). Publishing on a
+ * value nobody meant to send is the failure this guard exists to prevent, so
+ * anything that is not an explicit `false` fails private.
+ */
+export function executionStateFlag(value: unknown): 0 | 1 {
+  return value === false ? 0 : 1;
 }
 
 /** Inserts one narration; returns the new row's id (links cycle timelines). */
@@ -124,7 +156,11 @@ export async function insertCommentary(row: InsertCommentary): Promise<number> {
     row.completionTokens,
     row.promptKey ?? null,
     row.promptVersion ?? null,
-    row.containsExecutionState ? 1 : 0,
+    // Fail-private on omission. Matches the CREATE TABLE default, the legacy-row
+    // backfill (ALTER ... DEFAULT 1) and map()'s null handling, so "we don't
+    // know" reads the same at every layer — proven end-to-end against a real
+    // SQLite table by scripts/verify-commentary-store.ts.
+    executionStateFlag(row.containsExecutionState),
     new Date().toISOString(),
   )) as { id: number | bigint }[];
   return Number(rows[0]?.id ?? 0);
@@ -159,10 +195,14 @@ function map(r: RawRow): CommentaryRow {
   return {
     ...rest,
     windowActive: windowActive === 1,
-    // Legacy rows predate the column and read null — treat them as PRIVATE.
-    // A row written before the flag existed may still narrate a real position,
-    // so defaulting to public would re-open the very leak this closes.
-    containsExecutionState: containsExecutionState == null || containsExecutionState === 1,
+    // ONLY an exact stored 0 reads as public — the mirror of executionStateFlag's
+    // "only a literal false is public". Legacy rows predate the column and read
+    // null; a row written before the flag existed may still narrate a real
+    // position, so defaulting to public would re-open the very leak this closes.
+    // Testing `=== 1` instead published anything unexpected — 2, -1, a driver
+    // handing back the string "1" — which is backwards for a corrupt value
+    // (PR#27 re-review).
+    containsExecutionState: containsExecutionState !== 0,
     picks,
   };
 }

@@ -94,7 +94,7 @@ export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
     ],
     [
       number('MAX_PICKS', 'Max picks per scan', 'Trade Suggest', 5, 3, 1), // in
-      number('COMMENTARY_ENTRY_CUTOFF_MIN', 'Commentary entry cutoff (min IST)', 'Entry & Exit Times', 750, 750, 660), // out (default)
+      number('COMMENTARY_ENTRY_CUTOFF_MIN', 'Hard new-entry cutoff (min IST)', 'Entry & Exit Times', 750, 750, 660), // out (default)
     ]
   );
   check('config-drift: mixed set counts only drifted+relevant', s8.length === 2, `got ${s8.length}: ${JSON.stringify(s8)}`);

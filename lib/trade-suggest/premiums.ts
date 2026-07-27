@@ -21,7 +21,7 @@
 
 import { bestBidAsk, dhanMarketFeed } from '@/lib/dhan/market-feed';
 import {
-  MAX_OPT_SPREAD_PCT,
+  OPTION_WARN_SPREAD_PCT,
   MAX_RISK_PER_LOT_RUPEES,
   OPTION_STOP_PCT,
   TF_LOT_TARGET_RUPEES,
@@ -119,7 +119,7 @@ export async function attachPremiums(options: OptionPlan[], policy?: PremiumPoli
       const oi = oq.oi ?? null;
       const warnings: string[] = [];
       if (book == null) warnings.push('no option order book');
-      else if (book.spreadPct > MAX_OPT_SPREAD_PCT)
+      else if (book.spreadPct > OPTION_WARN_SPREAD_PCT)
         warnings.push(`option spread ${book.spreadPct.toFixed(1)}% of premium — slippage risk`);
       if (!volume) warnings.push('no traded volume yet in this contract');
       if (resolved.source === 'mid')

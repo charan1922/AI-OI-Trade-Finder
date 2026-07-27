@@ -380,9 +380,13 @@ a glance.
    far-away strikes would produce a very out-of-the-money option. This existed
    before this release; the new checks make it much less likely but do not remove
    it. A distance limit is the next safety check to add.
-5. **`insertCommentary()` treats a missing privacy stamp as public.** No leak
-   today, because both writers set it correctly. But it fails the wrong way, which
-   is the same bug class fixed twice above. One-line fix.
+5. ~~**`insertCommentary()` treats a missing privacy stamp as public.**~~
+   **CLOSED by PR #27** — see the addendum below. Two corrections to what this
+   item originally said: the writers were **not** all setting it correctly (both
+   auto-trader inserts omitted the field), and it was not a one-line fix — the
+   `CREATE TABLE` default said public while the `ALTER TABLE` backfill said
+   private, so a fresh install and an upgraded one disagreed. Left visible rather
+   than deleted, because the wrong diagnosis is the part worth remembering.
 6. **`forceSync()` has no in-process lock.** The database lock lets the same
    process re-acquire its own lock, so two calls inside one process could both
    run, and the first to finish releases the lock while the second is still
@@ -448,3 +452,258 @@ The trading edge is unchanged. 23 and 24 July produced +₹4,445 across 8 trades
 with 6 wins. That is two days. The average win (₹1,123) and average loss (₹1,145)
 are almost equal, so the result depends entirely on the win rate holding up.
 Two days is a good sign, not yet a pattern.
+
+---
+
+# Addendum — 27 July 2026: roll verified on real data, plus a follow-up PR
+
+Written the morning the roll first fires. Everything below is measured, not
+predicted.
+
+## The roll was replayed against the real contract file before the open
+
+The actual policy functions were run against the real `master_contracts`
+snapshot (`syncDate 2026-07-26`, 210 F&O underlyings, 70,616 option rows):
+
+| Trade date | What the code picks |
+|---|---|
+| Fri 24 July | **28 July** (4 days left) for all 210 names |
+| **Mon 27 July** | **25 August** (29 days left) for **208** names |
+| Tue 28 July | 25 August for 208 names |
+| Wed 29 July | 25 August for 208 names |
+
+The July contract itself, day by day:
+
+```
+2026-07-24 -> allowed
+2026-07-27 -> REFUSED: expires this calendar week on 2026-07-28 — use next month
+2026-07-28 -> REFUSED: same
+2026-07-29 -> REFUSED: contract expired on 2026-07-28
+```
+
+**The roll works.** It flips on Monday, not on expiry day, which is the whole
+point of the change.
+
+### The two names that get refused entirely
+
+`EXIDEIND` and `NUVAMA` have **only** the 28 July contract listed — no August,
+no September, and their futures are July-only too. So from Monday they have no
+eligible contract and the code refuses them.
+
+That is the correct, safe outcome (refuse rather than guess), and it is 2 names
+out of 210. Coverage across the universe:
+
+| Months listed | Underlyings |
+|---|---|
+| 3 (normal) | 207 |
+| 2 | 1 |
+| 1 (untradable from Monday) | 2 |
+
+If either name later starts trading normally on the exchange while still showing
+one month here, that is a download problem — check `/trading-lab/master-contracts`
+before assuming it is an exchange decision.
+
+## The "build an expiry calendar table" proposal — declined, with numbers
+
+An architecture review suggested replacing the contract-file logic with a small
+hand-maintained expiry table ("last Tuesday of the month"), on the belief that
+we scan 70,000 rows on every trade.
+
+**We do not.** Measured on the real database:
+
+| Step | Cost |
+|---|---|
+| Get a symbol's listed expiries | **0.427 ms** (warm, averaged over 1,000 calls) |
+| Get the nearest strike + security ID + lot size | **0.199 ms** |
+| **Total per symbol** | **~0.63 ms** |
+
+The query plan confirms it uses an index and never scans the table:
+
+```
+SEARCH master_contracts USING INDEX
+  master_contracts_underlying_expiryDate_optionType_strikePrice_idx (underlying=?)
+```
+
+For INFY it returns three dates — `2026-07-28, 2026-08-25, 2026-09-29` — which
+is *exactly* the table the review wanted written by hand. The exchange already
+sends it, through Dhan, every day.
+
+Three reasons it was declined:
+
+1. **It creates a second opinion you can never act on.** If the table says
+   25 August and the contract says 24 August, you buy the contract — *provided
+   today's contract file has passed its own freshness and integrity checks*. If
+   it has not, nothing is bought at all: `ensureSynced()` and the resolver refuse
+   on a stale, incomplete or unfingerprinted snapshot, and that refusal is
+   independent of anything the calendar says. A
+   source you always overrule is not a source.
+2. **"Last Tuesday" is an exchange rule that has changed before.** Hard-coding
+   it means it breaks silently, on a day you are holding something.
+3. **It would not remove any work.** Step 2 (strike, security ID, lot size)
+   still needs the same table.
+
+The 70,616 figure is real but belongs to the once-a-day download integrity
+check, which never runs during a trade.
+
+### Raised again in review: "so refuse the trade when they disagree?"
+
+A later review read reason 1 above and proposed the opposite rule — if the
+calendar and the contract file disagree about an expiry date, refuse the entry
+and alert. **Declined, and worth writing down so it is not re-proposed a third
+time.**
+
+`fno_expiry_calendar` is not an independent feed. It is seeded from a hardcoded
+list of 24 dates in `lib/backtest/expiry-calendar.ts` (the file says
+"user-provided"), it ends at December 2026, and its holiday preponements —
+30 March, 23 November — were typed in by hand. Its job is clipping option-OI
+baselines to the right expiry cycle, not resolving contracts for orders.
+
+So "refuse on disagreement" lets a hand-typed constant veto the exchange. When
+those two disagree, the stale one is almost always the hand-typed list. The
+failure it would create: NSE prepones August for a holiday, the broker file is
+right, the list is a month behind, and **no entry is allowed at all** until
+somebody edits source and redeploys. That is the same silent-breakage risk as
+reason 2, arrived at from the other direction.
+
+The real protection against a bad contract file already shipped in this release
+and is stronger: the per-`STOCK + CE/PE + MONTH` coverage check, the 10,000-row
+floor, the same-transaction fingerprint, and `checkOptionExpiryForEntry()`
+re-checking the contract's own expiry inside the order gate.
+
+**If the disagreement is ever wired up, it should ALERT, never block.** It is a
+useful signal — it means either the download is stale or the hardcoded list needs
+its next year added — but a hand-typed array disagreeing is not, by itself, a
+reason to stop trading.
+
+**Read that narrowly.** It applies only to *disagreement with the calendar*. A
+stale or damaged contract file absolutely does stop new entries, and still
+should: `ensureSynced()` refuses a snapshot that is not from today, and the
+resolver refuses on `master-stale` / `master-incomplete` before it looks at any
+expiry at all. Those blocks are independent of the calendar and are not being
+softened here. The rule is:
+
+| Situation | What should happen |
+|---|---|
+| Contract file stale, incomplete, or fails its fingerprint | **BLOCK** — already does |
+| Contract file healthy, calendar disagrees on a date | **ALERT** — trust the exchange's file |
+| Calendar has run out of future dates | **ALERT** — it needs its next year typed in |
+
+The separation the review asked for already exists:
+`selectOptionExpiryForEntry()` is a pure function with no database access; the
+contract lookup is a separate query; and `checkOptionExpiryForEntry()` re-checks
+the contract's own expiry inside the order gate as the last step before money
+moves.
+
+## PR #27, part 1 — a configuration label that was lying
+
+`/config` had a setting called **"Commentary entry cutoff"**, described as only
+affecting what the AI writes. It is also a hard block on real orders:
+
+```
+hardEnd = min(entry window close, this cutoff − 1 min, square-off − 1 min)
+```
+
+Both the AI path and the human-approval path load it before placing an order.
+
+**It is not biting today.** Entry close is 12:15 and the cutoff caps at 12:29,
+so the tighter one — your own setting — wins. The trap is widening the entry
+window past 12:29 and being silently capped anyway.
+
+Fixed by renaming the label to **"Hard new-entry cutoff (min IST) — blocks
+entries in ALL modes"** — the gate never looks at the trading mode, so this
+stops **paper** entries exactly as it stops live and approval ones —
+and spelling out the interaction on both clock settings. The stored key was left
+alone on purpose: renaming it would orphan the saved value and silently reset the
+cutoff to its default.
+
+The review's alternative — remove the cutoff from the gate — was rejected. That
+loosens a working safety rail to fix a naming problem.
+
+## PR #27, part 2 — commentary rows were stored as public
+
+The **reading** side already failed private. The **writing** side did not: an
+omitted flag stored `0` (public), and both auto-trader writes omitted it. So the
+rows containing real fills, stop moves and open premiums were stored as public.
+
+**Nothing leaked**, because redaction separately checks
+`promptKey === 'auto-trader'` and caught every one. But that is a lucky second
+check, not the design — `containsExecutionState` is the field the redaction is
+named for, and removing the redundant check in a future tidy-up would have
+published the book.
+
+Fixed: an unclassified writer now stores private, both writers say so
+explicitly, and a test pins all three cases. No trading code touched.
+
+Review found one more layer that was still failing the wrong way. The pure test
+could only see the helper function, and the **table definition disagreed with
+it**: a freshly created table declared the column `DEFAULT 0` (public) while the
+upgrade path for older databases used `DEFAULT 1` (private). Same code, two
+different privacy defaults depending on whether the database was new or upgraded
+— and no DB-free check could ever have seen it.
+
+Both now say private, and `scripts/verify-commentary-store.ts` proves it against
+a real throwaway SQLite database on **both** paths (fresh table and legacy
+upgrade), so the claim is verified rather than reasoned. The TypeScript field is
+now required too: a writer has to state whether it saw the operator's book.
+
+A third review pass found the guard was still too generous on both sides, in the
+same way. It asked "is this value truthy?" when it should have asked "is this
+value exactly the one that means public?":
+
+| Value reaching the guard | Old result | Now |
+|---|---|---|
+| `0`, `''`, `NaN` on the way IN | **published** | private |
+| `2`, `-1`, the text `"1"` on the way OUT | **published** | private |
+
+Nothing sent those values — every current writer passes a real true/false. But a
+guard whose comment promises to protect untyped callers has to actually do it.
+Now only a literal `false` going in, and only an exact stored `0` coming out,
+mean public. Anything unrecognised is treated as private. Both rules were checked
+by putting the old logic back and watching the tests go red, and the failure
+message names the leaking values rather than just saying "failed".
+
+**Not added: a `CHECK (containsExecutionState IN (0,1))` constraint**, though it
+was suggested. SQLite cannot add a constraint to an existing table without
+rebuilding it, so a fresh install would get the check and every upgraded one
+would not — reintroducing exactly the fresh-versus-upgraded split this section is
+about. The two runtime guards above cover the same risk on both paths equally.
+
+## PR #27, part 3 — three different limits were all called `MAX_SPREAD_PCT`
+
+Not a bug; a name that invited one. Three separate ceilings shared a name across
+two files, and a reader seeing `0.3` next to `3` reasonably assumed one was
+wrong. They measure different instruments and do different things:
+
+| Now called | Value | Instrument | What it does |
+|---|---|---|---|
+| `SUGGESTION_MAX_SPREAD_PCT` | 0.3% | the underlying stock | candidate never becomes a suggestion |
+| `OPTION_WARN_SPREAD_PCT` | 2% | the option itself | warns on the plan; trade still allowed |
+| `ORDER_ENTRY_MAX_SPREAD_PCT` | 3% | the option itself | the entry gate REFUSES the order |
+
+Renaming only. Every value is unchanged, so no behaviour moved.
+
+## Proof that none of this can affect today's session
+
+| Question | Answer |
+|---|---|
+| What is production running? | `88ede7f` |
+| Is PR #27 in `main` or `prod`? | No / No |
+| What does `main` have beyond `prod`? | One commit — this document. No code. |
+
+Both branches: `typecheck`, `typecheck:scripts`, `lint`,
+`verify-quant-shadow`, `verify-auto-trade`, `verify-ai-decision-context` all
+green locally, and CI reports `validate: success` and `build: success` on both
+head commits.
+
+Neither is deployed. Today's session runs the same code as 24 July, plus the
+expiry roll that was already live in `88ede7f`.
+
+## Local database caution discovered today
+
+The local `trade_commentary` table has 753 rows and **no
+`containsExecutionState` column** — the column is added lazily on first write,
+and local has not run that path. Production added it on its first commentary
+write after the release.
+
+So for this table, local is **not** a mirror of production. Do not use a local
+schema check to conclude anything about the live one.

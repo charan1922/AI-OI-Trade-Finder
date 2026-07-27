@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import OpenAI from 'openai';
 import { buildOpenPositionPicks } from '../lib/ai-commentary/picks';
+import { executionStateFlag } from '../lib/ai-commentary/store';
 import { MIMO_DEFAULT_MODEL, resolveMimoModel } from '../lib/ai-commentary/client';
 import { commentaryForRole, timelinesForRole, tradeSuggestForRole } from '../lib/auth/trading-privacy';
 import {
@@ -333,6 +334,20 @@ check('viewer commentary redacts management text and exact position cards only',
   assert.doesNotMatch(viewerRows[0].text, /INFY|fill|stop|target/i);
   assert.equal(viewerRows[1].text, 'Public scanner read');
   assert.equal(commentaryForRole(rows, false)[0].text, 'INFY exact fill/stop/target');
+});
+
+check('an unclassified commentary writer STORES private, not public', () => {
+  // The read side fails private (map() treats null as private; commentaryForRole
+  // uses ?? true). The WRITE side did not: `row.containsExecutionState ? 1 : 0`
+  // stored 0/public for any caller that omitted the field — and both auto-trader
+  // inserts in engine.ts omitted it, so the rows richest in execution state were
+  // stored as public. No leak reached a viewer only because trading-privacy.ts
+  // separately ORs in promptKey === 'auto-trader'. That redundancy is a backstop,
+  // not the design: keying redaction off the semantic field alone would have
+  // published them.
+  assert.equal(executionStateFlag(undefined), 1, 'omitted flag must store PRIVATE');
+  assert.equal(executionStateFlag(true), 1);
+  assert.equal(executionStateFlag(false), 0, 'an explicit public classification is still honoured');
 });
 
 check('viewer redaction keys off execution state, not promptKey', () => {

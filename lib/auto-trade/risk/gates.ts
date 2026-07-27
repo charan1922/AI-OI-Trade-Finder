@@ -14,7 +14,7 @@ import {
   istMinuteLabel,
   MAX_ENTRY_SLIPPAGE_PCT,
   MAX_RISK_PER_LOT_FALLBACK,
-  MAX_SPREAD_PCT,
+  ORDER_ENTRY_MAX_SPREAD_PCT,
   OPTION_STOP_PCT_FALLBACK,
 } from '../config';
 import type { AutoTradeSettings, GateVerdict } from '../types';
@@ -109,7 +109,7 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
     ['settings.squareOffMin', s.squareOffMin],
     ['settings.entryStartMin', s.entryStartMin ?? ENTRY_START_MIN],
     ['settings.entryEndMin', s.entryEndMin ?? ENTRY_END_MIN],
-    ['settings.maxSpreadPct', s.maxSpreadPct ?? MAX_SPREAD_PCT],
+    ['settings.maxSpreadPct', s.maxSpreadPct ?? ORDER_ENTRY_MAX_SPREAD_PCT],
     ['settings.optionStopPct', s.optionStopPct ?? OPTION_STOP_PCT_FALLBACK],
     ['settings.maxRiskPerLotRupees', s.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK],
   ];
@@ -137,12 +137,18 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
   // test fixtures without the fields on the long-standing defaults.
   const entryStart = s.entryStartMin ?? ENTRY_START_MIN;
   const entryEnd = s.entryEndMin ?? ENTRY_END_MIN;
+  // Callers pass /config's COMMENTARY_ENTRY_CUTOFF_MIN here. The name is a
+  // historical accident — it is a HARD cutoff on new entry ORDERS, not a
+  // commentary preference, and it can close the window EARLIER than
+  // settings.entryEndMin. No mode branch guards it, so it stops PAPER entries
+  // too. Nothing to do with the stale-candle freshness gate further down.
+  // Omitted (older fixtures) means "no extra cutoff", never "block".
   const cutoff = x.entryCutoffMin ?? Number.POSITIVE_INFINITY;
   const hardEnd = Math.min(entryEnd, cutoff - 1, s.squareOffMin - 1);
   if (x.minuteIST < entryStart || x.minuteIST > hardEnd) {
     reasons.push(`outside the effective entry window ${istMinuteLabel(entryStart)}–${istMinuteLabel(hardEnd)}`);
   }
-  if (x.minuteIST >= cutoff) reasons.push(`past the hard fresh-entry cutoff ${istMinuteLabel(cutoff)}`);
+  if (x.minuteIST >= cutoff) reasons.push(`past the hard new-entry cutoff ${istMinuteLabel(cutoff)}`);
   if (x.minuteIST >= s.squareOffMin) reasons.push(`at/after forced square-off ${istMinuteLabel(s.squareOffMin)}`);
   if (x.entriesToday >= s.maxTradesPerDay) {
     reasons.push(`daily trade cap reached (${x.entriesToday}/${s.maxTradesPerDay})`);
@@ -235,7 +241,7 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
       `premium moved ${x.slippagePct.toFixed(1)}% since the scan quote (> ${MAX_ENTRY_SLIPPAGE_PCT}% slippage guard)`
     );
   }
-  const maxSpread = s.maxSpreadPct ?? MAX_SPREAD_PCT;
+  const maxSpread = s.maxSpreadPct ?? ORDER_ENTRY_MAX_SPREAD_PCT;
   if (x.spreadPct == null || !Number.isFinite(x.spreadPct) || x.spreadPct < 0) {
     reasons.push('option spread unavailable — liquidity cannot be verified');
   } else if (x.spreadPct > maxSpread) {
