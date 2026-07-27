@@ -19,8 +19,24 @@ interface LogsResponse {
 }
 
 const lineClass = (l: string): string => {
-  if (/ ERROR /.test(l) || /error|failed|FAIL|crashed/i.test(l)) return 'text-red-400';
-  if (/ WARN /.test(l) || /warn|skip/i.test(l)) return 'text-yellow-300';
+  // Zero-count summary fields ("0 errors", "0 failed", "0 skipped") are good
+  // news, not a failure — strip them before testing so a clean cycle-summary line
+  // doesn't turn red just because it reports how many errors it DIDN'T have.
+  //
+  // Only a genuine COUNT FIELD is stripped — the zero must open one, i.e. follow
+  // a line start or a `,` / `:` / `(` the way every summary emitter writes it
+  // ("…498 calls, 0 errors, 174999ms", "(12 graded, 0 skipped)"). That keeps a
+  // zero that NAMES something rather than counting nothing fully alarming:
+  // "attempt 0 failed", "worker 0 failed", "v1.0 failed", "chunk-0 failed" all
+  // stay red. A count can never be misread either — the field must begin at the
+  // 0, so "10 errors" and "20 errors" are untouched. The leading delimiter is
+  // captured and put back instead of using a lookbehind, so the regex parses on
+  // any browser that can open this page; a SyntaxError here would break the log
+  // viewer exactly when it is needed. The ERROR level tag is tested on the raw
+  // line, so a tagged line is never quieted by this at all.
+  const scrubbed = l.replace(/(^|[,:(]\s*)0\s+(errors?|failed|failures?|crashed|skipped)\b/gi, '$1');
+  if (/ ERROR /.test(l) || /error|failed|FAIL|crashed/i.test(scrubbed)) return 'text-red-400';
+  if (/ WARN /.test(l) || /warn|skip/i.test(scrubbed)) return 'text-yellow-300';
   if (/TradeSuggest|auto-trade|AutoTrade/i.test(l)) return 'text-cyan-300';
   if (/FyersPoller|FastGuard|FileLog/.test(l)) return 'text-green-400';
   return 'text-neutral-200';
