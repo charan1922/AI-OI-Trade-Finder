@@ -30,7 +30,15 @@
  * Run:  npx tsx scripts/autoresearch.ts [experiments=60] [seed=42]
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { evaluateDay, listRecordedDates, loadDay, SHIPPED_VARIANT, type DayData, type Variant } from './replay-lib';
+import {
+  describeVariantDrift,
+  evaluateDay,
+  listRecordedDates,
+  loadDay,
+  loadLiveVariant,
+  type DayData,
+  type Variant,
+} from './replay-lib';
 
 const N_EXPERIMENTS = Number(process.argv[2] ?? 60);
 const SEED = Number(process.argv[3] ?? 42);
@@ -155,12 +163,18 @@ mkdirSync('tracking', { recursive: true });
 const runId = `${new Date().toISOString()}·seed${SEED}·n${N_EXPERIMENTS}`;
 const journal = (rec: Record<string, unknown>) => appendFileSync(JOURNAL, `${JSON.stringify({ runId, ...rec })}\n`);
 
-let best: Variant = { ...SHIPPED_VARIANT, weights: { ...SHIPPED_VARIANT.weights } };
+// Search starts from what the box ACTUALLY runs (feature_toggles), not the
+// config.ts defaults — otherwise every "accepted" mutation is measured against
+// a system nobody trades (see loadLiveVariant in replay-lib.ts).
+const LIVE_BASE = await loadLiveVariant();
+let best: Variant = { ...LIVE_BASE, weights: { ...LIVE_BASE.weights } };
 const baseline = metricOf(days, best);
 let bestMetric = baseline.metric;
 console.log(`autoresearch run ${runId}`);
 console.log(`benchmark: ${days.length} replayable session(s): ${days.map((d) => d.date).join(', ')}`);
-console.log(`baseline (shipped): metric ${bestMetric >= 0 ? '+' : ''}${bestMetric} · ${JSON.stringify(baseline.perDay)}\n`);
+const drift = describeVariantDrift(LIVE_BASE);
+if (drift.length > 0) console.log(`baseline uses LIVE toggles, differing from config.ts:\n  ${drift.join('\n  ')}`);
+console.log(`baseline (live toggles): metric ${bestMetric >= 0 ? '+' : ''}${bestMetric} · ${JSON.stringify(baseline.perDay)}\n`);
 journal({ type: 'baseline', config: best, metric: bestMetric, perDay: baseline.perDay });
 
 const leaderboard: { name: string; description: string; metric: number; accepted: boolean }[] = [];

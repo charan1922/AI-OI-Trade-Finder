@@ -6,23 +6,28 @@
  *   npx tsx scripts/auto-entry-filter-audit.ts
  *   npx tsx scripts/auto-entry-filter-audit.ts 2026-07-20 2026-07-21 2026-07-22
  */
-import { evaluateDay, loadDay, SHIPPED_VARIANT, type Variant } from './replay-lib';
+import { describeVariantDrift, evaluateDay, loadDay, loadLiveVariant, type Variant } from './replay-lib';
 
 const defaultDates = ['2026-07-15', '2026-07-16', '2026-07-17', '2026-07-20', '2026-07-21', '2026-07-22'];
 const dates = process.argv.slice(2).filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value));
 const sessions = dates.length > 0 ? dates : defaultDates;
+// Baseline = the LIVE toggles, not the config.ts defaults; auditing a filter
+// against a config nobody runs measures the wrong system (see replay-lib.ts).
+const BASE = await loadLiveVariant();
+const drift = describeVariantDrift(BASE);
+if (drift.length > 0) console.log(`Baseline: live feature_toggles — differs from config.ts:\n  ${drift.join('\n  ')}\n`);
 const variants: Variant[] = [
-  SHIPPED_VARIANT,
-  { ...SHIPPED_VARIANT, name: 'no-supertrend', requireSupertrendAlign: false },
+  BASE,
+  { ...BASE, name: 'no-supertrend', requireSupertrendAlign: false },
   {
-    ...SHIPPED_VARIANT,
+    ...BASE,
     name: 'confirmed-orb-volume-sector',
     requireConfirmedOrb: true,
     minBreakoutVolumeRatio: 1.2,
     requireSectorAlign: true,
   },
   {
-    ...SHIPPED_VARIANT,
+    ...BASE,
     name: 'confirmed-orb-volume-sector-no-ST',
     requireConfirmedOrb: true,
     minBreakoutVolumeRatio: 1.2,

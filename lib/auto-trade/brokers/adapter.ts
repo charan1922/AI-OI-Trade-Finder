@@ -108,6 +108,46 @@ export type BrokerPositionRead =
     }
   | { kind: 'unavailable'; reason: string };
 
+/**
+ * The venue's OWN profit/loss for the session — broker truth, not our books.
+ *
+ * SCOPE WARNING, read before using this for anything that blocks a trade: this
+ * counts EVERY fill the account made today, including manual orders the
+ * operator placed in the broker's own app. It is truth about the ACCOUNT, and
+ * it is NOT this module's P&L. `dailyRealizedPnl()` (auto_trades) remains the
+ * only figure that is purely ours. Use this to CROSS-CHECK ours, never to
+ * silently replace it — a manual trade would otherwise trip the bot's halt.
+ *
+ * `unavailable` means the venue could not say. Callers must never read that as
+ * "flat" or "zero" — same fail-closed contract as BrokerPositionRead.
+ */
+export type BrokerPnlRead =
+  | {
+      kind: 'verified';
+      /** Booked P&L in ₹ on closed quantity, as the venue reports it. */
+      realized: number;
+      /** Mark-to-market on still-open quantity; null when the venue omits it. */
+      unrealized: number | null;
+      /** The venue's own total (realized + unrealized where it reports both). */
+      total: number;
+    }
+  | { kind: 'unavailable'; reason: string };
+
+/**
+ * One order that is still LIVE at the venue (accepted, not yet filled,
+ * cancelled or rejected). Used to diagnose a blocked exit: a resting SELL on
+ * the same contract makes our own SELL look like a fresh naked short to the
+ * risk engine, which then refuses it for margin the account will never have.
+ */
+export interface BrokerOpenOrder {
+  brokerOrderId: string;
+  /** The venue's own symbol string for the contract. */
+  rawSymbol: string;
+  side: 'BUY' | 'SELL';
+  /** Units the order is for; null when the venue does not report it. */
+  qtyUnits: number | null;
+}
+
 /** One row of the venue's live intraday F&O position book (orphan scan). */
 export interface BrokerBookPosition {
   /** The venue's own symbol for the contract (audit + Fyers matching). */
@@ -151,6 +191,14 @@ export interface BrokerAdapter {
    *  "which live positions exist that we have NO local trade for?").
    *  Null = the book could not be read — never proof that nothing exists. */
   listNetPositions?(): Promise<BrokerBookPosition[] | null>;
+  /** The venue's own P&L for the session — broker truth used to CROSS-CHECK
+   *  our computed figure. See BrokerPnlRead for the account-vs-module scope
+   *  warning before wiring this into any gate. */
+  getBrokerPnl?(): Promise<BrokerPnlRead>;
+  /** Orders still LIVE at the venue. Null = the book could not be read, which
+   *  is never proof that none exist. Diagnostic only — callers must not treat
+   *  an empty list as permission to do anything. */
+  listOpenOrders?(): Promise<BrokerOpenOrder[] | null>;
   cancelOrder(brokerOrderId: string): Promise<void>;
 }
 

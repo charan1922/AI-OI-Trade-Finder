@@ -110,6 +110,17 @@ interface ApiResponse {
     openLots: number;
     deployedRupees: number;
     realizedPnlRupees: number;
+    /** The VENUE's own P&L, for comparison against ours. Account-wide, so a
+     *  manual order shows up here too — a delta means LOOK, not BUG. */
+    broker?:
+      | {
+          available: true;
+          realizedPnlRupees: number;
+          unrealizedPnlRupees: number | null;
+          deltaRupees: number;
+          checkedAt: string;
+        }
+      | { available: false; reason: string; checkedAt: string };
   };
   trades?: TradeRow[];
   pending?: TradeRow[];
@@ -818,6 +829,32 @@ export default function AutoTradePage() {
             >
               {today.realizedPnlRupees >= 0 ? '+' : ''}₹{today.realizedPnlRupees.toLocaleString('en-IN')}
             </div>
+            {/* Broker truth, under our own figure so a disagreement is seen by
+                the person who can act on it. Silent when the two agree; silent
+                in paper mode (no venue to disagree with). */}
+            {today.broker?.available === true && today.broker.deltaRupees !== 0 && (
+              <div
+                className="mt-1 text-[10px] leading-tight text-amber-600 dark:text-amber-400"
+                title={`Broker realized ₹${today.broker.realizedPnlRupees.toLocaleString('en-IN')} vs our books ₹${today.realizedPnlRupees.toLocaleString('en-IN')}. Read at ${new Date(today.broker.checkedAt).toLocaleTimeString('en-IN')}. The venue counts every fill on the account — a manual order you placed yourself lands here too, so a difference is a prompt to check, not proof of a bug.`}
+              >
+                ⚠ broker says {today.broker.realizedPnlRupees >= 0 ? '+' : ''}₹
+                {today.broker.realizedPnlRupees.toLocaleString('en-IN')} ({today.broker.deltaRupees >= 0 ? '+' : ''}₹
+                {today.broker.deltaRupees.toLocaleString('en-IN')})
+              </div>
+            )}
+            {today.broker?.available === true && today.broker.deltaRupees === 0 && (
+              <div className="mt-1 text-[10px] leading-tight text-muted-foreground" title="Our book matches the venue.">
+                ✓ matches broker
+              </div>
+            )}
+            {today.broker?.available === false && (
+              <div
+                className="mt-1 text-[10px] leading-tight text-muted-foreground"
+                title={`Cross-check unavailable: ${today.broker.reason}. This is NOT a claim that P&L is zero — the venue simply could not be read.`}
+              >
+                broker check unavailable
+              </div>
+            )}
           </div>
           {/* The HEADING follows the number. When the best bid cannot cover the
               whole position the figure is a mark, not an exit, so the card is

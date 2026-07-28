@@ -206,6 +206,16 @@ export async function pruneCandleHistory(): Promise<number> {
   );
 }
 
+/** Sessions still held after retention, oldest first — i.e. exactly the dates
+ *  that can still be graded or replayed. Anything older is gone for good. */
+export async function getRetainedCandleDates(): Promise<string[]> {
+  await ensureFyersCandlesTable();
+  const rows = await prisma.$queryRawUnsafe<{ date: string }[]>(
+    `SELECT DISTINCT date FROM fyers_candles ORDER BY date ASC`
+  );
+  return rows.map((r) => r.date);
+}
+
 const toNum = (v: unknown): number => Number(v ?? 0);
 
 export interface StoredFyersBar extends FyersBar {
