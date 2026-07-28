@@ -17,7 +17,7 @@
 
 import { prisma } from '@/lib/db';
 import type { BreakoutSignal } from '@/lib/breakout';
-import type { LiveUrgencyRow, RFactorRowDetail } from '@/app/live/_lib/types';
+import type { LiveUrgencyRow, RFactorRowDetail, RFactorV2RowDetail } from '@/app/live/_lib/types';
 
 let tableReady = false;
 
@@ -48,6 +48,16 @@ export async function ensureLiveUrgencyEodTable(): Promise<void> {
       breakout           TEXT,
       nseOiPct           REAL,
       nseOiSlope30m      REAL,
+      rFactorV2Activity            REAL,
+      rFactorV2Percentile          REAL,
+      rFactorV2Rank                INTEGER,
+      rFactorV2Universe            INTEGER,
+      rFactorV2Direction           TEXT,
+      rFactorV2DirectionConfidence REAL,
+      rFactorV2Coverage            REAL,
+      rFactorV2ComparableCoverage  REAL,
+      rFactorV2OptionStatus        TEXT,
+      rFactorV2Factors             TEXT,
       capturedAt         TEXT    NOT NULL,
       PRIMARY KEY (date, symbol)
     )
@@ -56,7 +66,24 @@ export async function ensureLiveUrgencyEodTable(): Promise<void> {
   // Migrate tables created before these columns existed (the frozen board must
   // persist the close's Breakout verdict + NSE OI% — both are live/same-evening
   // only and can't be recomputed for a past date once fyers_candles is pruned).
-  for (const col of ['breakout TEXT', 'nseOiPct REAL', 'nseOiSlope30m REAL']) {
+  // The rFactorV2* block is the shadow score: it lives in rfactor_v2_snapshots
+  // under a 20-session retention, so freezing it here is what lets a past
+  // session still be graded shadow-vs-live after those rows are pruned.
+  for (const col of [
+    'breakout TEXT',
+    'nseOiPct REAL',
+    'nseOiSlope30m REAL',
+    'rFactorV2Activity REAL',
+    'rFactorV2Percentile REAL',
+    'rFactorV2Rank INTEGER',
+    'rFactorV2Universe INTEGER',
+    'rFactorV2Direction TEXT',
+    'rFactorV2DirectionConfidence REAL',
+    'rFactorV2Coverage REAL',
+    'rFactorV2ComparableCoverage REAL',
+    'rFactorV2OptionStatus TEXT',
+    'rFactorV2Factors TEXT',
+  ]) {
     try {
       await prisma.$executeRawUnsafe(`ALTER TABLE live_urgency_eod ADD COLUMN ${col}`);
     } catch {
@@ -74,8 +101,8 @@ export interface EodRow extends LiveUrgencyRow {
   dayLow: number | null;
 }
 
-const COLS = 24;
-const BATCH_ROWS = 40; // 24 cols × 40 rows = 960 params, under SQLite's 999 limit
+const COLS = 34;
+const BATCH_ROWS = 29; // 34 cols × 29 rows = 986 params, under SQLite's 999 limit
 
 /** Persist one session's rows. Idempotent: INSERT OR IGNORE on (date, symbol)
  *  — repeat calls (e.g. a retried capture) never overwrite an existing row. */
@@ -114,6 +141,16 @@ export async function insertEodRows(date: string, rows: EodRow[], nowMs: number 
         r.breakout ? JSON.stringify(r.breakout) : null,
         r.nseOiPct ?? null,
         r.nseOiSlope30m ?? null,
+        r.rFactorV2Activity ?? null,
+        r.rFactorV2Percentile ?? null,
+        r.rFactorV2Rank ?? null,
+        r.rFactorV2Universe ?? null,
+        r.rFactorV2Direction ?? null,
+        r.rFactorV2DirectionConfidence ?? null,
+        r.rFactorV2Coverage ?? null,
+        r.rFactorV2ComparableCoverage ?? null,
+        r.rFactorV2OptionStatus ?? null,
+        r.rFactorV2Factors == null ? null : JSON.stringify(r.rFactorV2Factors),
         capturedAt,
       );
     }
@@ -122,7 +159,10 @@ export async function insertEodRows(date: string, rows: EodRow[], nowMs: number 
          (date, symbol, ltp, changePctOpen, spreadPct, imbalance, futOi, oiLevel, turnover,
           dayHigh, dayLow, sessionOiChangePct, oiVelocity, oiAccel, oiUrgency,
           rFactor, rFactorBias, rFactorConfidence, rFactorAfterEntry, rFactors,
-          breakout, nseOiPct, nseOiSlope30m, capturedAt)
+          breakout, nseOiPct, nseOiSlope30m,
+          rFactorV2Activity, rFactorV2Percentile, rFactorV2Rank, rFactorV2Universe,
+          rFactorV2Direction, rFactorV2DirectionConfidence, rFactorV2Coverage,
+          rFactorV2ComparableCoverage, rFactorV2OptionStatus, rFactorV2Factors, capturedAt)
        VALUES ${placeholders}`,
       ...params,
     );
@@ -170,6 +210,16 @@ function safeParseFactors(v: unknown): RFactorRowDetail[] | null {
   }
 }
 
+function safeParseV2Factors(v: unknown): RFactorV2RowDetail[] | null {
+  if (v == null) return null;
+  try {
+    const parsed = JSON.parse(String(v));
+    return Array.isArray(parsed) && parsed.length > 0 ? (parsed as RFactorV2RowDetail[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 function safeParseBreakout(v: unknown): BreakoutSignal | null {
   if (v == null) return null;
   try {
@@ -205,6 +255,18 @@ function rowToEod(r: Record<string, unknown>): EodRow {
     breakout: safeParseBreakout(r.breakout),
     nseOiPct: toNumOrNull(r.nseOiPct),
     nseOiSlope30m: toNumOrNull(r.nseOiSlope30m),
+    // Shadow R-Factor, frozen at the close. Null for sessions captured before
+    // these columns existed — the board renders "—" for those, never a zero.
+    rFactorV2Activity: toNumOrNull(r.rFactorV2Activity),
+    rFactorV2Percentile: toNumOrNull(r.rFactorV2Percentile),
+    rFactorV2Rank: toNumOrNull(r.rFactorV2Rank),
+    rFactorV2Universe: toNumOrNull(r.rFactorV2Universe),
+    rFactorV2Direction: (r.rFactorV2Direction as EodRow['rFactorV2Direction']) ?? null,
+    rFactorV2DirectionConfidence: toNumOrNull(r.rFactorV2DirectionConfidence),
+    rFactorV2Coverage: toNumOrNull(r.rFactorV2Coverage),
+    rFactorV2ComparableCoverage: toNumOrNull(r.rFactorV2ComparableCoverage),
+    rFactorV2OptionStatus: (r.rFactorV2OptionStatus as EodRow['rFactorV2OptionStatus']) ?? null,
+    rFactorV2Factors: safeParseV2Factors(r.rFactorV2Factors),
     dayHigh: toNumOrNull(r.dayHigh),
     dayLow: toNumOrNull(r.dayLow),
   };

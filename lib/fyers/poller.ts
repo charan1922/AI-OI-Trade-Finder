@@ -39,7 +39,7 @@ import { pruneRankSnapshots, recordRankSnapshot } from '@/lib/signals/rank-track
 import { pruneQuoteSnapshots } from '@/lib/auto-trade/store';
 import { pruneRFactorV2Snapshots } from '@/lib/r-factor-v2/store';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
-import { reviewToday } from '@/lib/trade-suggest/review';
+import { reviewUngradedBacklog } from '@/lib/trade-suggest/review';
 import { pruneSectorSnapshots } from '@/lib/priority-refresh/sector-snapshot-store';
 import { runPostDecisionShadow, type ShadowCycleInput } from '@/lib/priority-refresh/shadow';
 import { prunePriorityCycles } from '@/lib/priority-refresh/telemetry-store';
@@ -994,13 +994,21 @@ async function runEodMasterContractsSync(state: PollerState): Promise<void> {
 }
 
 /**
- * Same-evening trade-suggest scorecard (Railway-only). After market close, grade
- * the day's /trade-suggest picks against the recorded 5-min candles (review.ts).
- * Reads local fyers_candles only — no broker/AI call, no cost — and runs ONCE per
- * calendar day (marker), gated to after 16:00 IST so the closing bar is in. With
- * the 20-session candle retention this no longer has to beat same-day pruning,
- * but running it the same evening keeps /trade-suggest/history accurate that night.
- * Best-effort; never throws to the poller. Idempotent — a re-run just re-grades.
+ * Same-evening trade-suggest scorecard. After market close, grade the
+ * /trade-suggest picks against the recorded 5-min candles (review.ts). Reads
+ * local fyers_candles only — no broker/AI call, no cost — and runs ONCE per
+ * calendar day, gated to after 16:00 IST so the closing bar is in.
+ *
+ * Grades the whole UNGRADED BACKLOG, not just today. It used to call
+ * reviewToday(), so any session the grader missed — box restart, deploy,
+ * the feature not yet existing — was never revisited, and its picks expired
+ * unmeasured once their candles left the 20-session window. Found 2026-07-28:
+ * 87 of 176 recorded picks had no outcome and everything before 21 Jul was
+ * already past saving. Every backtest question is answered from this sample,
+ * so silently losing half of it made the questions unanswerable.
+ *
+ * Best-effort; never throws to the poller. A normal evening grades today and
+ * nothing else, because everything older already has an outcome.
  */
 async function runEodScorecard(state: PollerState): Promise<void> {
   const istNow = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
@@ -1008,9 +1016,14 @@ async function runEodScorecard(state: PollerState): Promise<void> {
   const istToday = `${istNow.getFullYear()}-${String(istNow.getMonth() + 1).padStart(2, '0')}-${String(istNow.getDate()).padStart(2, '0')}`;
   if (state.lastScorecardDate === istToday) return; // already graded once today
   try {
-    const { reviewed, skipped } = await reviewToday();
+    const { dates, reviewed, skipped, expired } = await reviewUngradedBacklog();
     state.lastScorecardDate = istToday;
-    console.log(`${TAG} EOD scorecard ran (${reviewed} graded, ${skipped} skipped)`);
+    const backfilled = dates.filter((d) => d !== istToday);
+    console.log(
+      `${TAG} EOD scorecard ran (${reviewed} graded, ${skipped} skipped` +
+        `${backfilled.length > 0 ? `, backfilled ${backfilled.length} missed session(s): ${backfilled.join(', ')}` : ''}` +
+        `${expired.length > 0 ? `, ${expired.length} session(s) past the candle window and now ungradeable` : ''})`,
+    );
   } catch (err) {
     console.warn(`${TAG} EOD scorecard failed: ${(err as Error).message}`);
   }

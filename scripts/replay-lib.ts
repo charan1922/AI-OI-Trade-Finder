@@ -70,6 +70,7 @@ import {
   USE_RANK_CLIMB_GATE,
   WEIGHTS,
 } from '../lib/trade-suggest/config';
+import { getToggle } from '../lib/config/feature-toggles';
 import { qualifiesByBreakout } from '../lib/trade-suggest/breakout-bypass';
 import { qualifiesExtendedTrend } from '../lib/trade-suggest/extended-bypass';
 import { qualifiesMomentumBreakout } from '../lib/trade-suggest/momentum-breakout';
@@ -161,7 +162,21 @@ export interface Variant {
   requireSupertrendAlign?: boolean;
 }
 
-/** Mirrors the production config — the loop's baseline. */
+/**
+ * The COMPILE-TIME defaults from config.ts.
+ *
+ * WARNING: this is not necessarily what runs. Every gate below is overridable
+ * at runtime from the `feature_toggles` table, and engine.ts reads that table
+ * (engine.ts:274-281) — so on a box where toggles have been flipped, this
+ * baseline simulates a system nobody trades. Measured 2026-07-28: 8 of 10
+ * toggles differed from the file, and replaying this baseline over 23/24/27 Jul
+ * produced 0 picks against 38/42/9 live, because the file bans extended movers
+ * and has the momentum path off while the live box has the opposite.
+ *
+ * Use `loadLiveVariant()` as the baseline for anything that is meant to grade
+ * what you actually run. Keep this export for a deliberate "what would stock
+ * config do?" comparison only.
+ */
 export const SHIPPED_VARIANT: Variant = {
   name: 'shipped',
   atrMult: SL_ATR_MULT,
@@ -189,6 +204,56 @@ export const SHIPPED_VARIANT: Variant = {
   rankClimbMaxRank: null,
   requireSectorAlign: false,
 };
+
+/**
+ * The baseline that reflects what the box ACTUALLY runs: SHIPPED_VARIANT with
+ * every gate the `feature_toggles` table overrides applied on top, read through
+ * the same `getToggle()` engine.ts uses (file constant = fallback, so a fresh
+ * install is identical to SHIPPED_VARIANT).
+ *
+ * This is what a variant grid should compare against. Grading an experiment
+ * against the file defaults measures a system that is not trading, which is how
+ * the momentum-breakout path went live ungraded on 22 Jul: the reminder said
+ * "replay it first", and the replay could not reproduce it.
+ *
+ * NOT modelled by Variant, so still not covered by any replay: MAX_PICKS,
+ * SCAN_OUTSIDE_WINDOW, SCAN_FULL_UNIVERSE, USE_TF_BREAKOUT_GATE and
+ * USE_CHAOTIC_OPEN_GATE. Treat a replay as evidence about the gates it models,
+ * not as a full simulation of the live scanner.
+ */
+export async function loadLiveVariant(): Promise<Variant> {
+  const [banExtended, extendedTrendBypass, breakoutBypass, momentumBreakout, rankClimbCatch] = await Promise.all([
+    getToggle('EXCLUDE_EXTENDED', EXCLUDE_EXTENDED),
+    getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS),
+    getToggle('USE_BREAKOUT_BYPASS', USE_BREAKOUT_BYPASS),
+    getToggle('USE_MOMENTUM_BREAKOUT', USE_MOMENTUM_BREAKOUT),
+    getToggle('USE_RANK_CLIMB_GATE', USE_RANK_CLIMB_GATE),
+  ]);
+  return {
+    ...SHIPPED_VARIANT,
+    name: 'live (DB toggles)',
+    banExtended,
+    extendedTrendBypass,
+    breakoutBypass,
+    momentumBreakout,
+    rankClimbCatch,
+  };
+}
+
+/** Human-readable diff of live toggles vs the file defaults — printed by the
+ *  replay scripts so a run always states which system it just graded. */
+export function describeVariantDrift(live: Variant): string[] {
+  const pairs: [string, boolean, boolean][] = [
+    ['EXCLUDE_EXTENDED', live.banExtended, SHIPPED_VARIANT.banExtended],
+    ['USE_EXTENDED_TREND_BYPASS', live.extendedTrendBypass ?? false, SHIPPED_VARIANT.extendedTrendBypass ?? false],
+    ['USE_BREAKOUT_BYPASS', live.breakoutBypass, SHIPPED_VARIANT.breakoutBypass],
+    ['USE_MOMENTUM_BREAKOUT', live.momentumBreakout, SHIPPED_VARIANT.momentumBreakout],
+    ['USE_RANK_CLIMB_GATE', live.rankClimbCatch, SHIPPED_VARIANT.rankClimbCatch],
+  ];
+  return pairs
+    .filter(([, now, file]) => now !== file)
+    .map(([key, now, file]) => `${key}: file ${file ? 'ON' : 'OFF'} -> live ${now ? 'ON' : 'OFF'}`);
+}
 
 // ─── Day data ────────────────────────────────────────────────────────────────
 export interface Bar {

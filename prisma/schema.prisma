@@ -603,30 +603,43 @@ model AutoQuoteSnapshot {
 /// the good first write with nulls). bid/ask/hasDepth aren't stored — the order
 /// book no longer exists at EOD, same as the live closing-snapshot response.
 model LiveUrgencyEod {
-  date               String
-  symbol             String
-  ltp                Float   @default(0)
-  changePctOpen      Float?
-  spreadPct          Float?
-  imbalance          Float?
-  futOi              Float?
-  oiLevel            Float?
-  turnover           Float?
-  dayHigh            Float?
-  dayLow             Float?
-  sessionOiChangePct Float?
-  oiVelocity         Float?
-  oiAccel            Float?
-  oiUrgency          Float?
-  rFactor            Float?
-  rFactorBias        String?
-  rFactorConfidence  Float?
-  rFactorAfterEntry  Int?
-  rFactors           String  @default("[]")
-  breakout           String?
-  nseOiPct           Float?
-  nseOiSlope30m      Float?
-  capturedAt         String
+  date                         String
+  symbol                       String
+  ltp                          Float   @default(0)
+  changePctOpen                Float?
+  spreadPct                    Float?
+  imbalance                    Float?
+  futOi                        Float?
+  oiLevel                      Float?
+  turnover                     Float?
+  dayHigh                      Float?
+  dayLow                       Float?
+  sessionOiChangePct           Float?
+  oiVelocity                   Float?
+  oiAccel                      Float?
+  oiUrgency                    Float?
+  rFactor                      Float?
+  rFactorBias                  String?
+  rFactorConfidence            Float?
+  rFactorAfterEntry            Int?
+  rFactors                     String  @default("[]")
+  breakout                     String?
+  nseOiPct                     Float?
+  nseOiSlope30m                Float?
+  // Shadow (V2) R-Factor frozen at the close. Source rows live in
+  // rfactor_v2_snapshots under a 20-session retention; freezing them here is
+  // what keeps a past session gradeable shadow-vs-live after that prune.
+  rFactorV2Activity            Float?
+  rFactorV2Percentile          Float?
+  rFactorV2Rank                Int?
+  rFactorV2Universe            Int?
+  rFactorV2Direction           String?
+  rFactorV2DirectionConfidence Float?
+  rFactorV2Coverage            Float?
+  rFactorV2ComparableCoverage  Float?
+  rFactorV2OptionStatus        String?
+  rFactorV2Factors             String?
+  capturedAt                   String
 
   @@id([date, symbol])
   @@index([date])
