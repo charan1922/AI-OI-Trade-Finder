@@ -33,7 +33,9 @@ import {
   updateShadowExcursion,
   updateTrade,
 } from '../store';
-import type { AutoTrade } from '../types';
+import type { AutoOrder, AutoTrade } from '../types';
+import { getAdapterById } from '../brokers';
+import { EXIT_FAILURE_ESCALATE, exitRetryWaitMs, shouldAlertOnExitFailure } from './exit-backoff';
 import { activateRiskLatch, clearRiskLatchReason } from './latch';
 import { supertrend } from '@/lib/signals/indicators';
 import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
@@ -112,8 +114,100 @@ function spotExitReason(trade: AutoTrade, spot: number): string | null {
   return null;
 }
 
-/** Consecutive exit failures before escalating to a loud warning. */
-const EXIT_FAILURE_ESCALATE = 3;
+/**
+ * In-memory exit-attempt tally, per trade id.
+ *
+ * Covers the exitTrade paths that REFUSE before an order row exists (stale
+ * date, unexpected short, excess position at the venue) — those write nothing
+ * to auto_orders, so the durable order-derived count cannot see them.
+ *
+ * HMR-hosted for the same reason guardSampleMinute is: Turbopack re-evaluates
+ * modules in dev, and a plain module-level Map would silently reset the breaker
+ * for exactly the refusal class this exists to cover.
+ *
+ * HONEST LIMIT: it does not survive a process restart, so a restart resets
+ * those refusals to "retry immediately". That is exactly today's behaviour, so
+ * the breaker is never worse than what it replaced; it is simply durable for
+ * the reject class and best-effort for the refusal class. Making refusals
+ * durable would need a column on auto_trades. Cleared on a successful exit and
+ * when the trade leaves the open book.
+ */
+const exitMemoHost = globalThis as unknown as {
+  __autoTradeExitAttemptMemo?: Map<number, { fails: number; lastAt: number }>;
+};
+exitMemoHost.__autoTradeExitAttemptMemo ??= new Map();
+const exitAttemptMemo = exitMemoHost.__autoTradeExitAttemptMemo;
+
+/**
+ * Best-effort diagnosis of a repeatedly-refused exit: is another SELL already
+ * resting on this contract at the venue?
+ *
+ * If one is, our SELL is a SECOND claim on the same quantity, so the risk
+ * engine prices it as a fresh naked short and refuses it for margin the
+ * account will never have. That is the RECLTD 2026-07-27 incident, where the
+ * resting order had been placed by hand in the broker's own app.
+ *
+ * DIAGNOSTIC ONLY. It never cancels anything — an order the operator placed is
+ * the operator's to withdraw, and silently pulling it would be a nastier
+ * surprise than a loud alert. It only turns "rejected for margin" into a
+ * sentence naming the cause. Any failure to read the book returns null: an
+ * unreadable order book is never evidence that nothing is resting there.
+ */
+async function describeRestingExit(trade: AutoTrade, ourSells: AutoOrder[]): Promise<string | null> {
+  try {
+    // Resolve the venue the TRADE opened on, exactly as exitTrade does — never
+    // from current settings. After a mid-day broker switch, settings point at a
+    // venue this contract never touched; and a paper trade held while the mode
+    // is live would query the REAL broker's book and could name a live resting
+    // order that has nothing to do with it. The paper adapter has no
+    // listOpenOrders, so it returns null here cleanly.
+    const adapter = getAdapterById(trade.broker);
+    if (adapter.listOpenOrders == null) return null;
+    const open = await adapter.listOpenOrders();
+    if (open == null) return null;
+    // Match the contract inside the venue's own symbol string. Both venues
+    // spell contracts differently, so this stays a substring test — but every
+    // test after the underlying runs on the TAIL (the part after the
+    // underlying's name), never the whole string. Testing the whole string
+    // makes an underlying that happens to contain "CE"/"PE" match the wrong
+    // right: holding a PETRONET PE, "NSE:PETRONET25JUL350CE" contains "PE"
+    // inside PETRONET itself. Same for the strike — a 25 strike would match
+    // the 25 in "25JUL". (PETRONET, PERSISTENT, PEL, CESC all hit this.)
+    const upper = (s: string) => s.toUpperCase();
+    const sym = upper(trade.symbol);
+    // JS never stringifies a trailing ".0", so String(strike) already covers
+    // the plain form; the second form is the decimal-stripped spelling some
+    // venues use (a 2477.5 strike as "24775").
+    const strikeForms = [String(trade.strike), String(trade.strike).replace('.', '')];
+    const resting = open.filter((o) => {
+      if (o.side !== 'SELL') return false;
+      const raw = upper(o.rawSymbol);
+      // Bounded underlying match: the character after the symbol must not be
+      // another symbol character, so M&M never matches M&MFIN.
+      const at = raw.indexOf(sym);
+      if (at < 0) return false;
+      const tail = raw.slice(at + sym.length);
+      if (tail !== '' && /^[A-Z&]/.test(tail)) return false;
+      if (!strikeForms.some((f) => tail.includes(f))) return false;
+      return tail.includes(trade.optionType);
+    });
+    if (resting.length === 0) return null;
+    // ourSells covers THIS trade only, so an order placed by this module for a
+    // DIFFERENT trade is not provably ours — say "not this trade's", which is
+    // exactly what we know, rather than claiming it is foreign.
+    const ourIds = new Set(ourSells.map((o) => o.brokerOrderId).filter((id): id is string => id != null));
+    const unknown = resting.filter((o) => !ourIds.has(o.brokerOrderId));
+    const qty = resting.reduce((sum, o) => sum + (o.qtyUnits ?? 0), 0);
+    const who =
+      unknown.length > 0
+        ? `not from this trade's exit attempts (id ${unknown.map((o) => o.brokerOrderId).join(', ')}) — if you placed it by hand, cancel it at the broker to free the quantity`
+        : "one of this trade's own earlier exit orders is still resting and holding the quantity";
+    return `BLOCKED BY A RESTING SELL on the same contract at ${adapter.id} (${resting.length} order(s)${qty > 0 ? `, ${qty} units` : ''}), ${who}`;
+  } catch (err) {
+    console.warn(`${TAG} resting-exit diagnosis failed: ${(err as Error).message}`);
+    return null;
+  }
+}
 
 /** Trailing stop: once premium gains this %, move the premium SL to the entry
  * reference. A market exit can still slip below it, so this reduces risk but
@@ -281,6 +375,10 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
   for (const tradeId of [...guardSampleMinute.keys()]) {
     if (!openIds.has(tradeId)) guardSampleMinute.delete(tradeId);
   }
+  // Same for the exit-retry tally — a closed trade can never need a backoff.
+  for (const tradeId of [...exitAttemptMemo.keys()]) {
+    if (!openIds.has(tradeId)) exitAttemptMemo.delete(tradeId);
+  }
 
   for (const trade of open) {
     try {
@@ -434,7 +532,41 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
       }
 
       if (reason) {
+        // CIRCUIT BREAKER (see EXIT_RETRY_BACKOFF_MS). Read the SELL history
+        // BEFORE submitting: past the escalation threshold this trade gets one
+        // attempt per backoff window, not one per pass. Deriving the state from
+        // stored orders (not memory) keeps the backoff across a restart.
+        const priorSells = (await getOrdersForTrade(trade.id)).filter((o) => o.side === 'SELL');
+        const orderFails = priorSells.filter((o) => o.status === 'rejected' || (o.status === 'sent' && o.error)).length;
+        const orderLastAt = priorSells.reduce((max, o) => Math.max(max, Date.parse(o.createdAt) || 0), 0);
+        // exitTrade REFUSES on some paths before any order row exists (stale
+        // date, unexpected short, excess position at the venue). Those never
+        // touch auto_orders, so an order-derived count alone would stay at 0
+        // and hammer forever on a condition just as static as a reject — the
+        // operator-interference class behind the RECLTD incident. The in-memory
+        // tally covers them; the order-derived count survives a restart. Taking
+        // the max means each mechanism covers the other's blind spot.
+        const memo = exitAttemptMemo.get(trade.id);
+        const priorFails = Math.max(orderFails, memo?.fails ?? 0);
+        const lastAt = Math.max(orderLastAt, memo?.lastAt ?? 0);
+        const waitMs = exitRetryWaitMs(priorFails);
+        if (waitMs > 0) {
+          const sinceMs = Date.now() - lastAt;
+          if (lastAt > 0 && sinceMs < waitMs) {
+            const held =
+              `${trade.symbol} ${trade.optionType}: exit HELD OFF — ${priorFails} consecutive failures, ` +
+              `next attempt in ${Math.ceil((waitMs - sinceMs) / 1000)}s (${reason})`;
+            actions.push(held);
+            console.warn(`${TAG} ${held}`);
+            await recordShadowExcursion(trade, date, actions);
+            continue;
+          }
+        }
         const outcome = await exitTrade(trade, reason);
+        // Record the attempt BEFORE anything else can throw, so a refusal that
+        // never reached auto_orders still counts toward the breaker.
+        if (outcome.ok) exitAttemptMemo.delete(trade.id);
+        else exitAttemptMemo.set(trade.id, { fails: priorFails + 1, lastAt: Date.now() });
         const line = `${trade.symbol} ${trade.optionType}: ${reason} → ${outcome.message}`;
         actions.push(line);
         console.log(`${TAG} ${line}`);
@@ -451,10 +583,24 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
             (o) => o.status === 'rejected' || (o.status === 'sent' && o.error)
           ).length;
           if (consecutiveFails >= EXIT_FAILURE_ESCALATE) {
-            const esc = `⚠️ ${trade.symbol} ${trade.optionType}: ${consecutiveFails} consecutive exit failures — MANUAL INTERVENTION NEEDED`;
+            // Name the most likely CAUSE, not just the count. A resting exit
+            // order on the same contract makes our SELL look like a fresh
+            // naked short to the venue's risk engine, so it is refused for
+            // margin the account will never have — the RECLTD 2026-07-27
+            // incident, where the blocker was an exit order placed by hand in
+            // the broker's own app. Diagnosis runs only on the FAILURE path,
+            // never on the hot exit path, and never blocks the retry.
+            const blocker = await describeRestingExit(trade, exitOrders);
+            const esc =
+              `⚠️ ${trade.symbol} ${trade.optionType}: ${consecutiveFails} consecutive exit failures — ` +
+              `MANUAL INTERVENTION NEEDED${blocker == null ? '' : ` · ${blocker}`}`;
             actions.push(esc);
             console.error(`[PositionGuard] 🚨 ${esc}`);
-            alerts.exitFailureEscalation(trade.symbol, consecutiveFails);
+            // One alarm per incident, then throttled — the old code alerted on
+            // every pass and buried the signal in itself.
+            if (shouldAlertOnExitFailure(consecutiveFails)) {
+              alerts.exitFailureEscalation(trade.symbol, consecutiveFails);
+            }
           }
         }
       }

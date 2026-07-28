@@ -16,10 +16,10 @@
  */
 
 import { todayIST } from '@/lib/dhan/market-feed';
-import { getFyersCandles } from '@/lib/fyers/candle-store';
+import { getFyersCandles, getRetainedCandleDates } from '@/lib/fyers/candle-store';
 import { gradeSpotPath } from '@/lib/trade-suggest/grade';
 import { simulateAllPresets } from '@/lib/trade-suggest/profit-protect';
-import { getSuggestions, recordOutcome } from '@/lib/trade-suggest/store';
+import { getDatesWithUngradedPicks, getSuggestions, recordOutcome } from '@/lib/trade-suggest/store';
 import type { StoredSuggestion } from '@/lib/trade-suggest/types';
 
 /** Baseline outcomes that carry a real R — the only ones a profit-protection
@@ -38,6 +38,64 @@ export interface ReviewResult {
 /** Grade today's picks (poller / skill entry point). */
 export async function reviewToday(): Promise<ReviewResult> {
   return reviewDate(todayIST());
+}
+
+export interface BacklogResult {
+  /** Dates graded this run, oldest first (today included when it has picks). */
+  dates: string[];
+  reviewed: number;
+  skipped: number;
+  /** Dates that hold ungraded picks but whose candles are already pruned —
+   *  permanently ungradeable. Surfaced so the loss is visible, not silent. */
+  expired: string[];
+}
+
+/**
+ * Grade every retained session that still holds UNGRADED picks — today plus any
+ * evening the grader never ran.
+ *
+ * Why this exists: the poller only ever called reviewToday(), so a session
+ * missed for any reason (box restart, deploy, the feature not existing yet)
+ * was never revisited, even though its candles stay for 20 sessions. Measured
+ * 2026-07-28: 87 of 176 recorded picks had no outcome, and everything before
+ * 21 Jul had aged past the candle window while still ungraded — the sample that
+ * every "is this toggle working?" question depends on was quietly expiring.
+ *
+ * Idempotent and cheap: local candle reads only, no broker/AI call. Already-
+ * graded dates are skipped, so a normal evening does today and nothing else.
+ * A grader BUG FIX still needs scripts/regrade-suggestions.ts, which re-grades
+ * retained history whether or not it already has outcomes.
+ */
+export async function reviewUngradedBacklog(): Promise<BacklogResult> {
+  const pending = await getDatesWithUngradedPicks();
+  const gradeable = new Set(await getRetainedCandleDates());
+  const dates = pending.filter((d) => gradeable.has(d)).sort();
+  const expired = pending.filter((d) => !gradeable.has(d)).sort();
+
+  let reviewed = 0;
+  let skipped = 0;
+  const done: string[] = [];
+  for (const date of dates) {
+    try {
+      const r = await reviewDate(date);
+      reviewed += r.reviewed;
+      skipped += r.skipped;
+      done.push(date);
+    } catch (err) {
+      // One bad session must never stop the rest of the backlog.
+      console.warn(`${TAG} backlog grade failed for ${date}: ${(err as Error).message}`);
+    }
+  }
+  if (expired.length > 0) {
+    // Bounded on purpose: this set only ever GROWS (every session that ages out
+    // with an ungraded pick joins it forever), so listing it in full would make
+    // one nightly log line longer every week. Count + range says the same thing.
+    const range = expired.length === 1 ? expired[0] : `${expired[0]}..${expired[expired.length - 1]}`;
+    console.warn(
+      `${TAG} ${expired.length} session(s) hold ungraded picks whose candles are already pruned — permanently ungradeable (${range})`,
+    );
+  }
+  return { dates: done, reviewed, skipped, expired };
 }
 
 /**

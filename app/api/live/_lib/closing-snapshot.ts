@@ -34,6 +34,7 @@ import {
   getLatestSnapshotDate,
 } from '@/lib/signals/oi-intraday';
 import { type EodRow, getEodForDate, hasEodCapture, insertEodRows } from '@/lib/signals/live-urgency-eod';
+import { getLastV2SnapshotsForDate, type RFactorV2DaySnapshot } from '@/lib/r-factor-v2/store';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
 import { classifyFno, excludeReasonLabel, loadFnoUniverse } from './fno-universe';
 import { getMorningContext } from './morning-candles';
@@ -71,9 +72,14 @@ async function computeClosingRows(
   // Baselines strictly BEFORE the snapshot date — once this day's bhavcopy
   // syncs overnight, the unbounded query would compare the day against itself
   // (see loadRFactorBaselines). No-op on the session's own evening.
-  const [seriesMap, baselines] = await Promise.all([
+  // The session's LAST shadow (V2) reading per symbol, so the frozen board
+  // keeps the shadow score next to the live one. Read-only — never recomputed
+  // here; an empty map (session predates the shadow, or retention pruned it)
+  // simply leaves the V2 fields null.
+  const [seriesMap, baselines, v2] = await Promise.all([
     getIntradaySeriesForSymbols(snapshotDate, allowed),
     loadRFactorBaselines(allowed, snapshotDate),
+    getLastV2SnapshotsForDate(snapshotDate, allowed).catch(() => new Map<string, RFactorV2DaySnapshot>()),
   ]);
 
   const isToday = snapshotDate === todayIST();
@@ -179,6 +185,19 @@ async function computeClosingRows(
           detail: f.detail,
         })) ?? null,
       breakout,
+      // Shadow R-Factor as it stood at the session's last reading.
+      rFactorV2Activity: v2.get(s)?.activityScore ?? null,
+      rFactorV2Percentile: v2.get(s)?.activityPercentile ?? null,
+      rFactorV2Rank: v2.get(s)?.activityRank || null,
+      rFactorV2Universe: v2.get(s)?.universeSize ?? null,
+      rFactorV2Direction: v2.get(s)?.direction ?? null,
+      rFactorV2DirectionConfidence: v2.get(s)?.directionConfidence ?? null,
+      rFactorV2Coverage: v2.get(s)?.coverage ?? null,
+      rFactorV2ComparableCoverage: v2.get(s)?.comparableCoverage ?? null,
+      rFactorV2OptionStatus: v2.get(s)?.optionStatus ?? null,
+      // Cast is unavoidable, not a Map-typing artifact: the store returns the
+      // persisted JSON blob as unknown[] because at that layer it IS unknown.
+      rFactorV2Factors: (v2.get(s)?.factors ?? null) as EodRow['rFactorV2Factors'],
       dayHigh,
       dayLow,
     });

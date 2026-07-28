@@ -18,6 +18,8 @@ import {
   type BrokerAdapter,
   type BrokerBookPosition,
   type BrokerFunds,
+  type BrokerOpenOrder,
+  type BrokerPnlRead,
   type BrokerPositionQuery,
   type BrokerPositionRead,
   type OrderState,
@@ -313,6 +315,76 @@ export class DhanAdapter implements BrokerAdapter {
         }));
     } catch (err) {
       console.warn(`${TAG} listNetPositions failed: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Dhan's own session P&L. Unlike Fyers there is no summary block — GET
+   * /positions returns per-position `realizedProfit` / `unrealizedProfit`, so
+   * we sum them. Account-wide: see the BrokerPnlRead scope warning.
+   *
+   * Fails closed on a PARTIAL read. If any row is missing a parseable
+   * realizedProfit the whole figure is 'unavailable', because a silently
+   * skipped row would under-report the loss — the one direction a risk
+   * cross-check must never be wrong in. An empty book is a real ₹0.
+   */
+  async getBrokerPnl(): Promise<BrokerPnlRead> {
+    try {
+      const data = await dhanFetch('/positions', { method: 'GET' });
+      // An unexpected body must NOT collapse to "an empty book worth ₹0" —
+      // skipping every row lands in exactly the direction this read promises
+      // never to be wrong in. Only a real array can be a real ₹0.
+      if (!Array.isArray(data)) {
+        return { kind: 'unavailable', reason: 'positions response was not an array' };
+      }
+      const rows = data as Record<string, unknown>[];
+      let realized = 0;
+      let unrealized = 0;
+      let sawUnrealized = false;
+      for (const row of rows) {
+        const r = parseFiniteNumber(row, ['realizedProfit']);
+        if (r == null) {
+          return {
+            kind: 'unavailable',
+            reason: `position row ${String(row.tradingSymbol ?? row.securityId ?? '?')} has no parseable realizedProfit`,
+          };
+        }
+        realized += r;
+        const u = parseFiniteNumber(row, ['unrealizedProfit']);
+        if (u != null) {
+          unrealized += u;
+          sawUnrealized = true;
+        }
+      }
+      const unrealizedOut = sawUnrealized ? unrealized : null;
+      return { kind: 'verified', realized, unrealized: unrealizedOut, total: realized + (unrealizedOut ?? 0) };
+    } catch (err) {
+      console.warn(`${TAG} getBrokerPnl failed: ${(err as Error).message}`);
+      return { kind: 'unavailable', reason: (err as Error).message };
+    }
+  }
+
+  /**
+   * Orders still live in the Dhan order book. Reuses mapStatus so "live" means
+   * exactly what it means everywhere else in this adapter (TRANSIT / PENDING /
+   * PART_TRADED → 'pending'). Diagnostic only — see BrokerOpenOrder.
+   */
+  async listOpenOrders(): Promise<BrokerOpenOrder[] | null> {
+    try {
+      const data = await dhanFetch('/orders', { method: 'GET' });
+      const rows = Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+      return rows
+        .filter((o) => mapStatus(String(o.orderStatus ?? '')) === 'pending')
+        .map((o) => ({
+          brokerOrderId: String(o.orderId ?? ''),
+          rawSymbol: String(o.tradingSymbol ?? o.securityId ?? ''),
+          side: String(o.transactionType ?? '').toUpperCase() === 'SELL' ? ('SELL' as const) : ('BUY' as const),
+          qtyUnits: parseFiniteNumber(o, ['remainingQuantity', 'quantity']),
+        }))
+        .filter((o) => o.brokerOrderId !== '');
+    } catch (err) {
+      console.warn(`${TAG} listOpenOrders failed: ${(err as Error).message}`);
       return null;
     }
   }

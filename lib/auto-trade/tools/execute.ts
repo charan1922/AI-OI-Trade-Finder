@@ -86,8 +86,16 @@ export async function buildAccountState(
   options: { includeBrokerFunds?: boolean } = {}
 ): Promise<AccountState> {
   const s = rt.settings;
+  const liveVenue = s.mode === 'approval' || s.mode === 'live';
+  // NOTE: the venue's own P&L is deliberately NOT read here. `includeBrokerFunds`
+  // is set by exactly one caller — the immediate pre-placement gate — and the
+  // adapter's serial() gate (600ms on Fyers) means a second account call cannot
+  // run in parallel with getFunds(); it would add ~600ms + a round trip to every
+  // entry. That path is latency-budgeted on purpose. Since the figure feeds no
+  // gate, it belongs where it is consumed: the operator console reads it through
+  // lib/auto-trade/broker-pnl-cache.ts, off the hot path and TTL-coalesced.
   const brokerFundsPromise =
-    options.includeBrokerFunds && (s.mode === 'approval' || s.mode === 'live')
+    options.includeBrokerFunds && liveVenue
       ? getExecutionAdapter(s, s.mode).getFunds()
       : Promise.resolve({ available: null });
   const [entriesToday, exposure, pnl, pending, entryCutoffMin, brokerFunds] = await Promise.all([

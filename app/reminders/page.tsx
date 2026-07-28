@@ -104,18 +104,19 @@ const REMINDERS: Reminder[] = [
       'Ask Claude: "replay the chaotic-open gate across recorded days". If it kept cutting HYUNDAI/SRF-type losers without cutting winners → keep ON. If it cost a real winner → flip it OFF on /config (one click) and park it back with the other experiments.',
   },
   {
-    title: 'Momentum-breakout switch was turned ON without the multi-day replay — grade it now',
-    when: 'Overdue — it is already live and taking real trades',
+    title: 'Momentum-breakout switch — GRADED 28 Jul: keep it. Not the cause of the 27 Jul losses.',
+    when: 'Closed. Re-grade once the sample reaches ~150 picks (roughly 5 more trading days).',
     added: '2026-07-15',
     what: [
-      'ORIGINAL ITEM: on 14 Jul TradeFinder made +₹15,930 on ADANIGREEN, a short-covering breakout our engine skips BY DESIGN (price up while OI falls scores zero on every accumulation gate). A 4th entry path was built for that pattern and shipped OFF until replays over several days proved it.',
-      'SECOND case, 16 Jul: TradeFinder made +₹10,159 on ADANIENSOL — on our gainers board all window, calm open, broke its opening range ~10:00 with trend agreement, and every OI gate refused it (futures OI 0.96× vs 1.1×, options share 6.7% vs 10%, premium ₹4.4Cr vs ₹5Cr).',
-      'STATUS CHANGE: the switch was turned ON at 23:43 on 22 Jul, without that replay. It is no longer a parked decision — it is the live admission path. On 23 Jul it produced 35 of the day’s 38 suggestions and ALL FIVE real trades (SRF, ETERNAL, BAJAJ-AUTO, M&M, HEROMOTOCO). Before that night it had produced zero picks on all 12 recorded days.',
-      'First day’s result: of 33 graded momentum picks, 14 won and 19 lost, summing to +3.03R (avg +0.09R). Of the 5 it sent to real orders, 3 won, 1 lost, 1 was blocked on margin. That is ONE day.',
-      '24 of the 35 momentum picks had an R-Factor below 3.6, meaning the momentum path is the only thing that could have admitted them — this switch is doing real work, not rubber-stamping picks that would qualify anyway.',
+      'ORIGINAL ITEM: on 14 Jul TradeFinder made +₹15,930 on ADANIGREEN, a short-covering breakout our engine skips BY DESIGN (price up while OI falls scores zero on every accumulation gate). A 4th entry path was built for that pattern and shipped OFF until replays over several days proved it. A second case followed on 16 Jul (ADANIENSOL, +₹10,159) where every OI gate refused a clean trend-day breakout.',
+      'The switch was turned ON at 23:43 on 22 Jul without that replay, so it went live ungraded. It is the dominant admission path: 35 of 38 picks on 23 Jul, 32 of 42 on 24 Jul, and ALL 9 on 27 Jul.',
+      'GRADED 28 Jul across every scored pick (n=89, sessions 21–27 Jul). Momentum path: n=72, mean +0.055R, 42% win, t=0.36. Everything else: n=17, mean −0.412R, 18% win. Per day it is stable — 23 Jul +0.092R (n=33), 24 Jul +0.048R (n=30), 27 Jul −0.053R (n=9). No single day carries it.',
+      'VERDICT: keep. It is flat on its own (t=0.36 is not a real edge) but it is clearly better than the picks admitted by the older paths, and it is the only path finding the trend-day movers at all.',
+      'It was also cleared of the 27 Jul losses. All 9 picks that day came through it, and all 5 bullish picks CLOSED GREEN (KFINTECH +8.7%, LODHA +3.8%, RECLTD +3.2%, COLPAL +2.2%, SBICARD +2.6%). Four were still booked as losses. The money was lost at the exit, not the entry — see the separate stop-width item.',
+      'CAVEAT on the sample: 89 picks but only 3 usable sessions, all trending days, graded on the SPOT plan (0.35% stop / 0.70% target) rather than real option P&L. A choppy week could still change this.',
     ],
     action:
-      'Ask Claude: "grade the momentum-breakout path across every recorded day now that it is live". It is ON and trading, so the question is no longer whether to enable it but whether to keep it — decide on the accumulated scorecard, not on 23 Jul alone.',
+      'Nothing to do — the switch stays ON. Re-run the same grading at ~150 picks, and re-open this item immediately if the momentum path turns negative over a full week.',
   },
   {
     title: 'First real broker orders have now run — reconciliation is the thing left to watch',

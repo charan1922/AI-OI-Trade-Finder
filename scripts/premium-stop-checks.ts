@@ -21,6 +21,15 @@ import {
   stopPremiumForFill,
 } from '../lib/auto-trade/backstops';
 import { DEFAULT_SETTINGS, MAX_RISK_PER_LOT_FALLBACK } from '../lib/auto-trade/config';
+// Leaf module on purpose: importing position-guard would drag prisma, the
+// broker adapters and the candle store into this DB-free bench.
+import {
+  EXIT_ALERT_EVERY,
+  EXIT_FAILURE_ESCALATE,
+  EXIT_RETRY_BACKOFF_MS,
+  exitRetryWaitMs,
+  shouldAlertOnExitFailure,
+} from '../lib/auto-trade/risk/exit-backoff';
 import type { EntryGateInput } from '../lib/auto-trade/risk/gates';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
@@ -263,5 +272,57 @@ export function runPremiumStopChecks(check: CheckFn): void {
   check(
     'capital: the stale-read path (₹25k + ₹31k) would have wrongly passed — documents the bug',
     capitalReservationExceeds(25_000, 31_000, 60_000) === false
+  );
+
+  // ── 11. Exit-retry circuit breaker (RECLTD 2026-07-27) ────────────────────
+  // The guard used to ALERT on repeated exit failures and then resubmit on the
+  // very next 5-second pass — 89 rejected orders and 30+ identical alerts in
+  // 10 minutes, none of which could have succeeded. This decides whether a
+  // stopped-out position gets an exit attempt, so it belongs in CI.
+  check('exit retry: first failure retries immediately (transient rejects must not wait)', exitRetryWaitMs(1) === 0);
+  check(
+    'exit retry: still immediate one BELOW the escalation threshold',
+    exitRetryWaitMs(EXIT_FAILURE_ESCALATE - 1) === 0
+  );
+  check(
+    'exit retry: AT the threshold the breaker engages (backs off, never gives up)',
+    exitRetryWaitMs(EXIT_FAILURE_ESCALATE) === EXIT_RETRY_BACKOFF_MS
+  );
+  check('exit retry: stays backed off as failures pile up', exitRetryWaitMs(89) === EXIT_RETRY_BACKOFF_MS);
+  // The incident, in numbers: 10 minutes of 5-second passes is ~120 attempts.
+  // Under the breaker the same window allows at most ~5.
+  check(
+    'exit retry: the 10-minute RECLTD window now allows ≤6 attempts, not 89',
+    Math.ceil((10 * 60_000) / EXIT_RETRY_BACKOFF_MS) + EXIT_FAILURE_ESCALATE <= 9
+  );
+  // Alert dedup: the FIRST escalation must always fire (a silent breaker is
+  // worse than a noisy one), and repeats must be throttled.
+  // Assert the SHIPPED helper, not a re-statement of it — a copy here could
+  // drift from the guard and still pass.
+  const alertsAt = shouldAlertOnExitFailure;
+  check('exit alert: the first escalation always fires', alertsAt(EXIT_FAILURE_ESCALATE) === true);
+  check('exit alert: the next failure does NOT re-alert', alertsAt(EXIT_FAILURE_ESCALATE + 1) === false);
+  check(
+    'exit alert: re-alerts once per EXIT_ALERT_EVERY failures',
+    alertsAt(EXIT_FAILURE_ESCALATE + EXIT_ALERT_EVERY) === true
+  );
+  check('exit alert: never alerts below the threshold', alertsAt(EXIT_FAILURE_ESCALATE - 1) === false);
+
+  // Review finding (2026-07-28): exitTrade REFUSES on three paths before any
+  // auto_orders row exists (stale date, unexpected short, excess position), so
+  // an order-derived count alone stays at 0 and never backs off. The guard now
+  // takes max(orderDerived, inMemory). These assert the combining rule.
+  const effectiveFails = (orderDerived: number, inMemory: number) => Math.max(orderDerived, inMemory);
+  check(
+    'exit retry: a refusal that wrote NO order row still engages the breaker',
+    exitRetryWaitMs(effectiveFails(0, EXIT_FAILURE_ESCALATE)) === EXIT_RETRY_BACKOFF_MS
+  );
+  check(
+    'exit retry: a durable reject count still engages it after a restart wipes memory',
+    exitRetryWaitMs(effectiveFails(EXIT_FAILURE_ESCALATE, 0)) === EXIT_RETRY_BACKOFF_MS
+  );
+  check(
+    'exit retry: neither source at the threshold means no backoff (the two do not sum)',
+    exitRetryWaitMs(effectiveFails(EXIT_FAILURE_ESCALATE - 1, EXIT_FAILURE_ESCALATE - 1)) === 0
   );
 }

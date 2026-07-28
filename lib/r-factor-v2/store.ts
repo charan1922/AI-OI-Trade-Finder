@@ -582,6 +582,77 @@ export async function recordOptionEvidence(symbol: string, evidence: OptionActiv
   );
 }
 
+/** One symbol's LAST shadow snapshot of a session — the fields the frozen
+ *  end-of-day board persists. Same shape the live row carries. */
+export interface RFactorV2DaySnapshot {
+  activityScore: number;
+  activityPercentile: number;
+  activityRank: number;
+  universeSize: number;
+  direction: 'bullish' | 'bearish' | 'neutral';
+  directionConfidence: number;
+  coverage: number;
+  comparableCoverage: number;
+  optionStatus: 'available' | 'pending';
+  factors: unknown[];
+}
+
+/**
+ * The FINAL shadow snapshot of `date` for each of `symbols`, keyed by symbol.
+ *
+ * Exists so the end-of-session capture can freeze the shadow R-Factor next to
+ * the live one (lib/signals/live-urgency-eod.ts). Without it the shadow is
+ * display-only and dies at 15:30: `live_urgency_eod` carried no V2 columns, so
+ * after the close there was no way to ask "did the shadow rank better than the
+ * live score?" — the whole point of running it in shadow.
+ *
+ * Reads only rows already recorded during the session; it never recomputes.
+ * Empty map when the session predates the shadow or was pruned by retention.
+ */
+export async function getLastV2SnapshotsForDate(
+  date: string,
+  symbols: string[],
+): Promise<Map<string, RFactorV2DaySnapshot>> {
+  const out = new Map<string, RFactorV2DaySnapshot>();
+  if (symbols.length === 0) return out;
+  await ensureRFactorV2Tables();
+  // One row per symbol: the greatest bucketTs that symbol reached that day.
+  const rows = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT s.* FROM rfactor_v2_snapshots s
+       JOIN (SELECT symbol, MAX(bucketTs) AS mx FROM rfactor_v2_snapshots
+              WHERE date = ? GROUP BY symbol) last
+         ON last.symbol = s.symbol AND last.mx = s.bucketTs
+      WHERE s.date = ?`,
+    date,
+    date,
+  );
+  const wanted = new Set(symbols);
+  for (const r of rows) {
+    const symbol = String(r.symbol);
+    if (!wanted.has(symbol)) continue;
+    let factors: unknown[] = [];
+    try {
+      const parsed = JSON.parse(String(r.factors ?? '[]'));
+      if (Array.isArray(parsed)) factors = parsed;
+    } catch {
+      // malformed blob — persist an empty factor list rather than dropping the row
+    }
+    out.set(symbol, {
+      activityScore: Number(r.activityScore),
+      activityPercentile: Number(r.activityPercentile),
+      activityRank: Number(r.activityRank),
+      universeSize: Number(r.universeSize),
+      direction: (r.direction as RFactorV2DaySnapshot['direction']) ?? 'neutral',
+      directionConfidence: Number(r.directionConfidence),
+      coverage: Number(r.coverage),
+      comparableCoverage: Number(r.comparableCoverage ?? r.coverage),
+      optionStatus: (r.optionStatus as RFactorV2DaySnapshot['optionStatus']) ?? 'pending',
+      factors,
+    });
+  }
+  return out;
+}
+
 /**
  * Retention for both shadow tables: keep the newest
  * RFACTOR_V2_RETENTION_SESSIONS dates, matching the candle/rank policy. The

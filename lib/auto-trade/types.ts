@@ -272,6 +272,10 @@ export interface AccountState {
   /** Real broker funds are fetched only inside the placement/approval gate so
    * routine AI context never waits on a broker account endpoint. */
   brokerFundsCheckedAtPlacement: boolean;
+  // The venue's own P&L is intentionally ABSENT here. It gates nothing, and the
+  // only builder of this state runs at the pre-placement gate where a second
+  // serialised broker call would cost ~600ms per entry. The operator console
+  // reads it off the hot path via lib/auto-trade/broker-pnl-cache.ts.
 }
 
 /** Trace of one tool execution — mirrors lib/ai-assistant's ToolTraceEntry. */

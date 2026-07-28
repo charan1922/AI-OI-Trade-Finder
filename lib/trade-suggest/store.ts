@@ -209,6 +209,30 @@ export async function getSuggestions(date: string): Promise<StoredSuggestion[]> 
   return rows.map(rowToStored);
 }
 
+/**
+ * Dates holding at least one pick with NO usable verdict, oldest first. Drives
+ * the evening backlog pass in review.ts.
+ *
+ * "No verdict" is two distinct cases, and both must be caught:
+ *   1. `outcomeAt IS NULL` — the grader never ran for that session at all.
+ *   2. `spotOutcome IS NULL` — it ran, but under an OLDER grader that recorded
+ *      the excursions (maxUpPct/maxDownPct) without deciding target/stop/timeout.
+ *      Measured 2026-07-28: 59 rows sat in exactly this state, invisible to an
+ *      `outcomeAt IS NULL` check while contributing nothing to any scorecard.
+ *
+ * A row that reached a real terminal verdict — including 'entry-ambiguous' — has
+ * spotOutcome set and is deliberately NOT re-queued.
+ */
+export async function getDatesWithUngradedPicks(): Promise<string[]> {
+  await ensureSuggestionsTable();
+  const rows = await prisma.$queryRawUnsafe<{ date: string }[]>(
+    `SELECT DISTINCT date FROM trade_suggestions
+       WHERE outcomeAt IS NULL OR spotOutcome IS NULL
+       ORDER BY date ASC`,
+  );
+  return rows.map((r) => r.date);
+}
+
 /** One trading day's worth of persisted suggestions, newest day first. */
 export interface SuggestionDay {
   date: string;
