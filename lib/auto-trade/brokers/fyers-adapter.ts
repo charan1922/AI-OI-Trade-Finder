@@ -21,6 +21,8 @@ import {
   type BrokerAdapter,
   type BrokerBookPosition,
   type BrokerFunds,
+  type BrokerOpenOrder,
+  type BrokerPnlRead,
   type BrokerPositionQuery,
   type BrokerPositionRead,
   type OrderState,
@@ -402,6 +404,67 @@ export class FyersAdapter implements BrokerAdapter {
         }));
     } catch (err) {
       console.warn(`${TAG} listNetPositions failed: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Fyers' own session P&L, from the `overall` block of GET /positions
+   * (`pl_realized` / `pl_unrealized` / `pl_total`). Account-wide — see the
+   * BrokerPnlRead scope warning.
+   *
+   * Fails closed: a missing or non-numeric `pl_realized` is 'unavailable',
+   * never 0. A zero-P&L day and an unreadable book must not look alike.
+   */
+  async getBrokerPnl(): Promise<BrokerPnlRead> {
+    try {
+      const fyers = await getFyers();
+      const res = await serial(() => fyers.get_positions());
+      if (!res || res.s !== 'ok') {
+        return { kind: 'unavailable', reason: `position book unreadable: ${String(res?.message ?? 'no response')}` };
+      }
+      const overall = res.overall as Record<string, unknown> | undefined;
+      if (overall == null || typeof overall !== 'object') {
+        return { kind: 'unavailable', reason: 'positions response carried no `overall` block' };
+      }
+      const realized = parseFiniteNumber(overall, ['pl_realized']);
+      if (realized == null) {
+        return { kind: 'unavailable', reason: `overall block has no parseable pl_realized (${safeJson(overall, 200)})` };
+      }
+      const unrealized = parseFiniteNumber(overall, ['pl_unrealized']);
+      const total = parseFiniteNumber(overall, ['pl_total']) ?? realized + (unrealized ?? 0);
+      return { kind: 'verified', realized, unrealized, total };
+    } catch (err) {
+      console.warn(`${TAG} getBrokerPnl failed: ${(err as Error).message}`);
+      return { kind: 'unavailable', reason: (err as Error).message };
+    }
+  }
+
+  /**
+   * Orders still live in the Fyers order book. Status codes match
+   * getOrderByCorrelationId: 4 = transit, 6 = pending; 1/2/5 are terminal.
+   * `side` is Fyers' numeric convention (1 = buy, -1 = sell).
+   */
+  async listOpenOrders(): Promise<BrokerOpenOrder[] | null> {
+    try {
+      const fyers = await getFyers();
+      const res = await serial(() => fyers.get_orders());
+      if (!res || res.s !== 'ok') return null;
+      const book = Array.isArray(res.orderBook) ? (res.orderBook as Record<string, unknown>[]) : [];
+      return book
+        .filter((o) => {
+          const status = Number(o.status);
+          return status === 4 || status === 6;
+        })
+        .map((o) => ({
+          brokerOrderId: String(o.id ?? ''),
+          rawSymbol: String(o.symbol ?? ''),
+          side: Number(o.side) === -1 ? ('SELL' as const) : ('BUY' as const),
+          qtyUnits: parseFiniteNumber(o, ['qty', 'remainingQuantity']),
+        }))
+        .filter((o) => o.brokerOrderId !== '');
+    } catch (err) {
+      console.warn(`${TAG} listOpenOrders failed: ${(err as Error).message}`);
       return null;
     }
   }
