@@ -551,7 +551,8 @@ type SortKey =
   | 'nsePremValueCr'
   | 'nseOptValueCr'
   | 'nseTotalValueCr'
-  | 'nseUnderlyingValue';
+  | 'nseUnderlyingValue'
+  | 'tfRFactor';
 /** `origRank` = the row's 1-based position in the incoming watchlist (= NSE Movers order). */
 type Row = LiveUrgencyRow & { verdict: SetupVerdict; origRank: number };
 
@@ -686,6 +687,12 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               className={`sticky top-0 z-30 h-6 border-b border-border ${HDR_BG} ${BLOCK_EDGE} px-2 text-left`}
             >
               NSE — oi-spurts feed, verbatim (matches nseindia.com)
+            </th>
+            <th
+              colSpan={1}
+              className={`sticky top-0 z-30 h-6 border-b border-border ${HDR_BG} ${BLOCK_EDGE} px-2 text-left`}
+            >
+              TF — TradeFinder&apos;s own number
             </th>
           </tr>
           <tr>
@@ -883,6 +890,14 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               col="nseUnderlyingValue"
               align="right"
               title="Straight from NSE: the stock's spot price as their feed reports it."
+              {...th}
+            />
+            <Th
+              label="TF R-Factor"
+              col="tfRFactor"
+              align="right"
+              className={BLOCK_EDGE}
+              title="TradeFinder's OWN R-Factor for this stock, from the most recent successful capture on /tf — not our estimate of it. Captured periodically, not live: can lag by minutes to a day. '—' until /tf has captured this symbol at least once."
               {...th}
             />
           </tr>

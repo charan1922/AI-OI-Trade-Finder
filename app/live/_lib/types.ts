@@ -119,6 +119,23 @@ export interface LiveUrgencyRow {
    *  Live LTP against 5-min-cached levels. Null until candles are recorded
    *  (optional so older row producers/consumers are unaffected). */
   breakout?: BreakoutSignal | null;
+
+  // ── TradeFinder's OWN R-Factor (lib/tf-live) ───────────────────────────────
+  // From the most recent successful `all_sector` capture on /tf — TradeFinder's
+  // actual number, not our estimate of it. Captured periodically (not live-
+  // ticking), so this can lag by minutes to a day; capturedAt on the fetch
+  // response says exactly how stale. Merged in client-side, additive only —
+  // never touches the live quote/scanner path. Null until /tf has a
+  // successful capture with this symbol in it.
+  tfRFactor?: number | null;
+  tfPctChange?: number | null;
+  tfPreviousClose?: number | null;
+}
+
+/** TradeFinder's own R-Factor snapshot, merged into rows for display only. */
+export interface TfRFactorMap {
+  capturedAt: string | null;
+  values: Record<string, { rFactor: number | null; pctChange: number | null; previousClose: number | null }>;
 }
 
 /** One factor's contribution, surfaced to the UI tooltip. */

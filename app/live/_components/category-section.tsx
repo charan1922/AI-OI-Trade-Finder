@@ -1,9 +1,10 @@
 'use client';
 
 import { Loader2, RefreshCw } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useCategoryUrgency } from '../_hooks/use-category-urgency';
-import type { SectorPick, WatchlistSource } from '../_lib/types';
+import { useTfRFactorMap } from '../_hooks/use-tf-rfactor-map';
+import type { LiveUrgencyRow, SectorPick, WatchlistSource } from '../_lib/types';
 import { UrgencyTable } from './urgency-table';
 
 const fmtTime = (iso: string | null): string =>
@@ -69,6 +70,17 @@ export function CategorySection({
     refresh,
   } = useCategoryUrgency(source, staggerIndex);
 
+  // TradeFinder's own R-Factor, merged in purely for display — independent
+  // fetch, independent poll cadence, never affects the live rows above.
+  const tf = useTfRFactorMap();
+  const rowsWithTf = useMemo<LiveUrgencyRow[]>(() => {
+    if (Object.keys(tf.values).length === 0) return rows;
+    return rows.map((r) => {
+      const v = tf.values[r.symbol];
+      return v ? { ...r, tfRFactor: v.rFactor, tfPctChange: v.pctChange, tfPreviousClose: v.previousClose } : r;
+    });
+  }, [rows, tf.values]);
+
   // Lift market-open / last-update up to the page header. Guarded so it only
   // reports real values (the page de-dupes identical updates).
   useEffect(() => {
@@ -113,7 +125,7 @@ export function CategorySection({
           Closing snapshot · {snapshotDate ?? 'last session'} — the day&apos;s final recorded values (no live order book
           after close). Live depth resumes at the next open.
         </p>
-        <UrgencyTable rows={rows} sectors={sectors} />
+        <UrgencyTable rows={rowsWithTf} sectors={sectors} />
       </>
     );
   } else if (marketOpen === false) {
@@ -136,7 +148,7 @@ export function CategorySection({
       </div>
     );
   } else {
-    body = <UrgencyTable rows={rows} sectors={sectors} />;
+    body = <UrgencyTable rows={rowsWithTf} sectors={sectors} />;
   }
 
   return (

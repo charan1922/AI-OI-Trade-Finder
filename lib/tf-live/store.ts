@@ -305,3 +305,105 @@ export async function getTfLiveCaptureHistory(
     limitDays * 4
   )) as { captureDate: string; endpoint: string; total: number; success: number; error: number; lastCapturedAt: string }[];
 }
+
+/** Every IST calendar date with at least one SUCCESSFUL capture for the given
+ *  endpoint, most recent first — the EOD page's date picker. */
+export async function getTfLiveCaptureDates(endpoint: 'all_sector' | 'daily-index'): Promise<string[]> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(
+    `
+    SELECT DISTINCT date(datetime(capturedAt, '+5 hours', '+30 minutes')) AS captureDate
+    FROM tf_live_captures
+    WHERE endpoint = ? AND status = 'success'
+    ORDER BY captureDate DESC
+  `,
+    endpoint
+  )) as { captureDate: string }[];
+  return rows.map((r) => r.captureDate);
+}
+
+/** The LAST successful capture on the given IST calendar date for one
+ *  endpoint — the EOD (closing) snapshot, not an intraday one, even if the
+ *  collector ran several times that day. Returns the raw parsed payload plus
+ *  when it was actually captured. */
+export async function getTfLiveCaptureForDate(
+  endpoint: 'all_sector' | 'daily-index',
+  date: string
+): Promise<{ capturedAt: string; payload: unknown } | null> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(
+    `
+    SELECT capturedAt, payloadJson
+    FROM tf_live_captures
+    WHERE endpoint = ? AND status = 'success'
+      AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
+    ORDER BY capturedAt DESC
+    LIMIT 1
+  `,
+    endpoint,
+    date
+  )) as { capturedAt: string; payloadJson: string | null }[];
+  const row = rows[0];
+  if (!row || !row.payloadJson) return null;
+  try {
+    return { capturedAt: row.capturedAt, payload: JSON.parse(row.payloadJson) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Per-symbol lookup from the MOST RECENT successful `all_sector` capture,
+ * whatever date that was — feeds the Live Urgency page's TF column. Field
+ * names are tried defensively (several candidates per value) because the
+ * exact schema of TradeFinder's `all_sector` response has not yet been
+ * inspected from a real successful capture — the FIRST real capture should
+ * be checked against this list and the candidates tightened if they don't
+ * match. Never guesses a value: a field with no matching key is null, shown
+ * as "—", not fabricated.
+ */
+export async function getLatestTfRFactorBySymbol(): Promise<{
+  capturedAt: string | null;
+  bySymbol: Map<string, { rFactor: number | null; pctChange: number | null; previousClose: number | null }>;
+}> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(`
+    SELECT capturedAt, payloadJson
+    FROM tf_live_captures
+    WHERE endpoint = 'all_sector' AND status = 'success'
+    ORDER BY capturedAt DESC
+    LIMIT 1
+  `)) as { capturedAt: string; payloadJson: string | null }[];
+  const row = rows[0];
+  const bySymbol = new Map<string, { rFactor: number | null; pctChange: number | null; previousClose: number | null }>();
+  if (!row?.payloadJson) return { capturedAt: null, bySymbol };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.payloadJson);
+  } catch {
+    return { capturedAt: null, bySymbol };
+  }
+  const data = (parsed as { payload?: { data?: unknown } } | null)?.payload?.data;
+  if (!data || typeof data !== 'object') return { capturedAt: row.capturedAt, bySymbol };
+
+  const pickNumber = (obj: Record<string, unknown>, keys: string[]): number | null => {
+    for (const key of keys) {
+      const value = obj[key];
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
+    }
+    return null;
+  };
+
+  for (const [symbol, value] of Object.entries(data as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const obj = value as Record<string, unknown>;
+    bySymbol.set(symbol, {
+      rFactor: pickNumber(obj, ['r_factor', 'rFactor', 'rfactor', 'param_2', 'r_fact', 'rFact']),
+      pctChange: pickNumber(obj, ['pct', 'pct_change', 'pctChange', 'change_pct', 'chg_pct']),
+      previousClose: pickNumber(obj, ['pc', 'prev_close', 'previousClose', 'prevClose', 'close']),
+    });
+  }
+  return { capturedAt: row.capturedAt, bySymbol };
+}
