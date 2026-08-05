@@ -677,22 +677,16 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               aria-hidden
             />
             <th
-              colSpan={16}
+              colSpan={17}
               className={`sticky top-0 z-30 h-6 border-b border-border ${HDR_BG} ${BLOCK_EDGE} px-2 text-left`}
             >
-              App — computed by us (live Dhan/Fyers signals)
+              App + TF — TF R-Factor is TradeFinder&apos;s own number, everything else computed by us (live Dhan/Fyers signals)
             </th>
             <th
               colSpan={10}
               className={`sticky top-0 z-30 h-6 border-b border-border ${HDR_BG} ${BLOCK_EDGE} px-2 text-left`}
             >
               NSE — oi-spurts feed, verbatim (matches nseindia.com)
-            </th>
-            <th
-              colSpan={1}
-              className={`sticky top-0 z-30 h-6 border-b border-border ${HDR_BG} ${BLOCK_EDGE} px-2 text-left`}
-            >
-              TF — TradeFinder&apos;s own number
             </th>
           </tr>
           <tr>
@@ -719,6 +713,13 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               align="right"
               className={BLOCK_EDGE}
               title="Our score, 1 to 8: how much BIG money is active in this stock today. Higher = more big-player activity; the arrow shows which way they lean. Careful: it says WHERE the money is, not WHEN to enter — it stays high even after the move is over. For timing, use Setup + Breakout + Since 9:45. Hover a value to see what drove it."
+              {...th}
+            />
+            <Th
+              label="TF R-Factor"
+              col="tfRFactor"
+              align="right"
+              title="TradeFinder's OWN R-Factor for this stock, from the most recent successful capture on /tf — not our estimate of it. Captured periodically, not live: can lag by minutes to a day. '—' until /tf has captured this symbol at least once."
               {...th}
             />
             <Th
@@ -892,14 +893,6 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               title="Straight from NSE: the stock's spot price as their feed reports it."
               {...th}
             />
-            <Th
-              label="TF R-Factor"
-              col="tfRFactor"
-              align="right"
-              className={BLOCK_EDGE}
-              title="TradeFinder's OWN R-Factor for this stock, from the most recent successful capture on /tf — not our estimate of it. Captured periodically, not live: can lag by minutes to a day. '—' until /tf has captured this symbol at least once."
-              {...th}
-            />
           </tr>
         </thead>
         <tbody>
@@ -940,6 +933,9 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               {/* App block */}
               <td className={`${BLOCK_EDGE} px-1.5 py-0.5 text-right`}>
                 <RFactorCell r={r} />
+              </td>
+              <td className="px-1.5 py-0.5 text-right font-semibold tabular-nums text-violet-600 dark:text-violet-400">
+                {r.tfRFactor != null ? r.tfRFactor.toFixed(1) : <span className="font-normal text-muted-foreground/50">—</span>}
               </td>
               <td className="px-1.5 py-0.5 text-right">
                 <RFactorV2Cell r={r} />
@@ -1027,7 +1023,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
           ))}
           {sorted.length === 0 && (
             <tr>
-              <td colSpan={27} className="px-2 py-8 text-center text-muted-foreground">
+              <td colSpan={29} className="px-2 py-8 text-center text-muted-foreground">
                 No data.
               </td>
             </tr>

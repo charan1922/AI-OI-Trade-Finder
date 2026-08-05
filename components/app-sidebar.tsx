@@ -97,6 +97,7 @@ const NAV_GROUPS: NavGroup[] = [
       { title: 'EOD Trade Log', href: '/trade-suggest/history', icon: NotebookText },
       { title: 'EOD Live Urgency', href: '/live/history', icon: Gauge },
       { title: 'EOD Movers', href: '/nse/movers-history', icon: Flame },
+      { title: 'EOD TF R-Factor', href: '/tf/history', icon: KeyRound },
     ],
   },
   {
