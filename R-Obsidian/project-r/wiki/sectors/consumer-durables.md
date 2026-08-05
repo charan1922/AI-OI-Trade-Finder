@@ -9,13 +9,16 @@ sources: 0
 # Consumer Durables
 
 10 F&O stocks — NSE official sector (NIFTY 500 constituent
-file, 2026-07-06). Index to watch: NIFTY CONSR DURBL. TF bucket: CONSUMER DURABLES.
-`(TF: …)` marks stocks whose app bucket differs.
+file, 2026-07-06). Index to watch: NIFTY CONSR DURBL. TF bucket: — none. TradeFinder has no CONSUMER DURABLES basket.
+`(TF: …)` marks each stock's TradeFinder bucket; `(TF: none)` means TradeFinder
+gives it no sector.
 
 ## Stocks (10)
 
-[[AMBER]] · [[ASIANPAINT]] (TF: chemicals) · [[BLUESTARCO]] · [[CROMPTON]] ·
-[[DIXON]] · [[HAVELLS]] · [[KALYANKJIL]] · [[PGEL]] · [[TITAN]] · [[VOLTAS]]
+[[AMBER]] (TF: none) · [[ASIANPAINT]] (TF: none) · [[BLUESTARCO]] (TF: energy) ·
+[[CROMPTON]] (TF: none) · [[DIXON]] (TF: none) · [[HAVELLS]] (TF: none) ·
+[[KALYANKJIL]] (TF: fmcg) · [[PGEL]] (TF: none) · [[TITAN]] (TF: none) ·
+[[VOLTAS]] (TF: none)
 
 ## Notes
 

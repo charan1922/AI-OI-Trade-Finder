@@ -9,12 +9,14 @@ sources: 0
 # Chemicals
 
 5 F&O stocks — NSE official sector (NIFTY 500 constituent
-file, 2026-07-06). Index to watch: NIFTY CHEMICALS. TF bucket: CHEMICALS.
-`(TF: …)` marks stocks whose app bucket differs.
+file, 2026-07-06). Index to watch: NIFTY CHEMICALS. TF bucket: — none. TradeFinder has no CHEMICALS basket.
+`(TF: …)` marks each stock's TradeFinder bucket; `(TF: none)` means TradeFinder
+gives it no sector.
 
 ## Stocks (5)
 
-[[PIDILITIND]] · [[PIIND]] · [[SOLARINDS]] · [[SRF]] · [[UPL]]
+[[PIDILITIND]] (TF: none) · [[PIIND]] (TF: none) · [[SOLARINDS]] (TF: energy) ·
+[[SRF]] (TF: none) · [[UPL]] (TF: none)
 
 ## Notes
 

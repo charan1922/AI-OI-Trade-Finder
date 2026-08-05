@@ -31,6 +31,8 @@ export interface HeatTile {
   /** Traded value in ₹ (live: VWAP × volume so far today; closed: full-day turnover). */
   turnover: number;
   price: number;
+  /** Exact prior close used for pct; supplied from Dhan, Fyers/NSE session, or bhavcopy. */
+  previousClose: number;
 }
 
 /**
@@ -86,6 +88,7 @@ export async function GET() {
               intradayPct: open > 0 ? ((ltp - open) / open) * 100 : pct,
               turnover,
               price: ltp,
+              previousClose: prevClose,
             });
           }
           if (tiles.length > 0) {
@@ -173,6 +176,7 @@ export async function GET() {
             intradayPct,
             turnover: r.turnover,
             price: r.dayClose,
+            previousClose: base > 0 ? base : r.dayOpen,
           };
         });
         return NextResponse.json({
@@ -231,6 +235,7 @@ export async function GET() {
           intradayPct: cur.open > 0 ? ((cur.close - cur.open) / cur.open) * 100 : pct,
           turnover: cur.turnover,
           price: cur.close,
+          previousClose: base,
         };
       });
 

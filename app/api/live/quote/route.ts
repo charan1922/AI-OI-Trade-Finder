@@ -44,7 +44,9 @@ export const runtime = 'nodejs';
  */
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}) as { symbols?: unknown; fresh?: unknown });
+    const body = await req.json().catch(
+      () => ({}) as { symbols?: unknown; fresh?: unknown; scope?: unknown },
+    );
     // A section's whole symbol list is quoted in ONE batched Dhan request (built
     // below), so list size never multiplies Dhan calls. The /live page issues one
     // such request per category section, serialized client-side to ≤1 req/sec. This
@@ -54,11 +56,15 @@ export async function POST(req: Request) {
     // engine keys everything by symbol) but WOULD inflate the V2 universe size,
     // letting a list of 200 copies of one symbol claim the minute over a genuine
     // 166-name scanner universe (PR#15 re-review).
+    const includeAllFno = body.scope === 'sector-scope';
+    // TradeFinder's Sector Scope has 210 unique members (including OTHERS).
+    // Keep its batch intact; other live watchlists retain their 200-name guard.
+    const symbolLimit = includeAllFno ? 220 : 200;
     const symbols: string[] = Array.isArray(body.symbols)
       ? [
           ...new Set(
             (body.symbols as unknown[])
-              .slice(0, 200)
+              .slice(0, symbolLimit)
               .map((s) => String(s).trim().toUpperCase())
               .filter(Boolean),
           ),
@@ -80,7 +86,8 @@ export async function POST(req: Request) {
     // Sort for cache-key normalization — two windows passing the same symbols
     // in different order must share the same cache entry.
     const sortedSymbols = [...symbols].sort();
-    const payload = await cachedQuoteResponse(sortedSymbols.join(','), fresh, () => computeQuotePayload(symbols));
+    const cacheKey = `${includeAllFno ? 'sector-scope:' : ''}${sortedSymbols.join(',')}`;
+    const payload = await cachedQuoteResponse(cacheKey, fresh, () => computeQuotePayload(symbols, includeAllFno));
     return NextResponse.json(payload);
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
@@ -88,13 +95,13 @@ export async function POST(req: Request) {
 }
 
 /** The full (uncached) quote computation — exactly the former handler body. */
-async function computeQuotePayload(symbols: string[]): Promise<object> {
+async function computeQuotePayload(symbols: string[], includeAllFno = false): Promise<object> {
   if (!isMarketHours()) {
     // Post-market: serve the last RECORDED state of the most recent session
     // (oi_intraday + Fyers bars) so the page keeps showing that day's numbers
     // until the next open. Falls back to the old empty response when nothing
     // was recorded (e.g. fresh install).
-    const snap = await buildClosingSnapshot(symbols);
+    const snap = await buildClosingSnapshot(symbols, { includeAvoid: includeAllFno });
     if (snap) return snap;
     return { success: true, marketOpen: false, rows: [], symbols };
   }
@@ -107,7 +114,7 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
   const allowed: string[] = [];
   for (const s of symbols) {
     const cls = classifyFno(fno.get(s));
-    if (cls.ok) allowed.push(s);
+    if (cls.ok || (includeAllFno && fno.has(s) && cls.reason === 'avoid')) allowed.push(s);
     else
       excluded.push({
         symbol: s,
@@ -203,6 +210,11 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
     const changePctOpen = ltp != null && open > 0 ? ((ltp - open) / open) * 100 : null;
 
     const base = baselines.get(s);
+    const previousClose = base?.priorDayClose ?? null;
+    const changePctPrevClose =
+      ltp != null && previousClose != null && previousClose > 0
+        ? ((ltp - previousClose) / previousClose) * 100
+        : changePctOpen;
     const futOi = futQ?.oi ?? null;
     const avg = base?.futOi20dAvg ?? 0;
     const oiLevel = futOi != null && futOi > 0 && avg > 0 ? futOi / avg : null;
@@ -252,6 +264,8 @@ async function computeQuotePayload(symbols: string[]): Promise<object> {
     return {
       symbol: s,
       ltp,
+      previousClose,
+      changePctPrevClose,
       changePctOpen,
       bid: ba?.bid ?? null,
       ask: ba?.ask ?? null,

@@ -13,13 +13,35 @@ the F&O names inside it. This is the **hub** — each sector below is its own
 page holding the stock list. Grouping is **NSE's official industry
 classification** (NIFTY 500 constituent file; all 211 F&O symbols matched).
 
-Two lenses exist for "sector" and they disagree for ~15 stocks:
+Two lenses exist for "sector" and they disagree widely:
 
 1. **NSE official (these pages).** NSE Indices' industry taxonomy — the same
    one behind the sectoral indices on `/nse/heatmap`.
-2. **TF buckets (what the app's pages group by).** `fno_stocks` DB, seeded
-   from the TradeFinder-derived `fno_sectors.json`. Where a stock's TF bucket
-   differs, its sector page tags it `(TF: …)`.
+2. **TradeFinder (what the app groups by).** `fno_stocks.sector`, generated
+   from TradeFinder's Sector Scope by `scripts/generate-sector-map.mjs`. Where
+   a stock's TF bucket differs, its sector page tags it `(TF: …)`.
+
+**Updated 2026-08-05 — the app now mirrors TradeFinder exactly.** Verified
+against the live site that day: Sector Scope renders **15 baskets over 196
+stocks**, and TF's baskets are *index memberships*, not a partition — 65 stocks
+sit in several at once, so the full membership lives in the
+`stock_sector_memberships` table and `fno_stocks.sector` holds a derived primary
+(most specific basket wins; PSU/PVT BANK beat BANK, any bank beats FIN SERVICE).
+
+Two consequences worth knowing before reading the pages below:
+
+- **TradeFinder has no CAPITAL GOODS, CHEMICALS, CONSUMER DURABLES, CONSUMER
+  SERVICES, TELECOM or SERVICES basket.** Those six NSE pages still exist here,
+  but their stocks carry `(TF: …)` tags pointing elsewhere — mostly ENERGY.
+- **36 stocks get no TF sector at all** (`(TF: none)`). TradeFinder lists them
+  only in NIFTY 50 / SENSEX / NIFTY MID SELECT, which are indices rather than
+  sectors — LT, TITAN, TRENT, BHARTIARTL, GRASIM, ADANIPORTS, INDIGO and the
+  like. They keep their previous sector in the DB, flagged `sectorSource='legacy'`,
+  rather than being swept into an invented bucket.
+
+There is deliberately **no OTHERS bucket**: an earlier capture contained one,
+but a name-by-name search of the live page found SRF, HAL and DIXON nowhere on
+it, so it is not part of Sector Scope and is not used here.
 
 ## Sectors
 

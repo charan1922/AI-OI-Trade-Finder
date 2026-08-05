@@ -153,6 +153,7 @@ export async function dhanMarketFeed(
   // cooldown (noteQuote429) so the NEXT gated dispatch — this poll's natural
   // successor 5s later — waits the account out. Drop this poll and return empty.
   return throughQuoteGate(async () => {
+    try {
     const resp = await fetch(`https://api.dhan.co/v2/marketfeed/${endpoint}`, {
       method: 'POST',
       headers: {
@@ -189,6 +190,11 @@ export async function dhanMarketFeed(
     if ((json.status ?? '').toLowerCase() !== 'success' || !responsePayload) return {};
     noteQuoteOk();
     return responsePayload as MarketFeedResponse;
+    } catch (error) {
+      const reason = isAbortError(error) ? 'timed out' : (error as Error).message;
+      console.warn(`[Dhan] marketfeed/${endpoint} request failed: ${reason}`);
+      return {};
+    }
   });
 }
 

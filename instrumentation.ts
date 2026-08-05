@@ -38,4 +38,6 @@ export async function register(): Promise<void> {
   startGuardLoop();
   void catchUpMasterContractsForToday(true);
   startFyersPoller();
+  const { startTfLiveCollector } = await import('./lib/tf-live/collector');
+  startTfLiveCollector();
 }

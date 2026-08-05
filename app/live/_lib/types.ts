@@ -3,6 +3,10 @@ import type { BreakoutSignal } from '@/lib/breakout';
 export interface LiveUrgencyRow {
   symbol: string;
   ltp: number | null;
+  /** Previous official cash close used by Sector Scope's `Pre C`/day-change display. */
+  previousClose?: number | null;
+  /** Signed move from the previous official cash close (%). */
+  changePctPrevClose?: number | null;
   /** Intraday change since the day's open (%). */
   changePctOpen: number | null;
   /** Best bid/ask and the spread as a % of mid — the liquidity / execution-cost read. */
