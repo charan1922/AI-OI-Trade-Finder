@@ -20,6 +20,7 @@ import {
   FlaskConical,
   Gauge,
   Grid3x3,
+  KeyRound,
   LayoutGrid,
   type LucideIcon,
   NotebookText,
@@ -73,6 +74,7 @@ const NAV_GROUPS: NavGroup[] = [
       { title: 'Sector Scope', href: '/sector-scope', icon: ScanSearch },
       { title: 'Fyers Live', href: '/fyers', icon: Radio },
       { title: 'Dhan', href: '/dhan', icon: Banknote },
+      { title: 'TradeFinder', href: '/tf', icon: KeyRound },
     ],
   },
   {

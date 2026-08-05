@@ -195,17 +195,24 @@ model TfSnapshot {
   @@map("tf_snapshots")
 }
 
-/// The current, manually refreshed TradeFinder web session. The cookie is
-/// AES-256-GCM encrypted before it reaches SQLite; no route ever returns it.
+/// The current, manually refreshed TradeFinder auth pair. TradeFinder's own
+/// frontend authenticates its /api_be/* calls with two small values pulled
+/// from browser storage — `localStorage.lt` and `sessionStorage.at` — sent as
+/// the `jwtToken` / `accessToken` request headers respectively. Confirmed live
+/// 2026-08-05: a plain fetch with ONLY these two headers (credentials:'omit',
+/// no cookies at all) returns real data from both `all_sector` and
+/// `daily-index`. So no cookie, no browser, no CDP session is needed — just
+/// these two short strings, pasted from DevTools when they expire.
+/// AES-256-GCM encrypted before reaching SQLite; no route ever returns them.
 /// `id = 1` keeps this strictly single-account until a deliberate multi-account
 /// design is needed.
 model TfLiveSession {
-  id               Int     @id
-  encryptedCookie  String
-  updatedAt        String
-  expiresAt        String?
-  verifiedAt       String?
-  lastError        String?
+  id            Int     @id
+  encryptedLt   String
+  encryptedAt   String
+  updatedAt     String
+  verifiedAt    String?
+  lastError     String?
 
   @@map("tf_live_session")
 }
