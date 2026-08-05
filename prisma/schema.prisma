@@ -210,6 +210,10 @@ model TfLiveSession {
   id            Int     @id
   encryptedLt   String
   encryptedAt   String
+  /// Decoded from lt's own JWT `exp` claim at paste time (no TF call needed).
+  /// Confirmed live 2026-08-05: ~8 hour lifetime, NOT the ~30-day login
+  /// session it's easy to mistake it for.
+  jwtExpiresAt  String?
   updatedAt     String
   verifiedAt    String?
   lastError     String?
