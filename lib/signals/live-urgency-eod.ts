@@ -40,6 +40,7 @@ export async function ensureLiveUrgencyEodTable(): Promise<void> {
       oiVelocity         REAL,
       oiAccel            REAL,
       oiUrgency          REAL,
+      sinceEntryPct      REAL,
       rFactor            REAL,
       rFactorBias        TEXT,
       rFactorConfidence  REAL,
@@ -66,11 +67,16 @@ export async function ensureLiveUrgencyEodTable(): Promise<void> {
   // Migrate tables created before these columns existed (the frozen board must
   // persist the close's Breakout verdict + NSE OI% — both are live/same-evening
   // only and can't be recomputed for a past date once fyers_candles is pruned).
+  // sinceEntryPct was computed at capture time from the very first version of
+  // this table but never added to the schema/INSERT/read-back — a real bug
+  // (found 2026-08-06): the live page showed it, but a reload of an already-
+  // captured session, or /live/history, always saw it as missing.
   // The rFactorV2* block is the shadow score: it lives in rfactor_v2_snapshots
   // under a 20-session retention, so freezing it here is what lets a past
   // session still be graded shadow-vs-live after those rows are pruned.
   for (const col of [
     'breakout TEXT',
+    'sinceEntryPct REAL',
     'nseOiPct REAL',
     'nseOiSlope30m REAL',
     'rFactorV2Activity REAL',
@@ -101,8 +107,8 @@ export interface EodRow extends LiveUrgencyRow {
   dayLow: number | null;
 }
 
-const COLS = 34;
-const BATCH_ROWS = 29; // 34 cols × 29 rows = 986 params, under SQLite's 999 limit
+const COLS = 35;
+const BATCH_ROWS = 28; // 35 cols × 28 rows = 980 params, under SQLite's 999 limit
 
 /** Persist one session's rows. Idempotent: INSERT OR IGNORE on (date, symbol)
  *  — repeat calls (e.g. a retried capture) never overwrite an existing row. */
@@ -133,6 +139,7 @@ export async function insertEodRows(date: string, rows: EodRow[], nowMs: number 
         r.oiVelocity,
         r.oiAccel,
         r.oiUrgency,
+        r.sinceEntryPct ?? null,
         r.rFactor,
         r.rFactorBias,
         r.rFactorConfidence,
@@ -157,7 +164,7 @@ export async function insertEodRows(date: string, rows: EodRow[], nowMs: number 
     await prisma.$executeRawUnsafe(
       `INSERT OR IGNORE INTO live_urgency_eod
          (date, symbol, ltp, changePctOpen, spreadPct, imbalance, futOi, oiLevel, turnover,
-          dayHigh, dayLow, sessionOiChangePct, oiVelocity, oiAccel, oiUrgency,
+          dayHigh, dayLow, sessionOiChangePct, oiVelocity, oiAccel, oiUrgency, sinceEntryPct,
           rFactor, rFactorBias, rFactorConfidence, rFactorAfterEntry, rFactors,
           breakout, nseOiPct, nseOiSlope30m,
           rFactorV2Activity, rFactorV2Percentile, rFactorV2Rank, rFactorV2Universe,
@@ -247,6 +254,7 @@ function rowToEod(r: Record<string, unknown>): EodRow {
     oiVelocity: toNumOrNull(r.oiVelocity),
     oiAccel: toNumOrNull(r.oiAccel),
     oiUrgency: toNumOrNull(r.oiUrgency),
+    sinceEntryPct: toNumOrNull(r.sinceEntryPct),
     rFactor: toNumOrNull(r.rFactor),
     rFactorBias: (r.rFactorBias as 'buy' | 'sell' | 'neutral' | null) ?? null,
     rFactorConfidence: toNumOrNull(r.rFactorConfidence),
