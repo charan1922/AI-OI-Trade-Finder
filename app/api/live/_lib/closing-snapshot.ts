@@ -154,6 +154,11 @@ async function computeClosingRows(
     rows.push({
       symbol: s,
       ltp: last.ltp,
+      previousClose: base?.priorDayClose ?? null,
+      changePctPrevClose:
+        base?.priorDayClose != null && base.priorDayClose > 0
+          ? ((last.ltp - base.priorDayClose) / base.priorDayClose) * 100
+          : last.changePctOpen,
       changePctOpen: last.changePctOpen,
       bid: null,
       ask: null,
@@ -305,7 +310,10 @@ async function attachOiSpurtsColumns(rows: LiveUrgencyRow[]): Promise<void> {
   }
 }
 
-export async function buildClosingSnapshot(symbols: string[]): Promise<ClosingSnapshotResponse | null> {
+export async function buildClosingSnapshot(
+  symbols: string[],
+  options: { includeAvoid?: boolean } = {},
+): Promise<ClosingSnapshotResponse | null> {
   const snapshotDate = await getLatestSnapshotDate();
   if (!snapshotDate) return null;
 
@@ -315,7 +323,7 @@ export async function buildClosingSnapshot(symbols: string[]): Promise<ClosingSn
   const allowed: string[] = [];
   for (const s of symbols) {
     const cls = classifyFno(fno.get(s));
-    if (cls.ok) allowed.push(s);
+    if (cls.ok || (options.includeAvoid === true && fno.has(s) && cls.reason === 'avoid')) allowed.push(s);
     else
       excluded.push({
         symbol: s,

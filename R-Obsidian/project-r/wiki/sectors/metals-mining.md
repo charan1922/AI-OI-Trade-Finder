@@ -14,13 +14,13 @@ file, 2026-07-06). Index to watch: NIFTY METAL. TF bucket: METAL.
 
 ## Stocks (10)
 
-[[ADANIENT]] (TF: energy) · [[HINDALCO]] · [[HINDZINC]] · [[JINDALSTEL]] ·
+[[ADANIENT]] · [[HINDALCO]] · [[HINDZINC]] · [[JINDALSTEL]] ·
 [[JSWSTEEL]] · [[NATIONALUM]] · [[NMDC]] · [[SAIL]] · [[TATASTEEL]] ·
 [[VEDL]]
 
 ## Notes
 
-- [[ADANIENT]] sits here on NSE (trading house) though the TF map calls it energy.
+- [[ADANIENT]] sits here on NSE (trading house) and TradeFinder now agrees — it is in NIFTY METAL on Sector Scope, so the old `(TF: energy)` tag is gone.
 - [[APLAPOLLO]] left for [[capital-goods]] (pipes/products) on NSE.
 
 Hub: [[fno-sector-map]]

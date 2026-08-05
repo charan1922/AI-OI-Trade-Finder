@@ -9,18 +9,21 @@ sources: 0
 # Capital Goods
 
 23 F&O stocks — NSE official sector (NIFTY 500 constituent
-file, 2026-07-06). Index to watch: — none sectoral; NIFTY IND DEFENCE (thematic) covers the defence subset. TF bucket: CAPITAL GOODS.
-`(TF: …)` marks stocks whose app bucket differs.
+file, 2026-07-06). Index to watch: — none sectoral; NIFTY IND DEFENCE (thematic) covers the defence subset. TF bucket: — none. TradeFinder has no CAPITAL GOODS basket; it splits these names across ENERGY, METAL, AUTO and IT, and leaves seven with no sector at all.
+`(TF: …)` marks each stock's TradeFinder bucket; `(TF: none)` means TradeFinder
+lists it only in NIFTY 50 / SENSEX / MID SELECT, which are not sectors.
 
 ## Stocks (23)
 
-[[ABB]] · [[APLAPOLLO]] (TF: metal) · [[ASHOKLEY]] (TF: auto) · [[ASTRAL]] ·
-[[BDL]] · [[BEL]] · [[BHEL]] · [[CGPOWER]] · [[COCHINSHIP]] · [[CUMMINSIND]] ·
-[[GVT&D]] · [[HAL]] · [[INOXWIND]] (TF: energy) ·
-[[KAYNES]] (TF: consumer-durables) · [[KEI]] · [[MAZDOCK]] · [[POLYCAB]] ·
-[[POWERINDIA]] · [[PREMIERENE]] (TF: energy) · [[SIEMENS]] ·
-[[SUPREMEIND]] (TF: chemicals) · [[SUZLON]] (TF: energy) ·
-[[WAAREEENER]] (TF: energy)
+[[ABB]] (TF: energy) · [[APLAPOLLO]] (TF: metal) · [[ASHOKLEY]] (TF: auto) ·
+[[ASTRAL]] (TF: none) · [[BDL]] (TF: energy) · [[BEL]] (TF: none) ·
+[[BHEL]] (TF: energy) · [[CGPOWER]] (TF: energy) · [[COCHINSHIP]] (TF: none) ·
+[[CUMMINSIND]] (TF: none) · [[GVT&D]] (TF: energy) · [[HAL]] (TF: none) ·
+[[INOXWIND]] (TF: energy) · [[KAYNES]] (TF: it) · [[KEI]] (TF: none) ·
+[[MAZDOCK]] (TF: energy) · [[POLYCAB]] (TF: none) ·
+[[POWERINDIA]] (TF: energy) · [[PREMIERENE]] (TF: energy) ·
+[[SIEMENS]] (TF: energy) · [[SUPREMEIND]] (TF: fmcg) ·
+[[SUZLON]] (TF: energy) · [[WAAREEENER]] (TF: energy)
 
 ## Notes
 

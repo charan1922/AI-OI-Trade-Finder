@@ -96,10 +96,13 @@ model TradeContract {
 }
 
 /// NSE F&O universe with lot sizes (from "Dhan - Nse Fno Lot Size.csv") and
-/// sector classification. sectorSource records provenance: 'tf-map' = the
-/// project's existing 207-symbol TradeFinder-derived map; 'inferred' = assigned
-/// by matching the company's business to the map's convention for its closest
-/// peer (e.g. defence→AUTO like MAZDOCK, liquor→FMCG like UNITDSPR);
+/// sector classification. `sector` mirrors TradeFinder's Sector Scope, derived
+/// to ONE value per symbol by lib/data/tf-sector-rules.mjs — the full
+/// multi-basket truth lives in StockSectorMembership. sectorSource records
+/// provenance: 'tradefinder' = TF puts it in a real sector basket; 'legacy' =
+/// TF lists it only in index baskets (NIFTY 50/SENSEX/MID SELECT) or not at
+/// all, so its previous sector was kept rather than invented; 'inferred' =
+/// assigned by matching the company's business to its closest peer;
 /// 'index' = not a stock.
 model FnoStock {
   id           Int    @id @default(autoincrement())
@@ -122,6 +125,33 @@ model FnoStock {
   @@index([sector])
   @@index([tradeBand])
   @@map("fno_stocks")
+}
+
+/// TradeFinder Sector Scope basket membership, kept exactly as the site has it:
+/// one row per (symbol, basket). TF's baskets are index memberships rather than
+/// a partition, so 65 of its 210 symbols belong to several at once — this table
+/// is the faithful copy, while FnoStock.sector is the derived primary that
+/// single-sector consumers (R-Factor V2 peer comparison, sector leaders,
+/// priority refresh) read. Seeded by scripts/seed-fno-stocks.mjs from
+/// lib/data/sector_scope_groups.json; created there via raw SQL, declared here
+/// so `db push` keeps it.
+model StockSectorMembership {
+  symbol    String
+  /// Upstream basket key, e.g. 'NIFTY PSU BANK'.
+  basket    String
+  /// TradeFinder's on-screen label for that basket, e.g. 'PSU BANK'.
+  label     String
+  /// True for index-only baskets (NIFTY 50, SENSEX, NIFTY MID SELECT), which
+  /// are never used as a symbol's sector.
+  isIndex   Boolean @default(false)
+  /// True on the one basket that produced FnoStock.sector for this symbol.
+  isPrimary Boolean @default(false)
+  source    String  @default("tradefinder")
+  syncedAt  String
+
+  @@id([symbol, basket])
+  @@index([basket])
+  @@map("stock_sector_memberships")
 }
 
 /// Numeric definition of the trade bands — a queryable lookup so the lot-size
@@ -163,6 +193,50 @@ model TfSnapshot {
   @@unique([date, symbol])
   @@index([date])
   @@map("tf_snapshots")
+}
+
+/// The current, manually refreshed TradeFinder web session. The cookie is
+/// AES-256-GCM encrypted before it reaches SQLite; no route ever returns it.
+/// `id = 1` keeps this strictly single-account until a deliberate multi-account
+/// design is needed.
+model TfLiveSession {
+  id               Int     @id
+  encryptedCookie  String
+  updatedAt        String
+  expiresAt        String?
+  verifiedAt       String?
+  lastError        String?
+
+  @@map("tf_live_session")
+}
+
+/// One upstream TradeFinder collection result. The raw payload is retained as
+/// evidence so future normalizers can be replayed without re-calling the site.
+model TfLiveCapture {
+  id          Int    @id @default(autoincrement())
+  capturedAt  String
+  endpoint    String
+  status      String
+  payloadHash String?
+  payloadJson String?
+  error       String?
+
+  @@index([capturedAt])
+  @@map("tf_live_captures")
+}
+
+/// Normalized rows extracted from one tf_live_captures record. `payloadJson`
+/// remains source-shaped until the Market Pulse endpoint is identified.
+model TfLiveRow {
+  id          Int    @id @default(autoincrement())
+  captureId   Int
+  rowKey      String
+  symbol      String?
+  payloadJson String
+
+  @@unique([captureId, rowKey])
+  @@index([symbol])
+  @@map("tf_live_rows")
 }
 
 /// Intraday futures-OI snapshots powering the Live Urgency time-series (created

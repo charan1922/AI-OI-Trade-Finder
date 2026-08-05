@@ -16,11 +16,12 @@ file, 2026-07-06). Index to watch: NIFTY PHARMA (makers) · NIFTY HEALTHCARE (ad
 
 [[ALKEM]] · [[APOLLOHOSP]] · [[AUROPHARMA]] · [[BIOCON]] · [[CIPLA]] ·
 [[DIVISLAB]] · [[DRREDDY]] · [[FORTIS]] · [[GLENMARK]] · [[LAURUSLABS]] ·
-[[LUPIN]] · [[MANKIND]] · [[MAXHEALTH]] · [[SUNPHARMA]] · [[TORNTPHARM]] ·
-[[ZYDUSLIFE]]
+[[LUPIN]] · [[MANKIND]] · [[MAXHEALTH]] (TF: fin-service) · [[SUNPHARMA]] ·
+[[TORNTPHARM]] · [[ZYDUSLIFE]]
 
 ## Notes
 
 - Hospitals — [[APOLLOHOSP]], [[FORTIS]], [[MAXHEALTH]] — are only in NIFTY HEALTHCARE, not NIFTY PHARMA.
+- TradeFinder files [[MAXHEALTH]] under FIN SERVICE (its own oddity, mirrored in the app) and gives [[APOLLOHOSP]] no sector at all — NIFTY 50 only.
 
 Hub: [[fno-sector-map]]

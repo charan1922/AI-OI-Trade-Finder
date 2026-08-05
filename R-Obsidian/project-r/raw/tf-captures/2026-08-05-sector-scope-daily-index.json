@@ -1,0 +1,30 @@
+{
+  "capturedAt": "2026-08-05T20:08+05:30",
+  "source": "https://tradefinder.in/api_be/data/order/daily-index",
+  "how": "Captured from TradeFinder's own authenticated page request (fetch hook on the Sector Scope tab). Values verified against the mobile-app screenshot taken at 8:08 pm the same day — AUTO 5.3, METAL 4.3, ENERGY negative — so this is the exact series behind the Sector Scope bar graph.",
+  "notes": [
+    "15 indices, NO 'OTHERS' entry — independent confirmation that Sector Scope has 15 baskets.",
+    "param_3 is SIGNED: NIFTY ENERGY is -1.75 while it held the single highest stock R-Factor of the day (NHPC 6.32). So the bar is not the max, not the constituent mean, and its sign is not activity.",
+    "This is an index-level value, not an aggregation of the constituent R-Factors captured in the sibling stock file."
+  ],
+  "payload": {
+    "data": [
+      { "Symbol": "NIFTY IT", "param_3": 0.42815947262171344 },
+      { "Symbol": "NIFTY REALTY", "param_3": 0.4817057003616763 },
+      { "Symbol": "NIFTY BANK", "param_3": 0.06126563199566744 },
+      { "Symbol": "NIFTY ENERGY", "param_3": -1.751136045297407 },
+      { "Symbol": "NIFTY AUTO", "param_3": 5.297961105402304 },
+      { "Symbol": "NIFTY CEMENT", "param_3": 0.5733422628658779 },
+      { "Symbol": "NIFTY PVT BANK", "param_3": 0.4935200098715969 },
+      { "Symbol": "NIFTY PSU BANK", "param_3": 0.4831367236666105 },
+      { "Symbol": "NIFTY FMCG", "param_3": 0.3864831648442534 },
+      { "Symbol": "NIFTY METAL", "param_3": 4.3160392112303985 },
+      { "Symbol": "NIFTY 50", "param_3": 2.267895448901686 },
+      { "Symbol": "NIFTY PHARMA", "param_3": 0.7035589098768412 },
+      { "Symbol": "SENSEX", "param_3": 1.9473077064047888 },
+      { "Symbol": "NIFTY FIN SERVICE", "param_3": 0.776653698469712 },
+      { "Symbol": "NIFTY MID SELECT", "param_3": 0.7636507477157339 }
+    ]
+  },
+  "status": "SUCCESS"
+}
