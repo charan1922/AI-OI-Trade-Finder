@@ -18,7 +18,7 @@
  * to recover from, not treated as exceptional.
  */
 
-import { AlertTriangle, KeyRound, Loader2, RefreshCw, Zap } from 'lucide-react';
+import { AlertTriangle, Check, Copy, KeyRound, Loader2, RefreshCw, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRole } from '@/lib/auth/use-role';
 
@@ -119,6 +119,17 @@ export default function TfPage() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null);
   const [pasted, setPasted] = useState('');
+  const [snippetCopied, setSnippetCopied] = useState(false);
+
+  const copySnippet = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(CONSOLE_SNIPPET);
+      setSnippetCopied(true);
+      setTimeout(() => setSnippetCopied(false), 2000);
+    } catch {
+      /* clipboard permission denied — the code block is still selectable by hand */
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -230,6 +241,9 @@ export default function TfPage() {
       <div className="flex flex-wrap items-center gap-2">
         <KeyRound className="h-4 w-4 text-primary" />
         <h1 className="text-base font-bold">TradeFinder Session</h1>
+        <a href="/tf/history" className="text-[11px] text-muted-foreground underline hover:text-foreground">
+          EOD history →
+        </a>
         {s && (
           <>
             <Badge tone={s.configured ? 'ok' : 'neutral'}>{s.configured ? 'lt/at stored' : 'not configured'}</Badge>
@@ -298,7 +312,17 @@ export default function TfPage() {
             </a>
             , open DevTools console and run:
           </p>
-          <code className="block overflow-x-auto rounded bg-muted px-2 py-1.5 text-[11px]">{CONSOLE_SNIPPET}</code>
+          <div className="flex items-center gap-1.5">
+            <code className="block flex-1 overflow-x-auto rounded bg-muted px-2 py-1.5 text-[11px]">{CONSOLE_SNIPPET}</code>
+            <button
+              type="button"
+              onClick={() => void copySnippet()}
+              title="Copy this line to your clipboard"
+              className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1.5 text-[11px] hover:bg-muted"
+            >
+              {snippetCopied ? <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+          </div>
           <p className="text-[11px] text-muted-foreground">
             That copies both values as one JSON blob to your clipboard. Paste the whole thing into the box below —
             do not split it into two fields, this one box parses it for you.
