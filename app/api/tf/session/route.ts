@@ -4,6 +4,7 @@ import { adminOnly } from '@/lib/auth/server';
 import {
   assertTfLiveSessionKeyConfigured,
   getLatestTfLiveCaptures,
+  getTfLiveCaptureHistory,
   getTfLiveSessionStatus,
   saveTfLiveTokens,
   validateTfLiveTokens,
@@ -17,8 +18,12 @@ export async function GET(req: Request) {
   const denied = adminOnly(req);
   if (denied) return denied;
   try {
-    const [session, captures] = await Promise.all([getTfLiveSessionStatus(), getLatestTfLiveCaptures()]);
-    return NextResponse.json({ success: true, session, captures });
+    const [session, captures, history] = await Promise.all([
+      getTfLiveSessionStatus(),
+      getLatestTfLiveCaptures(),
+      getTfLiveCaptureHistory(),
+    ]);
+    return NextResponse.json({ success: true, session, captures, history });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }

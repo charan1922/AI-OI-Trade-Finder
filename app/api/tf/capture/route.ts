@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { adminOnly } from '@/lib/auth/server';
 import { captureTfLive } from '@/lib/tf-live/collector';
-import { getLatestTfLiveCaptures, getTfLiveSessionStatus } from '@/lib/tf-live/store';
+import { getLatestTfLiveCaptures, getTfLiveCaptureHistory, getTfLiveSessionStatus } from '@/lib/tf-live/store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,8 +16,12 @@ export async function POST(req: Request) {
   if (denied) return denied;
   try {
     await captureTfLive({ force: true });
-    const [session, captures] = await Promise.all([getTfLiveSessionStatus(), getLatestTfLiveCaptures()]);
-    return NextResponse.json({ success: true, session, captures });
+    const [session, captures, history] = await Promise.all([
+      getTfLiveSessionStatus(),
+      getLatestTfLiveCaptures(),
+      getTfLiveCaptureHistory(),
+    ]);
+    return NextResponse.json({ success: true, session, captures, history });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }

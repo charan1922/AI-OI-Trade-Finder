@@ -10,18 +10,21 @@
  * that a plain fetch with just these two headers (zero cookies) returns real
  * data from both `all_sector` and `daily-index`.
  *
- * So this page is a plain paste-and-store panel, same shape as /dhan's token
- * card: two fields, a save button, a manual "Capture now" test, and a small
- * table of the last capture per endpoint.
+ * `lt` is itself a JWT with its own `exp` claim — decoded server-side at
+ * paste time so this page can show a real countdown, not a guess. Confirmed
+ * live: this token's lifetime is ~8 HOURS, not the ~30-day NextAuth login
+ * session it's easy to mistake it for. `at` appears to rotate independently
+ * and can go stale even faster — paste failures should be expected and easy
+ * to recover from, not treated as exceptional.
  */
 
-import { KeyRound, Loader2, RefreshCw, Zap } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, KeyRound, Loader2, RefreshCw, Zap } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRole } from '@/lib/auth/use-role';
 
 const POLL_MS = 15_000;
 
-const fmtTime = (iso: string | null | undefined) =>
+const fmtDateTime = (iso: string | null | undefined) =>
   iso
     ? new Date(iso).toLocaleString('en-IN', {
         timeZone: 'Asia/Kolkata',
@@ -33,25 +36,50 @@ const fmtTime = (iso: string | null | undefined) =>
       })
     : '—';
 
-function Badge({ ok, okLabel, badLabel }: { ok: boolean; okLabel: string; badLabel: string }) {
-  return (
-    <span
-      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-        ok
-          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'
-          : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-500/10 dark:text-zinc-400'
-      }`}
-    >
-      {ok ? okLabel : badLabel}
-    </span>
-  );
+const fmtDate = (isoDate: string) =>
+  new Date(`${isoDate}T00:00:00Z`).toLocaleDateString('en-IN', {
+    timeZone: 'UTC',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    weekday: 'short',
+  });
+
+function fmtCountdown(ms: number): string {
+  if (ms <= 0) return 'expired';
+  const totalMin = Math.floor(ms / 60_000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-/** Mirror of GET /api/tf/session. */
+function Badge({
+  tone,
+  children,
+}: {
+  tone: 'ok' | 'warn' | 'bad' | 'neutral';
+  children: React.ReactNode;
+}) {
+  const cls = {
+    ok: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
+    warn: 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
+    bad: 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400',
+    neutral: 'bg-zinc-200 text-zinc-600 dark:bg-zinc-500/10 dark:text-zinc-400',
+  }[tone];
+  return <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${cls}`}>{children}</span>;
+}
+
 interface TfSession {
   success: boolean;
-  session: { configured: boolean; updatedAt: string | null; verifiedAt: string | null; lastError: string | null };
+  session: {
+    configured: boolean;
+    updatedAt: string | null;
+    verifiedAt: string | null;
+    lastError: string | null;
+    jwtExpiresAt: string | null;
+  };
   captures: { endpoint: string; capturedAt: string; status: string; error: string | null }[];
+  history: { captureDate: string; endpoint: string; total: number; success: number; error: number; lastCapturedAt: string }[];
 }
 
 /** One line the operator pastes into DevTools console on a signed-in
@@ -60,19 +88,46 @@ interface TfSession {
 const CONSOLE_SNIPPET =
   "copy(JSON.stringify({lt: localStorage.getItem('lt'), at: sessionStorage.getItem('at')}))";
 
+/** Accepts the JSON the snippet copies, but also tolerates a few things a
+ *  human might paste by hand: raw `lt=...&at=...`, or two lines. Never
+ *  silently invents a value — anything it can't parse is a clear error. */
+function parsePastedTokens(raw: string): { lt: string; at: string } | { error: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { error: 'nothing pasted' };
+  try {
+    const parsed = JSON.parse(trimmed) as { lt?: unknown; at?: unknown };
+    if (typeof parsed.lt === 'string' && typeof parsed.at === 'string' && parsed.lt && parsed.at) {
+      return { lt: parsed.lt, at: parsed.at };
+    }
+    return { error: 'JSON parsed but is missing a non-empty "lt" or "at" field' };
+  } catch {
+    /* fall through to the tolerant formats below */
+  }
+  const kv: Record<string, string> = {};
+  for (const part of trimmed.split(/[&\n]/)) {
+    const eq = part.indexOf('=');
+    if (eq > 0) kv[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
+  }
+  if (kv.lt && kv.at) return { lt: kv.lt, at: kv.at };
+  return { error: 'could not find both lt and at — paste the exact output of the console snippet' };
+}
+
 export default function TfPage() {
   const { readOnly } = useRole();
   const [data, setData] = useState<TfSession | null>(null);
+  const [nowMs, setNowMs] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [lt, setLt] = useState('');
-  const [at, setAt] = useState('');
+  const [notice, setNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null);
+  const [pasted, setPasted] = useState('');
 
   const refresh = useCallback(async () => {
     try {
       const res = await fetch('/api/tf/session', { cache: 'no-store' });
       const j = (await res.json()) as TfSession;
-      if (j.success) setData(j);
+      if (j.success) {
+        setData(j);
+        setNowMs(Date.now());
+      }
     } catch {
       /* transient — next poll retries */
     }
@@ -98,27 +153,33 @@ export default function TfPage() {
   }, []);
 
   const save = useCallback(async () => {
+    const parsed = parsePastedTokens(pasted);
+    if ('error' in parsed) {
+      setNotice({ text: parsed.error, tone: 'bad' });
+      return;
+    }
     setBusy(true);
     setNotice(null);
     try {
       const res = await fetch('/api/tf/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lt, at }),
+        body: JSON.stringify(parsed),
       });
       const j = (await res.json()) as { success: boolean; error?: string };
-      setNotice(j.success ? 'saved — verified against a real TradeFinder call' : (j.error ?? 'save failed'));
-      if (j.success) {
-        setLt('');
-        setAt('');
-      }
+      setNotice(
+        j.success
+          ? { text: 'saved — verified against a real TradeFinder call', tone: 'ok' }
+          : { text: j.error ?? 'save failed', tone: 'bad' }
+      );
+      if (j.success) setPasted('');
       await refresh();
     } catch (e) {
-      setNotice((e as Error).message);
+      setNotice({ text: (e as Error).message, tone: 'bad' });
     } finally {
       setBusy(false);
     }
-  }, [lt, at, refresh]);
+  }, [pasted, refresh]);
 
   const captureNow = useCallback(async () => {
     setBusy(true);
@@ -126,16 +187,43 @@ export default function TfPage() {
     try {
       const res = await fetch('/api/tf/capture', { method: 'POST' });
       const j = (await res.json()) as TfSession;
-      if (j.success) setData(j);
-      else setNotice((j as unknown as { error?: string }).error ?? 'capture failed');
+      if (j.success) {
+        setData(j);
+        setNowMs(Date.now());
+        const failed = j.captures.filter((c) => c.status === 'error');
+        setNotice(
+          failed.length === 0
+            ? { text: 'captured — all endpoints OK', tone: 'ok' }
+            : { text: `${failed.length}/${j.captures.length} endpoint(s) failed: ${failed.map((f) => `${f.endpoint} (${f.error})`).join('; ')}`, tone: 'bad' }
+        );
+      } else {
+        setNotice({ text: (j as unknown as { error?: string }).error ?? 'capture failed', tone: 'bad' });
+      }
     } catch (e) {
-      setNotice((e as Error).message);
+      setNotice({ text: (e as Error).message, tone: 'bad' });
     } finally {
       setBusy(false);
     }
   }, []);
 
   const s = data?.session;
+  const jwtExpiresMs = s?.jwtExpiresAt ? new Date(s.jwtExpiresAt).getTime() : null;
+  const jwtRemainingMs = jwtExpiresMs != null && nowMs ? jwtExpiresMs - nowMs : null;
+  const jwtTone: 'ok' | 'warn' | 'bad' | 'neutral' =
+    jwtRemainingMs == null ? 'neutral' : jwtRemainingMs <= 0 ? 'bad' : jwtRemainingMs <= 30 * 60_000 ? 'warn' : 'ok';
+
+  const historyByDate = useMemo(() => {
+    const grouped = new Map<string, { total: number; success: number; error: number; lastCapturedAt: string }>();
+    for (const row of data?.history ?? []) {
+      const existing = grouped.get(row.captureDate) ?? { total: 0, success: 0, error: 0, lastCapturedAt: row.lastCapturedAt };
+      existing.total += row.total;
+      existing.success += row.success;
+      existing.error += row.error;
+      if (row.lastCapturedAt > existing.lastCapturedAt) existing.lastCapturedAt = row.lastCapturedAt;
+      grouped.set(row.captureDate, existing);
+    }
+    return [...grouped.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  }, [data]);
 
   return (
     <div className="mx-auto max-w-5xl space-y-3 p-3">
@@ -144,12 +232,15 @@ export default function TfPage() {
         <h1 className="text-base font-bold">TradeFinder Session</h1>
         {s && (
           <>
-            <Badge ok={s.configured} okLabel="lt/at stored" badLabel="not configured" />
-            <Badge
-              ok={!!s.verifiedAt && !s.lastError}
-              okLabel={`verified ${fmtTime(s.verifiedAt)}`}
-              badLabel={s.lastError ? s.lastError.slice(0, 50) : 'never verified'}
-            />
+            <Badge tone={s.configured ? 'ok' : 'neutral'}>{s.configured ? 'lt/at stored' : 'not configured'}</Badge>
+            {jwtRemainingMs != null && (
+              <Badge tone={jwtTone}>
+                {jwtRemainingMs > 0 ? `token expires in ${fmtCountdown(jwtRemainingMs)}` : `token expired ${fmtDateTime(s.jwtExpiresAt)}`}
+              </Badge>
+            )}
+            <Badge tone={!!s.verifiedAt && !s.lastError ? 'ok' : s.lastError ? 'bad' : 'neutral'}>
+              {s.lastError ? s.lastError.slice(0, 60) : s.verifiedAt ? `verified ${fmtDateTime(s.verifiedAt)}` : 'never verified'}
+            </Badge>
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
@@ -175,13 +266,31 @@ export default function TfPage() {
         </div>
       </div>
 
-      {notice && <div className="rounded-md border border-border bg-muted/50 p-2 text-xs">{notice}</div>}
+      {jwtTone === 'warn' && (
+        <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> Token expires soon — re-paste from a signed-in tab before it lapses.
+        </div>
+      )}
+      {jwtTone === 'bad' && jwtRemainingMs != null && jwtRemainingMs <= 0 && (
+        <div className="flex items-center gap-2 rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> Token has expired — captures will fail until you paste a fresh pair.
+        </div>
+      )}
+      {notice && (
+        <div
+          className={`rounded-md border p-2 text-xs ${
+            notice.tone === 'ok'
+              ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400'
+              : 'border-red-300 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400'
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
 
       {!readOnly && (
         <section className="space-y-2 rounded-lg border border-border bg-card p-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Update lt / at
-          </h2>
+          <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Update lt / at</h2>
           <p className="text-[11px] leading-snug text-muted-foreground">
             On a signed-in tab at{' '}
             <a href="https://tradefinder.in" target="_blank" rel="noreferrer" className="underline">
@@ -191,26 +300,19 @@ export default function TfPage() {
           </p>
           <code className="block overflow-x-auto rounded bg-muted px-2 py-1.5 text-[11px]">{CONSOLE_SNIPPET}</code>
           <p className="text-[11px] text-muted-foreground">
-            That copies both values as JSON to your clipboard — paste the whole thing below, or split it into the
-            two fields.
+            That copies both values as one JSON blob to your clipboard. Paste the whole thing into the box below —
+            do not split it into two fields, this one box parses it for you.
           </p>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <input
-              value={lt}
-              onChange={(e) => setLt(e.target.value)}
-              placeholder="lt (localStorage)"
-              className="rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-mono"
-            />
-            <input
-              value={at}
-              onChange={(e) => setAt(e.target.value)}
-              placeholder="at (sessionStorage)"
-              className="rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-mono"
-            />
-          </div>
+          <textarea
+            value={pasted}
+            onChange={(e) => setPasted(e.target.value)}
+            placeholder='{"lt":"...","at":"..."}'
+            rows={3}
+            className="w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-[11px]"
+          />
           <button
             type="button"
-            disabled={busy || !lt || !at}
+            disabled={busy || !pasted.trim()}
             onClick={() => void save()}
             className="rounded-md bg-primary px-3 py-1.5 text-[11px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
@@ -240,11 +342,47 @@ export default function TfPage() {
                 {data.captures.map((c) => (
                   <tr key={c.endpoint} className="border-b border-border/60">
                     <td className="py-1 font-medium">{c.endpoint}</td>
-                    <td className="py-1 tabular-nums">{fmtTime(c.capturedAt)}</td>
+                    <td className="py-1 tabular-nums">{fmtDateTime(c.capturedAt)}</td>
                     <td className={`py-1 ${c.status === 'success' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
                       {c.status}
                     </td>
                     <td className="py-1 text-muted-foreground">{c.error ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
+
+      {data && (
+        <section className="space-y-2 rounded-lg border border-border bg-card p-3">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Capture history by date
+          </h2>
+          {historyByDate.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">No captures recorded yet — history fills in as the collector runs.</p>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead className="text-muted-foreground">
+                <tr className="border-b border-border">
+                  <th className="py-1 text-left font-medium">Date (IST)</th>
+                  <th className="py-1 text-right font-medium">Attempts</th>
+                  <th className="py-1 text-right font-medium">Success</th>
+                  <th className="py-1 text-right font-medium">Failed</th>
+                  <th className="py-1 text-left font-medium">Last capture</th>
+                </tr>
+              </thead>
+              <tbody>
+                {historyByDate.map(([date, stats]) => (
+                  <tr key={date} className="border-b border-border/60">
+                    <td className="py-1 font-medium">{fmtDate(date)}</td>
+                    <td className="py-1 text-right tabular-nums">{stats.total}</td>
+                    <td className="py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{stats.success}</td>
+                    <td className={`py-1 text-right tabular-nums ${stats.error > 0 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'}`}>
+                      {stats.error}
+                    </td>
+                    <td className="py-1 tabular-nums text-muted-foreground">{fmtDateTime(stats.lastCapturedAt)}</td>
                   </tr>
                 ))}
               </tbody>

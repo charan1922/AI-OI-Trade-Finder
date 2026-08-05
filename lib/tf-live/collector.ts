@@ -16,7 +16,13 @@
  * be re-logged-in by hand when its session lapsed. This version needs neither
  * — the two tokens are pasted on /tf, encrypted at rest, and used directly.
  */
-import { getTfLiveTokens, recordTfLiveCapture, recordTfLiveRows, recordTfLiveSessionOutcome } from '@/lib/tf-live/store';
+import {
+  decodeJwtExpiry,
+  getTfLiveTokens,
+  recordTfLiveCapture,
+  recordTfLiveRows,
+  recordTfLiveSessionOutcome,
+} from '@/lib/tf-live/store';
 
 const ENDPOINTS = ['all_sector', 'daily-index'] as const;
 type Endpoint = (typeof ENDPOINTS)[number];
@@ -69,6 +75,17 @@ export async function captureTfLiveEndpoint(endpoint: Endpoint, options: { force
   const tokens = await getTfLiveTokens();
   if (!tokens) return;
 
+  // The JWT knows its own expiry — skip the network round-trip entirely for
+  // a token we already know is dead, and say so precisely rather than let it
+  // surface as a generic TradeFinder rejection.
+  const jwtExpiresAt = decodeJwtExpiry(tokens.lt);
+  if (jwtExpiresAt && new Date(jwtExpiresAt).getTime() <= Date.now()) {
+    const message = `lt expired at ${jwtExpiresAt} — paste a fresh pair on /tf`;
+    await recordTfLiveCapture({ endpoint, status: 'error', error: message });
+    await recordTfLiveSessionOutcome(false, message);
+    return;
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
   try {
@@ -85,8 +102,10 @@ export async function captureTfLiveEndpoint(endpoint: Endpoint, options: { force
     } catch {
       throw new Error('TradeFinder returned non-JSON');
     }
-    if ((parsed as { status?: string } | null)?.status !== 'SUCCESS') {
-      throw new Error(`TradeFinder rejected the token: ${((parsed as { message?: string })?.message ?? 'unknown').slice(0, 200)}`);
+    const shape = parsed as { status?: string; code?: string; message?: string } | null;
+    if (shape?.status !== 'SUCCESS') {
+      const detail = shape?.code ? `${shape.code}: ${shape.message ?? 'rejected'}` : 'no response body';
+      throw new Error(`TradeFinder rejected it (${detail.slice(0, 200)})`);
     }
     const captureId = await recordTfLiveCapture({ endpoint, status: 'success', payloadJson: body });
     const rows = extractRows(parsed);

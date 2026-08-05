@@ -11,6 +11,7 @@ let tablesReady = false;
 type SessionRow = {
   encryptedLt: string;
   encryptedAt: string;
+  jwtExpiresAt: string | null;
   updatedAt: string;
   verifiedAt: string | null;
   lastError: string | null;
@@ -21,6 +22,10 @@ export type TfLiveSessionStatus = {
   updatedAt: string | null;
   verifiedAt: string | null;
   lastError: string | null;
+  /** Decoded from lt's own `exp` claim at paste time — no network call needed
+   *  to know this. Confirmed live 2026-08-05: this JWT's lifetime is ~8 hours,
+   *  NOT the ~30-day NextAuth login session it's easy to mistake it for. */
+  jwtExpiresAt: string | null;
 };
 
 async function ensureTables(): Promise<void> {
@@ -30,11 +35,19 @@ async function ensureTables(): Promise<void> {
       id            INTEGER PRIMARY KEY CHECK (id = 1),
       encryptedLt   TEXT NOT NULL,
       encryptedAt   TEXT NOT NULL,
+      jwtExpiresAt  TEXT,
       updatedAt     TEXT NOT NULL,
       verifiedAt    TEXT,
       lastError     TEXT
     )
   `);
+  // Guarded ALTER for boxes whose tf_live_session predates this column —
+  // CREATE TABLE IF NOT EXISTS is a no-op once the table already exists.
+  try {
+    await prisma.$executeRawUnsafe(`ALTER TABLE tf_live_session ADD COLUMN jwtExpiresAt TEXT`);
+  } catch {
+    /* column already exists */
+  }
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS tf_live_captures (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +103,26 @@ function decryptValue(encrypted: string): string {
 }
 
 /**
+ * `lt` is itself a JWT with `exp` (and `start`) claims — decode them locally,
+ * no TF call needed. This is metadata extraction (public JWT structure), not
+ * signature verification: we never see TF's signing key and don't need to,
+ * we just want to know when OUR OWN copy goes stale. Returns null for any
+ * malformed/non-JWT input rather than throwing — this is a best-effort UX
+ * hint, never load-bearing for auth.
+ */
+export function decodeJwtExpiry(jwt: string): string | null {
+  try {
+    const parts = jwt.split('.');
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as { exp?: number };
+    if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) return null;
+    return new Date(payload.exp * 1000).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Used by the collector only; never return these from a Route Handler.
  * TradeFinder's own frontend sends `lt` (from localStorage) as the `jwtToken`
  * header and `at` (from sessionStorage) as the `accessToken` header — no
@@ -109,19 +142,31 @@ export async function getTfLiveTokens(): Promise<{ lt: string; at: string } | nu
 export async function getTfLiveSessionStatus(): Promise<TfLiveSessionStatus> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(
-    `SELECT encryptedLt, updatedAt, verifiedAt, lastError FROM tf_live_session WHERE id = 1`
-  )) as Pick<SessionRow, 'encryptedLt' | 'updatedAt' | 'verifiedAt' | 'lastError'>[];
+    `SELECT encryptedLt, jwtExpiresAt, updatedAt, verifiedAt, lastError FROM tf_live_session WHERE id = 1`
+  )) as Pick<SessionRow, 'encryptedLt' | 'jwtExpiresAt' | 'updatedAt' | 'verifiedAt' | 'lastError'>[];
   const row = rows[0];
   return row
-    ? { configured: true, updatedAt: row.updatedAt, verifiedAt: row.verifiedAt, lastError: row.lastError }
-    : { configured: false, updatedAt: null, verifiedAt: null, lastError: null };
+    ? {
+        configured: true,
+        updatedAt: row.updatedAt,
+        verifiedAt: row.verifiedAt,
+        lastError: row.lastError,
+        jwtExpiresAt: row.jwtExpiresAt,
+      }
+    : { configured: false, updatedAt: null, verifiedAt: null, lastError: null, jwtExpiresAt: null };
 }
 
 /** Proves the pasted (lt, at) actually authenticate — a real, tiny data call,
- *  not just "non-empty strings". No cookies sent. */
+ *  not just "non-empty strings". No cookies sent. Surfaces TF's own error
+ *  code/message (e.g. "AT_ERROR: INVALID TOKEN") so a rejection says WHICH
+ *  of the two values TF didn't like, not just "failed". */
 export async function validateTfLiveTokens(lt: string, at: string): Promise<{ valid: boolean; error?: string }> {
   if (!lt || !at || lt.length > MAX_TOKEN_LENGTH || at.length > MAX_TOKEN_LENGTH) {
     return { valid: false, error: 'lt/at is empty or too large' };
+  }
+  const jwtExpiresAt = decodeJwtExpiry(lt);
+  if (jwtExpiresAt && new Date(jwtExpiresAt).getTime() <= Date.now()) {
+    return { valid: false, error: `lt already expired at ${jwtExpiresAt} — copy a fresh pair` };
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
@@ -132,11 +177,15 @@ export async function validateTfLiveTokens(lt: string, at: string): Promise<{ va
       signal: controller.signal,
     });
     if (!response.ok) return { valid: false, error: `TradeFinder returned HTTP ${response.status}` };
-    const body = (await response.json().catch(() => null)) as { status?: string } | null;
-    if (!body || body.status !== 'SUCCESS') return { valid: false, error: 'TradeFinder rejected the token (not SUCCESS)' };
+    const body = (await response.json().catch(() => null)) as { status?: string; code?: string; message?: string } | null;
+    if (!body || body.status !== 'SUCCESS') {
+      const detail = body?.code ? `${body.code}: ${body.message ?? 'rejected'}` : 'no response body';
+      return { valid: false, error: `TradeFinder rejected it (${detail})` };
+    }
     return { valid: true };
-  } catch {
-    return { valid: false, error: 'TradeFinder token validation failed (network or timeout)' };
+  } catch (error) {
+    const timedOut = (error as Error).name === 'AbortError';
+    return { valid: false, error: timedOut ? 'TradeFinder timed out (12s)' : 'TradeFinder validation request failed (network)' };
   } finally {
     clearTimeout(timeout);
   }
@@ -145,17 +194,20 @@ export async function validateTfLiveTokens(lt: string, at: string): Promise<{ va
 export async function saveTfLiveTokens(lt: string, at: string): Promise<void> {
   await ensureTables();
   const now = new Date().toISOString();
+  const jwtExpiresAt = decodeJwtExpiry(lt);
   await prisma.$executeRawUnsafe(
-    `INSERT INTO tf_live_session (id, encryptedLt, encryptedAt, updatedAt, verifiedAt, lastError)
-       VALUES (1, ?, ?, ?, ?, NULL)
+    `INSERT INTO tf_live_session (id, encryptedLt, encryptedAt, jwtExpiresAt, updatedAt, verifiedAt, lastError)
+       VALUES (1, ?, ?, ?, ?, ?, NULL)
        ON CONFLICT(id) DO UPDATE SET
          encryptedLt = excluded.encryptedLt,
          encryptedAt = excluded.encryptedAt,
+         jwtExpiresAt = excluded.jwtExpiresAt,
          updatedAt = excluded.updatedAt,
          verifiedAt = excluded.verifiedAt,
          lastError = NULL`,
     encryptValue(lt),
     encryptValue(at),
+    jwtExpiresAt,
     now,
     now
   );
@@ -213,7 +265,7 @@ export async function recordTfLiveRows(captureId: number, rows: unknown[]): Prom
   }
 }
 
-/** Latest capture per endpoint, for the /tf status panel. */
+/** Latest capture per endpoint, for the /tf status panel's headline chips. */
 export async function getLatestTfLiveCaptures(): Promise<
   { endpoint: string; capturedAt: string; status: string; error: string | null }[]
 > {
@@ -226,4 +278,30 @@ export async function getLatestTfLiveCaptures(): Promise<
      )
      ORDER BY endpoint
   `)) as { endpoint: string; capturedAt: string; status: string; error: string | null }[];
+}
+
+/** Per-IST-day capture counts, most recent day first — the "date-wise"
+ *  history view. captureDate is 'YYYY-MM-DD' derived from the stored UTC
+ *  capturedAt, so a day boundary matches the trading calendar (IST), not UTC
+ *  midnight. */
+export async function getTfLiveCaptureHistory(
+  limitDays = 30
+): Promise<{ captureDate: string; endpoint: string; total: number; success: number; error: number; lastCapturedAt: string }[]> {
+  await ensureTables();
+  return (await prisma.$queryRawUnsafe(
+    `
+    SELECT
+      date(datetime(capturedAt, '+5 hours', '+30 minutes')) AS captureDate,
+      endpoint,
+      COUNT(*) AS total,
+      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
+      SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error,
+      MAX(capturedAt) AS lastCapturedAt
+    FROM tf_live_captures
+    GROUP BY captureDate, endpoint
+    ORDER BY captureDate DESC, endpoint ASC
+    LIMIT ?
+  `,
+    limitDays * 4
+  )) as { captureDate: string; endpoint: string; total: number; success: number; error: number; lastCapturedAt: string }[];
 }
