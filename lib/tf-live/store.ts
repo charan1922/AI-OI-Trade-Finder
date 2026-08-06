@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 import { prisma } from '@/lib/db';
+import { parseAllSector } from '@/lib/tf-live/parse';
 
 const SESSION_KEY_ENV = 'TF_LIVE_SESSION_KEY';
 const DAILY_INDEX_URL = 'https://tradefinder.in/api_be/data/order/daily-index';
@@ -396,26 +397,8 @@ export async function getLatestTfRFactorBySymbol(): Promise<{
   } catch {
     return { capturedAt: null, bySymbol };
   }
-  const data = (parsed as { payload?: { data?: unknown } } | null)?.payload?.data;
-  if (!data || typeof data !== 'object') return { capturedAt: row.capturedAt, bySymbol };
-
-  const pickNumber = (obj: Record<string, unknown>, keys: string[]): number | null => {
-    for (const key of keys) {
-      const value = obj[key];
-      if (typeof value === 'number' && Number.isFinite(value)) return value;
-      if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
-    }
-    return null;
-  };
-
-  for (const [symbol, value] of Object.entries(data as Record<string, unknown>)) {
-    if (!value || typeof value !== 'object') continue;
-    const obj = value as Record<string, unknown>;
-    bySymbol.set(symbol, {
-      rFactor: pickNumber(obj, ['r_factor', 'rFactor', 'rfactor', 'param_2', 'r_fact', 'rFact']),
-      pctChange: pickNumber(obj, ['pct', 'pct_change', 'pctChange', 'change_pct', 'chg_pct']),
-      previousClose: pickNumber(obj, ['pc', 'prev_close', 'previousClose', 'prevClose', 'close']),
-    });
+  for (const r of parseAllSector(parsed)) {
+    bySymbol.set(r.symbol, { rFactor: r.rFactor, pctChange: r.pctChange, previousClose: r.previousClose });
   }
   return { capturedAt: row.capturedAt, bySymbol };
 }

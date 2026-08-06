@@ -14,11 +14,14 @@
 import { CalendarDays, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
+interface TfStockRow { symbol: string; baskets: string[]; ltp: number | null; previousClose: number | null; pctChange: number | null; rFactor: number | null; }
+interface TfIndexRow { name: string; value: number | null; }
+
 interface EodResponse {
   success: boolean;
   date?: string;
-  allSector?: { capturedAt: string; rows: Record<string, unknown>[] } | null;
-  dailyIndex?: { capturedAt: string; rows: Record<string, unknown>[] } | null;
+  allSector?: { capturedAt: string; rows: TfStockRow[] } | null;
+  dailyIndex?: { capturedAt: string; rows: TfIndexRow[] } | null;
   error?: string;
 }
 
@@ -33,14 +36,6 @@ const fmtDateTime = (iso: string | null | undefined) =>
       })
     : '—';
 
-const pick = (obj: Record<string, unknown>, keys: string[]): number | null => {
-  for (const key of keys) {
-    const value = obj[key];
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
-  }
-  return null;
-};
 const fmtNum = (n: number | null): string => (n == null ? '—' : n.toFixed(2));
 
 export default function TfHistoryPage() {
@@ -97,27 +92,16 @@ export default function TfHistoryPage() {
   const navCls = (disabled: boolean) =>
     `flex h-7 w-7 items-center justify-center rounded-md border border-border ${disabled ? 'opacity-30' : 'hover:bg-accent'}`;
 
-  const stockRows = useMemo(() => {
-    const rows = data?.allSector?.rows ?? [];
-    return rows
-      .map((r) => ({
-        symbol: String(r.symbol ?? r.Symbol ?? '—'),
-        previousClose: pick(r, ['pc', 'prev_close', 'previousClose', 'prevClose', 'close']),
-        pctChange: pick(r, ['pct', 'pct_change', 'pctChange', 'change_pct', 'chg_pct']),
-        rFactor: pick(r, ['r_factor', 'rFactor', 'rfactor', 'param_2', 'r_fact', 'rFact']),
-      }))
-      .sort((a, b) => (b.rFactor ?? -Infinity) - (a.rFactor ?? -Infinity));
-  }, [data]);
-
-  const indexRows = useMemo(() => {
-    const rows = data?.dailyIndex?.rows ?? [];
-    return rows
-      .map((r) => ({
-        name: String(r.Symbol ?? r.symbol ?? '—'),
-        value: pick(r, ['param_3', 'value']),
-      }))
-      .sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity));
-  }, [data]);
+  // Rows arrive already parsed by lib/tf-live/parse.ts (the one place that
+  // knows TradeFinder's param_N schema) — no field guessing here.
+  const stockRows = useMemo(
+    () => [...(data?.allSector?.rows ?? [])].sort((a, b) => (b.rFactor ?? -Infinity) - (a.rFactor ?? -Infinity)),
+    [data]
+  );
+  const indexRows = useMemo(
+    () => [...(data?.dailyIndex?.rows ?? [])].sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity)),
+    [data]
+  );
 
   return (
     <div className="mx-auto max-w-5xl space-y-3 p-3">

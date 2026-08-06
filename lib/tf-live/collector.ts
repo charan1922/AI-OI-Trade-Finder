@@ -16,6 +16,7 @@
  * be re-logged-in by hand when its session lapsed. This version needs neither
  * — the two tokens are pasted on /tf, encrypted at rest, and used directly.
  */
+import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
 import {
   decodeJwtExpiry,
   getTfLiveTokens,
@@ -56,16 +57,18 @@ function marketOpen(now = new Date()): boolean {
 
 /** `all_sector`'s payload is an OBJECT keyed by symbol; `daily-index`'s is
  *  already an array keyed by Symbol. Normalize both to one row shape. */
-function extractRows(payload: unknown): unknown[] | undefined {
-  const data = (payload as { payload?: { data?: unknown } } | null)?.payload?.data;
-  if (Array.isArray(data)) return data;
-  if (data && typeof data === 'object') {
-    return Object.entries(data as Record<string, unknown>).map(([symbol, value]) => ({
-      symbol,
-      ...(value && typeof value === 'object' ? (value as Record<string, unknown>) : { value }),
-    }));
+function extractRows(endpoint: Endpoint, payload: unknown): unknown[] | undefined {
+  // Shapes are owned by lib/tf-live/parse.ts, confirmed against a real payload:
+  // all_sector is BASKET-keyed then symbol-keyed with positional param_N fields
+  // (param_0 ltp, param_1 prevClose, param_2 %, param_3 R-Factor); daily-index
+  // is already a flat array. The raw payloadJson is retained on the capture row
+  // regardless, so a future re-parse never needs to re-call TradeFinder.
+  if (endpoint === 'all_sector') {
+    const rows = parseAllSector(payload);
+    return rows.length > 0 ? rows : undefined;
   }
-  return undefined;
+  const rows = parseDailyIndex(payload);
+  return rows.length > 0 ? rows.map((r) => ({ symbol: r.name, value: r.value })) : undefined;
 }
 
 /** options.force skips the autonomous/market-hours gates — used by the manual
@@ -108,7 +111,7 @@ export async function captureTfLiveEndpoint(endpoint: Endpoint, options: { force
       throw new Error(`TradeFinder rejected it (${detail.slice(0, 200)})`);
     }
     const captureId = await recordTfLiveCapture({ endpoint, status: 'success', payloadJson: body });
-    const rows = extractRows(parsed);
+    const rows = extractRows(endpoint, parsed);
     if (captureId && rows) await recordTfLiveRows(captureId, rows);
     await recordTfLiveSessionOutcome(true);
   } catch (error) {

@@ -13,7 +13,7 @@ import { runPremiumStopChecks } from './premium-stop-checks';
 import { runGradeChecks } from './grade-checks';
 import { runProfitProtectChecks } from './profit-protect-checks';
 import { runExpiryPolicyChecks } from './expiry-policy-checks';
-import { runStopMoveChecks } from './stop-move-checks';
+import { runStopMoveChecks, runTfParseChecks } from './stop-move-checks';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -27,6 +27,7 @@ async function main(): Promise<void> {
   await runConfigDriftChecks(check);
   runPremiumStopChecks(check);
   runStopMoveChecks(check);
+  runTfParseChecks(check);
   runGradeChecks(check);
   runProfitProtectChecks(check);
   runExpiryPolicyChecks(check);
