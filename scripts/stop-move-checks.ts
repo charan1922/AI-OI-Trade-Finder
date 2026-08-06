@@ -18,6 +18,7 @@
  * a gate that reads "cannot calculate" as "allow" is not a gate).
  */
 import { MIN_STOP_MOVE_DISTANCE_PCT, checkStopMove } from '../lib/auto-trade/risk/gates';
+import { parseAllSector, parseDailyIndex } from '../lib/tf-live/parse';
 
 type Check = (name: string, ok: boolean, detail?: string) => void;
 
@@ -102,4 +103,52 @@ export function runStopMoveChecks(check: Check): void {
     'stop move: FORCEMOT 05-Aug — a stop at entry 18770 would now be refused',
     checkStopMove('bullish', 18600, 18770, 18770).allow === false
   );
+}
+
+/**
+ * TradeFinder `all_sector` schema — pinned against a REAL captured payload
+ * (2026-08-06). This exists because the field mapping was guessed wrong once:
+ * an earlier defensive guess had param_2 as the R-Factor when param_2 is the
+ * % change and param_3 is the R-Factor — which would have rendered % change
+ * in the R-Factor column and silently corrupted the TF comparison.
+ */
+export function runTfParseChecks(check: Check): void {
+  // Verbatim slice of the real payload: basket-keyed, then symbol-keyed.
+  const sample = {
+    payload: {
+      data: {
+        'NIFTY 50_r_factor': {
+          ADANIENT: { Symbol: 'ADANIENT', param_0: 3026, param_1: 3050, param_2: -0.79, param_3: 0.37051524293546023 },
+          RELIANCE: { Symbol: 'RELIANCE', param_0: 1325, param_1: 1280, param_2: 3.52, param_3: 2.198960164515214 },
+        },
+        'NIFTY METAL_r_factor': {
+          // ADANIENT is in BOTH baskets — must de-duplicate to one row.
+          ADANIENT: { Symbol: 'ADANIENT', param_0: 3026, param_1: 3050, param_2: -0.79, param_3: 0.37051524293546023 },
+          APLAPOLLO: { Symbol: 'APLAPOLLO', param_0: 1945, param_1: 1948.5, param_2: -0.18, param_3: 2.114172695709904 },
+        },
+      },
+    },
+  };
+  const rows = parseAllSector(sample);
+  const adani = rows.find((r) => r.symbol === 'ADANIENT');
+
+  check('tf parse: flattens basket-keyed payload to unique symbols', rows.length === 3, `got ${rows.length}`);
+  check('tf parse: param_0 is LTP', adani?.ltp === 3026);
+  check('tf parse: param_1 is previous close', adani?.previousClose === 3050);
+  check('tf parse: param_2 is % change (NOT the R-Factor)', adani?.pctChange === -0.79);
+  check('tf parse: param_3 is the R-Factor', adani?.rFactor === 0.37051524293546023);
+  check(
+    'tf parse: a multi-basket symbol keeps every basket it appeared in',
+    (adani?.baskets ?? []).includes('NIFTY 50') && (adani?.baskets ?? []).includes('NIFTY METAL'),
+    JSON.stringify(adani?.baskets)
+  );
+  check('tf parse: the "_r_factor" suffix is stripped from basket labels', !(adani?.baskets ?? []).some((b) => b.endsWith('_r_factor')));
+
+  // Guards: never invent rows from a shape we do not recognise.
+  check('tf parse: a flat symbol-keyed payload yields no rows (shape changed)', parseAllSector({ payload: { data: { FOO: { param_3: 1 } } } }).length === 0);
+  check('tf parse: null/garbage yields no rows', parseAllSector(null).length === 0 && parseAllSector({ nope: 1 }).length === 0);
+
+  // daily-index stays a flat array keyed by Symbol.
+  const idx = parseDailyIndex({ payload: { data: [{ Symbol: 'NIFTY AUTO', param_3: 5.29 }, { Symbol: 'NIFTY ENERGY', param_3: -1.75 }] } });
+  check('tf parse: daily-index reads param_3 and keeps the sign', idx.length === 2 && idx[0].value === 5.29 && idx[1].value === -1.75);
 }

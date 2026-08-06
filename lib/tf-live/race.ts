@@ -12,6 +12,7 @@
  * this says so rather than inventing a rank from a single data point.
  */
 import { prisma } from '@/lib/db';
+import { parseAllSector } from '@/lib/tf-live/parse';
 
 const WINDOW_START_MIN = 9 * 60 + 45; // 09:45 IST
 const WINDOW_END_MIN = 11 * 60; // 11:00 IST
@@ -48,14 +49,6 @@ function minutesIST(iso: string): number {
   return hour * 60 + minute;
 }
 
-const pickNumber = (obj: Record<string, unknown>, keys: string[]): number | null => {
-  for (const key of keys) {
-    const value = obj[key];
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
-  }
-  return null;
-};
 
 /**
  * Ranks every symbol by TF's own R-Factor at each successful `all_sector`
@@ -90,27 +83,13 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     const board = new Map<string, number>();
     if (capture.payloadJson) {
       try {
-        const parsed = JSON.parse(capture.payloadJson) as { payload?: { data?: unknown } };
-        const data = parsed.payload?.data;
-        if (data && typeof data === 'object') {
-          const scored: { symbol: string; rFactor: number }[] = [];
-          for (const [symbol, value] of Object.entries(data as Record<string, unknown>)) {
-            if (!value || typeof value !== 'object') continue;
-            const rFactor = pickNumber(value as Record<string, unknown>, [
-              'r_factor',
-              'rFactor',
-              'rfactor',
-              'param_2',
-              'r_fact',
-              'rFact',
-            ]);
-            if (rFactor != null) scored.push({ symbol, rFactor });
-          }
-          scored.sort((a, b) => b.rFactor - a.rFactor);
-          scored.forEach((s, i) => board.set(s.symbol, i + 1));
-          if (index === inWindow.length - 1) {
-            for (const s of scored) rFactorNowBySymbol.set(s.symbol, s.rFactor);
-          }
+        const scored = parseAllSector(JSON.parse(capture.payloadJson))
+          .filter((r): r is typeof r & { rFactor: number } => r.rFactor != null)
+          .map((r) => ({ symbol: r.symbol, rFactor: r.rFactor }));
+        scored.sort((a, b) => b.rFactor - a.rFactor);
+        scored.forEach((s, i) => board.set(s.symbol, i + 1));
+        if (index === inWindow.length - 1) {
+          for (const s of scored) rFactorNowBySymbol.set(s.symbol, s.rFactor);
         }
       } catch {
         /* a malformed capture just contributes an empty board, not a crash */
