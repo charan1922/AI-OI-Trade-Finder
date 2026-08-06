@@ -676,7 +676,11 @@ export async function executeAutoTradeTool(
           },
         };
       }
-      const verdict = checkStopMove(trade.direction, trade.slSpot, newSlSpot);
+      // The noise floor is measured against the LIVE spot, so a stop can never
+      // be tightened to within 0.35% of where price actually is. Fails closed
+      // when the spot is unavailable — the existing (wider) stop simply stands.
+      const stopMoveSpot = await latestSpot(trade.symbol, rt.date);
+      const verdict = checkStopMove(trade.direction, trade.slSpot, newSlSpot, stopMoveSpot);
       if (!verdict.allow) {
         return {
           result: { moved: false, reasons: verdict.reasons },

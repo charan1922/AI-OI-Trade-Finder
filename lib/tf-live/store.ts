@@ -288,7 +288,7 @@ export async function getTfLiveCaptureHistory(
   limitDays = 30
 ): Promise<{ captureDate: string; endpoint: string; total: number; success: number; error: number; lastCapturedAt: string }[]> {
   await ensureTables();
-  return (await prisma.$queryRawUnsafe(
+  const rows = (await prisma.$queryRawUnsafe(
     `
     SELECT
       date(datetime(capturedAt, '+5 hours', '+30 minutes')) AS captureDate,
@@ -303,7 +303,19 @@ export async function getTfLiveCaptureHistory(
     LIMIT ?
   `,
     limitDays * 4
-  )) as { captureDate: string; endpoint: string; total: number; success: number; error: number; lastCapturedAt: string }[];
+  )) as { captureDate: string; endpoint: string; total: unknown; success: unknown; error: unknown; lastCapturedAt: string }[];
+  // SQLite COUNT/SUM come back as BigInt through Prisma's raw driver, and
+  // BigInt has no JSON representation — returning it straight from a Route
+  // Handler throws "Do not know how to serialize a BigInt" and 500s the whole
+  // /tf page (hit in prod 2026-08-06). Normalize at the boundary.
+  return rows.map((r) => ({
+    captureDate: r.captureDate,
+    endpoint: r.endpoint,
+    total: Number(r.total ?? 0),
+    success: Number(r.success ?? 0),
+    error: Number(r.error ?? 0),
+    lastCapturedAt: r.lastCapturedAt,
+  }));
 }
 
 /** Every IST calendar date with at least one SUCCESSFUL capture for the given

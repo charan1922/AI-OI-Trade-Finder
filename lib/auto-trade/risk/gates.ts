@@ -261,12 +261,41 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
   return { allow: reasons.length === 0, reasons };
 }
 
+/**
+ * Minimum breathing room a MOVED stop must leave, as % of the current spot.
+ *
+ * Mirrors MIN_RISK_PCT in lib/trade-suggest/config.ts, which already floors the
+ * stop at PLACEMENT for exactly this reason ("a stop inside normal 5-min noise
+ * is a guaranteed stop-out, not a plan"). That floor was never enforced on stop
+ * MOVES, so the AI could — and did — drag a correctly-placed stop to breakeven
+ * and hand the position zero room.
+ *
+ * Evidence (2026-08-06 review of every trade since 2026-07-22):
+ *  - 12 trades had their stop moved to EXACTLY the entry price; 11 of those were
+ *    then killed by that stop, for −₹7,535. Kills were absurdly tight: MANKIND
+ *    stopped 0.3 points away, APLAPOLLO 0.6, LICHSGFIN 1.1.
+ *  - The AI's own stated reason was "spot moved 2 points above entry; tightening
+ *    stop to entry level to reduce risk" — protecting ~0.1R by guaranteeing an exit.
+ *  - The repo's own profit-protect shadow report (183 resolved picks) had ALREADY
+ *    measured breakeven stops as NEGATIVE: breakeven@1R ΔR −0.07 (saved 16, hurt
+ *    18), trail@1R-lock0.5 ΔR −0.07 (saved 16, hurt 40). The AI was doing it at
+ *    ~0.1R — far more aggressive than the version already shown not to work.
+ *
+ * The AI may still tighten a genuine trend; it may not tighten into noise.
+ */
+export const MIN_STOP_MOVE_DISTANCE_PCT = 0.35;
+
 /** Stop moves may only TIGHTEN (reduce risk): for a bullish (CE) position the
- *  spot SL may only move UP toward price; for a bearish (PE) one only DOWN. */
+ *  spot SL may only move UP toward price; for a bearish (PE) one only DOWN.
+ *  A moved stop must also stay at least MIN_STOP_MOVE_DISTANCE_PCT away from the
+ *  current spot. FAILS CLOSED: an unknown/unusable spot REFUSES the move, which
+ *  simply leaves the existing (wider, correctly-floored) stop in place — the safe
+ *  direction. A risk gate must never read "cannot calculate" as "allow". */
 export function checkStopMove(
   direction: 'bullish' | 'bearish',
   currentSlSpot: number | null,
-  newSlSpot: number
+  newSlSpot: number,
+  currentSpot?: number | null
 ): GateVerdict {
   if (!Number.isFinite(newSlSpot) || newSlSpot <= 0) {
     return { allow: false, reasons: ['newSlSpot must be a positive number'] };
@@ -285,5 +314,32 @@ export function checkStopMove(
       };
     }
   }
+
+  // Noise floor. Fails closed on a missing/garbage spot.
+  if (currentSpot == null || !Number.isFinite(currentSpot) || currentSpot <= 0) {
+    return {
+      allow: false,
+      reasons: ['cannot verify stop distance without a live spot — refusing the move (existing stop stands)'],
+    };
+  }
+  const minDistance = (currentSpot * MIN_STOP_MOVE_DISTANCE_PCT) / 100;
+  const distance = Math.abs(currentSpot - newSlSpot);
+  if (distance < minDistance) {
+    return {
+      allow: false,
+      reasons: [
+        `stop ${newSlSpot} is ${distance.toFixed(2)} from spot ${currentSpot} — inside the ${MIN_STOP_MOVE_DISTANCE_PCT}% noise floor (needs ${minDistance.toFixed(2)}). Breakeven/near-spot stops measured NEGATIVE on this book; not tightening into noise.`,
+      ],
+    };
+  }
+  // A stop on the WRONG side of spot is already breached — that is an exit
+  // decision, not a stop move.
+  if (direction === 'bullish' && newSlSpot >= currentSpot) {
+    return { allow: false, reasons: [`stop ${newSlSpot} is at/above spot ${currentSpot} — that is an exit, not a stop move`] };
+  }
+  if (direction === 'bearish' && newSlSpot <= currentSpot) {
+    return { allow: false, reasons: [`stop ${newSlSpot} is at/below spot ${currentSpot} — that is an exit, not a stop move`] };
+  }
+
   return { allow: true, reasons: [] };
 }
