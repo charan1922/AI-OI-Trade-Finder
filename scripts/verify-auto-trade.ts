@@ -339,10 +339,14 @@ async function main(): Promise<void> {
     !checkEntryGates({ ...base, riskLatchReasons: ['orphan-position:NSE:TEST26JUL100CE (unmanaged venue position)'] })
       .allow
   );
-  check('stop: bullish tighten up allowed', checkStopMove('bullish', 100, 105).allow);
-  check('stop: bullish loosen down blocked', !checkStopMove('bullish', 100, 95).allow);
-  check('stop: bearish tighten down allowed', checkStopMove('bearish', 100, 95).allow);
-  check('stop: bearish loosen up blocked', !checkStopMove('bearish', 100, 105).allow);
+  // A live spot is now required: the stop-MOVE noise floor is measured against
+  // it, and the gate fails closed without one (see stop-move-checks.ts, which
+  // owns the exhaustive floor/fail-closed cases). The spots here sit well clear
+  // of the proposed stops so these keep asserting only the direction rule.
+  check('stop: bullish tighten up allowed', checkStopMove('bullish', 100, 105, 120).allow);
+  check('stop: bullish loosen down blocked', !checkStopMove('bullish', 100, 95, 120).allow);
+  check('stop: bearish tighten down allowed', checkStopMove('bearish', 100, 95, 80).allow);
+  check('stop: bearish loosen up blocked', !checkStopMove('bearish', 100, 105, 80).allow);
 
   // ── 2. Fyers option symbology ──────────────────────────────────────────────
   const sym = toFyersOptionSymbol({
