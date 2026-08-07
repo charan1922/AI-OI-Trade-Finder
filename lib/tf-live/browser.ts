@@ -64,6 +64,16 @@ const CONSECUTIVE_FAILURE_LIMIT = 6;
 const FIRST_SUCCESS_TIMEOUT_MS = 2 * 60_000;
 /** How often the watchdog checks the browser is alive and still in-window. */
 const WATCHDOG_INTERVAL_MS = 60_000;
+/** How often WE reload the page to force a fresh round of requests. The
+ *  module originally assumed TradeFinder's own page keeps polling forever on
+ *  its own ~10s timer (observed once in a real human browser's Network tab,
+ *  2026-08-08) — two separate live tests on the actual headless relay proved
+ *  that wrong: it fires ONE round of requests at page load and then goes
+ *  silent, whether or not any of those requests succeeded. Rather than trust
+ *  an undocumented client-side timer we don't control, this module now
+ *  drives its own reloads, so a fresh attempt is guaranteed on a schedule we
+ *  own (2026-08-08, second live-test failure). */
+const RELOAD_INTERVAL_MS = 30_000;
 /** A manual "Start now" (or a fresh cookie save) outside market hours used to
  *  get killed by the very next watchdog tick, at most 60s later — the tick
  *  calls ensureTfBrowserState() with no `force`, sees the window is closed,
@@ -127,6 +137,10 @@ interface BrowserState {
   /** Epoch ms until which a manual start should keep running even outside
    *  the capture window. Null when there's no active manual override. */
   manualUntilMs: number | null;
+  /** Drives the page reload loop (see RELOAD_INTERVAL_MS) — cleared in
+   *  closeBrowser() so a stale timer from a previous session can never fire
+   *  against a browser that's already gone. */
+  reloadTimer: NodeJS.Timeout | null;
 }
 
 const store = globalThis as unknown as { __tfBrowserState?: BrowserState };
@@ -137,6 +151,7 @@ store.__tfBrowserState ??= {
   sawFirstSuccess: false,
   watchdog: null,
   manualUntilMs: null,
+  reloadTimer: null,
 };
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
 
@@ -189,8 +204,9 @@ async function handleResponse(response: import('playwright').Response): Promise<
 }
 
 /** Launch one browser, inject cookies, open the entry page, and wire the
- *  response listener. Resolves once navigation completes; the browser then
- *  keeps running and capturing until stopped or it crashes. */
+ *  response listener. Resolves once navigation completes; from there OUR OWN
+ *  reload loop (not the page's own JS) keeps producing fresh attempts every
+ *  RELOAD_INTERVAL_MS until stopped or the browser crashes. */
 async function launch(cookieHeader: string): Promise<void> {
   logMemory('before launch');
   const { chromium } = await import('playwright');
@@ -205,6 +221,10 @@ async function launch(cookieHeader: string): Promise<void> {
 
   browser.on('disconnected', () => {
     if (s.browser === browser) s.browser = null;
+    if (s.reloadTimer) {
+      clearInterval(s.reloadTimer);
+      s.reloadTimer = null;
+    }
   });
 
   const context = await browser.newContext({ userAgent: REALISTIC_UA });
@@ -217,9 +237,18 @@ async function launch(cookieHeader: string): Promise<void> {
   // page load — reading memory immediately after goto() would under-count it.
   setTimeout(() => logMemory('~5s after page load (steady-state cost)'), 5_000);
 
-  // Give the page's own polling loop a bounded window to prove the session is
-  // real before declaring it broken — a slow first load is normal, silence
-  // forever is not.
+  // WE drive every subsequent attempt — see RELOAD_INTERVAL_MS's module note
+  // on why the page's own polling loop can't be trusted to keep going.
+  if (s.reloadTimer) clearInterval(s.reloadTimer);
+  s.reloadTimer = setInterval(() => {
+    if (s.browser !== browser) return; // stale timer from a since-replaced browser
+    void page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
+  }, RELOAD_INTERVAL_MS);
+  s.reloadTimer.unref?.();
+
+  // Give our own reload loop a bounded number of rounds to prove the session
+  // is real before declaring it broken — a slow first load is normal, total
+  // silence across several reloads is not.
   setTimeout(() => {
     void (async () => {
       if (s.browser === browser && !s.sawFirstSuccess) {
@@ -234,6 +263,10 @@ async function launch(cookieHeader: string): Promise<void> {
 
 async function closeBrowser(): Promise<void> {
   const s = state();
+  if (s.reloadTimer) {
+    clearInterval(s.reloadTimer);
+    s.reloadTimer = null;
+  }
   const browser = s.browser;
   s.browser = null;
   if (browser) {
