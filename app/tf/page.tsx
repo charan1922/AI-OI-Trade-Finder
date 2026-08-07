@@ -359,18 +359,18 @@ export default function TfPage() {
             <table className="w-full text-[11px]">
               <thead className="text-muted-foreground">
                 <tr className="border-b border-border">
-                  <th className="py-1 text-left font-medium">Endpoint</th>
-                  <th className="py-1 text-left font-medium">When (IST)</th>
-                  <th className="py-1 text-left font-medium">Status</th>
+                  <th className="py-1 pr-3 text-left font-medium">Endpoint</th>
+                  <th className="py-1 pr-3 text-left font-medium">When (IST)</th>
+                  <th className="py-1 pr-3 text-left font-medium">Status</th>
                   <th className="py-1 text-left font-medium">Error</th>
                 </tr>
               </thead>
               <tbody>
                 {data.captures.map((c) => (
                   <tr key={c.endpoint} className="border-b border-border/60">
-                    <td className="py-1 font-medium">{c.endpoint}</td>
-                    <td className="py-1 tabular-nums">{fmtDateTime(c.capturedAt)}</td>
-                    <td className={`py-1 ${c.status === 'success' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                    <td className="py-1 pr-3 font-medium">{c.endpoint}</td>
+                    <td className="py-1 pr-3 tabular-nums">{fmtDateTime(c.capturedAt)}</td>
+                    <td className={`py-1 pr-3 ${c.status === 'success' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
                       {c.status}
                     </td>
                     <td className="py-1 text-muted-foreground">{c.error ?? '—'}</td>
@@ -393,20 +393,20 @@ export default function TfPage() {
             <table className="w-full text-[11px]">
               <thead className="text-muted-foreground">
                 <tr className="border-b border-border">
-                  <th className="py-1 text-left font-medium">Date (IST)</th>
-                  <th className="py-1 text-right font-medium">Attempts</th>
-                  <th className="py-1 text-right font-medium">Success</th>
-                  <th className="py-1 text-right font-medium">Failed</th>
+                  <th className="py-1 pr-3 text-left font-medium">Date (IST)</th>
+                  <th className="py-1 pr-3 text-right font-medium">Attempts</th>
+                  <th className="py-1 pr-3 text-right font-medium">Success</th>
+                  <th className="py-1 pr-3 text-right font-medium">Failed</th>
                   <th className="py-1 text-left font-medium">Last capture</th>
                 </tr>
               </thead>
               <tbody>
                 {historyByDate.map(([date, stats]) => (
                   <tr key={date} className="border-b border-border/60">
-                    <td className="py-1 font-medium">{fmtDate(date)}</td>
-                    <td className="py-1 text-right tabular-nums">{stats.total}</td>
-                    <td className="py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{stats.success}</td>
-                    <td className={`py-1 text-right tabular-nums ${stats.error > 0 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'}`}>
+                    <td className="py-1 pr-3 font-medium">{fmtDate(date)}</td>
+                    <td className="py-1 pr-3 text-right tabular-nums">{stats.total}</td>
+                    <td className="py-1 pr-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{stats.success}</td>
+                    <td className={`py-1 pr-3 text-right tabular-nums ${stats.error > 0 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'}`}>
                       {stats.error}
                     </td>
                     <td className="py-1 tabular-nums text-muted-foreground">{fmtDateTime(stats.lastCapturedAt)}</td>
