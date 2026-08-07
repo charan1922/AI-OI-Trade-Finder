@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 import { prisma } from '@/lib/db';
+import { tfFetch } from '@/lib/tf-live/client';
 import type { TfEndpoint } from '@/lib/tf-live/endpoints';
 import { parseAllSector } from '@/lib/tf-live/parse';
 
@@ -170,27 +171,12 @@ export async function validateTfLiveTokens(lt: string, at: string): Promise<{ va
   if (jwtExpiresAt && new Date(jwtExpiresAt).getTime() <= Date.now()) {
     return { valid: false, error: `lt already expired at ${jwtExpiresAt} — copy a fresh pair` };
   }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-  try {
-    const response = await fetch(DAILY_INDEX_URL, {
-      cache: 'no-store',
-      headers: { accept: 'application/json', jwtToken: lt, accessToken: at },
-      signal: controller.signal,
-    });
-    if (!response.ok) return { valid: false, error: `TradeFinder returned HTTP ${response.status}` };
-    const body = (await response.json().catch(() => null)) as { status?: string; code?: string; message?: string } | null;
-    if (!body || body.status !== 'SUCCESS') {
-      const detail = body?.code ? `${body.code}: ${body.message ?? 'rejected'}` : 'no response body';
-      return { valid: false, error: `TradeFinder rejected it (${detail})` };
-    }
-    return { valid: true };
-  } catch (error) {
-    const timedOut = (error as Error).name === 'AbortError';
-    return { valid: false, error: timedOut ? 'TradeFinder timed out (12s)' : 'TradeFinder validation request failed (network)' };
-  } finally {
-    clearTimeout(timeout);
-  }
+  // Goes through the SHARED queue in client.ts, not a bare fetch. Validation
+  // that jumped the queue was itself a burst source: pasting a token fires a
+  // validate, and a collector tick landing in the same second turned a good
+  // credential into an immediate AT_ERROR.
+  const result = await tfFetch(DAILY_INDEX_URL, { lt, at });
+  return result.ok ? { valid: true } : { valid: false, error: result.error ?? 'TradeFinder rejected lt/at' };
 }
 
 export async function saveTfLiveTokens(lt: string, at: string): Promise<void> {
