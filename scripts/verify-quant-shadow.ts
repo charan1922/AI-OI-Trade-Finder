@@ -14,6 +14,7 @@ import { runGradeChecks } from './grade-checks';
 import { runProfitProtectChecks } from './profit-protect-checks';
 import { runExpiryPolicyChecks } from './expiry-policy-checks';
 import { runStopMoveChecks, runTfParseChecks } from './stop-move-checks';
+import { runEntryQualityChecks } from './entry-quality-checks';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -28,6 +29,7 @@ async function main(): Promise<void> {
   runPremiumStopChecks(check);
   runStopMoveChecks(check);
   runTfParseChecks(check);
+  runEntryQualityChecks(check);
   runGradeChecks(check);
   runProfitProtectChecks(check);
   runExpiryPolicyChecks(check);

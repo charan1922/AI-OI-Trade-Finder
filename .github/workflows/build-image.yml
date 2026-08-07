@@ -150,14 +150,11 @@ jobs:
       # Single source of truth for "is this the deploy publish?" — a real push to
       # the prod branch. Everything else builds + smoke-tests without pushing, so a
       # workflow_dispatch on any branch can NEVER overwrite production `latest`.
-      # Publish only from the prod BRANCH. `workflow_dispatch` is included
-      # because GitHub stopped firing push events for this repo on 2026-08-06
-      # (pushes landed on the remote but created no run at all, while a manual
-      # dispatch ran fine) — leaving prod undeployable. The branch check is the
-      # real guard and is unchanged: a dispatch on main or any other ref still
-      # cannot publish, so this cannot overwrite production from a feature
-      # branch. Revert to push-only once GitHub honours push events again.
-      PUBLISH: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/prod' }}
+      # Reverted to push-only on 2026-08-07: the workflow_dispatch escape hatch
+      # added the previous day existed only because a GitHub Actions major
+      # outage (2026-08-06 15:22 UTC) stopped push events from creating runs at
+      # all. Actions is operational again, so the narrower rule is back.
+      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/prod' }}
       IMAGE: ghcr.io/${{ github.repository_owner }}/project-r-simulator
     steps:
       # SHA-pinned (see the validate job's note); comments carry the version, all

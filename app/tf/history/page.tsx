@@ -5,10 +5,10 @@
  * Reads whatever was actually captured on /tf for a given IST calendar date:
  * the per-stock `all_sector` table and the per-index `daily-index` bar values.
  *
- * Field names shown for `all_sector` are best-effort guesses (see
- * lib/tf-live/store.ts's pickNumber candidates) until a real successful
- * capture has been inspected — this page shows exactly what it finds, never
- * a fabricated value, so an unrecognized field reads as "—", not a guess.
+ * Rows arrive already parsed by lib/tf-live/parse.ts, the one module that owns
+ * TradeFinder's schema (confirmed against a real payload). This page shows
+ * exactly what was captured and never a fabricated value — an absent field
+ * reads as "—".
  */
 
 import { CalendarDays, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
@@ -197,10 +197,10 @@ export default function TfHistoryPage() {
           </div>
 
           <p className="text-[10px] text-muted-foreground">
-            Field names for all_sector are matched defensively against several likely candidates — the exact schema
-            hasn&apos;t been confirmed from a real successful capture yet. A column reading &quot;—&quot; across every
-            row (not just some) means none of the candidate names matched; check a raw capture and tighten
-            lib/tf-live/store.ts&apos;s pickNumber() candidates.
+            Parsed by lib/tf-live/parse.ts, confirmed against a real TradeFinder payload: their response is keyed by
+            basket then by symbol, and the R-Factor is the <code>param_3</code> field (not <code>param_2</code>, which
+            is % change). A value reading &quot;—&quot; means that field was genuinely absent from the capture — never a
+            fallback or an estimate.
           </p>
         </>
       )}

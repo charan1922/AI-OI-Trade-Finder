@@ -32,6 +32,7 @@ import {
   USE_CHAOTIC_OPEN_GATE,
   USE_EXTENDED_TREND_BYPASS,
   USE_MOMENTUM_BREAKOUT,
+  USE_MOVE_FRESHNESS_GATE,
   USE_RANK_CLIMB_GATE,
   USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
@@ -121,6 +122,14 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     default: USE_MOMENTUM_BREAKOUT,
     description:
       'A fourth way for a stock to qualify, built for "short-covering" breakouts — price rising while open interest FALLS (traders who bet against it rushing to exit). These score badly on every normal rule by design, yet can be big winners. ON: a stock with no build-up evidence at all (low strength score, no open-interest build, quiet setup) can still be suggested — but ONLY with a confirmed early-morning-range breakout, BOTH trend tools agreeing, and at least a 1.5% move from the open in the trade direction. Liquidity, activity and direction rules still apply. OFF (default): keep it off until the nightly test proves it catches these winners without letting false breakouts through over several days — one good day is not proof.',
+  },
+  {
+    key: 'USE_MOVE_FRESHNESS_GATE',
+    label: 'Skip stale moves (Since 9:45)',
+    category: 'Trade Suggest',
+    default: USE_MOVE_FRESHNESS_GATE,
+    description:
+      'Uses the "Since 9:45" number — how much a stock has moved since the entry window opened — to throw out stocks whose move is already BEHIND them. Two cases get dropped: "spent" (a big move on the day but almost nothing since 09:45 — the jump happened at the open and it has sat still for an hour) and "fading" (it is actively giving the move back since 09:45, so buying strength here means buying into the unwind). A stock still moving your way ("fresh") is untouched, and a stock with no 09:45 reading recorded is NEVER dropped — missing information is not evidence of staleness. OFF (default): nothing is filtered, but every pick still SHOWS its freshness reading, and both the commentary and the auto-trader are told to treat "spent" and "fading" as no-trade. Honest reason it ships OFF: the 09:45 number was only saved from 7 Aug 2026 onward, so there is no history yet to test the filter against. Turn ON once the nightly test has ~10 days and shows it drops more losers than winners.',
   },
   {
     key: 'PRIORITY_REFRESH_SHADOW',

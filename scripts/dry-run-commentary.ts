@@ -66,6 +66,41 @@ const mk = (over: Partial<TradeSuggestion> & { symbol: string }): TradeSuggestio
     detail:
       'morning low held (buyers absorbing dips) · cleared 2 levels: OR high, prev-day high · next: 5d high 1451.00',
   },
+  // The clean pick is deliberately the full new shape: a tight coil that broke
+  // and held, a move that is still running since 09:45, and TradeFinder's own
+  // board agreeing. The weaker pick below overrides these to the opposite
+  // profile, so one dry run exercises both sides of the new entry bar.
+  consolidation: {
+    direction: 'bullish',
+    grade: 'strong',
+    baseHigh: 1409.8,
+    baseLow: 1400.2,
+    pivot: 1409.8,
+    baseRangePct: 0.68,
+    baseBars: 6,
+    barsSinceBreakout: 2,
+    volumeMult: 2.1,
+    extensionPct: 0.25,
+    extended: false,
+    detail:
+      "coiled 0.68% wide over 6 bars (1400.20–1409.80), then closed above 1409.80; breakout bar traded 2.1× the coil's average volume; it has held for 2 completed bars since",
+  },
+  sinceEntryPct: 1.4,
+  moveFreshness: {
+    profile: 'fresh',
+    sinceEntryDirectional: 1.4,
+    dayDirectional: 1.9,
+    freshShare: 0.74,
+    detail: "moving NOW: +1.40% since 09:45, +1.90% on the day (74% of the day's move came after 09:45)",
+  },
+  tfCorroboration: {
+    rFactor: 4.9,
+    rank: 3,
+    total: 196,
+    topBoard: true,
+    ageMinutes: 6,
+    detail: 'TradeFinder independently ranks it #3 of 196 (their R-Factor 4.90) (TF board is 6 min old)',
+  },
   setupLevel: 'strong',
   extended: false,
   factors: {
@@ -118,6 +153,27 @@ const base: SuggestResponse = {
         clearedNames: [],
         nextLevel: { name: 'OR high', price: 566.4 },
         detail: 'morning low held · no level cleared yet · next: OR high 566.40',
+      },
+      // The counter-case: a big day move that has gone nowhere since 09:45 and
+      // no coil. A correct read must NOT call this a trade.
+      consolidation: null,
+      sinceEntryPct: 0.05,
+      moveFreshness: {
+        profile: 'spent',
+        sinceEntryDirectional: 0.05,
+        dayDirectional: 2.4,
+        freshShare: 0.02,
+        detail:
+          "gap-and-flat: 2.40% on the day but only +0.05% since 09:45 (2% of the day's move came after 09:45) — the move happened before the entry window and has stalled since",
+      },
+      tfCorroboration: {
+        rFactor: 2.1,
+        rank: 88,
+        total: 196,
+        topBoard: false,
+        ageMinutes: 6,
+        detail:
+          '⚠ TradeFinder ranks it only #88 of 196 (their R-Factor 2.10) — their board does not confirm this name (TF board is 6 min old)',
       },
       plan: {
         entrySpot: 563.25,

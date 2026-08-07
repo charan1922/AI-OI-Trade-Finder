@@ -52,6 +52,36 @@ function trimEntryPick(s: TradeSuggestion): Record<string, unknown> {
       grade: s.tfBreakout.grade,
       direction: s.tfBreakout.direction,
     },
+    // Coil-and-pop structure: `pivot` is the level the market itself drew, so
+    // it is the honest invalidation reference for this trade.
+    consolidation: s.consolidation && {
+      grade: s.consolidation.grade,
+      pivot: s.consolidation.pivot,
+      baseHigh: s.consolidation.baseHigh,
+      baseLow: s.consolidation.baseLow,
+      baseRangePct: s.consolidation.baseRangePct,
+      barsSinceBreakout: s.consolidation.barsSinceBreakout,
+      volumeMult: s.consolidation.volumeMult,
+      extensionPct: s.consolidation.extensionPct,
+      extended: s.consolidation.extended,
+    },
+    // Is the move still ahead of the trade, or already behind it?
+    sinceEntryPct: s.sinceEntryPct,
+    moveProfile: s.moveFreshness?.profile ?? 'unknown',
+    moveFreshness: s.moveFreshness && {
+      sinceEntryDirectional: s.moveFreshness.sinceEntryDirectional,
+      freshShare: s.moveFreshness.freshShare,
+      detail: s.moveFreshness.detail,
+    },
+    // TradeFinder's independent rank. null = TF has NO data on this name today,
+    // which is missing evidence — it is NOT a TradeFinder rejection.
+    tf: s.tfCorroboration && {
+      rFactor: s.tfCorroboration.rFactor,
+      rank: s.tfCorroboration.rank,
+      total: s.tfCorroboration.total,
+      topBoard: s.tfCorroboration.topBoard,
+      ageMinutes: s.tfCorroboration.ageMinutes,
+    },
     extended: s.extended,
     entrySpot: s.plan.entrySpot,
     slSpot: s.plan.slSpot,
@@ -91,6 +121,10 @@ export function buildScanContext(
     scanned: scan.scanned,
     gated: scan.gated,
     tilt: scan.tilt,
+    // TradeFinder's independent board + the 09:45–11:00 climb race. Present in
+    // shape even when empty so `available: false` reads as "no TF evidence
+    // today" rather than the field silently vanishing.
+    tf: scan.tfContext ?? { available: false, hasRace: false, climbers: [], newEntrants: [] },
     picks: (scan.suggestions ?? []).map(trimEntryPick),
   };
 }

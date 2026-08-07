@@ -60,6 +60,7 @@ import {
   USE_CHAOTIC_OPEN_GATE,
   USE_EXTENDED_TREND_BYPASS,
   USE_MOMENTUM_BREAKOUT,
+  USE_MOVE_FRESHNESS_GATE,
   USE_RANK_CLIMB_GATE,
   USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
@@ -76,8 +77,12 @@ import {
 } from '@/lib/trade-suggest/candidates';
 import { qualifiesByBreakout } from '@/lib/trade-suggest/breakout-bypass';
 import { chaoticOpenRatio } from '@/lib/trade-suggest/chaotic-open';
+import { detectConsolidationBreakout } from '@/lib/trade-suggest/consolidation-breakout';
 import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
+import { classifyMoveFreshness, isStaleMove, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
 import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
+import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
+import { getTfRaceForWindow } from '@/lib/tf-live/race';
 import { attachPremiums, type PremiumPolicy } from '@/lib/trade-suggest/premiums';
 import { buildSpotPlan, computeCompositeScore } from '@/lib/trade-suggest/scoring';
 import { getSuggestions, upsertSuggestions } from '@/lib/trade-suggest/store';
@@ -278,6 +283,7 @@ export async function runTradeSuggest(
   const useMomentumBreakout = await getToggle('USE_MOMENTUM_BREAKOUT', USE_MOMENTUM_BREAKOUT);
   const useChaoticOpenGate = await getToggle('USE_CHAOTIC_OPEN_GATE', USE_CHAOTIC_OPEN_GATE);
   const useRankClimbGate = await getToggle('USE_RANK_CLIMB_GATE', USE_RANK_CLIMB_GATE);
+  const useMoveFreshnessGate = await getToggle('USE_MOVE_FRESHNESS_GATE', USE_MOVE_FRESHNESS_GATE);
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
   // Capital budget = the auto-trade page's editable maxCapitalRupees (one source
   // of truth). A pick whose single lot costs more than this is skipped, so the
@@ -285,6 +291,26 @@ export async function runTradeSuggest(
   // Dhan balance -> only ≤₹30k/lot picks). getAutoTradeSettings never throws —
   // falls back to its default (= CAPITAL_BUDGET) on a DB hiccup.
   const capitalBudget = (await getAutoTradeSettings()).maxCapitalRupees || CAPITAL_BUDGET;
+
+  // TradeFinder's INDEPENDENT board for today, read ONCE per scan and shared by
+  // both the open-position signals and the new picks. A second pipeline
+  // agreeing on a name is corroboration; TF having no data is MISSING evidence,
+  // never confirmation. The failure path is silent by design — TF tokens are
+  // pasted by hand on /tf and lapse often, and a scan that produces real trade
+  // decisions must never depend on that.
+  let tfSnapshot: TfSnapshot = {
+    date,
+    available: false,
+    capturedAt: null,
+    ageMinutes: null,
+    total: 0,
+    bySymbol: new Map(),
+  };
+  try {
+    tfSnapshot = await getTfSnapshot(date);
+  } catch (err) {
+    console.warn(`${TAG} TradeFinder snapshot unavailable: ${(err as Error).message}`);
+  }
 
   // 1. Candidates from the live NSE feeds (F&O-gated, sector attached),
   //    widened to the full tracked universe when SCAN_FULL_UNIVERSE is on
@@ -475,6 +501,16 @@ export async function runTradeSuggest(
         orBreakout,
         tfBreakout: row?.breakout ?? null,
         sectorAligned,
+        // For a HELD position the freshness read is an EXIT input, not an entry
+        // one: a thesis that has flipped to 'fading' since 09:45 is the move
+        // unwinding while we are still in it.
+        sinceEntryPct: row?.sinceEntryPct ?? null,
+        moveFreshness: classifyMoveFreshness({
+          sinceEntryPct: row?.sinceEntryPct ?? null,
+          changePctOpen: row?.changePctOpen ?? null,
+          direction,
+        }),
+        tfCorroboration: corroborateWithTf(tfSnapshot, trade.symbol),
         dataAsOfMs: base.marketDataAsOfMs ?? null,
       };
     })
@@ -543,6 +579,8 @@ export async function runTradeSuggest(
     rankClimb: number | null;
     /** True when the OI gate passed via the rank-climb catch path (NSE 1–5% + climbing). */
     climbPath: boolean;
+    /** Direction-aware "App Since 9:45" reading (move-freshness.ts). */
+    moveFreshness: MoveFreshness;
     score: number;
   }
   const survivors: Enriched[] = [];
@@ -717,6 +755,21 @@ export async function runTradeSuggest(
       continue;
     }
 
+    // Move freshness — the "App Since 9:45" read (move-freshness.ts). Computed
+    // for EVERY survivor because it is attached as evidence regardless; the
+    // GATE (drop 'spent'/'fading') is opt-in and off until sinceEntryPct has
+    // replayable history. 'unknown' never blocks: missing evidence is not
+    // evidence of staleness.
+    const moveFreshness = classifyMoveFreshness({
+      sinceEntryPct: row.sinceEntryPct ?? null,
+      changePctOpen: row.changePctOpen ?? null,
+      direction,
+    });
+    if (useMoveFreshnessGate && isStaleMove(moveFreshness.profile)) {
+      gated.staleMove = (gated.staleMove ?? 0) + 1;
+      continue;
+    }
+
     survivors.push({
       row,
       sector: sectorBySymbol.get(row.symbol) ?? '',
@@ -737,6 +790,7 @@ export async function runTradeSuggest(
       chaosRatio,
       rankClimb: rankClimbSpots,
       climbPath: climbCatchOk,
+      moveFreshness,
       score: 0,
     });
   }
@@ -932,6 +986,16 @@ export async function runTradeSuggest(
       sectorAligned,
     };
 
+    // Coil-and-pop read (consolidation-breakout.ts): the highest-quality entry
+    // shape available, because the coil's far edge is a stop the MARKET drew
+    // rather than a percentage we invented. Evidence only — it never admits a
+    // name past a gate; it tells the ranking and both AIs which admitted name
+    // has real structure behind it. Point-in-time: the forming bucket excluded.
+    const consolidation = detectConsolidationBreakout(s.bars, s.direction, fyersBucketFor(Date.now()));
+
+    // TradeFinder's independent verdict on the same name (tf-live/snapshot.ts).
+    const tfCorroboration = corroborateWithTf(tfSnapshot, r.symbol);
+
     // SHADOW sector-activity evidence (not a gate/score): where this pick's
     // sector ranks among all scanned sectors by OI activity. Evidence only.
     const sectorRank = sectorActivityRank.get(s.sector) ?? null;
@@ -962,6 +1026,19 @@ export async function runTradeSuggest(
             '🚪 BREAKOUT-BYPASS path: both OI gates failed (no futures build, no qualifying NSE combined build) — admitted on a confirmed OR breakout with Supertrend + VWAP agreeing and R-Factor ≥ 3.6. Price led, open interest did not confirm.',
           ]
         : []),
+      // Move freshness FIRST among the evidence: it is the one line that says
+      // whether the move is still in front of the trade or already behind it.
+      ...(s.moveFreshness.profile === 'unknown'
+        ? []
+        : [
+            `${s.moveFreshness.profile === 'fresh' ? '🔥 fresh move' : s.moveFreshness.profile === 'spent' ? '⚠ spent move' : s.moveFreshness.profile === 'fading' ? '⚠ fading move' : 'quiet move'}: ${s.moveFreshness.detail}`,
+          ]),
+      ...(consolidation
+        ? [
+            `📦 consolidation breakout (${consolidation.grade}): ${consolidation.detail}. The base edge ${consolidation.pivot} is the structural invalidation level.`,
+          ]
+        : []),
+      ...(tfCorroboration ? [tfCorroboration.detail] : []),
       `R-Factor ${r.rFactor?.toFixed(2)} (${s.direction}, confidence ${((r.rFactorConfidence ?? 0) * 100).toFixed(0)}%)`,
       `futures OI ${r.oiLevel?.toFixed(2)}× 20-day avg${r.oiUrgency != null && r.oiUrgency > 0 ? `, urgency ${r.oiUrgency.toFixed(1)}/10` : ''}`,
       ...(s.nseOiPct != null && (s.nseOiPct >= MIN_NSE_OI_PCT || s.climbPath)
@@ -1078,6 +1155,10 @@ export async function runTradeSuggest(
       imbalance: r.imbalance,
       orBreakout: s.orBreakout,
       tfBreakout: r.breakout ?? null,
+      consolidation,
+      sinceEntryPct: r.sinceEntryPct ?? null,
+      moveFreshness: s.moveFreshness,
+      tfCorroboration,
       setupLevel: s.setupLevel,
       extended: s.extended,
       factors,
@@ -1101,6 +1182,44 @@ export async function runTradeSuggest(
   // Expose the per-sector aggregation (already computed above) so the poller's
   // priority-refresh shadow can store a sector snapshot without any new call.
   base.sectorAggregates = [...sectorAgg.values()];
+
+  // TradeFinder session context: how fresh their board is, and who is climbing
+  // it inside the 09:45–11:00 entry window. The race needs ≥2 captures in that
+  // window — with fewer it reports hasRace:false rather than inventing a
+  // trajectory from one point (see tf-live/race.ts).
+  try {
+    const race = await getTfRaceForWindow(date);
+    base.tfContext = {
+      available: tfSnapshot.available,
+      capturedAt: tfSnapshot.capturedAt,
+      ageMinutes: tfSnapshot.ageMinutes,
+      total: tfSnapshot.total,
+      hasRace: race.hasRace,
+      climbers: race.runners.map((runner) => ({
+        symbol: runner.symbol,
+        rankNow: runner.rankNow,
+        deltaSinceWindowStart: runner.deltaSinceWindowStart,
+        rFactorNow: runner.rFactorNow,
+      })),
+      newEntrants: race.newEntrants.map((runner) => ({
+        symbol: runner.symbol,
+        rankNow: runner.rankNow,
+        rFactorNow: runner.rFactorNow,
+      })),
+    };
+  } catch (err) {
+    console.warn(`${TAG} TradeFinder race unavailable: ${(err as Error).message}`);
+    base.tfContext = {
+      available: tfSnapshot.available,
+      capturedAt: tfSnapshot.capturedAt,
+      ageMinutes: tfSnapshot.ageMinutes,
+      total: tfSnapshot.total,
+      hasRace: false,
+      climbers: [],
+      newEntrants: [],
+    };
+  }
+
   // 7. Persist (first sighting keeps its original spot/time; repeats bump timesSeen)
   try {
     await upsertSuggestions(date, picks);

@@ -38,7 +38,9 @@ const { computeRFactor } = await import('../lib/r-factor');
 const { aggregateSectors } = await import('../lib/sector/aggregate');
 const { combinedOiSlope } = await import('../lib/signals/combined-oi-slope');
 const { atr, sessionVwap, supertrend } = await import('../lib/signals/indicators');
-const { computeOiUrgency } = await import('../lib/signals/oi-intraday');
+const { changeSinceEntryWindow, computeOiUrgency } = await import('../lib/signals/oi-intraday');
+const { detectConsolidationBreakout } = await import('../lib/trade-suggest/consolidation-breakout');
+const { classifyMoveFreshness } = await import('../lib/trade-suggest/move-freshness');
 const { deriveSessionContext } = await import('../lib/signals/session-context');
 const { deriveBreakoutContext, evaluateBreakout } = await import('../lib/breakout');
 const { qualifiesByBreakout } = await import('../lib/trade-suggest/breakout-bypass');
@@ -171,6 +173,9 @@ function scanAtTick(tick: number): SuggestResponse {
       rFactorBias: r?.bias ?? null,
       rFactorConfidence: r?.confidence ?? null,
       rFactorAfterEntry: r?.afterEntryWindow ?? null,
+      // Point-in-time "since 09:45": `series` is already clipped to this tick,
+      // so this is exactly what the live route computes, with no lookahead.
+      sinceEntryPct: changeSinceEntryWindow(series, snap.ltp),
       rFactors:
         r?.factors.map((f) => ({
           label: f.label,
@@ -353,6 +358,20 @@ function scanAtTick(tick: number): SuggestResponse {
       imbalance: sv.row.imbalance,
       orBreakout: sv.orBreakout,
       tfBreakout,
+      // Both computed from the same tick-clipped inputs the live engine uses.
+      consolidation: detectConsolidationBreakout(sv.bars, sv.direction, tickBucket),
+      sinceEntryPct: sv.row.sinceEntryPct ?? null,
+      moveFreshness: classifyMoveFreshness({
+        sinceEntryPct: sv.row.sinceEntryPct ?? null,
+        changePctOpen: sv.row.changePctOpen ?? null,
+        direction: sv.direction,
+      }),
+      // Deliberately null in replay: TradeFinder captures are stored with their
+      // wall-clock capture time only, so there is no way to reconstruct what
+      // their board said AS OF this tick. Replaying against a board captured
+      // later in the session would be lookahead. No TF evidence is the honest
+      // state here — see lib/tf-live/snapshot.ts.
+      tfCorroboration: null,
       setupLevel: sv.setupLevel,
       extended: sv.extended,
       factors: {

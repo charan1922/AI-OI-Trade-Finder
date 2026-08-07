@@ -326,6 +326,24 @@ export const EXTENDED_BYPASS_MIN_RFACTOR = 3.6;
  *  proves itself — the conservative default when overriding a 0-for-5 ban. */
 export const EXTENDED_BYPASS_REQUIRE_SUPERTREND = true;
 
+/**
+ * EXPERIMENTAL stale-move gate (lib/trade-suggest/move-freshness.ts): drop a
+ * candidate whose move is already BEHIND it — the gap-and-flat profile (a big
+ * day move with ~nothing since 09:45) and the fading profile (giving it back
+ * since 09:45). This is the "App Since 9:45" column finally acting on a scan
+ * instead of only being displayed.
+ *
+ * Ships OFF, and the reason is not timidity: `sinceEntryPct` was never
+ * PERSISTED to the EOD table until 2026-08-07, so there is no multi-day history
+ * to replay this against. Turning it on now would be a guess wearing a gate's
+ * clothes. Everything the gate would use is attached to every pick as evidence
+ * regardless (`moveFreshness`), it is written into the entry bar both AIs read,
+ * and it is surfaced in the reasons list — so the signal is fully in play
+ * today. Flip this ON from /config once the replay has ~10 sessions of
+ * sinceEntryPct history and shows the profiles separate winners from losers.
+ */
+export const USE_MOVE_FRESHNESS_GATE = false;
+
 /** Candidate pool switch. When true, the scan quotes the FULL tradeable F&O
  *  universe (fno_stocks, non-index, non-'avoid' — ~166 names, the same list
  *  the Fyers recorder tracks) merged with the movers feeds below (still

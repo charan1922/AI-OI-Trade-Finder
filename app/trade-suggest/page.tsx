@@ -86,6 +86,35 @@ interface LivePick {
   imbalance: number | null;
   orBreakout: boolean;
   extended: boolean;
+  /** Coil-and-pop structure; null when no intact consolidation breakout exists. */
+  consolidation: {
+    grade: 'unconfirmed' | 'confirmed' | 'strong';
+    pivot: number;
+    baseHigh: number;
+    baseLow: number;
+    baseRangePct: number;
+    barsSinceBreakout: number;
+    volumeMult: number | null;
+    extensionPct: number;
+    extended: boolean;
+    detail: string;
+  } | null;
+  sinceEntryPct: number | null;
+  moveFreshness: {
+    profile: 'fresh' | 'quiet' | 'spent' | 'fading' | 'unknown';
+    sinceEntryDirectional: number | null;
+    freshShare: number | null;
+    detail: string;
+  } | null;
+  /** TradeFinder's independent rank; null = they have no data on this name. */
+  tfCorroboration: {
+    rFactor: number;
+    rank: number;
+    total: number;
+    topBoard: boolean;
+    ageMinutes: number | null;
+    detail: string;
+  } | null;
   factors: PickFactors | null;
   reasons: string[];
 }
@@ -159,6 +188,51 @@ function PickCard({ p }: { p: LivePick }) {
   const riskRupees = prem != null ? Math.round(prem.perLotCost * 0.4) : null;
   const fmt = (v: number | null | undefined, d = 2) => (v == null ? '—' : v.toFixed(d));
   const chips: { label: string; value: string; tone: 'good' | 'warn' | 'info'; title: string }[] = [
+    // Freshness first — it answers "is the move ahead of me or behind me?",
+    // which decides whether the rest of the evidence is worth reading.
+    ...(p.moveFreshness && p.moveFreshness.profile !== 'unknown'
+      ? [
+          {
+            label: 'Since 9:45',
+            value:
+              p.moveFreshness.sinceEntryDirectional == null
+                ? p.moveFreshness.profile
+                : `${p.moveFreshness.sinceEntryDirectional >= 0 ? '+' : ''}${p.moveFreshness.sinceEntryDirectional.toFixed(2)}% ${p.moveFreshness.profile}`,
+            tone: (p.moveFreshness.profile === 'fresh'
+              ? 'good'
+              : p.moveFreshness.profile === 'quiet'
+                ? 'info'
+                : 'warn') as 'good' | 'warn' | 'info',
+            title: `Move since the 09:45 entry window opened, signed toward the trade. ${p.moveFreshness.detail}`,
+          },
+        ]
+      : []),
+    ...(p.consolidation
+      ? [
+          {
+            label: 'Coil',
+            value: `${p.consolidation.grade} @ ${p.consolidation.pivot}`,
+            tone: (p.consolidation.extended
+              ? 'warn'
+              : p.consolidation.grade === 'strong'
+                ? 'good'
+                : p.consolidation.grade === 'confirmed'
+                  ? 'good'
+                  : 'info') as 'good' | 'warn' | 'info',
+            title: `Consolidation breakout — ${p.consolidation.detail}. The pivot ${p.consolidation.pivot} is the structural invalidation level (the one the market drew, not a % guess).`,
+          },
+        ]
+      : []),
+    ...(p.tfCorroboration
+      ? [
+          {
+            label: 'TF rank',
+            value: `#${p.tfCorroboration.rank}/${p.tfCorroboration.total}`,
+            tone: (p.tfCorroboration.topBoard ? 'good' : 'warn') as 'good' | 'warn',
+            title: p.tfCorroboration.detail,
+          },
+        ]
+      : []),
     {
       label: 'R-Factor',
       value: `${p.rFactor.toFixed(2)}`,
