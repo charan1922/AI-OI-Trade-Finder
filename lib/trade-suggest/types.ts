@@ -5,6 +5,9 @@
 import type { BreakoutSignal } from '@/lib/breakout';
 import type { PriorityFeed, PriorityReason, PriorityTier } from '@/lib/priority-refresh/types';
 import type { SectorAggregate } from '@/lib/sector/aggregate';
+import type { ConsolidationBreakout } from '@/lib/trade-suggest/consolidation-breakout';
+import type { MoveFreshness } from '@/lib/trade-suggest/move-freshness';
+import type { TfCorroboration } from '@/lib/tf-live/snapshot';
 
 export type OptionSide = 'CE' | 'PE';
 
@@ -168,6 +171,20 @@ export interface TradeSuggestion {
    *  morning test · R-Factor efficiency · named levels cleared. Display
    *  evidence, not a gate — null until the symbol's candles are recorded. */
   tfBreakout: BreakoutSignal | null;
+  /** Coil-and-pop read on the 5-min bars (consolidation-breakout.ts): a tight
+   *  base the price has actually left, with the base edge as a structural stop.
+   *  Null when no intact coil breakout exists — evidence, never a gate. */
+  consolidation: ConsolidationBreakout | null;
+  /** Raw move since the 09:45 entry window opened (%), from the recorded
+   *  intraday series — the "App Since 9:45" column. Null before 09:45 or when
+   *  no snapshot was recorded at/after it. */
+  sinceEntryPct: number | null;
+  /** Direction-aware reading of sinceEntryPct vs the day's move
+   *  (move-freshness.ts): is the move still in front of us, or behind us? */
+  moveFreshness: MoveFreshness | null;
+  /** TradeFinder's INDEPENDENT R-Factor rank for this name today, when a /tf
+   *  capture exists. Null means TF has no data — not that TF ranks it poorly. */
+  tfCorroboration: TfCorroboration | null;
   setupLevel: string;
   /** Already moved ≥3% from open at suggestion time. With EXCLUDE_EXTENDED
    *  these are gated out (0-for-5 evidence); kept for the flag-off path. */
@@ -238,7 +255,30 @@ export interface ManagedPositionSignal {
   orBreakout: boolean | null;
   tfBreakout: BreakoutSignal | null;
   sectorAligned: boolean | null;
+  /** Move since 09:45 and its direction-aware reading — for a HELD position
+   *  a flip to 'fading' is the thesis breaking, which is an exit reason. */
+  sinceEntryPct: number | null;
+  moveFreshness: MoveFreshness | null;
+  /** TradeFinder's independent rank for the held name, when available. */
+  tfCorroboration: TfCorroboration | null;
   dataAsOfMs: number | null;
+}
+
+/** Session-level TradeFinder context attached to a scan: how fresh their board
+ *  is and who is climbing it inside the 09:45–11:00 entry window. Always
+ *  present in shape; `available: false` means no capture today (missing
+ *  evidence), which callers must never read as confirmation. */
+export interface TfScanContext {
+  available: boolean;
+  capturedAt: string | null;
+  ageMinutes: number | null;
+  total: number;
+  /** True once ≥2 captures exist inside today's 09:45–11:00 window. */
+  hasRace: boolean;
+  /** Names climbing TradeFinder's own R-Factor board this window. */
+  climbers: { symbol: string; rankNow: number; deltaSinceWindowStart: number | null; rFactorNow: number | null }[];
+  /** Names that appeared on the board mid-window (no window-start rank). */
+  newEntrants: { symbol: string; rankNow: number; rFactorNow: number | null }[];
 }
 
 /** A persisted suggestion read back from trade_suggestions. */
@@ -323,6 +363,8 @@ export interface SuggestResponse {
   tracked?: TrackedPosition[];
   /** Current thesis evidence for tracked names, independent of suggestion gates. */
   managedPositionSignals?: ManagedPositionSignal[];
+  /** TradeFinder's independent board + entry-window race (evidence only). */
+  tfContext?: TfScanContext;
   note?: string;
   error?: string;
 }

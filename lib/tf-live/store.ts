@@ -367,13 +367,15 @@ export async function getTfLiveCaptureForDate(
 
 /**
  * Per-symbol lookup from the MOST RECENT successful `all_sector` capture,
- * whatever date that was — feeds the Live Urgency page's TF column. Field
- * names are tried defensively (several candidates per value) because the
- * exact schema of TradeFinder's `all_sector` response has not yet been
- * inspected from a real successful capture — the FIRST real capture should
- * be checked against this list and the candidates tightened if they don't
- * match. Never guesses a value: a field with no matching key is null, shown
- * as "—", not fabricated.
+ * whatever date that was — feeds the Live Urgency page's TF column. The schema
+ * is owned by lib/tf-live/parse.ts and was CONFIRMED against a real payload
+ * (2026-08-06), so nothing here guesses at field names; an unparseable payload
+ * yields no rows rather than invented values.
+ *
+ * Note the deliberate difference from lib/tf-live/snapshot.ts: this returns the
+ * latest capture from ANY date, because a display column showing yesterday's TF
+ * number is acceptable. Anything feeding a TRADE decision must use the
+ * date-scoped snapshot instead — a stale board must never be read as today's.
  */
 export async function getLatestTfRFactorBySymbol(): Promise<{
   capturedAt: string | null;

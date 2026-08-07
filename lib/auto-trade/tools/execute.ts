@@ -15,6 +15,8 @@ import { getEqBucketStatus } from '@/lib/fyers/candle-store';
 import { BLOCK_STALE_AUTO_ENTRY } from '@/lib/priority-refresh/config';
 import { evaluateFreshness, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
+import { getTfRaceForWindow, type TfRaceResult } from '@/lib/tf-live/race';
+import { getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
 import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types';
 import { alerts } from '../alerts';
 import { getExecutionAdapter } from '../brokers';
@@ -347,6 +349,64 @@ export async function executeAutoTradeTool(
           args,
           ok: true,
           summary: rt.scan ? `${picks} pick(s) from ${rt.scan.scanned} scanned` : 'no scan this cycle',
+        },
+      };
+    }
+
+    if (name === 'get_tf_race') {
+      // Read TradeFinder's board straight from the store rather than reusing
+      // rt.scan.tfContext: on a management-only pass there may be no scan at
+      // all, and an exit decision should still be able to see their board.
+      // Fails SOFT — no TF data must never break a decision pass.
+      let snapshot: TfSnapshot | null = null;
+      let race: TfRaceResult | null = null;
+      try {
+        snapshot = await getTfSnapshot(rt.date);
+        race = await getTfRaceForWindow(rt.date);
+      } catch (error) {
+        console.warn(`[auto-trade] TradeFinder board unavailable: ${(error as Error).message}`);
+      }
+      const result = {
+        available: snapshot?.available ?? false,
+        capturedAt: snapshot?.capturedAt ?? null,
+        ageMinutes: snapshot?.ageMinutes ?? null,
+        total: snapshot?.total ?? 0,
+        note:
+          snapshot?.available !== true
+            ? 'No TradeFinder capture today — this is MISSING evidence, not a rejection of any pick.'
+            : race?.hasRace !== true
+              ? 'Board available, but fewer than two captures landed inside 09:45–11:00, so no climb trajectory can be computed.'
+              : null,
+        board: snapshot?.available
+          ? [...snapshot.bySymbol.entries()]
+              .sort((a, b) => a[1].rank - b[1].rank)
+              .slice(0, 20)
+              .map(([symbol, row]) => ({ symbol, rank: row.rank, rFactor: row.rFactor, pctChange: row.pctChange }))
+          : [],
+        hasRace: race?.hasRace ?? false,
+        climbers:
+          race?.runners.map((runner) => ({
+            symbol: runner.symbol,
+            rankNow: runner.rankNow,
+            climbedSpots: runner.deltaSinceWindowStart,
+            rFactorNow: runner.rFactorNow,
+          })) ?? [],
+        newEntrants:
+          race?.newEntrants.map((runner) => ({
+            symbol: runner.symbol,
+            rankNow: runner.rankNow,
+            rFactorNow: runner.rFactorNow,
+          })) ?? [],
+      };
+      return {
+        result,
+        trace: {
+          name,
+          args,
+          ok: true,
+          summary: result.available
+            ? `TF board ${result.total} names, ${result.ageMinutes ?? '?'} min old · ${result.hasRace ? `${result.climbers.length} climbing` : 'no race yet'}`
+            : 'no TradeFinder data today',
         },
       };
     }

@@ -27,6 +27,21 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
     parameters: NO_ARGS,
   },
   {
+    name: 'get_tf_race',
+    description:
+      "TradeFinder's OWN R-Factor leaderboard for today — a second, independent pipeline scoring the " +
+      'same market. Returns their current board (rank + their R-Factor), plus the 09:45–11:00 "running ' +
+      'race": which names have CLIMBED their board since the entry window opened, and which appeared on ' +
+      'it mid-window. Use it to corroborate a scanner pick you are already considering: agreement across ' +
+      'two independent pipelines is real evidence. It is NOT a source of trade ideas — you may only ever ' +
+      'enter names from get_scan_picks. available:false means TradeFinder data is MISSING today (their ' +
+      'session token lapsed); that is absence of evidence, never confirmation, and never a reason to ' +
+      'skip a pick that is otherwise clean. hasRace:false means fewer than two captures landed inside ' +
+      'the window, so no trajectory can be computed — read it as unknown, not as "nobody is climbing". ' +
+      'Check ageMinutes: a board an hour old describes an hour-old market.',
+    parameters: NO_ARGS,
+  },
+  {
     name: 'get_account_state',
     description:
       'Refresh the account state already preloaded in the first message: mode, kill switch, entries used ' +
@@ -142,5 +157,14 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
 /** Once no entry is possible this pass, do not keep paying to describe entry
  * tools the model cannot use. The final decision text is already the durable
  * audit record, so a separate record_note round trip is intentionally absent. */
-const MANAGEMENT_TOOL_NAMES = new Set(['get_quote', 'get_open_positions', 'modify_stop', 'exit_position']);
+const MANAGEMENT_TOOL_NAMES = new Set([
+  'get_quote',
+  'get_open_positions',
+  'modify_stop',
+  'exit_position',
+  // Kept on management passes on purpose: a HELD name sliding down
+  // TradeFinder's board is corroborating evidence for an EARLY EXIT, which is
+  // the one place the AI adds value over the deterministic backstops.
+  'get_tf_race',
+]);
 export const AUTO_TRADE_MANAGEMENT_TOOLS = AUTO_TRADE_TOOLS.filter((tool) => MANAGEMENT_TOOL_NAMES.has(tool.name));

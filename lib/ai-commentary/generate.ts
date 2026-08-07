@@ -148,10 +148,26 @@ export const COMMENTARY_SYSTEM = [
   "scanner's numbers, never bravado, and you use ONLY numbers present in the JSON or your earlier reads.",
   '',
   'THE BAR for "TRADE NOW" (all from the JSON; every miss knocks it down to WATCH or nothing):',
-  '- breakout actually happened: tfBreakout.grade "confirmed"/"strong", or orBreakout true;',
+  '- the move is STILL AHEAD: moveProfile "fresh". This one carries the most weight, because it decides',
+  '  whether the trader joins a move or inherits one. "spent" = a big day move with ~nothing since 09:45',
+  '  (the gap already paid whoever was early — no trade). "fading" = giving it back since 09:45 (that is',
+  '  the unwind — no trade). "quiet" = nothing has started (WATCH at most). "unknown" = the 09:45',
+  '  reference was never recorded, which is MISSING evidence, not a clean read.',
+  '- breakout actually happened: consolidation present (best), tfBreakout.grade "confirmed"/"strong",',
+  '  or orBreakout true;',
   '- trend with the trade: supertrendAligned and vwapAligned not false; sector not against it;',
   '- fresh money still coming in: combinedOiSlope30m >= 0 (or oiUrgency clearly rising);',
   '- entry→target room beats the entry→SL risk.',
+  'PREFER THE CONSOLIDATION BREAKOUT. When `consolidation` is present the stock coiled into a tight',
+  'range and then left it — the setup that gives a reason, a level and a measured risk together. grade',
+  '"strong" (tight coil + volume expansion) beats a higher-scoring name that merely trended all morning;',
+  '"confirmed" has held at least one bar; "unconfirmed" broke on the last bar and is a WATCH, not a',
+  'trade. Quote `pivot` as the invalidation level in plain words ("it fails if it closes back under',
+  '1438"). consolidation.extended true means price has already run well past the pivot — a chase.',
+  '`tf` on a pick is TradeFinder\'s INDEPENDENT rank for the same name: agreement is genuine extra',
+  'confidence, a poor rank is a reason to demand the rest be flawless, and null/absent means they have',
+  'no data today — absence of a second opinion, never a rejection. Never call a trade because TF ranks',
+  'it; the trader only ever acts on names in `suggestions`.',
   'On "extended": the scanner ALREADY penalizes and filters late chases — an extended name that still',
   'reaches you is the deliberate trend-day-continuation profile (still breaking out, trend + money',
   'behind it). Extended alone is NOT a veto: demand the rest of the bar be fully clean, call it a late',
@@ -204,6 +220,9 @@ function trimForPrompt(r: SuggestResponse): unknown {
     scanned: r.scanned,
     gated: r.gated,
     tilt: r.tilt,
+    // TradeFinder's independent board + who is climbing it in the 09:45–11:00
+    // window. available:false = no capture today (no second opinion available).
+    tf: r.tfContext ?? { available: false, hasRace: false, climbers: [], newEntrants: [] },
     // Position-management feed: earlier calls + live price, even when the name
     // no longer clears the gates (see TrackedPosition in trade-suggest/types).
     tracked: (r.tracked ?? []).map((t) => ({
@@ -226,6 +245,30 @@ function trimForPrompt(r: SuggestResponse): unknown {
       oiLevel: s.oiLevel,
       oiUrgency: s.oiUrgency,
       orBreakout: s.orBreakout,
+      // Coil-and-pop structure (consolidation-breakout.ts) — `pivot` is the
+      // level the market itself drew, so it is the honest invalidation point.
+      consolidation: s.consolidation && {
+        grade: s.consolidation.grade,
+        pivot: s.consolidation.pivot,
+        baseHigh: s.consolidation.baseHigh,
+        baseLow: s.consolidation.baseLow,
+        baseRangePct: s.consolidation.baseRangePct,
+        barsSinceBreakout: s.consolidation.barsSinceBreakout,
+        volumeMult: s.consolidation.volumeMult,
+        extended: s.consolidation.extended,
+      },
+      // The "since 09:45" freshness read — is the move ahead of us or behind us?
+      sinceEntryPct: s.sinceEntryPct,
+      moveProfile: s.moveFreshness?.profile ?? 'unknown',
+      moveDetail: s.moveFreshness?.detail ?? null,
+      // TradeFinder's INDEPENDENT rank; null = they have no data on this name.
+      tf: s.tfCorroboration && {
+        rFactor: s.tfCorroboration.rFactor,
+        rank: s.tfCorroboration.rank,
+        total: s.tfCorroboration.total,
+        topBoard: s.tfCorroboration.topBoard,
+        ageMinutes: s.tfCorroboration.ageMinutes,
+      },
       // TradeFinder 3-check breakout verdict (lib/breakout) — null until candles exist.
       tfBreakout: s.tfBreakout && {
         grade: s.tfBreakout.grade,
