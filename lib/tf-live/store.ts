@@ -74,6 +74,18 @@ async function ensureTables(): Promise<void> {
     )
   `);
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_tf_live_rows_symbol ON tf_live_rows(symbol)`);
+  // The browser-relay's cookie jar (lib/tf-live/browser.ts) — deliberately a
+  // SEPARATE table from tf_live_session (lt/at): the two capture methods are
+  // independent and a box may have one, both, or neither configured.
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS tf_browser_session (
+      id                INTEGER PRIMARY KEY CHECK (id = 1),
+      encryptedCookies  TEXT NOT NULL,
+      updatedAt         TEXT NOT NULL,
+      verifiedAt        TEXT,
+      lastError         TEXT
+    )
+  `);
   tablesReady = true;
 }
 
@@ -210,6 +222,70 @@ export async function recordTfLiveSessionOutcome(ok: boolean, error?: string): P
     await prisma.$executeRawUnsafe(`UPDATE tf_live_session SET verifiedAt = ?, lastError = NULL WHERE id = 1`, now);
   } else {
     await prisma.$executeRawUnsafe(`UPDATE tf_live_session SET lastError = ? WHERE id = 1`, error ?? 'unknown error');
+  }
+}
+
+// ─── Browser-relay cookie session (lib/tf-live/browser.ts) ──────────────────
+
+export interface TfBrowserSessionStatus {
+  configured: boolean;
+  updatedAt: string | null;
+  verifiedAt: string | null;
+  lastError: string | null;
+}
+
+/** Store the cookie jar the browser relay injects to start out logged in.
+ *  Encrypted at rest with the same key/scheme as lt/at. */
+export async function saveTfBrowserCookies(cookieHeader: string): Promise<void> {
+  if (!cookieHeader || cookieHeader.length > MAX_TOKEN_LENGTH) {
+    throw new Error('cookie header is empty or too large');
+  }
+  await ensureTables();
+  const now = new Date().toISOString();
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO tf_browser_session (id, encryptedCookies, updatedAt, verifiedAt, lastError)
+     VALUES (1, ?, ?, NULL, NULL)
+     ON CONFLICT(id) DO UPDATE SET
+       encryptedCookies = excluded.encryptedCookies,
+       updatedAt = excluded.updatedAt,
+       verifiedAt = NULL,
+       lastError = NULL`,
+    encryptValue(cookieHeader),
+    now
+  );
+}
+
+/** Used by the browser relay only; never return this from a Route Handler. */
+export async function getTfBrowserCookies(): Promise<string | null> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(
+    `SELECT encryptedCookies FROM tf_browser_session WHERE id = 1`
+  )) as { encryptedCookies: string }[];
+  const row = rows[0];
+  return row ? decryptValue(row.encryptedCookies) : null;
+}
+
+export async function getTfBrowserSessionStatus(): Promise<TfBrowserSessionStatus> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(
+    `SELECT updatedAt, verifiedAt, lastError FROM tf_browser_session WHERE id = 1`
+  )) as { updatedAt: string; verifiedAt: string | null; lastError: string | null }[];
+  const row = rows[0];
+  return row
+    ? { configured: true, updatedAt: row.updatedAt, verifiedAt: row.verifiedAt, lastError: row.lastError }
+    : { configured: false, updatedAt: null, verifiedAt: null, lastError: null };
+}
+
+/** Called by the browser relay after every capture attempt: `ok` on at least
+ *  one successful TradeFinder response seen, otherwise `error` describing why
+ *  (crash, looks logged out, no response at all yet). */
+export async function recordTfBrowserOutcome(ok: boolean, error?: string): Promise<void> {
+  await ensureTables();
+  const now = new Date().toISOString();
+  if (ok) {
+    await prisma.$executeRawUnsafe(`UPDATE tf_browser_session SET verifiedAt = ?, lastError = NULL WHERE id = 1`, now);
+  } else {
+    await prisma.$executeRawUnsafe(`UPDATE tf_browser_session SET lastError = ? WHERE id = 1`, error ?? 'unknown error');
   }
 }
 

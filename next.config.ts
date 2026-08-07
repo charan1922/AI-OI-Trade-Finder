@@ -14,7 +14,10 @@ const nextConfig: NextConfig = {
   // Native modules used by the server-side data layer (DuckDB Parquet store +
   // Prisma better-sqlite3 adapter) must not be bundled — keep them external so
   // they're require()'d from node_modules at runtime. Turbopack honors this.
-  serverExternalPackages: ["@prisma/client", ".prisma/client", "better-sqlite3", "fyers-api-v3"],
+  // playwright: drives the real headless Chromium for the TradeFinder browser
+  // relay (lib/tf-live/browser.ts) — a native-binary-backed package like the
+  // others here, must not be bundled.
+  serverExternalPackages: ["@prisma/client", ".prisma/client", "better-sqlite3", "fyers-api-v3", "playwright"],
   turbopack: {
     root: projectRoot,
   },
