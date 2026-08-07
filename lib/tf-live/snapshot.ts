@@ -7,6 +7,21 @@
  * participation. Where they disagree, at least one of them is wrong and the
  * name deserves less confidence, not more.
  *
+ * WHAT R-FACTOR MEASURES — AND WHAT IT DOES NOT
+ * ---------------------------------------------
+ * R-Factor is a SIZE-OF-PARTICIPATION number: how much big money is building
+ * or adding in a name. It is DIRECTIONLESS. A high R-Factor says "large players
+ * are active here", never "this is going up". CROMPTON topped TradeFinder's own
+ * board on 2026-08-07 while trading −6.39% on the day — heavy participation, in
+ * a fall.
+ *
+ * So a top rank is never a reason to buy, and a low rank is never a reason to
+ * sell. Direction comes from our own signals (bias, breakout, VWAP/Supertrend,
+ * OI direction); TradeFinder's rank only corroborates that something worth
+ * trading is happening in the name at all. Every string this module produces is
+ * worded to keep that distinction, because a rank presented as an endorsement
+ * is exactly how a directionless number turns into a bad entry.
+ *
  * HARD RULES this module keeps:
  * - It is scoped to ONE DATE. A capture from a previous session is never served
  *   as today's board — an empty result says "no TF data today", which is the
@@ -159,8 +174,10 @@ export function corroborateWithTf(snapshot: TfSnapshot, symbol: string): TfCorro
   const hit = snapshot.bySymbol.get(symbol.toUpperCase());
   if (!hit) return null;
   const topBoard = hit.rank <= TF_TOP_BOARD_RANK;
-  const age =
-    snapshot.ageMinutes == null ? '' : ` (TF board is ${snapshot.ageMinutes} min old)`;
+  const age = snapshot.ageMinutes == null ? '' : `, TF board ${snapshot.ageMinutes} min old`;
+  // Wording is deliberate: "activity/participation", never "confirms the
+  // trade". R-Factor is directionless (see the module note) — the top name on
+  // TF's board on 2026-08-07 was down 6.4% on the day.
   return {
     rFactor: hit.rFactor,
     rank: hit.rank,
@@ -168,7 +185,7 @@ export function corroborateWithTf(snapshot: TfSnapshot, symbol: string): TfCorro
     topBoard,
     ageMinutes: snapshot.ageMinutes,
     detail: topBoard
-      ? `TradeFinder independently ranks it #${hit.rank} of ${snapshot.total} (their R-Factor ${hit.rFactor.toFixed(2)})${age}`
-      : `⚠ TradeFinder ranks it only #${hit.rank} of ${snapshot.total} (their R-Factor ${hit.rFactor.toFixed(2)}) — their board does not confirm this name${age}`,
+      ? `TradeFinder independently ranks it #${hit.rank} of ${snapshot.total} for big-money ACTIVITY (their R-Factor ${hit.rFactor.toFixed(2)}${age}) — size of participation, not a direction call`
+      : `TradeFinder ranks it #${hit.rank} of ${snapshot.total} for big-money activity (their R-Factor ${hit.rFactor.toFixed(2)}${age}) — little institutional participation by their measure; that is a weak-interest flag, NOT a bearish/bullish signal`,
   };
 }

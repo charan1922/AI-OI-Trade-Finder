@@ -32,8 +32,11 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
       "TradeFinder's OWN R-Factor leaderboard for today — a second, independent pipeline scoring the " +
       'same market. Returns their current board (rank + their R-Factor), plus the 09:45–11:00 "running ' +
       'race": which names have CLIMBED their board since the entry window opened, and which appeared on ' +
-      'it mid-window. Use it to corroborate a scanner pick you are already considering: agreement across ' +
-      'two independent pipelines is real evidence. It is NOT a source of trade ideas — you may only ever ' +
+      'it mid-window. THEIR R-FACTOR MEASURES THE SIZE OF BIG-MONEY PARTICIPATION AND IS DIRECTIONLESS: ' +
+      'a #1 rank means large capital is active in that name, NOT that it is going up (on 2026-08-07 ' +
+      'their top name was down 6.39% on the day). Use it to corroborate that something worth trading is ' +
+      'happening in a scanner pick you are already considering; take DIRECTION from the pick\'s own ' +
+      'evidence, never from this rank. It is NOT a source of trade ideas — you may only ever ' +
       'enter names from get_scan_picks. available:false means TradeFinder data is MISSING today (their ' +
       'session token lapsed); that is absence of evidence, never confirmation, and never a reason to ' +
       'skip a pick that is otherwise clean. hasRace:false means fewer than two captures landed inside ' +

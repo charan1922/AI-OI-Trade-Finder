@@ -16,6 +16,7 @@
  * be re-logged-in by hand when its session lapsed. This version needs neither
  * — the two tokens are pasted on /tf, encrypted at rest, and used directly.
  */
+import { MIN_REQUEST_GAP_MS, tfFetch } from '@/lib/tf-live/client';
 import { TF_ENDPOINT_URL, TF_ENDPOINTS, type TfEndpoint } from '@/lib/tf-live/endpoints';
 import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
 import {
@@ -31,7 +32,11 @@ const ENDPOINTS = TF_ENDPOINTS;
 type Endpoint = TfEndpoint;
 const ENDPOINT_URL = TF_ENDPOINT_URL;
 
-const INTERVAL_MS = 5 * 60_000;
+/** Capture cadence: 60s, at the user's explicit request (2026-08-07). A
+ *  5-minute grid was too coarse to see a name climbing TF's board inside the
+ *  09:45–11:00 entry window. Four feeds spaced MIN_REQUEST_GAP_MS apart use
+ *  ~12s of each minute, so a tick always finishes well before the next. */
+const INTERVAL_MS = 60_000;
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 
@@ -89,63 +94,81 @@ function extractRows(endpoint: Endpoint, payload: unknown): unknown[] | undefine
   return undefined;
 }
 
-/** options.force skips the autonomous/market-hours gates — used by the manual
- *  "Capture now" button on /tf so an operator can test off-hours too. */
-export async function captureTfLiveEndpoint(endpoint: Endpoint, options: { force?: boolean } = {}): Promise<void> {
-  if (!options.force && (!configured() || !withinCaptureWindow())) return;
+/**
+ * Capture ONE endpoint. Returns whether it succeeded so the caller can report a
+ * single honest verdict for the whole tick — this function deliberately does
+ * NOT touch the session's lastError. Four endpoints each writing their own
+ * outcome meant the /tf banner showed whatever the LAST one did: three
+ * successes and one throttled retry still painted the page red.
+ *
+ * options.force skips the autonomous/window gates — the manual "Capture now"
+ * button on /tf, so an operator can test off-hours.
+ */
+export async function captureTfLiveEndpoint(
+  endpoint: Endpoint,
+  options: { force?: boolean } = {}
+): Promise<{ endpoint: Endpoint; ok: boolean; error?: string; skipped?: boolean }> {
+  if (!options.force && (!configured() || !withinCaptureWindow())) {
+    return { endpoint, ok: false, skipped: true };
+  }
   const tokens = await getTfLiveTokens();
-  if (!tokens) return;
+  if (!tokens) return { endpoint, ok: false, skipped: true };
 
-  // The JWT knows its own expiry — skip the network round-trip entirely for
-  // a token we already know is dead, and say so precisely rather than let it
+  // The JWT knows its own expiry — skip the network round-trip entirely for a
+  // token we already know is dead, and say so precisely rather than let it
   // surface as a generic TradeFinder rejection.
   const jwtExpiresAt = decodeJwtExpiry(tokens.lt);
   if (jwtExpiresAt && new Date(jwtExpiresAt).getTime() <= Date.now()) {
-    const message = `lt expired at ${jwtExpiresAt} — paste a fresh pair on /tf`;
-    await recordTfLiveCapture({ endpoint, status: 'error', error: message });
-    await recordTfLiveSessionOutcome(false, message);
-    return;
+    const error = `lt expired at ${jwtExpiresAt} — paste a fresh pair on /tf`;
+    await recordTfLiveCapture({ endpoint, status: 'error', error });
+    return { endpoint, ok: false, error };
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-  try {
-    const response = await fetch(ENDPOINT_URL[endpoint], {
-      cache: 'no-store',
-      headers: { accept: 'application/json', jwtToken: tokens.lt, accessToken: tokens.at },
-      signal: controller.signal,
-    });
-    const body = await response.text();
-    if (!response.ok) throw new Error(`TradeFinder returned HTTP ${response.status}`);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      throw new Error('TradeFinder returned non-JSON');
-    }
-    const shape = parsed as { status?: string; code?: string; message?: string } | null;
-    if (shape?.status !== 'SUCCESS') {
-      const detail = shape?.code ? `${shape.code}: ${shape.message ?? 'rejected'}` : 'no response body';
-      throw new Error(`TradeFinder rejected it (${detail.slice(0, 200)})`);
-    }
-    const captureId = await recordTfLiveCapture({ endpoint, status: 'success', payloadJson: body });
-    const rows = extractRows(endpoint, parsed);
-    if (captureId && rows) await recordTfLiveRows(captureId, rows);
-    await recordTfLiveSessionOutcome(true);
-  } catch (error) {
-    const message = (error as Error).message;
-    await recordTfLiveCapture({ endpoint, status: 'error', error: message });
-    await recordTfLiveSessionOutcome(false, message);
-  } finally {
-    clearTimeout(timeout);
+  // Every request goes through the shared queue in client.ts: serialized
+  // globally and spaced, because bursts are what TradeFinder refuses.
+  const result = await tfFetch(ENDPOINT_URL[endpoint], tokens);
+  if (!result.ok) {
+    const error = result.error ?? 'TradeFinder request failed';
+    await recordTfLiveCapture({ endpoint, status: 'error', error });
+    return { endpoint, ok: false, error };
   }
+
+  const captureId = await recordTfLiveCapture({ endpoint, status: 'success', payloadJson: result.body });
+  const rows = extractRows(endpoint, result.payload);
+  if (captureId && rows) await recordTfLiveRows(captureId, rows);
+  return { endpoint, ok: true };
 }
 
+/**
+ * One full tick: every endpoint, sequentially, spaced by the shared queue.
+ *
+ * The session outcome is recorded ONCE, for the tick as a whole, and only
+ * counts endpoints that actually attempted a request. A tick where some feeds
+ * succeed and others are throttled is reported as a partial failure naming the
+ * feeds that failed — not as a blanket "TradeFinder rejected it", which is what
+ * made the /tf banner scream red immediately after a capture that had just
+ * stored 210 stocks.
+ */
 export async function captureTfLive(options: { force?: boolean } = {}): Promise<void> {
   if (running) return;
   running = true;
   try {
-    for (const endpoint of ENDPOINTS) await captureTfLiveEndpoint(endpoint, options);
+    const results = [];
+    for (const endpoint of ENDPOINTS) results.push(await captureTfLiveEndpoint(endpoint, options));
+
+    const attempted = results.filter((r) => !r.skipped);
+    if (attempted.length === 0) return; // outside the window / no token — not a failure
+
+    const failed = attempted.filter((r) => !r.ok);
+    if (failed.length === 0) {
+      await recordTfLiveSessionOutcome(true);
+      return;
+    }
+    const summary =
+      failed.length === attempted.length
+        ? (failed[0].error ?? 'TradeFinder request failed')
+        : `${failed.length} of ${attempted.length} feeds failed (${failed.map((f) => f.endpoint).join(', ')}): ${failed[0].error ?? 'rejected'}`;
+    await recordTfLiveSessionOutcome(false, summary);
   } finally {
     running = false;
   }
@@ -156,5 +179,8 @@ export function startTfLiveCollector(): void {
   void captureTfLive();
   timer = setInterval(() => void captureTfLive(), INTERVAL_MS);
   timer.unref?.();
-  console.log('[tf_live] collector started (plain fetch, no browser)');
+  console.log(
+    `[tf_live] collector started — ${ENDPOINTS.length} feeds every ${INTERVAL_MS / 1000}s, ` +
+      `spaced ${MIN_REQUEST_GAP_MS / 1000}s apart, window 09:22–15:30 IST`
+  );
 }
