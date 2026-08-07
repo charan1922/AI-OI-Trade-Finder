@@ -288,9 +288,9 @@ export default function TfPage() {
             copied and reused (confirmed 2026-08-08) — so a real headless browser runs on the server instead, logged
             in with cookies from your own session. On a signed-in tab, open DevTools Network tab, right-click any
             request to <span className="font-mono">tradefinder.in</span>, choose <strong>Copy → Copy as cURL</strong>,
-            and paste the whole thing below. This should keep working for as long as your TradeFinder login session
-            lasts (their own <span className="font-mono">/api/auth/session</span> reports ~30 days) — not the few
-            seconds a copied access token survives.
+            and paste the whole thing below. This keeps working for as long as your TradeFinder login stays signed
+            in — if your account logs you out daily (confirmed for at least one account, 2026-08-08), plan on
+            re-pasting once a day too. Still far better than the old method, which died within seconds.
           </p>
           <textarea
             value={pastedCurl}

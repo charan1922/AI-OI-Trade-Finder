@@ -21,15 +21,17 @@
  * firing every ~10s, observed directly in a live Network-tab capture
  * 2026-08-08) and store it, exactly like the old fetch-based collector did.
  *
- * WHY THE INJECTED SESSION SHOULD OUTLAST lt/at BY WEEKS, NOT SECONDS
- * --------------------------------------------------------------------
+ * HOW LONG THE INJECTED SESSION LASTS — SHORTER THAN TRADEFINDER CLAIMS
+ * -----------------------------------------------------------------------
  * The one cookie that matters is `__Secure-next-auth.session-token` —
- * TradeFinder's own Google-login session, reported with a ~30-day `expires` in
- * their own /api/auth/session response. That is the SAME mechanism that lets a
- * human reopen tradefinder.in tomorrow without logging in again. Injecting it
- * here should keep this browser "logged in" for roughly that long. When it
- * finally does expire, the fix is the same one-time action as today: paste a
- * fresh "Copy as cURL" on /tf.
+ * TradeFinder's own Google-login session. Their own /api/auth/session response
+ * reports a ~30-day `expires`, but that is the cookie's outer ceiling, not a
+ * promise: at least one real account gets signed out of tradefinder.in DAILY
+ * despite that (confirmed 2026-08-08), so this injected copy should be
+ * expected to need refreshing about that often too — not monthly. Either way,
+ * the fix when it does lapse is the same one-time action: paste a fresh
+ * "Copy as cURL" on /tf. Still a large improvement over lt/at, which needed
+ * re-pasting roughly every few seconds.
  *
  * COST AND LIFECYCLE
  * -------------------
@@ -62,6 +64,14 @@ const CONSECUTIVE_FAILURE_LIMIT = 6;
 const FIRST_SUCCESS_TIMEOUT_MS = 2 * 60_000;
 /** How often the watchdog checks the browser is alive and still in-window. */
 const WATCHDOG_INTERVAL_MS = 60_000;
+/** A manual "Start now" (or a fresh cookie save) outside market hours used to
+ *  get killed by the very next watchdog tick, at most 60s later — the tick
+ *  calls ensureTfBrowserState() with no `force`, sees the window is closed,
+ *  and shuts it straight back down. That made it impossible to just watch it
+ *  run for a few minutes to confirm it's actually working (user request,
+ *  2026-08-08). A manual start now stays up for this long regardless of the
+ *  time of day, then reverts to normal window-based behaviour. */
+const MANUAL_TEST_DURATION_MS = 10 * 60_000;
 
 const REALISTIC_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
@@ -114,10 +124,20 @@ interface BrowserState {
   consecutiveFailures: number;
   sawFirstSuccess: boolean;
   watchdog: NodeJS.Timeout | null;
+  /** Epoch ms until which a manual start should keep running even outside
+   *  the capture window. Null when there's no active manual override. */
+  manualUntilMs: number | null;
 }
 
 const store = globalThis as unknown as { __tfBrowserState?: BrowserState };
-store.__tfBrowserState ??= { browser: null, starting: null, consecutiveFailures: 0, sawFirstSuccess: false, watchdog: null };
+store.__tfBrowserState ??= {
+  browser: null,
+  starting: null,
+  consecutiveFailures: 0,
+  sawFirstSuccess: false,
+  watchdog: null,
+  manualUntilMs: null,
+};
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
 
 /** True while a browser process is currently up. Exported for the /tf status API. */
@@ -229,9 +249,11 @@ async function closeBrowser(): Promise<void> {
  */
 export async function ensureTfBrowserState(options: { force?: boolean } = {}): Promise<void> {
   const s = state();
-  const shouldRun = options.force || withinCaptureWindow();
+  const manualActive = s.manualUntilMs != null && Date.now() < s.manualUntilMs;
+  const shouldRun = options.force || withinCaptureWindow() || manualActive;
 
   if (!shouldRun) {
+    if (s.manualUntilMs != null) s.manualUntilMs = null; // the override just lapsed — clear it, don't keep checking
     await closeBrowser();
     return;
   }
@@ -263,12 +285,20 @@ export function startTfBrowserWatchdog(): void {
   console.log(`[tf_browser] watchdog started — checks every ${WATCHDOG_INTERVAL_MS / 1000}s, window 09:22–15:30 IST`);
 }
 
-/** Manual "Start now" action on /tf — force a launch outside the window for testing. */
+/** Manual "Start now" action on /tf (also used right after a fresh cookie
+ *  save) — force a launch outside the window, and keep it up for
+ *  MANUAL_TEST_DURATION_MS so the next watchdog tick doesn't immediately
+ *  shut it back down again. */
 export async function forceStartTfBrowser(): Promise<void> {
+  state().manualUntilMs = Date.now() + MANUAL_TEST_DURATION_MS;
   await ensureTfBrowserState({ force: true });
 }
 
 /** Manual "Stop" action on /tf. */
 export async function stopTfBrowser(): Promise<void> {
+  // Clear any active manual-test override too — otherwise the next watchdog
+  // tick would see it's still within MANUAL_TEST_DURATION_MS and relaunch the
+  // very browser this call is meant to stop.
+  state().manualUntilMs = null;
   await closeBrowser();
 }
