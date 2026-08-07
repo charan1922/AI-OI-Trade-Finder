@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { adminOnly } from '@/lib/auth/server';
 import {
   assertTfLiveSessionKeyConfigured,
+  clearTfLiveCaptureHistory,
   getLatestTfLiveCaptures,
   getTfLiveCaptureHistory,
   getTfLiveSessionStatus,
@@ -55,5 +56,24 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 400 });
+  }
+}
+
+/** Clear the "Last capture per endpoint" / "Capture history by date" tables —
+ *  the "Clear history" button on /tf. Leaves lt/at and the browser cookie jar
+ *  untouched; only the capture log is wiped. */
+export async function DELETE(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
+  try {
+    await clearTfLiveCaptureHistory();
+    const [session, captures, history] = await Promise.all([
+      getTfLiveSessionStatus(),
+      getLatestTfLiveCaptures(),
+      getTfLiveCaptureHistory(),
+    ]);
+    return NextResponse.json({ success: true, session, captures, history });
+  } catch (error) {
+    return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
 }
