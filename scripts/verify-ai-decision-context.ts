@@ -177,11 +177,19 @@ const heldPosition: DecisionOpenPosition = {
   entryReason: 'scanner entry',
 };
 
-check('management tools are the exact four position actions', () => {
-  assert.deepEqual(
-    AUTO_TRADE_MANAGEMENT_TOOLS.map((tool) => tool.name),
-    ['get_quote', 'get_open_positions', 'modify_stop', 'exit_position']
-  );
+check('management tools are the position actions plus read-only TF corroboration', () => {
+  // The real guard is the assertion BELOW: no entry tool may ever be offered on
+  // a management pass. The exact list is pinned so an addition has to be
+  // deliberate. `get_tf_race` is here on purpose and is read-only — a held name
+  // sliding down TradeFinder's board corroborates an EARLY EXIT, which is the
+  // one place the AI adds value over the deterministic backstops.
+  assert.deepEqual(AUTO_TRADE_MANAGEMENT_TOOLS.map((tool) => tool.name), [
+    'get_tf_race',
+    'get_quote',
+    'get_open_positions',
+    'modify_stop',
+    'exit_position',
+  ]);
   assert.ok(!AUTO_TRADE_MANAGEMENT_TOOLS.some((tool) => ['check_order', 'place_entry_order'].includes(tool.name)));
   assert.ok(!AUTO_TRADE_TOOLS.some((tool) => tool.name === 'record_note'));
 });

@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 import { prisma } from '@/lib/db';
+import type { TfEndpoint } from '@/lib/tf-live/endpoints';
 import { parseAllSector } from '@/lib/tf-live/parse';
 
 const SESSION_KEY_ENV = 'TF_LIVE_SESSION_KEY';
@@ -321,7 +322,7 @@ export async function getTfLiveCaptureHistory(
 
 /** Every IST calendar date with at least one SUCCESSFUL capture for the given
  *  endpoint, most recent first — the EOD page's date picker. */
-export async function getTfLiveCaptureDates(endpoint: 'all_sector' | 'daily-index'): Promise<string[]> {
+export async function getTfLiveCaptureDates(endpoint: TfEndpoint): Promise<string[]> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(
     `
@@ -340,7 +341,7 @@ export async function getTfLiveCaptureDates(endpoint: 'all_sector' | 'daily-inde
  *  collector ran several times that day. Returns the raw parsed payload plus
  *  when it was actually captured. */
 export async function getTfLiveCaptureForDate(
-  endpoint: 'all_sector' | 'daily-index',
+  endpoint: TfEndpoint,
   date: string
 ): Promise<{ capturedAt: string; payload: unknown } | null> {
   await ensureTables();
