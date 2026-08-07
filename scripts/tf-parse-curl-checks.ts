@@ -87,16 +87,24 @@ export function runTfParseCurlChecks(check: CheckFn): void {
   );
 
   // ── cookie-header → Playwright cookie objects ─────────────────────────────
-  const cookies = cookieHeaderToPlaywrightCookies('a=1; b=2; malformed; c=3', '.tradefinder.in');
+  const SITE_URL = 'https://tradefinder.in/';
+  const cookies = cookieHeaderToPlaywrightCookies('a=1; b=2; malformed; c=3', SITE_URL);
   check('playwright cookies: parses every well-formed pair', cookies.length === 3, `got ${cookies.length}`);
   check('playwright cookies: a pair with no = is dropped, not guessed', !cookies.some((c) => c.name === 'malformed'));
   check(
-    'playwright cookies: every cookie carries the requested domain and root path',
-    cookies.every((c) => c.domain === '.tradefinder.in' && c.path === '/')
+    'playwright cookies: every cookie uses url (not domain) and is marked secure — required for __Secure-/__Host- prefixed cookies',
+    cookies.every((c) => c.url === SITE_URL && c.secure === true)
+  );
+  check(
+    'playwright cookies: __Host- and __Secure- prefixed cookie names carry no domain field at all',
+    (() => {
+      const c = cookieHeaderToPlaywrightCookies('__Host-x=1; __Secure-y=2', SITE_URL);
+      return c.every((cookie) => !('domain' in cookie));
+    })()
   );
   check(
     'playwright cookies: names and values are trimmed',
-    cookieHeaderToPlaywrightCookies(' x = y ; z=w', '.tradefinder.in')[0]?.name === 'x'
+    cookieHeaderToPlaywrightCookies(' x = y ; z=w', SITE_URL)[0]?.name === 'x'
   );
-  check('playwright cookies: an empty header yields an empty list, never a crash', cookieHeaderToPlaywrightCookies('', '.tradefinder.in').length === 0);
+  check('playwright cookies: an empty header yields an empty list, never a crash', cookieHeaderToPlaywrightCookies('', SITE_URL).length === 0);
 }
