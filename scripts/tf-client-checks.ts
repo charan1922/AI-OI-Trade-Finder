@@ -15,6 +15,7 @@
  * scripts/verify-quant-shadow.ts, which the build workflow runs.
  */
 import { MIN_REQUEST_GAP_MS, tfFetch } from '../lib/tf-live/client';
+import { humanAgo, isTransientTfError, summarizeTfHealth } from '../lib/tf-live/status';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
@@ -161,4 +162,70 @@ export async function runTfClientChecks(check: CheckFn): Promise<void> {
       restore();
     }
   }
+
+  // ── /tf health verdict ───────────────────────────────────────────────────
+  // The banner must distinguish "paste a token" from "it heals itself". A
+  // status line that cries wolf is worse than none: the one time it means
+  // "act", it has to be believed.
+  const NOW = Date.parse('2026-08-07T05:00:00.000Z');
+  const base = {
+    configured: true,
+    jwtExpiresAt: '2026-08-07T07:00:00.000Z', // still valid
+    lastError: null as string | null,
+    lastSuccessAt: '2026-08-07T04:58:00.000Z',
+    successesToday: 10,
+    attemptsToday: 12,
+    nowMs: NOW,
+  };
+
+  {
+    const h = summarizeTfHealth(base);
+    check('tf health: a clean tick is ok', h.level === 'ok', h.headline);
+    check('tf health: ok needs no action', h.action === null);
+  }
+
+  {
+    const h = summarizeTfHealth({ ...base, lastError: 'TradeFinder rejected it (AT_ERROR: INVALID TOKEN)' });
+    check(
+      'tf health: AT_ERROR with a LIVE token is a warning, not an error',
+      h.level === 'warning',
+      `${h.level}: ${h.headline}`
+    );
+    check('tf health: a self-healing state asks the operator to do NOTHING', h.action === null);
+    check('tf health: it does not parrot the raw AT_ERROR string', !h.headline.includes('AT_ERROR'), h.headline);
+    check('tf health: it explains the retry', h.detail.toLowerCase().includes('retries'), h.detail);
+  }
+
+  {
+    // Same error text, but the token really is dead — THIS one must be red.
+    const h = summarizeTfHealth({
+      ...base,
+      jwtExpiresAt: '2026-08-07T04:00:00.000Z',
+      lastError: 'TradeFinder rejected it (AT_ERROR: INVALID TOKEN)',
+    });
+    check('tf health: an EXPIRED token is an error', h.level === 'error', h.headline);
+    check('tf health: the expired case tells the operator exactly what to do', (h.action ?? '').includes('fresh'), h.action ?? '');
+  }
+
+  {
+    const h = summarizeTfHealth({ ...base, configured: false, lastSuccessAt: null, successesToday: 0, attemptsToday: 0 });
+    check('tf health: no stored session is an error with an action', h.level === 'error' && h.action != null);
+  }
+
+  {
+    const h = summarizeTfHealth({ ...base, lastError: '2 of 4 feeds failed (sector_scope, market_pulse): rejected' });
+    check('tf health: a PARTIAL failure is a warning, not a total failure', h.level === 'warning', h.headline);
+    check('tf health: partial failure still surfaces the last good capture', h.headline.includes('ago'), h.headline);
+  }
+
+  check('tf health: transient classifier catches throttle, timeout and network',
+    isTransientTfError('TradeFinder rejected it (AT_ERROR: INVALID TOKEN)') &&
+    isTransientTfError('TradeFinder timed out (15s)') &&
+    isTransientTfError('TradeFinder request failed (network)'));
+  check('tf health: a genuinely unknown error is not silently called transient',
+    !isTransientTfError('lt expired at 2026-08-07 — paste a fresh pair on /tf'));
+
+  check('tf health: humanAgo renders minutes', humanAgo('2026-08-07T04:57:00.000Z', NOW) === '3 minutes ago');
+  check('tf health: humanAgo handles a null timestamp', humanAgo(null, NOW) === null);
+  check('tf health: humanAgo rejects an unparseable timestamp', humanAgo('not-a-date', NOW) === null);
 }

@@ -21,6 +21,7 @@
 import { AlertTriangle, Check, Copy, KeyRound, Loader2, RefreshCw, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRole } from '@/lib/auth/use-role';
+import { summarizeTfHealth } from '@/lib/tf-live/status';
 
 const POLL_MS = 15_000;
 
@@ -79,7 +80,15 @@ interface TfSession {
     jwtExpiresAt: string | null;
   };
   captures: { endpoint: string; capturedAt: string; status: string; error: string | null }[];
-  history: { captureDate: string; endpoint: string; total: number; success: number; error: number; lastCapturedAt: string }[];
+  history: {
+    captureDate: string;
+    endpoint: string;
+    total: number;
+    success: number;
+    error: number;
+    lastCapturedAt: string;
+    lastSuccessAt: string | null;
+  }[];
 }
 
 /** One line the operator pastes into DevTools console on a signed-in
@@ -223,6 +232,33 @@ export default function TfPage() {
   const jwtTone: 'ok' | 'warn' | 'bad' | 'neutral' =
     jwtRemainingMs == null ? 'neutral' : jwtRemainingMs <= 0 ? 'bad' : jwtRemainingMs <= 30 * 60_000 ? 'warn' : 'ok';
 
+  /** Today's tally + the newest capture that actually LANDED, across all feeds
+   *  — the two facts that decide whether a failure is worth worrying about. */
+  //  `nowMs` is the component's ticking clock state — deliberately used instead
+  //  of Date.now(), which is impure during render. Before the first tick it is
+  //  0, so the memo falls back to the newest capture date in the payload rather
+  //  than computing an IST date from the epoch.
+  const health = useMemo(() => {
+    const rows = data?.history ?? [];
+    const todayIST = nowMs
+      ? new Date(nowMs + 5.5 * 3600_000).toISOString().slice(0, 10)
+      : (rows[0]?.captureDate ?? '');
+    const today = rows.filter((row) => row.captureDate === todayIST);
+    const lastSuccessAt = today.reduce<string | null>(
+      (newest, row) => (row.lastSuccessAt && (!newest || row.lastSuccessAt > newest) ? row.lastSuccessAt : newest),
+      null
+    );
+    return summarizeTfHealth({
+      configured: s?.configured ?? false,
+      jwtExpiresAt: s?.jwtExpiresAt ?? null,
+      lastError: s?.lastError ?? null,
+      lastSuccessAt,
+      successesToday: today.reduce((sum, row) => sum + row.success, 0),
+      attemptsToday: today.reduce((sum, row) => sum + row.total, 0),
+      nowMs: nowMs || Date.parse(rows[0]?.lastCapturedAt ?? '') || 0,
+    });
+  }, [data, s, nowMs]);
+
   const historyByDate = useMemo(() => {
     const grouped = new Map<string, { total: number; success: number; error: number; lastCapturedAt: string }>();
     for (const row of data?.history ?? []) {
@@ -252,8 +288,13 @@ export default function TfPage() {
                 {jwtRemainingMs > 0 ? `token expires in ${fmtCountdown(jwtRemainingMs)}` : `token expired ${fmtDateTime(s.jwtExpiresAt)}`}
               </Badge>
             )}
-            <Badge tone={!!s.verifiedAt && !s.lastError ? 'ok' : s.lastError ? 'bad' : 'neutral'}>
-              {s.lastError ? s.lastError.slice(0, 60) : s.verifiedAt ? `verified ${fmtDateTime(s.verifiedAt)}` : 'never verified'}
+            {/* ONE health verdict, not the raw lastError string. The raw
+                string read "TradeFinder rejected it (AT_ERROR: INVALID TOKEN)"
+                seconds after a capture had stored 210 stocks — it looked like
+                total failure when nothing needed doing. summarizeTfHealth
+                separates "you must act" from "it heals itself". */}
+            <Badge tone={health.level === 'ok' ? 'ok' : health.level === 'error' ? 'bad' : 'warn'}>
+              {health.headline}
             </Badge>
           </>
         )}
@@ -280,6 +321,31 @@ export default function TfPage() {
         </div>
       </div>
 
+      {/* The health explanation. Amber states say plainly that nothing needs
+          doing, because the previous raw-error banner made a self-healing
+          throttle look identical to a dead token. Only `error` shows an action. */}
+      {s && health.level !== 'ok' && (
+        <div
+          className={`flex items-start gap-2 rounded-md border p-2 text-xs ${
+            health.level === 'error'
+              ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400'
+              : 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400'
+          }`}
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            <strong>{health.headline}.</strong> {health.detail}
+            {health.action ? (
+              <>
+                {' '}
+                <strong>{health.action}</strong>
+              </>
+            ) : (
+              ' No action needed.'
+            )}
+          </span>
+        </div>
+      )}
       {jwtTone === 'warn' && (
         <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> Token expires soon — re-paste from a signed-in tab before it lapses.

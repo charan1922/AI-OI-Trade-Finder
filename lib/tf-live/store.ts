@@ -274,7 +274,18 @@ export async function getLatestTfLiveCaptures(): Promise<
  *  midnight. */
 export async function getTfLiveCaptureHistory(
   limitDays = 30
-): Promise<{ captureDate: string; endpoint: string; total: number; success: number; error: number; lastCapturedAt: string }[]> {
+): Promise<
+  {
+    captureDate: string;
+    endpoint: string;
+    total: number;
+    success: number;
+    error: number;
+    lastCapturedAt: string;
+    /** Newest SUCCESSFUL capture for this feed/date; null if it never landed. */
+    lastSuccessAt: string | null;
+  }[]
+> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(
     `
@@ -284,14 +295,26 @@ export async function getTfLiveCaptureHistory(
       COUNT(*) AS total,
       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
       SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error,
-      MAX(capturedAt) AS lastCapturedAt
+      MAX(capturedAt) AS lastCapturedAt,
+      -- The health line on /tf needs "when did a feed last actually LAND",
+      -- which MAX(capturedAt) cannot answer: it returns the newest attempt,
+      -- success or failure. NULL here means this feed has never succeeded.
+      MAX(CASE WHEN status = 'success' THEN capturedAt END) AS lastSuccessAt
     FROM tf_live_captures
     GROUP BY captureDate, endpoint
     ORDER BY captureDate DESC, endpoint ASC
     LIMIT ?
   `,
     limitDays * 4
-  )) as { captureDate: string; endpoint: string; total: unknown; success: unknown; error: unknown; lastCapturedAt: string }[];
+  )) as {
+    captureDate: string;
+    endpoint: string;
+    total: unknown;
+    success: unknown;
+    error: unknown;
+    lastCapturedAt: string;
+    lastSuccessAt: string | null;
+  }[];
   // SQLite COUNT/SUM come back as BigInt through Prisma's raw driver, and
   // BigInt has no JSON representation — returning it straight from a Route
   // Handler throws "Do not know how to serialize a BigInt" and 500s the whole
@@ -303,6 +326,7 @@ export async function getTfLiveCaptureHistory(
     success: Number(r.success ?? 0),
     error: Number(r.error ?? 0),
     lastCapturedAt: r.lastCapturedAt,
+    lastSuccessAt: r.lastSuccessAt ?? null,
   }));
 }
 
