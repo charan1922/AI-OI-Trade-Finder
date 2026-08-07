@@ -38,6 +38,14 @@ export async function register(): Promise<void> {
   startGuardLoop();
   void catchUpMasterContractsForToday(true);
   startFyersPoller();
-  const { startTfLiveCollector } = await import('./lib/tf-live/collector');
-  startTfLiveCollector();
+  // The BROWSER relay (lib/tf-live/browser.ts) is the primary TradeFinder
+  // capture path — the plain-fetch collector (lib/tf-live/collector.ts) was
+  // proven 2026-08-07/08 to be structurally unable to work (TradeFinder's
+  // accessToken is single-use, minted by their own frontend JS; no replay of
+  // a captured value survives even a fraction of a second). It is no longer
+  // auto-started here to stop sending requests to TradeFinder that can never
+  // succeed — its code stays in place because the manual "Capture now" button
+  // on /tf still calls it directly for one-shot debugging.
+  const { startTfBrowserWatchdog } = await import('./lib/tf-live/browser');
+  startTfBrowserWatchdog();
 }

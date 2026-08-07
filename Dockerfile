@@ -61,6 +61,16 @@ WORKDIR /app
 # Same base OS/arch as the builder, so those native binaries load unchanged.
 COPY --from=builder /app ./
 
+# The TradeFinder browser relay's ONLY extra runtime requirement: a real
+# Chromium binary plus the OS shared libraries it needs (nss, atk, gbm, fonts,
+# ...). `--with-deps` installs both via apt in one step. `playwright` itself is
+# already in node_modules (copied above); this is the large platform-specific
+# binary that deliberately does NOT live in git or the lockfile. This is the
+# real, accepted cost of that feature (2026-08-08) — the multi-stage split
+# above still keeps the C/C++ COMPILER toolchain out of this image, so this is
+# additive, not a reversion of that saving.
+RUN npx playwright install --with-deps chromium
+
 # Guarantee the mount point exists even if the volume is ever detached; the real
 # persistent volume is mounted over this at start time.
 RUN mkdir -p /app/data

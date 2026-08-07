@@ -91,6 +91,13 @@ interface TfSession {
   }[];
 }
 
+interface TfBrowserSession {
+  success: boolean;
+  session: { configured: boolean; updatedAt: string | null; verifiedAt: string | null; lastError: string | null };
+  running: boolean;
+  error?: string;
+}
+
 /** One line the operator pastes into DevTools console on a signed-in
  *  tradefinder.in tab — copies both values to the clipboard as JSON so
  *  there's nothing to misread or mistype. */
@@ -129,6 +136,10 @@ export default function TfPage() {
   const [notice, setNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null);
   const [pasted, setPasted] = useState('');
   const [snippetCopied, setSnippetCopied] = useState(false);
+  const [browserSession, setBrowserSession] = useState<TfBrowserSession | null>(null);
+  const [pastedCurl, setPastedCurl] = useState('');
+  const [browserBusy, setBrowserBusy] = useState(false);
+  const [browserNotice, setBrowserNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null);
 
   const copySnippet = useCallback(async () => {
     try {
@@ -153,16 +164,28 @@ export default function TfPage() {
     }
   }, []);
 
+  const refreshBrowserSession = useCallback(async () => {
+    try {
+      const res = await fetch('/api/tf/browser-session', { cache: 'no-store' });
+      const j = (await res.json()) as TfBrowserSession;
+      if (j.success) setBrowserSession(j);
+    } catch {
+      /* transient — next poll retries */
+    }
+  }, []);
+
   const refreshRef = useRef(refresh);
+  const refreshBrowserRef = useRef(refreshBrowserSession);
   useEffect(() => {
     refreshRef.current = refresh;
-  }, [refresh]);
+    refreshBrowserRef.current = refreshBrowserSession;
+  }, [refresh, refreshBrowserSession]);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       if (stopped) return;
-      await refreshRef.current();
+      await Promise.all([refreshRef.current(), refreshBrowserRef.current()]);
       if (!stopped) timer = setTimeout(tick, POLL_MS);
     };
     void tick();
@@ -225,6 +248,60 @@ export default function TfPage() {
       setBusy(false);
     }
   }, []);
+
+  const saveBrowserCurl = useCallback(async () => {
+    if (!pastedCurl.trim()) {
+      setBrowserNotice({ text: 'paste a curl command first', tone: 'bad' });
+      return;
+    }
+    setBrowserBusy(true);
+    setBrowserNotice(null);
+    try {
+      const res = await fetch('/api/tf/browser-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ curl: pastedCurl }),
+      });
+      const j = (await res.json()) as { success: boolean; error?: string; running?: boolean };
+      setBrowserNotice(
+        j.success
+          ? { text: `saved — browser ${j.running ? 'is starting up now' : 'will start at the next check'}`, tone: 'ok' }
+          : { text: j.error ?? 'save failed', tone: 'bad' }
+      );
+      if (j.success) setPastedCurl('');
+      await refreshBrowserSession();
+    } catch (e) {
+      setBrowserNotice({ text: (e as Error).message, tone: 'bad' });
+    } finally {
+      setBrowserBusy(false);
+    }
+  }, [pastedCurl, refreshBrowserSession]);
+
+  const browserAction = useCallback(
+    async (action: 'start' | 'stop') => {
+      setBrowserBusy(true);
+      setBrowserNotice(null);
+      try {
+        const res = await fetch('/api/tf/browser-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+        });
+        const j = (await res.json()) as { success: boolean; error?: string; running?: boolean };
+        setBrowserNotice(
+          j.success
+            ? { text: action === 'start' ? (j.running ? 'browser is running' : 'starting…') : 'browser stopped', tone: 'ok' }
+            : { text: j.error ?? `${action} failed`, tone: 'bad' }
+        );
+        await refreshBrowserSession();
+      } catch (e) {
+        setBrowserNotice({ text: (e as Error).message, tone: 'bad' });
+      } finally {
+        setBrowserBusy(false);
+      }
+    },
+    [refreshBrowserSession]
+  );
 
   const s = data?.session;
   const jwtExpiresMs = s?.jwtExpiresAt ? new Date(s.jwtExpiresAt).getTime() : null;
@@ -369,8 +446,80 @@ export default function TfPage() {
       )}
 
       {!readOnly && (
+        <section className="space-y-2 rounded-lg border border-emerald-300/60 bg-card p-3 dark:border-emerald-500/30">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Browser session (recommended)
+            </h2>
+            {browserSession?.session && (
+              <Badge tone={browserSession.session.configured ? 'ok' : 'neutral'}>
+                {browserSession.session.configured ? 'cookies stored' : 'not configured'}
+              </Badge>
+            )}
+            {browserSession && (
+              <Badge tone={browserSession.running ? 'ok' : 'neutral'}>{browserSession.running ? 'browser running' : 'browser stopped'}</Badge>
+            )}
+            {browserSession?.session.lastError && (
+              <Badge tone="warn">{browserSession.session.lastError.slice(0, 70)}</Badge>
+            )}
+          </div>
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            TradeFinder&apos;s access token is minted fresh by their own page for every single request and cannot be
+            copied and reused (confirmed 2026-08-08) — so a real headless browser runs on the server instead, logged
+            in with cookies from your own session. On a signed-in tab, open DevTools Network tab, right-click any
+            request to <span className="font-mono">tradefinder.in</span>, choose <strong>Copy → Copy as cURL</strong>,
+            and paste the whole thing below. This should keep working for as long as your TradeFinder login session
+            lasts (their own <span className="font-mono">/api/auth/session</span> reports ~30 days) — not the few
+            seconds a copied access token survives.
+          </p>
+          <textarea
+            value={pastedCurl}
+            onChange={(e) => setPastedCurl(e.target.value)}
+            placeholder="curl --url &quot;https://tradefinder.in/...&quot; -H ... -b &quot;...&quot; ..."
+            rows={4}
+            className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-[11px]"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={browserBusy}
+              onClick={() => void saveBrowserCurl()}
+              className="rounded-md bg-primary px-3 py-1.5 text-[11px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {browserBusy ? 'Saving…' : 'Save & start browser'}
+            </button>
+            <button
+              type="button"
+              disabled={browserBusy || !browserSession?.session.configured}
+              onClick={() => void browserAction(browserSession?.running ? 'stop' : 'start')}
+              title={browserSession?.running ? 'Stop the headless browser' : 'Start the headless browser now (bypasses the 09:22–15:30 window, for testing)'}
+              className="rounded-md border border-border px-3 py-1.5 text-[11px] hover:bg-muted disabled:opacity-50"
+            >
+              {browserSession?.running ? 'Stop browser' : 'Start now'}
+            </button>
+            {browserSession?.session.verifiedAt && (
+              <span className="text-[11px] text-muted-foreground">last confirmed working: {fmtDateTime(browserSession.session.verifiedAt)}</span>
+            )}
+          </div>
+          {browserNotice && (
+            <div
+              className={`rounded-md border p-2 text-xs ${
+                browserNotice.tone === 'ok'
+                  ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400'
+                  : 'border-red-300 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400'
+              }`}
+            >
+              {browserNotice.text}
+            </div>
+          )}
+        </section>
+      )}
+
+      {!readOnly && (
         <section className="space-y-2 rounded-lg border border-border bg-card p-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Update lt / at</h2>
+          <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Update lt / at <span className="font-normal normal-case text-muted-foreground/70">(legacy — dies within seconds, not recommended)</span>
+          </h2>
           <p className="text-[11px] leading-snug text-muted-foreground">
             On a signed-in tab at{' '}
             <a href="https://tradefinder.in" target="_blank" rel="noreferrer" className="underline">
