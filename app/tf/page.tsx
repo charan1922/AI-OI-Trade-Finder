@@ -249,6 +249,27 @@ export default function TfPage() {
     }
   }, []);
 
+  const clearHistory = useCallback(async () => {
+    if (!confirm('Clear all captured history? This only wipes the capture log — your saved lt/at and browser cookie session are untouched.')) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const res = await fetch('/api/tf/session', { method: 'DELETE' });
+      const j = (await res.json()) as TfSession;
+      if (j.success) {
+        setData(j);
+        setNowMs(Date.now());
+        setNotice({ text: 'capture history cleared', tone: 'ok' });
+      } else {
+        setNotice({ text: (j as unknown as { error?: string }).error ?? 'clear failed', tone: 'bad' });
+      }
+    } catch (e) {
+      setNotice({ text: (e as Error).message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   const saveBrowserCurl = useCallback(async () => {
     if (!pastedCurl.trim()) {
       setBrowserNotice({ text: 'paste a curl command first', tone: 'bad' });
@@ -562,9 +583,22 @@ export default function TfPage() {
 
       {data && (
         <section className="space-y-2 rounded-lg border border-border bg-card p-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Last capture per endpoint
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Last capture per endpoint
+            </h2>
+            {!readOnly && (data.captures.length > 0 || historyByDate.length > 0) && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void clearHistory()}
+                title="Wipe the capture log below — does not touch your saved lt/at or browser cookie session"
+                className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-50"
+              >
+                Clear history
+              </button>
+            )}
+          </div>
           {data.captures.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">No captures yet.</p>
           ) : (

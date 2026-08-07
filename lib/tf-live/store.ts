@@ -329,6 +329,18 @@ export async function recordTfLiveRows(captureId: number, rows: unknown[]): Prom
   }
 }
 
+/** Wipe every stored capture and its rows — used to clear out the pile of
+ *  error records left over from the lt/at-replay debugging period (2026-08-07/08)
+ *  once the browser relay is confirmed working, so the /tf history tables
+ *  start clean instead of showing weeks of now-irrelevant failures. Does NOT
+ *  touch tf_live_session or tf_browser_session — those hold live credentials,
+ *  not history. */
+export async function clearTfLiveCaptureHistory(): Promise<void> {
+  await ensureTables();
+  await prisma.$executeRawUnsafe(`DELETE FROM tf_live_rows`);
+  await prisma.$executeRawUnsafe(`DELETE FROM tf_live_captures`);
+}
+
 /** Latest capture per endpoint, for the /tf status panel's headline chips. */
 export async function getLatestTfLiveCaptures(): Promise<
   { endpoint: string; capturedAt: string; status: string; error: string | null }[]
