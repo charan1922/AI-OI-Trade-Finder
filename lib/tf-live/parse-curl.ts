@@ -97,14 +97,27 @@ export function hasSessionCookie(cookieHeader: string): boolean {
 export interface PlaywrightCookie {
   name: string;
   value: string;
-  domain: string;
-  path: string;
+  url: string;
+  secure: true;
 }
 
 /** Parse a "a=1; b=2" cookie header into the shape Playwright's
  *  `context.addCookies()` expects. Pairs with no `=` (malformed) are dropped
- *  rather than guessed. */
-export function cookieHeaderToPlaywrightCookies(cookieHeader: string, domain: string): PlaywrightCookie[] {
+ *  rather than guessed.
+ *
+ *  Uses `url` rather than `domain`+`path`, and always sets `secure: true`.
+ *  This isn't stylistic — TradeFinder's own session cookies carry the
+ *  `__Secure-` and `__Host-` name prefixes, which Chromium enforces at the
+ *  protocol level: `__Secure-*` cookies MUST have Secure set, and `__Host-*`
+ *  cookies MUST have NO Domain attribute at all. Passing an explicit `domain`
+ *  (even one that matches) violates that second rule for every `__Host-`
+ *  cookie in the jar, and CDP's `Storage.setCookies` rejects the WHOLE batch
+ *  rather than skipping the bad one — which is what actually broke the first
+ *  version of this (2026-08-08: "Protocol error (Storage.setCookies)" on
+ *  every real paste, because the fixture cookie names didn't happen to use
+ *  either prefix). `url` alone makes every cookie host-only with no Domain
+ *  attribute, satisfying both prefixes at once. */
+export function cookieHeaderToPlaywrightCookies(cookieHeader: string, url: string): PlaywrightCookie[] {
   return cookieHeader
     .split(';')
     .map((pair) => pair.trim())
@@ -112,7 +125,7 @@ export function cookieHeaderToPlaywrightCookies(cookieHeader: string, domain: st
     .map((pair): PlaywrightCookie | null => {
       const eq = pair.indexOf('=');
       if (eq <= 0) return null;
-      return { name: pair.slice(0, eq).trim(), value: pair.slice(eq + 1).trim(), domain, path: '/' };
+      return { name: pair.slice(0, eq).trim(), value: pair.slice(eq + 1).trim(), url, secure: true };
     })
     .filter((c): c is PlaywrightCookie => c != null);
 }

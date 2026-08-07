@@ -40,6 +40,7 @@
  * dies mid-session. This is the cost the user explicitly accepted in exchange
  * for data that plain HTTP replay can never produce (2026-08-08).
  */
+import { freemem, totalmem } from 'node:os';
 import { withinCaptureWindow } from '@/lib/tf-live/collector';
 import { cookieHeaderToPlaywrightCookies } from '@/lib/tf-live/parse-curl';
 import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
@@ -49,7 +50,9 @@ import { getTfBrowserCookies, recordTfBrowserOutcome, recordTfLiveCapture, recor
  *  live 2026-08-08 (market_pulse, sector_scope, rfactor_data, feature_read all
  *  fire from here on a ~10s loop). */
 const ENTRY_URL = 'https://tradefinder.in/market-pulse';
-const COOKIE_DOMAIN = '.tradefinder.in';
+/** Passed to addCookies as `url`, not `domain` — see parse-curl.ts's module
+ *  note on why `__Secure-`/`__Host-` cookies reject an explicit Domain. */
+const SITE_URL = 'https://tradefinder.in/';
 
 /** After this many consecutive TradeFinder responses with NO success at all,
  *  the session is treated as broken rather than "still warming up". */
@@ -62,6 +65,18 @@ const WATCHDOG_INTERVAL_MS = 60_000;
 
 const REALISTIC_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
+
+/** Chromium runs as its OWN OS process, not inside this Node process — so
+ *  `process.memoryUsage()` would never see it. System-wide free memory is
+ *  the only number that actually answers "does this fit on the box", which is
+ *  what matters for a small always-on server running the live trading loops
+ *  alongside this (user request, 2026-08-08: know the real cost, not a guess). */
+const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
+function logMemory(label: string): void {
+  const freeMb = mb(freemem());
+  const totalMb = mb(totalmem());
+  console.log(`[tf_browser] ${label} — free ${freeMb}MB / ${totalMb}MB total (${Math.round((freeMb / totalMb) * 100)}% free)`);
+}
 
 /** Map a TradeFinder request path to the endpoint tag the rest of the app
  *  already reads from tf_live_captures. The two feeds with confirmed schemas
@@ -157,6 +172,7 @@ async function handleResponse(response: import('playwright').Response): Promise<
  *  response listener. Resolves once navigation completes; the browser then
  *  keeps running and capturing until stopped or it crashes. */
 async function launch(cookieHeader: string): Promise<void> {
+  logMemory('before launch');
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({
     headless: true,
@@ -172,11 +188,14 @@ async function launch(cookieHeader: string): Promise<void> {
   });
 
   const context = await browser.newContext({ userAgent: REALISTIC_UA });
-  await context.addCookies(cookieHeaderToPlaywrightCookies(cookieHeader, COOKIE_DOMAIN));
+  await context.addCookies(cookieHeaderToPlaywrightCookies(cookieHeader, SITE_URL));
   const page = await context.newPage();
   page.on('response', (response) => void handleResponse(response).catch(() => undefined));
 
   await page.goto(ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  // A few seconds for Chromium's own process to finish settling after the
+  // page load — reading memory immediately after goto() would under-count it.
+  setTimeout(() => logMemory('~5s after page load (steady-state cost)'), 5_000);
 
   // Give the page's own polling loop a bounded window to prove the session is
   // real before declaring it broken — a slow first load is normal, silence
@@ -197,7 +216,10 @@ async function closeBrowser(): Promise<void> {
   const s = state();
   const browser = s.browser;
   s.browser = null;
-  if (browser) await browser.close().catch(() => undefined);
+  if (browser) {
+    await browser.close().catch(() => undefined);
+    logMemory('after close (should return near the "before launch" figure)');
+  }
 }
 
 /**
