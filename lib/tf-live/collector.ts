@@ -16,6 +16,7 @@
  * be re-logged-in by hand when its session lapsed. This version needs neither
  * — the two tokens are pasted on /tf, encrypted at rest, and used directly.
  */
+import { TF_ENDPOINT_URL, TF_ENDPOINTS, type TfEndpoint } from '@/lib/tf-live/endpoints';
 import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
 import {
   decodeJwtExpiry,
@@ -25,13 +26,10 @@ import {
   recordTfLiveSessionOutcome,
 } from '@/lib/tf-live/store';
 
-const ENDPOINTS = ['all_sector', 'daily-index'] as const;
-type Endpoint = (typeof ENDPOINTS)[number];
-
-const ENDPOINT_URL: Record<Endpoint, string> = {
-  'all_sector': 'https://tradefinder.in/api_be/data/order/all_sector',
-  'daily-index': 'https://tradefinder.in/api_be/data/order/daily-index',
-};
+/** Which feeds exist and where they live: lib/tf-live/endpoints.ts. */
+const ENDPOINTS = TF_ENDPOINTS;
+type Endpoint = TfEndpoint;
+const ENDPOINT_URL = TF_ENDPOINT_URL;
 
 const INTERVAL_MS = 5 * 60_000;
 let timer: NodeJS.Timeout | null = null;
@@ -41,7 +39,19 @@ function configured(): boolean {
   return process.env.AUTONOMOUS_SERVER === 'true' && process.env.TF_LIVE_ENABLED === 'true';
 }
 
-function marketOpen(now = new Date()): boolean {
+/**
+ * Capture window, IST. Starts at 09:22 — NOT 09:15 — at the user's explicit
+ * request (2026-08-07): TradeFinder's numbers in the first few minutes reflect
+ * the pre-open auction unwinding rather than real session participation, so the
+ * earliest captures were describing noise. Ends with the session at 15:30.
+ *
+ * Exported so the window is testable and so there is one place to change it.
+ */
+export const CAPTURE_START_MIN = 9 * 60 + 22; // 09:22 IST
+export const CAPTURE_END_MIN = 15 * 60 + 30; // 15:30 IST
+
+/** True inside the capture window on a weekday. `now` is injectable for tests. */
+export function withinCaptureWindow(now = new Date()): boolean {
   const parts = new Intl.DateTimeFormat('en-IN', {
     timeZone: 'Asia/Kolkata',
     weekday: 'short',
@@ -52,29 +62,37 @@ function marketOpen(now = new Date()): boolean {
   const value = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
   const day = parts.find((part) => part.type === 'weekday')?.value;
   const minutes = value('hour') * 60 + value('minute');
-  return day !== 'Sat' && day !== 'Sun' && minutes >= 9 * 60 + 15 && minutes <= 15 * 60 + 30;
+  return day !== 'Sat' && day !== 'Sun' && minutes >= CAPTURE_START_MIN && minutes <= CAPTURE_END_MIN;
 }
 
-/** `all_sector`'s payload is an OBJECT keyed by symbol; `daily-index`'s is
- *  already an array keyed by Symbol. Normalize both to one row shape. */
+/**
+ * Normalize a payload into per-symbol rows, for the feeds whose shape we have
+ * actually SEEN. Shapes are owned by lib/tf-live/parse.ts, confirmed against a
+ * real payload: `all_sector` is BASKET-keyed then symbol-keyed with positional
+ * param_N fields (param_0 ltp, param_1 prevClose, param_2 %, param_3 R-Factor);
+ * `daily-index` is already a flat array.
+ *
+ * `sector_scope` and `market_pulse` intentionally return undefined: no parser
+ * exists because no real payload has been inspected. They are still CAPTURED —
+ * the raw payloadJson is stored on every capture row, so nothing is lost and a
+ * re-parse never needs to re-call TradeFinder.
+ */
 function extractRows(endpoint: Endpoint, payload: unknown): unknown[] | undefined {
-  // Shapes are owned by lib/tf-live/parse.ts, confirmed against a real payload:
-  // all_sector is BASKET-keyed then symbol-keyed with positional param_N fields
-  // (param_0 ltp, param_1 prevClose, param_2 %, param_3 R-Factor); daily-index
-  // is already a flat array. The raw payloadJson is retained on the capture row
-  // regardless, so a future re-parse never needs to re-call TradeFinder.
   if (endpoint === 'all_sector') {
     const rows = parseAllSector(payload);
     return rows.length > 0 ? rows : undefined;
   }
-  const rows = parseDailyIndex(payload);
-  return rows.length > 0 ? rows.map((r) => ({ symbol: r.name, value: r.value })) : undefined;
+  if (endpoint === 'daily-index') {
+    const rows = parseDailyIndex(payload);
+    return rows.length > 0 ? rows.map((r) => ({ symbol: r.name, value: r.value })) : undefined;
+  }
+  return undefined;
 }
 
 /** options.force skips the autonomous/market-hours gates — used by the manual
  *  "Capture now" button on /tf so an operator can test off-hours too. */
 export async function captureTfLiveEndpoint(endpoint: Endpoint, options: { force?: boolean } = {}): Promise<void> {
-  if (!options.force && (!configured() || !marketOpen())) return;
+  if (!options.force && (!configured() || !withinCaptureWindow())) return;
   const tokens = await getTfLiveTokens();
   if (!tokens) return;
 

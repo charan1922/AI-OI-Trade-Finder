@@ -19,6 +19,7 @@ import {
   detectConsolidationBreakout,
 } from '../lib/trade-suggest/consolidation-breakout';
 import { classifyMoveFreshness, isStaleMove } from '../lib/trade-suggest/move-freshness';
+import { TF_ENDPOINT_URL, TF_ENDPOINTS, TF_PARSED_ENDPOINTS } from '../lib/tf-live/endpoints';
 import type { IndicatorBar } from '../lib/signals/indicators';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
@@ -210,5 +211,36 @@ export function runEntryQualityChecks(check: CheckFn): void {
   {
     const nan = classifyMoveFreshness({ sinceEntryPct: Number.NaN, changePctOpen: 2, direction: 'bullish' });
     check('freshness: a non-finite input reads unknown, never a number', nan.profile === 'unknown');
+  }
+
+  // ── TradeFinder endpoint registry ─────────────────────────────────────────
+  // A typo in one of these URLs fails SILENTLY: the collector records a capture
+  // error every 5 minutes forever and nothing else looks wrong. Pin them.
+  {
+    const expected: Record<string, string> = {
+      'all_sector': 'https://tradefinder.in/api_be/data/order/all_sector',
+      'daily-index': 'https://tradefinder.in/api_be/data/order/daily-index',
+      'sector_scope': 'https://tradefinder.in/api_be/data/sector_scope',
+      'market_pulse': 'https://tradefinder.in/api_be/data/market_pulse',
+    };
+    check(
+      'tf endpoints: all four required feeds are captured',
+      TF_ENDPOINTS.length === 4 && Object.keys(expected).every((e) => (TF_ENDPOINTS as readonly string[]).includes(e)),
+      TF_ENDPOINTS.join(', ')
+    );
+    for (const [endpoint, url] of Object.entries(expected)) {
+      check(`tf endpoints: ${endpoint} URL is exact`, TF_ENDPOINT_URL[endpoint as keyof typeof TF_ENDPOINT_URL] === url);
+    }
+    check(
+      'tf endpoints: every endpoint has a URL (no undefined fetch target)',
+      TF_ENDPOINTS.every((e) => typeof TF_ENDPOINT_URL[e] === 'string' && TF_ENDPOINT_URL[e].startsWith('https://'))
+    );
+    check(
+      'tf endpoints: only the two confirmed-schema feeds are marked parsed',
+      TF_PARSED_ENDPOINTS.length === 2 &&
+        TF_PARSED_ENDPOINTS.includes('all_sector') &&
+        TF_PARSED_ENDPOINTS.includes('daily-index'),
+      'sector_scope/market_pulse are captured RAW until a real payload is inspected'
+    );
   }
 }
