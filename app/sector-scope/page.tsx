@@ -52,6 +52,7 @@ interface HeatmapResponse {
 
 interface IndexResponse {
   success: boolean;
+  capturedAt?: string | null;
   values?: Record<string, number>;
 }
 
@@ -79,21 +80,24 @@ const GROUPS = groupsJson as Record<string, string[]>;
 // symbols the captured payload filed under OTHERS (SRF, HAL, DIXON, AMBER,
 // CROMPTON, DELHIVERY, HAVELLS, IDEA, INDUSTOWER, KEI, NAM-INDIA, PGEL,
 // PIDILITIND, COCHINSHIP) appear nowhere on that page, so neither do they here.
+// Matches the basket order TradeFinder's own all_sector payload returns them
+// in (https://tradefinder.in/api_be/data/order/all_sector, confirmed by the
+// operator 2026-08-08) — not alphabetical, just their order.
 const GROUP_ORDER = [
-  'NIFTY 50',
-  'NIFTY AUTO',
-  'NIFTY BANK',
-  'NIFTY CEMENT',
+  'NIFTY METAL',
+  'NIFTY PSU BANK',
+  'NIFTY REALTY',
   'NIFTY ENERGY',
+  'NIFTY AUTO',
+  'NIFTY IT',
+  'NIFTY PHARMA',
+  'NIFTY 50',
+  'NIFTY PVT BANK',
+  'NIFTY BANK',
   'NIFTY FIN SERVICE',
   'NIFTY FMCG',
-  'NIFTY IT',
-  'NIFTY METAL',
+  'NIFTY CEMENT',
   'NIFTY MID SELECT',
-  'NIFTY PHARMA',
-  'NIFTY PSU BANK',
-  'NIFTY PVT BANK',
-  'NIFTY REALTY',
   'SENSEX',
 ] as const;
 const ALL_SYMBOLS = [...new Set(GROUP_ORDER.flatMap((name) => GROUPS[name] ?? []))];
@@ -181,6 +185,7 @@ function formatTfCapturedAt(iso: string | null) {
 export default function SectorScopePage() {
   const [data, setData] = useState<ScopeData | null>(null);
   const [indexValues, setIndexValues] = useState<Record<string, number>>({});
+  const [indexCapturedAt, setIndexCapturedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -211,7 +216,10 @@ export default function SectorScopePage() {
       try {
         const indexResponse = await fetch('/api/sector-scope/indices', { cache: 'no-store' });
         const payload = (await indexResponse.json()) as IndexResponse;
-        if (indexResponse.ok && payload.success) setIndexValues(payload.values ?? {});
+        if (indexResponse.ok && payload.success) {
+          setIndexValues(payload.values ?? {});
+          setIndexCapturedAt(payload.capturedAt ?? null);
+        }
       } catch {
         // Stock heatmap data remains usable if the separate index feed is down.
       }
@@ -436,7 +444,10 @@ export default function SectorScopePage() {
             <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
               <div>
                 <h2 className="text-sm font-semibold text-foreground">Sector Scope bar graph</h2>
-                <p className="text-[10px] text-muted-foreground">Index R-factor activity from Dhan range expansion vs the prior 20 sessions. Sign follows the move from open.</p>
+                <p className="text-[10px] text-muted-foreground">
+                  TradeFinder&apos;s own per-index R-factor, from their most recent captured board.
+                  {indexCapturedAt ? ` As of ${formatTfCapturedAt(indexCapturedAt)}.` : ' No capture yet.'}
+                </p>
               </div>
               <span className="text-[10px] text-muted-foreground">{chart.length}/15 indices · strongest to weakest</span>
             </div>

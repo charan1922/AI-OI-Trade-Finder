@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { prisma } from '@/lib/db';
 import { tfFetch } from '@/lib/tf-live/client';
 import type { TfEndpoint } from '@/lib/tf-live/endpoints';
-import { parseAllSector } from '@/lib/tf-live/parse';
+import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
 
 const SESSION_KEY_ENV = 'TF_LIVE_SESSION_KEY';
 const DAILY_INDEX_URL = 'https://tradefinder.in/api_be/data/order/daily-index';
@@ -502,4 +502,38 @@ export async function getLatestTfRFactorBySymbol(): Promise<{
     bySymbol.set(r.symbol, { rFactor: r.rFactor, pctChange: r.pctChange, previousClose: r.previousClose });
   }
   return { capturedAt: row.capturedAt, bySymbol };
+}
+
+/**
+ * The latest successful `daily-index` capture — TradeFinder's own per-index
+ * chart values (param_3), used by /sector-scope's sector-level bar chart.
+ * Same "latest from any date" rule as getLatestTfRFactorBySymbol above: this
+ * feeds a display chart, never a trade decision.
+ */
+export async function getLatestTfDailyIndexValues(): Promise<{
+  capturedAt: string | null;
+  byIndex: Map<string, number>;
+}> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(`
+    SELECT capturedAt, payloadJson
+    FROM tf_live_captures
+    WHERE endpoint = 'daily-index' AND status = 'success'
+    ORDER BY capturedAt DESC
+    LIMIT 1
+  `)) as { capturedAt: string; payloadJson: string | null }[];
+  const row = rows[0];
+  const byIndex = new Map<string, number>();
+  if (!row?.payloadJson) return { capturedAt: null, byIndex };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.payloadJson);
+  } catch {
+    return { capturedAt: null, byIndex };
+  }
+  for (const r of parseDailyIndex(parsed)) {
+    if (r.value != null) byIndex.set(r.name, r.value);
+  }
+  return { capturedAt: row.capturedAt, byIndex };
 }
