@@ -261,8 +261,19 @@ async function launch(cookieHeader: string): Promise<void> {
   const sectorScopePage = await context.newPage();
   sectorScopePage.on('response', (response) => void handleResponse(response).catch(() => undefined));
 
-  await marketPulsePage.goto(MARKET_PULSE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-  await sectorScopePage.goto(SECTOR_SCOPE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  // Each page's initial navigation is independent — a timeout or nav error on
+  // ONE (e.g. a slow market-pulse load) must never take down the other or the
+  // whole launch. Before this fix, an unhandled goto() failure here threw out
+  // of launch(), which the caller's catch treated as "browser launch failed"
+  // and closed the ENTIRE browser — killing a perfectly good sector-scope tab
+  // over an unrelated market-pulse hiccup (confirmed live 2026-08-08: 15
+  // successful all_sector/daily-index captures, then reported "not running").
+  // The reload loop below retries both every RELOAD_INTERVAL_MS regardless,
+  // so a failed first load here just means the first reload is the real one.
+  await Promise.all([
+    marketPulsePage.goto(MARKET_PULSE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined),
+    sectorScopePage.goto(SECTOR_SCOPE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined),
+  ]);
   // A few seconds for Chromium's own process to finish settling after both
   // page loads — reading memory immediately after goto() would under-count it.
   setTimeout(() => logMemory('~5s after page load (steady-state cost)'), 5_000);
