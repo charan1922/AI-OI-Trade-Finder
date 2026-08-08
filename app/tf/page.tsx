@@ -8,7 +8,12 @@
  * this page runs a real headless browser on the server, logged in with
  * cookies from the operator's own TradeFinder session (see
  * lib/tf-live/browser.ts and parse-curl.ts for the full story), and simply
- * records whatever TradeFinder's own page fetches on its own polling loop.
+ * records whatever TradeFinder's own pages fetch on their own polling loop.
+ *
+ * ONE endpoint (/api/tf/browser-session) backs this whole page — folded
+ * together 2026-08-08 so there's a single source of truth for session status,
+ * whether the browser is running, and the capture log, instead of two
+ * separate polls that could drift out of sync with each other.
  */
 
 import { AlertTriangle, KeyRound, Loader2, RefreshCw } from 'lucide-react';
@@ -54,15 +59,10 @@ function Badge({
   return <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${cls}`}>{children}</span>;
 }
 
-interface TfSession {
+interface TfStatus {
   success: boolean;
-  session: {
-    configured: boolean;
-    updatedAt: string | null;
-    verifiedAt: string | null;
-    lastError: string | null;
-    jwtExpiresAt: string | null;
-  };
+  session: { configured: boolean; updatedAt: string | null; verifiedAt: string | null; lastError: string | null };
+  running: boolean;
   captures: { endpoint: string; capturedAt: string; status: string; error: string | null }[];
   history: {
     captureDate: string;
@@ -73,57 +73,38 @@ interface TfSession {
     lastCapturedAt: string;
     lastSuccessAt: string | null;
   }[];
-}
-
-interface TfBrowserSession {
-  success: boolean;
-  session: { configured: boolean; updatedAt: string | null; verifiedAt: string | null; lastError: string | null };
-  running: boolean;
   error?: string;
 }
 
 export default function TfPage() {
   const { readOnly } = useRole();
-  const [data, setData] = useState<TfSession | null>(null);
+  const [data, setData] = useState<TfStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null);
-  const [browserSession, setBrowserSession] = useState<TfBrowserSession | null>(null);
   const [pastedCurl, setPastedCurl] = useState('');
   const [browserBusy, setBrowserBusy] = useState(false);
   const [browserNotice, setBrowserNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/tf/session', { cache: 'no-store' });
-      const j = (await res.json()) as TfSession;
+      const res = await fetch('/api/tf/browser-session', { cache: 'no-store' });
+      const j = (await res.json()) as TfStatus;
       if (j.success) setData(j);
     } catch {
       /* transient — next poll retries */
     }
   }, []);
 
-  const refreshBrowserSession = useCallback(async () => {
-    try {
-      const res = await fetch('/api/tf/browser-session', { cache: 'no-store' });
-      const j = (await res.json()) as TfBrowserSession;
-      if (j.success) setBrowserSession(j);
-    } catch {
-      /* transient — next poll retries */
-    }
-  }, []);
-
   const refreshRef = useRef(refresh);
-  const refreshBrowserRef = useRef(refreshBrowserSession);
   useEffect(() => {
     refreshRef.current = refresh;
-    refreshBrowserRef.current = refreshBrowserSession;
-  }, [refresh, refreshBrowserSession]);
+  }, [refresh]);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       if (stopped) return;
-      await Promise.all([refreshRef.current(), refreshBrowserRef.current()]);
+      await refreshRef.current();
       if (!stopped) timer = setTimeout(tick, POLL_MS);
     };
     void tick();
@@ -138,13 +119,13 @@ export default function TfPage() {
     setBusy(true);
     setNotice(null);
     try {
-      const res = await fetch('/api/tf/session', { method: 'DELETE' });
-      const j = (await res.json()) as TfSession;
+      const res = await fetch('/api/tf/browser-session', { method: 'DELETE' });
+      const j = (await res.json()) as TfStatus;
       if (j.success) {
         setData(j);
         setNotice({ text: 'capture history cleared', tone: 'ok' });
       } else {
-        setNotice({ text: (j as unknown as { error?: string }).error ?? 'clear failed', tone: 'bad' });
+        setNotice({ text: j.error ?? 'clear failed', tone: 'bad' });
       }
     } catch (e) {
       setNotice({ text: (e as Error).message, tone: 'bad' });
@@ -173,13 +154,13 @@ export default function TfPage() {
           : { text: j.error ?? 'save failed', tone: 'bad' }
       );
       if (j.success) setPastedCurl('');
-      await refreshBrowserSession();
+      await refresh();
     } catch (e) {
       setBrowserNotice({ text: (e as Error).message, tone: 'bad' });
     } finally {
       setBrowserBusy(false);
     }
-  }, [pastedCurl, refreshBrowserSession]);
+  }, [pastedCurl, refresh]);
 
   const browserAction = useCallback(
     async (action: 'start' | 'stop') => {
@@ -197,14 +178,14 @@ export default function TfPage() {
             ? { text: action === 'start' ? (j.running ? 'browser is running' : 'starting…') : 'browser stopped', tone: 'ok' }
             : { text: j.error ?? `${action} failed`, tone: 'bad' }
         );
-        await refreshBrowserSession();
+        await refresh();
       } catch (e) {
         setBrowserNotice({ text: (e as Error).message, tone: 'bad' });
       } finally {
         setBrowserBusy(false);
       }
     },
-    [refreshBrowserSession]
+    [refresh]
   );
 
   const historyByDate = useMemo(() => {
@@ -228,12 +209,12 @@ export default function TfPage() {
         <a href="/tf/history" className="text-[11px] text-muted-foreground underline hover:text-foreground">
           EOD history →
         </a>
-        {browserSession && (
+        {data && (
           <>
-            <Badge tone={browserSession.session.configured ? 'ok' : 'neutral'}>
-              {browserSession.session.configured ? 'cookies stored' : 'not configured'}
+            <Badge tone={data.session.configured ? 'ok' : 'neutral'}>
+              {data.session.configured ? 'cookies stored' : 'not configured'}
             </Badge>
-            <Badge tone={browserSession.running ? 'ok' : 'neutral'}>{browserSession.running ? 'browser running' : 'browser stopped'}</Badge>
+            <Badge tone={data.running ? 'ok' : 'neutral'}>{data.running ? 'browser running' : 'browser stopped'}</Badge>
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
@@ -251,14 +232,14 @@ export default function TfPage() {
       {/* A missing/broken cookie session is the ONE state that needs action —
           everything else (a failed tick, the browser being off outside market
           hours) heals itself, so it isn't raised as a banner here. */}
-      {browserSession && !browserSession.session.configured && (
+      {data && !data.session.configured && (
         <div className="flex items-center gap-2 rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> No browser session configured — paste a &quot;Copy as cURL&quot; below to start capturing.
         </div>
       )}
-      {browserSession?.session.lastError && (
+      {data?.session.lastError && (
         <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {browserSession.session.lastError}
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {data.session.lastError}
         </div>
       )}
       {notice && (
@@ -279,9 +260,7 @@ export default function TfPage() {
             <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Browser session (recommended)
             </h2>
-            {browserSession?.session.lastError && (
-              <Badge tone="warn">{browserSession.session.lastError.slice(0, 70)}</Badge>
-            )}
+            {data?.session.lastError && <Badge tone="warn">{data.session.lastError.slice(0, 70)}</Badge>}
           </div>
           <p className="text-[11px] leading-snug text-muted-foreground">
             TradeFinder&apos;s access token is minted fresh by their own page for every single request and cannot be
@@ -310,15 +289,15 @@ export default function TfPage() {
             </button>
             <button
               type="button"
-              disabled={browserBusy || !browserSession?.session.configured}
-              onClick={() => void browserAction(browserSession?.running ? 'stop' : 'start')}
-              title={browserSession?.running ? 'Stop the headless browser' : 'Start the headless browser now (bypasses the 09:22–15:30 window, for testing)'}
+              disabled={browserBusy || !data?.session.configured}
+              onClick={() => void browserAction(data?.running ? 'stop' : 'start')}
+              title={data?.running ? 'Stop the headless browser' : 'Start the headless browser now (bypasses the 09:22–15:30 window, for testing)'}
               className="rounded-md border border-border px-3 py-1.5 text-[11px] hover:bg-muted disabled:opacity-50"
             >
-              {browserSession?.running ? 'Stop browser' : 'Start now'}
+              {data?.running ? 'Stop browser' : 'Start now'}
             </button>
-            {browserSession?.session.verifiedAt && (
-              <span className="text-[11px] text-muted-foreground">last confirmed working: {fmtDateTime(browserSession.session.verifiedAt)}</span>
+            {data?.session.verifiedAt && (
+              <span className="text-[11px] text-muted-foreground">last confirmed working: {fmtDateTime(data.session.verifiedAt)}</span>
             )}
           </div>
           {browserNotice && (

@@ -3,18 +3,51 @@ import { NextResponse } from 'next/server';
 import { adminOnly } from '@/lib/auth/server';
 import { forceStartTfBrowser, isTfBrowserRunning, stopTfBrowser } from '@/lib/tf-live/browser';
 import { extractCookieHeaderFromCurl } from '@/lib/tf-live/parse-curl';
-import { assertTfLiveSessionKeyConfigured, getTfBrowserSessionStatus, saveTfBrowserCookies } from '@/lib/tf-live/store';
+import {
+  assertTfLiveSessionKeyConfigured,
+  clearTfLiveCaptureHistory,
+  getLatestTfLiveCaptures,
+  getTfBrowserSessionStatus,
+  getTfLiveCaptureHistory,
+  saveTfBrowserCookies,
+} from '@/lib/tf-live/store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-/** Safe operational status. Never returns the stored cookie value. */
+/** ONE endpoint for everything /tf shows: the browser cookie session status,
+ *  whether it's running, and the capture log — folded together 2026-08-08 so
+ *  the page doesn't need two separate polls for what's really one screen.
+ *  Never returns the stored cookie value. */
 export async function GET(req: Request) {
   const denied = adminOnly(req);
   if (denied) return denied;
   try {
-    const session = await getTfBrowserSessionStatus();
-    return NextResponse.json({ success: true, session, running: isTfBrowserRunning() });
+    const [session, captures, history] = await Promise.all([
+      getTfBrowserSessionStatus(),
+      getLatestTfLiveCaptures(),
+      getTfLiveCaptureHistory(),
+    ]);
+    return NextResponse.json({ success: true, session, running: isTfBrowserRunning(), captures, history });
+  } catch (error) {
+    return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
+  }
+}
+
+/** Clear the "Last capture per endpoint" / "Capture history by date" tables —
+ *  the "Clear history" button on /tf. Leaves the browser cookie jar
+ *  untouched; only the capture log is wiped. */
+export async function DELETE(req: Request) {
+  const denied = adminOnly(req);
+  if (denied) return denied;
+  try {
+    await clearTfLiveCaptureHistory();
+    const [session, captures, history] = await Promise.all([
+      getTfBrowserSessionStatus(),
+      getLatestTfLiveCaptures(),
+      getTfLiveCaptureHistory(),
+    ]);
+    return NextResponse.json({ success: true, session, running: isTfBrowserRunning(), captures, history });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
