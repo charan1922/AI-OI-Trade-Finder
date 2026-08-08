@@ -220,13 +220,16 @@ export function runEntryQualityChecks(check: CheckFn): void {
     const expected: Record<string, string> = {
       'all_sector': 'https://tradefinder.in/api_be/data/order/all_sector',
       'daily-index': 'https://tradefinder.in/api_be/data/order/daily-index',
-      'sector_scope': 'https://tradefinder.in/api_be/data/sector_scope',
       'market_pulse': 'https://tradefinder.in/api_be/data/market_pulse',
     };
     check(
-      'tf endpoints: all four required feeds are captured',
-      TF_ENDPOINTS.length === 4 && Object.keys(expected).every((e) => (TF_ENDPOINTS as readonly string[]).includes(e)),
+      'tf endpoints: exactly the three feeds this app actually uses are captured',
+      TF_ENDPOINTS.length === 3 && Object.keys(expected).every((e) => (TF_ENDPOINTS as readonly string[]).includes(e)),
       TF_ENDPOINTS.join(', ')
+    );
+    check(
+      'tf endpoints: sector_scope (TF\'s own, unrelated to our /sector-scope page) is NOT captured',
+      !(TF_ENDPOINTS as readonly string[]).includes('sector_scope')
     );
     for (const [endpoint, url] of Object.entries(expected)) {
       check(`tf endpoints: ${endpoint} URL is exact`, TF_ENDPOINT_URL[endpoint as keyof typeof TF_ENDPOINT_URL] === url);
@@ -240,7 +243,7 @@ export function runEntryQualityChecks(check: CheckFn): void {
       TF_PARSED_ENDPOINTS.length === 2 &&
         TF_PARSED_ENDPOINTS.includes('all_sector') &&
         TF_PARSED_ENDPOINTS.includes('daily-index'),
-      'sector_scope/market_pulse are captured RAW until a real payload is inspected'
+      'market_pulse is captured RAW until a real payload is inspected'
     );
   }
 }

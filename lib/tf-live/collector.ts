@@ -34,8 +34,8 @@ const ENDPOINT_URL = TF_ENDPOINT_URL;
 
 /** Capture cadence: 60s, at the user's explicit request (2026-08-07). A
  *  5-minute grid was too coarse to see a name climbing TF's board inside the
- *  09:45–11:00 entry window. Four feeds spaced MIN_REQUEST_GAP_MS apart use
- *  ~12s of each minute, so a tick always finishes well before the next. */
+ *  09:45–11:00 entry window. Three feeds spaced MIN_REQUEST_GAP_MS apart use
+ *  ~9s of each minute, so a tick always finishes well before the next. */
 const INTERVAL_MS = 60_000;
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -77,10 +77,10 @@ export function withinCaptureWindow(now = new Date()): boolean {
  * param_N fields (param_0 ltp, param_1 prevClose, param_2 %, param_3 R-Factor);
  * `daily-index` is already a flat array.
  *
- * `sector_scope` and `market_pulse` intentionally return undefined: no parser
- * exists because no real payload has been inspected. They are still CAPTURED —
- * the raw payloadJson is stored on every capture row, so nothing is lost and a
- * re-parse never needs to re-call TradeFinder.
+ * `market_pulse` intentionally returns undefined: no parser exists because no
+ * real payload has been inspected. It is still CAPTURED — the raw payloadJson
+ * is stored on every capture row, so nothing is lost and a re-parse never
+ * needs to re-call TradeFinder.
  */
 function extractRows(endpoint: Endpoint, payload: unknown): unknown[] | undefined {
   if (endpoint === 'all_sector') {

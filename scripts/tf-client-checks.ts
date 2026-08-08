@@ -213,7 +213,7 @@ export async function runTfClientChecks(check: CheckFn): Promise<void> {
   }
 
   {
-    const h = summarizeTfHealth({ ...base, lastError: '2 of 4 feeds failed (sector_scope, market_pulse): rejected' });
+    const h = summarizeTfHealth({ ...base, lastError: '2 of 3 feeds failed (daily-index, market_pulse): rejected' });
     check('tf health: a PARTIAL failure is a warning, not a total failure', h.level === 'warning', h.headline);
     check('tf health: partial failure still surfaces the last good capture', h.headline.includes('ago'), h.headline);
   }

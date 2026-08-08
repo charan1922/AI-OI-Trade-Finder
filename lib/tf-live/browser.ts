@@ -16,10 +16,13 @@
  * own browser already has (see lib/tf-live/parse-curl.ts for how those are
  * captured), and navigates to the site. AS FAR AS TRADEFINDER CAN TELL THIS IS
  * A LOGGED-IN BROWSER, so their own code mints lt/at exactly as it does for a
- * human — we never touch lt/at at all. We only listen to whatever the page's
- * own polling loop produces (market_pulse / sector_scope / rfactor_data / ...
- * firing every ~10s, observed directly in a live Network-tab capture
- * 2026-08-08) and store it, exactly like the old fetch-based collector did.
+ * human — we never touch lt/at at all. We only listen to whatever the page
+ * fires and keep the three endpoints lib/tf-live/endpoints.ts actually lists
+ * (see ALLOWED_TAGS below) — the page also fires several others nobody reads
+ * (admin/users/check_signal, feature_flag/feature_read,
+ * rfactor_filter/rfactor_data, servertime, TradeFinder's OWN sector_scope),
+ * which are dropped before they ever reach the database (scoped down
+ * 2026-08-08, user request).
  *
  * HOW LONG THE INJECTED SESSION LASTS — SHORTER THAN TRADEFINDER CLAIMS
  * -----------------------------------------------------------------------
@@ -44,14 +47,20 @@
  */
 import { freemem, totalmem } from 'node:os';
 import { withinCaptureWindow } from '@/lib/tf-live/collector';
+import { TF_ENDPOINTS } from '@/lib/tf-live/endpoints';
 import { cookieHeaderToPlaywrightCookies } from '@/lib/tf-live/parse-curl';
 import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
 import { getTfBrowserCookies, recordTfBrowserOutcome, recordTfLiveCapture, recordTfLiveRows } from '@/lib/tf-live/store';
 
-/** The page whose own JavaScript polls the feeds we care about — confirmed
- *  live 2026-08-08 (market_pulse, sector_scope, rfactor_data, feature_read all
- *  fire from here on a ~10s loop). */
+/** The page whose own JavaScript makes the requests we watch for. */
 const ENTRY_URL = 'https://tradefinder.in/market-pulse';
+/** ONLY these get stored — see lib/tf-live/endpoints.ts's module note for
+ *  why the list is exactly these three and no more. Everything else the page
+ *  fires (admin/users/check_signal, feature_flag/feature_read,
+ *  rfactor_filter/rfactor_data, servertime, TF's own sector_scope) is real
+ *  traffic nobody in this app reads, so it's dropped in handleResponse()
+ *  before recordTfLiveCapture is ever called. */
+const ALLOWED_TAGS = new Set<string>(TF_ENDPOINTS);
 /** Passed to addCookies as `url`, not `domain` — see parse-curl.ts's module
  *  note on why `__Secure-`/`__Host-` cookies reject an explicit Domain. */
 const SITE_URL = 'https://tradefinder.in/';
@@ -60,8 +69,12 @@ const SITE_URL = 'https://tradefinder.in/';
  *  the session is treated as broken rather than "still warming up". */
 const CONSECUTIVE_FAILURE_LIMIT = 6;
 /** If a launch never produces even one success within this long, give up and
- *  let the watchdog retry on the next check rather than run forever blind. */
-const FIRST_SUCCESS_TIMEOUT_MS = 2 * 60_000;
+ *  let the watchdog retry on the next check rather than run forever blind.
+ *  Must stay comfortably above RELOAD_INTERVAL_MS — real evidence (2026-08-08)
+ *  shows the FIRST page load can fail even on a good session (a one-time cold
+ *  start), so this needs room for at least a second reload to prove the
+ *  session is actually fine before giving up on it. */
+const FIRST_SUCCESS_TIMEOUT_MS = 4 * 60_000;
 /** How often the watchdog checks the browser is alive and still in-window. */
 const WATCHDOG_INTERVAL_MS = 60_000;
 /** How often WE reload the page to force a fresh round of requests. The
@@ -73,7 +86,7 @@ const WATCHDOG_INTERVAL_MS = 60_000;
  *  an undocumented client-side timer we don't control, this module now
  *  drives its own reloads, so a fresh attempt is guaranteed on a schedule we
  *  own (2026-08-08, second live-test failure). */
-const RELOAD_INTERVAL_MS = 30_000;
+const RELOAD_INTERVAL_MS = 90_000;
 /** A manual "Start now" (or a fresh cookie save) outside market hours used to
  *  get killed by the very next watchdog tick, at most 60s later — the tick
  *  calls ensureTfBrowserState() with no `force`, sees the window is closed,
@@ -99,23 +112,26 @@ function logMemory(label: string): void {
 }
 
 /** Map a TradeFinder request path to the endpoint tag the rest of the app
- *  already reads from tf_live_captures. The two feeds with confirmed schemas
- *  keep the SAME tag the old fetch-based collector used ('all_sector',
- *  'daily-index') so race.ts / snapshot.ts / the EOD page need no changes.
- *  Anything else is tagged by its own path — nothing seen is ever dropped,
- *  even endpoints nobody has built a parser for yet. */
-function endpointTagFor(pathname: string): string {
-  if (pathname.endsWith('/data/order/all_sector')) return 'all_sector';
-  if (pathname.endsWith('/data/order/daily-index')) return 'daily-index';
-  const marker = '/api_be/';
-  const at = pathname.indexOf(marker);
-  return at >= 0 ? pathname.slice(at + marker.length) : pathname;
+ *  already reads from tf_live_captures. Keeps the SAME tags the old
+ *  fetch-based collector used ('all_sector', 'daily-index', 'market_pulse')
+ *  so race.ts / snapshot.ts / the EOD page need no changes. Returns null for
+ *  anything NOT in ALLOWED_TAGS — the caller drops those before they're ever
+ *  recorded (lib/tf-live/endpoints.ts owns the allowlist and the reasoning). */
+function endpointTagFor(pathname: string): string | null {
+  let tag: string;
+  if (pathname.endsWith('/data/order/all_sector')) tag = 'all_sector';
+  else if (pathname.endsWith('/data/order/daily-index')) tag = 'daily-index';
+  else {
+    const marker = '/api_be/';
+    const at = pathname.indexOf(marker);
+    tag = at >= 0 ? pathname.slice(at + marker.length) : pathname;
+  }
+  return ALLOWED_TAGS.has(tag) ? tag : null;
 }
 
 /** Best-effort parse into tf_live_rows for the two feeds with a confirmed
- *  schema. Everything else is still fully captured via payloadJson — see the
- *  module note in collector.ts on why sector_scope/market_pulse/rfactor_data
- *  have no parser yet. */
+ *  schema. `market_pulse` is still fully captured via payloadJson — see
+ *  endpoints.ts's module note on why it has no parser yet. */
 function extractRows(tag: string, payload: unknown): unknown[] | undefined {
   if (tag === 'all_sector') {
     const rows = parseAllSector(payload);
@@ -166,6 +182,7 @@ async function handleResponse(response: import('playwright').Response): Promise<
 
   const pathname = new URL(url).pathname;
   const tag = endpointTagFor(pathname);
+  if (!tag) return; // not one of the three we keep — real traffic, but nobody reads it
   const s = state();
 
   let body: unknown;
