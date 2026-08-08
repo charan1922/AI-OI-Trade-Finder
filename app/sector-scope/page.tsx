@@ -55,12 +55,22 @@ interface IndexResponse {
   values?: Record<string, number>;
 }
 
+interface TfRFactorResponse {
+  success: boolean;
+  capturedAt: string | null;
+  values?: Record<string, { rFactor: number | null; pctChange: number | null; previousClose: number | null }>;
+}
+
 interface ScopeData {
   source: DataSource | undefined;
   marketOpen: boolean;
   sessionDate?: string;
   baseDate?: string;
   rows: ScopeRow[];
+  /** When TradeFinder's own all_sector capture (the R-Factor column's source)
+   *  was captured — null if /tf has never captured successfully. TF's board
+   *  updates periodically, not live, so this can be minutes to a day old. */
+  tfCapturedAt: string | null;
 }
 
 const GROUPS = groupsJson as Record<string, string[]>;
@@ -154,6 +164,20 @@ function formatPrice(value: number | null) {
   }).format(value);
 }
 
+/** TradeFinder's board updates periodically, not live — this says exactly how
+ *  stale the R-Factor column is, rather than letting a silent number imply
+ *  it's ticking in real time. */
+function formatTfCapturedAt(iso: string | null) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export default function SectorScopePage() {
   const [data, setData] = useState<ScopeData | null>(null);
   const [indexValues, setIndexValues] = useState<Record<string, number>>({});
@@ -167,8 +191,9 @@ export default function SectorScopePage() {
       const heatmapResponse = await fetch('/api/heatmap', { cache: 'no-store' });
       const heatmap = (await heatmapResponse.json()) as HeatmapResponse;
 
-      // R-Factor is app-owned enrichment. It is never allowed to block the
-      // raw Dhan/Fyers price, prior-close, and percentage fields.
+      // R-Factor enrichment (our own bias signal, and previousClose fallback).
+      // It is never allowed to block the raw Dhan/Fyers price, prior-close,
+      // and percentage fields.
       let quote: QuoteResponse | null = null;
       try {
         const quoteResponse = await fetch('/api/live/quote', {
@@ -180,7 +205,7 @@ export default function SectorScopePage() {
         const payload = (await quoteResponse.json()) as QuoteResponse;
         if (quoteResponse.ok && payload.success) quote = payload;
       } catch {
-        // The source rows below remain usable without R-Factor enrichment.
+        // The source rows below remain usable without this enrichment.
       }
 
       try {
@@ -191,8 +216,22 @@ export default function SectorScopePage() {
         // Stock heatmap data remains usable if the separate index feed is down.
       }
 
+      // The R-Factor NUMBER shown on this page is TradeFinder's OWN, from their
+      // most recent captured all_sector board — not our own model (user request
+      // 2026-08-08: the two page's numbers previously didn't match because this
+      // page computed its own instead of showing theirs).
+      let tfRFactor: TfRFactorResponse | null = null;
+      try {
+        const tfResponse = await fetch('/api/tf/rfactor-map', { cache: 'no-store' });
+        const payload = (await tfResponse.json()) as TfRFactorResponse;
+        if (tfResponse.ok && payload.success) tfRFactor = payload;
+      } catch {
+        // The source rows below remain usable without TF's R-Factor.
+      }
+
       const tileBySymbol = new Map((heatmap.tiles ?? []).map((tile) => [tile.symbol, tile]));
       const quoteBySymbol = new Map((quote?.rows ?? []).map((row) => [row.symbol, row]));
+      const tfBySymbol = tfRFactor?.values ?? {};
       const rows = ALL_SYMBOLS.map((symbol) => {
         const tile = tileBySymbol.get(symbol);
         const live = quoteBySymbol.get(symbol);
@@ -201,7 +240,7 @@ export default function SectorScopePage() {
           ltp: tile?.price ?? null,
           previousClose: tile?.previousClose ?? live?.previousClose ?? null,
           changePctPrevClose: tile?.pct ?? null,
-          rFactor: live?.rFactor ?? null,
+          rFactor: tfBySymbol[symbol]?.rFactor ?? null,
           rFactorBias: live?.rFactorBias ?? null,
           turnover: tile?.turnover ?? 0,
         } satisfies ScopeRow;
@@ -217,6 +256,7 @@ export default function SectorScopePage() {
         sessionDate: heatmap.sessionDate,
         baseDate: heatmap.baseDate,
         rows,
+        tfCapturedAt: tfRFactor?.capturedAt ?? null,
       } satisfies ScopeData;
       setData(next);
       setError(null);
@@ -323,6 +363,14 @@ export default function SectorScopePage() {
         >
           {sourceLabel}
         </span>
+        {data && (
+          <span
+            className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-500/10 dark:text-violet-400"
+            title="The R column shows TradeFinder's OWN R-Factor from their most recent captured board — this is how old that capture is, not how fresh the prices above are."
+          >
+            TF R-Factor: {data.tfCapturedAt ? formatTfCapturedAt(data.tfCapturedAt) : 'no capture yet'}
+          </span>
+        )}
         <button
           type="button"
           onClick={() => void fetchOnce(true)}
@@ -372,7 +420,7 @@ export default function SectorScopePage() {
                     return (
                       <g key={`${basket.name}-${row.symbol}`}>
                         <rect x={rect.x} y={rect.y} width={Math.max(0, rect.w - 1)} height={Math.max(0, rect.h - 1)} fill={heatColor(pct)} rx={1}>
-                          <title>{`${row.symbol}\nLTP ₹${formatPrice(row.ltp)} · Prev close ₹${formatPrice(row.previousClose)}\n${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% vs previous close${row.rFactor != null ? `\nApp R-Factor ${row.rFactor.toFixed(2)}` : ''}`}</title>
+                          <title>{`${row.symbol}\nLTP ₹${formatPrice(row.ltp)} · Prev close ₹${formatPrice(row.previousClose)}\n${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% vs previous close${row.rFactor != null ? `\nTF R-Factor ${row.rFactor.toFixed(2)}` : ''}`}</title>
                         </rect>
                         {showSymbol && <text x={rect.x + rect.w / 2} y={rect.y + rect.h / 2 + (showPct ? -2 : 3)} textAnchor="middle" fontSize={fontSize} fontWeight={700} fill="white" pointerEvents="none">{row.symbol}</text>}
                         {showPct && <text x={rect.x + rect.w / 2} y={rect.y + rect.h / 2 + fontSize} textAnchor="middle" fontSize={fontSize * 0.85} fill="rgba(255,255,255,0.9)" pointerEvents="none">{pct >= 0 ? '+' : ''}{pct.toFixed(1)}%</text>}
@@ -441,7 +489,7 @@ export default function SectorScopePage() {
                 <div className="max-h-72 overflow-auto">
                   <table className="w-full text-[11px]">
                     <thead className="sticky top-0 bg-card text-[10px] text-muted-foreground">
-                      <tr className="border-b border-border"><th className="py-1.5 text-left font-medium">Symbol</th><th className="py-1.5 text-right font-medium">LTP</th><th className="py-1.5 text-right font-medium">Prev C</th><th className="py-1.5 text-right font-medium">%</th><th className="py-1.5 text-right font-medium">R</th></tr>
+                      <tr className="border-b border-border"><th className="py-1.5 text-left font-medium">Symbol</th><th className="py-1.5 text-right font-medium">LTP</th><th className="py-1.5 text-right font-medium">Prev C</th><th className="py-1.5 text-right font-medium">%</th><th className="py-1.5 text-right font-medium" title="TradeFinder's own R-Factor, from their most recent captured board — not our estimate of it.">R</th></tr>
                     </thead>
                     <tbody>
                       {[...basket.rows].sort((a, b) => (b.changePctPrevClose ?? -Infinity) - (a.changePctPrevClose ?? -Infinity)).map((row) => {
