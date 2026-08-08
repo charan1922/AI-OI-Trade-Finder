@@ -52,8 +52,16 @@ import { cookieHeaderToPlaywrightCookies } from '@/lib/tf-live/parse-curl';
 import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
 import { getTfBrowserCookies, recordTfBrowserOutcome, recordTfLiveCapture, recordTfLiveRows } from '@/lib/tf-live/store';
 
-/** The page whose own JavaScript makes the requests we watch for. */
-const ENTRY_URL = 'https://tradefinder.in/market-pulse';
+/** TWO separate TradeFinder pages, each firing a different subset of the
+ *  three endpoints we keep — confirmed with the operator 2026-08-08:
+ *  /market-pulse fires `market_pulse`; /sector-scope fires `all_sector` AND
+ *  `daily-index`. Watching only /market-pulse (the original design) meant
+ *  all_sector/daily-index had ZERO fresh captures since the fetch-based
+ *  collector was retired — that's why the "TF R-Factor" column on /live had
+ *  been empty. Both pages are opened as separate tabs in the SAME browser
+ *  context, so they share the one injected cookie jar. */
+const MARKET_PULSE_URL = 'https://tradefinder.in/market-pulse';
+const SECTOR_SCOPE_URL = 'https://tradefinder.in/sector-scope';
 /** ONLY these get stored — see lib/tf-live/endpoints.ts's module note for
  *  why the list is exactly these three and no more. Everything else the page
  *  fires (admin/users/check_signal, feature_flag/feature_read,
@@ -220,10 +228,11 @@ async function handleResponse(response: import('playwright').Response): Promise<
   await recordTfBrowserOutcome(true);
 }
 
-/** Launch one browser, inject cookies, open the entry page, and wire the
- *  response listener. Resolves once navigation completes; from there OUR OWN
- *  reload loop (not the page's own JS) keeps producing fresh attempts every
- *  RELOAD_INTERVAL_MS until stopped or the browser crashes. */
+/** Launch one browser, inject cookies, open BOTH entry pages, and wire the
+ *  response listener on each. Resolves once both navigations complete; from
+ *  there OUR OWN reload loop (not either page's own JS) keeps producing
+ *  fresh attempts on both tabs every RELOAD_INTERVAL_MS until stopped or the
+ *  browser crashes. */
 async function launch(cookieHeader: string): Promise<void> {
   logMemory('before launch');
   const { chromium } = await import('playwright');
@@ -246,20 +255,26 @@ async function launch(cookieHeader: string): Promise<void> {
 
   const context = await browser.newContext({ userAgent: REALISTIC_UA });
   await context.addCookies(cookieHeaderToPlaywrightCookies(cookieHeader, SITE_URL));
-  const page = await context.newPage();
-  page.on('response', (response) => void handleResponse(response).catch(() => undefined));
 
-  await page.goto(ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-  // A few seconds for Chromium's own process to finish settling after the
-  // page load — reading memory immediately after goto() would under-count it.
+  const marketPulsePage = await context.newPage();
+  marketPulsePage.on('response', (response) => void handleResponse(response).catch(() => undefined));
+  const sectorScopePage = await context.newPage();
+  sectorScopePage.on('response', (response) => void handleResponse(response).catch(() => undefined));
+
+  await marketPulsePage.goto(MARKET_PULSE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  await sectorScopePage.goto(SECTOR_SCOPE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  // A few seconds for Chromium's own process to finish settling after both
+  // page loads — reading memory immediately after goto() would under-count it.
   setTimeout(() => logMemory('~5s after page load (steady-state cost)'), 5_000);
 
-  // WE drive every subsequent attempt — see RELOAD_INTERVAL_MS's module note
-  // on why the page's own polling loop can't be trusted to keep going.
+  // WE drive every subsequent attempt on BOTH tabs — see RELOAD_INTERVAL_MS's
+  // module note on why neither page's own polling loop can be trusted to
+  // keep going by itself.
   if (s.reloadTimer) clearInterval(s.reloadTimer);
   s.reloadTimer = setInterval(() => {
     if (s.browser !== browser) return; // stale timer from a since-replaced browser
-    void page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
+    void marketPulsePage.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
+    void sectorScopePage.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
   }, RELOAD_INTERVAL_MS);
   s.reloadTimer.unref?.();
 
@@ -271,7 +286,7 @@ async function launch(cookieHeader: string): Promise<void> {
       if (s.browser === browser && !s.sawFirstSuccess) {
         await recordTfBrowserOutcome(
           false,
-          `no successful TradeFinder response within ${FIRST_SUCCESS_TIMEOUT_MS / 1000}s of loading ${ENTRY_URL} — the session may be logged out`
+          `no successful TradeFinder response within ${FIRST_SUCCESS_TIMEOUT_MS / 1000}s of loading ${MARKET_PULSE_URL} or ${SECTOR_SCOPE_URL} — the session may be logged out`
         );
       }
     })();
