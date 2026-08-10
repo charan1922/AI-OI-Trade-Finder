@@ -57,6 +57,13 @@ export interface LiveUrgencyRow {
   /** Trailing ~30-min build of nseOiPct in pct-points — OUR derived combined-OI
    *  rate ("still building now" vs "stalled"). Shown in the App block. */
   nseOiSlope30m?: number | null;
+  /** Combined (futures+options) OI build in pct-points SINCE 09:35 IST — the OI
+   *  counterpart of the `sinceEntryPct` price column, answering "how much of
+   *  today's OI build arrived after the open settled" rather than "since
+   *  yesterday". Both ends are NSE's own cumulative figure, subtracted — nothing
+   *  is recomputed from raw OI. Null when no bar at/after 09:35 was recorded;
+   *  null means no evidence, never zero build. */
+  nseOiSinceWindowPct?: number | null;
   // ── NSE oi-spurts feed columns (LIVE-feed join, shown verbatim as NSE reports) ─
   // These are the exact per-underlying values from NSE's
   // live-analysis-oi-spurts-underlyings feed — the same numbers /nse/movers and

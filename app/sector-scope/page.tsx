@@ -1,13 +1,10 @@
 'use client';
 
 import { Grid3x3, Loader2, RefreshCw } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { squarify, squarifyOrdered, type TreemapRect } from '@/app/heatmap/_lib/squarify';
 import groupsJson from '@/lib/data/sector_scope_groups.json';
-
-type Signal = 'buy' | 'sell' | 'neutral' | null;
-type DataSource = 'live' | 'stale-live' | 'session' | 'eod';
 
 interface ScopeRow {
   symbol: string;
@@ -15,39 +12,13 @@ interface ScopeRow {
   previousClose: number | null;
   changePctPrevClose: number | null;
   rFactor: number | null;
-  rFactorBias: Signal;
-  turnover: number;
 }
 
-interface QuoteRow {
-  symbol: string;
-  rFactor: number | null;
-  rFactorBias: Signal;
-  previousClose?: number | null;
-}
-
-interface QuoteResponse {
-  success: boolean;
-  rows: QuoteRow[];
-}
-
-interface HeatmapTile {
-  symbol: string;
-  pct: number;
-  turnover: number;
-  price: number;
-  previousClose: number;
-}
-
+/** Only `turnover` is read off this — see the `turnoverBySymbol` note. Every
+ *  NUMBER this page shows comes from TradeFinder, never from here. */
 interface HeatmapResponse {
   success: boolean;
-  source?: DataSource;
-  marketOpen?: boolean;
-  sessionDate?: string;
-  baseDate?: string;
-  liveError?: string | null;
-  tiles?: HeatmapTile[];
-  error?: string;
+  tiles?: { symbol: string; turnover: number }[];
 }
 
 interface IndexResponse {
@@ -59,18 +30,16 @@ interface IndexResponse {
 interface TfRFactorResponse {
   success: boolean;
   capturedAt: string | null;
-  values?: Record<string, { rFactor: number | null; pctChange: number | null; previousClose: number | null }>;
+  values?: Record<string, { ltp: number | null; rFactor: number | null; pctChange: number | null; previousClose: number | null }>;
 }
 
 interface ScopeData {
-  source: DataSource | undefined;
-  marketOpen: boolean;
-  sessionDate?: string;
-  baseDate?: string;
   rows: ScopeRow[];
-  /** When TradeFinder's own all_sector capture (the R-Factor column's source)
-   *  was captured — null if /tf has never captured successfully. TF's board
-   *  updates periodically, not live, so this can be minutes to a day old. */
+  /** When the all_sector capture every number on this page comes from was
+   *  taken — null if /tf has never captured successfully. TradeFinder's board
+   *  refreshes periodically, not tick-by-tick, and stops entirely when their
+   *  session lapses (as it did at 12:10 IST on 2026-08-10), so this is the
+   *  page's real freshness and is shown rather than implied. */
   tfCapturedAt: string | null;
 }
 
@@ -101,6 +70,11 @@ const GROUP_ORDER = [
   'SENSEX',
 ] as const;
 const ALL_SYMBOLS = [...new Set(GROUP_ORDER.flatMap((name) => GROUPS[name] ?? []))];
+
+/** How often tile SIZES may be refreshed from /api/heatmap. Deliberately far
+ *  slower than the board itself — see the call site for why a broker call for
+ *  rectangle area must not compete with /live's quote polling. */
+const HEATMAP_MIN_INTERVAL_MS = 10 * 60_000;
 
 // TradeFinder display labels. Internal keys retain their full index names so
 // basket membership and Dhan index lookup remain unchanged.
@@ -189,85 +163,145 @@ export default function SectorScopePage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Wall clock, in state rather than read during render — the capture-age
+   *  badge has to keep counting up BETWEEN refreshes (a frozen board is
+   *  precisely when no new data arrives to re-render on), but calling Date.now()
+   *  in the render body is impure and unstable. Starts null so the server and
+   *  the first client render agree; fetchOnce sets it on the very first tick. */
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
-  const fetchOnce = useCallback(async (fresh = false): Promise<ScopeData | null> => {
+  /** Traded value per symbol, used for NOTHING except treemap tile size — the
+   *  proportional look of /heatmap, which the operator wants kept (2026-08-10).
+   *  TradeFinder's payload carries no turnover, so this is the one thing still
+   *  sourced from Dhan/Fyers via /api/heatmap. It is fetched OUT OF BAND and
+   *  never awaited: the grid paints immediately from TF's capture with equal
+   *  tiles, then re-proportions the moment turnover lands. A slow or failed
+   *  broker call therefore costs layout polish, never the page. */
+  const [turnoverBySymbol, setTurnoverBySymbol] = useState<Record<string, number>>({});
+  /** When tile sizes were last refreshed. Kept in a ref, not state — it must
+   *  not trigger a render, and it must survive every board refresh in between. */
+  const lastHeatmapAtRef = useRef(0);
+
+  /**
+   * TWO parallel reads, both pure SQLite, no broker anywhere. This page is 100%
+   * TradeFinder now (user decision 2026-08-10: "it totally depends on TF data")
+   * and loads in tens of milliseconds instead of seconds.
+   *
+   * WHAT CHANGED AND WHY. It used to run FOUR fetches strictly one after
+   * another, so load time was their SUM (~3–7s, reported as "taking so much
+   * time"). Two were Dhan calls that cannot even overlap — they share a
+   * process-wide 1.5s-spaced gate (lib/dhan/quote-gate.ts) — and neither was
+   * needed:
+   *
+   *  - POST /api/live/quote (196 symbols) contributed NOTHING visible. Its
+   *    `rFactorBias` went into a field no JSX here ever read, and its
+   *    `previousClose` sat behind a value the heatmap always supplied.
+   *  - GET /api/heatmap supplied LTP, previous close and % change — all three
+   *    of which TradeFinder's own all_sector payload already carries
+   *    (param_0/param_1/param_2), so we were asking a broker for numbers TF
+   *    had already handed us. It also supplied `turnover`, used for nothing
+   *    but treemap tile SIZE; TF's payload has no turnover at all (verified
+   *    against two real captures, 2026-08-10 — every leaf is exactly
+   *    Symbol + param_0..param_3), so sizing tiles by it was our invention and
+   *    never made this page match theirs. Tiles are equal-sized now.
+   *
+   * The trade-off, stated plainly: this page is now exactly as fresh as the
+   * last successful /tf capture and no fresher. When TradeFinder signs the
+   * session out mid-day (as it did at 12:10 IST on 2026-08-10) these numbers
+   * FREEZE rather than falling back to live Dhan prices. That is intended —
+   * matching TradeFinder is the point of the page — which is why the capture
+   * time is shown prominently and turns amber once stale, instead of a frozen
+   * board quietly passing for a live one.
+   *
+   * NOTE for whoever edits this next: dropping the /api/live/quote call also
+   * dropped its side effects (intraday OI recording, universe enrollment,
+   * breakout context) from THIS page. They still run every ~5 min during market
+   * hours via the Fyers poller's scanner pass (lib/trade-suggest/engine.ts
+   * calls the same route with fresh:true) and from /live whenever it's open —
+   * this page was never their only source.
+   */
+  const fetchOnce = useCallback(async (): Promise<ScopeData | null> => {
     setRefreshing(true);
+    setNow(Date.now());
     try {
-      const heatmapResponse = await fetch('/api/heatmap', { cache: 'no-store' });
-      const heatmap = (await heatmapResponse.json()) as HeatmapResponse;
+      const [indexPayload, tfRFactor] = await Promise.all([
+        fetch('/api/sector-scope/indices', { cache: 'no-store' })
+          .then(async (r) => ((await r.json()) as IndexResponse))
+          .then((p) => (p.success ? p : null))
+          .catch(() => null),
+        fetch('/api/tf/rfactor-map', { cache: 'no-store' })
+          .then(async (r) => ((await r.json()) as TfRFactorResponse))
+          .then((p) => (p.success ? p : null))
+          .catch(() => null),
+      ]);
 
-      // R-Factor enrichment (our own bias signal, and previousClose fallback).
-      // It is never allowed to block the raw Dhan/Fyers price, prior-close,
-      // and percentage fields.
-      let quote: QuoteResponse | null = null;
-      try {
-        const quoteResponse = await fetch('/api/live/quote', {
-          method: 'POST',
-          cache: 'no-store',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbols: ALL_SYMBOLS, scope: 'sector-scope', fresh }),
-        });
-        const payload = (await quoteResponse.json()) as QuoteResponse;
-        if (quoteResponse.ok && payload.success) quote = payload;
-      } catch {
-        // The source rows below remain usable without this enrichment.
+      // The bar chart and the stock grid come from two different TF endpoints
+      // (daily-index vs all_sector) — one missing must never blank the other.
+      if (indexPayload) {
+        setIndexValues(indexPayload.values ?? {});
+        setIndexCapturedAt(indexPayload.capturedAt ?? null);
       }
 
-      try {
-        const indexResponse = await fetch('/api/sector-scope/indices', { cache: 'no-store' });
-        const payload = (await indexResponse.json()) as IndexResponse;
-        if (indexResponse.ok && payload.success) {
-          setIndexValues(payload.values ?? {});
-          setIndexCapturedAt(payload.capturedAt ?? null);
-        }
-      } catch {
-        // Stock heatmap data remains usable if the separate index feed is down.
-      }
+      if (!tfRFactor) throw new Error('Could not read the TradeFinder capture — check /tf.');
 
-      // The R-Factor NUMBER shown on this page is TradeFinder's OWN, from their
-      // most recent captured all_sector board — not our own model (user request
-      // 2026-08-08: the two page's numbers previously didn't match because this
-      // page computed its own instead of showing theirs).
-      let tfRFactor: TfRFactorResponse | null = null;
-      try {
-        const tfResponse = await fetch('/api/tf/rfactor-map', { cache: 'no-store' });
-        const payload = (await tfResponse.json()) as TfRFactorResponse;
-        if (tfResponse.ok && payload.success) tfRFactor = payload;
-      } catch {
-        // The source rows below remain usable without TF's R-Factor.
-      }
-
-      const tileBySymbol = new Map((heatmap.tiles ?? []).map((tile) => [tile.symbol, tile]));
-      const quoteBySymbol = new Map((quote?.rows ?? []).map((row) => [row.symbol, row]));
-      const tfBySymbol = tfRFactor?.values ?? {};
+      const tfBySymbol = tfRFactor.values ?? {};
       const rows = ALL_SYMBOLS.map((symbol) => {
-        const tile = tileBySymbol.get(symbol);
-        const live = quoteBySymbol.get(symbol);
+        const tf = tfBySymbol[symbol];
         return {
           symbol,
-          ltp: tile?.price ?? null,
-          previousClose: tile?.previousClose ?? live?.previousClose ?? null,
-          changePctPrevClose: tile?.pct ?? null,
-          rFactor: tfBySymbol[symbol]?.rFactor ?? null,
-          rFactorBias: live?.rFactorBias ?? null,
-          turnover: tile?.turnover ?? 0,
+          ltp: tf?.ltp ?? null,
+          previousClose: tf?.previousClose ?? null,
+          changePctPrevClose: tf?.pctChange ?? null,
+          rFactor: tf?.rFactor ?? null,
         } satisfies ScopeRow;
       });
 
-      if (!heatmap.success || !rows.some((row) => row.ltp != null && row.changePctPrevClose != null)) {
-        throw new Error(heatmap.error ?? 'Sector Scope market data is unavailable');
+      if (!rows.some((row) => row.changePctPrevClose != null)) {
+        throw new Error('No TradeFinder capture yet — paste a fresh "Copy as cURL" on /tf to start capturing.');
       }
 
-      const next = {
-        source: heatmap.source,
-        marketOpen: heatmap.marketOpen ?? false,
-        sessionDate: heatmap.sessionDate,
-        baseDate: heatmap.baseDate,
-        rows,
-        tfCapturedAt: tfRFactor?.capturedAt ?? null,
-      } satisfies ScopeData;
+      const next = { rows, tfCapturedAt: tfRFactor.capturedAt ?? null } satisfies ScopeData;
       setData(next);
       setError(null);
+
+      // ONLY NOW go looking for tile sizes, and rarely.
+      //
+      // /api/heatmap is a Dhan call behind the process-wide 1.5s quote gate,
+      // measured at 1.0–8.6s against the real dev server (2026-08-10) versus
+      // 36–45ms for the two TF reads above. Two consequences, both real:
+      //
+      //  1. Fired alongside them — even unawaited — it competed for the same
+      //     server and browser connections, which is why the network trace
+      //     showed indices/rfactor-map inflated to ~3s. Starting it after the
+      //     data is committed to state means it cannot delay the paint; the
+      //     grid is already up as an even mesh and re-proportions when turnover
+      //     lands.
+      //  2. More seriously, it takes the SAME gate /live's quote polling needs.
+      //     app/live/_lib/quote-scheduler.ts aborts any quote that exceeds
+      //     FETCH_TIMEOUT_MS (8s), which the browser reports as "(canceled)" —
+      //     observed live on 2026-08-10. A cosmetic tile size must never
+      //     out-queue the trading page's quotes.
+      //
+      // So it runs at most once per HEATMAP_MIN_INTERVAL_MS regardless of how
+      // often the board refreshes. Traded value barely moves across ten
+      // minutes, and it decides nothing but rectangle area.
+      if (Date.now() - lastHeatmapAtRef.current > HEATMAP_MIN_INTERVAL_MS) {
+        lastHeatmapAtRef.current = Date.now();
+        void fetch('/api/heatmap', { cache: 'no-store' })
+          .then(async (r) => ((await r.json()) as HeatmapResponse))
+          .then((h) => {
+            if (!h?.success || !h.tiles?.length) return;
+            const sizes: Record<string, number> = {};
+            for (const tile of h.tiles) sizes[tile.symbol] = tile.turnover;
+            setTurnoverBySymbol(sizes);
+          })
+          .catch(() => undefined);
+      }
+
       return next;
     } catch (fetchError) {
       setError((fetchError as Error).message);
@@ -278,13 +312,20 @@ export default function SectorScopePage() {
     }
   }, []);
 
+  // 90s, matching the /tf browser relay's own RELOAD_INTERVAL_MS — there is no
+  // point refreshing faster than TradeFinder's board is being captured, and no
+  // point refreshing slower or the page lags a capture it already has. The old
+  // interval branched on the heatmap's `marketOpen` flag (150s open / 900s
+  // closed); it no longer needs to, because a refresh is now two indexed SQLite
+  // reads rather than a broker call, so polling off-hours costs nothing worth
+  // branching for.
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
-      const next = await fetchOnce();
+      await fetchOnce();
       if (stopped) return;
-      timer = setTimeout(tick, next?.marketOpen ? 150_000 : 900_000);
+      timer = setTimeout(tick, 90_000);
     };
     void tick();
     return () => {
@@ -302,14 +343,22 @@ export default function SectorScopePage() {
       const averagePct = priced.length
         ? priced.reduce((total, row) => total + (row.changePctPrevClose ?? 0), 0) / priced.length
         : 0;
-      const turnover = rows.reduce((total, row) => total + row.turnover, 0);
+      // TradeFinder's own per-sector up/down split, shown above each card's
+      // table exactly as their page does ("7 stocks (63.64% Up)"). A flat
+      // zero counts as neither, matching how their bar reads.
+      const up = priced.filter((row) => (row.changePctPrevClose ?? 0) > 0).length;
+      const down = priced.filter((row) => (row.changePctPrevClose ?? 0) < 0).length;
+      // Highest R-Factor first — the order TradeFinder's own table opens in.
+      const ranked = [...rows].sort((a, b) => (b.rFactor ?? -1) - (a.rFactor ?? -1));
       const indexPct = indexValues[name];
       return {
         name,
         rows,
+        ranked,
         priced,
+        up,
+        down,
         averagePct,
-        turnover,
         chartPct: indexPct ?? null,
       };
     }),
@@ -318,10 +367,24 @@ export default function SectorScopePage() {
 
   const basketByName = useMemo(() => new Map(baskets.map((basket) => [basket.name, basket])), [baskets]);
 
+  /**
+   * Tiles sized by traded value, the same proportional look as /heatmap —
+   * operator's call (2026-08-10), reversing an earlier equal-tile experiment
+   * that flattened the grid and lost the at-a-glance sense of where the money
+   * actually is.
+   *
+   * Until turnover arrives (it's fetched out of band, see `turnoverBySymbol`)
+   * every tile falls back to 1, so the grid renders instantly as an even mesh
+   * and then re-proportions. Never a blank or blocked treemap.
+   */
   const layout = useMemo(() => {
     const visible = baskets.filter((basket) => basket.rows.length > 0);
+    const weight = (symbol: string) => Math.max(1, turnoverBySymbol[symbol] ?? 1);
     const outer = squarifyOrdered(
-      visible.map((basket) => ({ id: basket.name, value: Math.max(1, basket.turnover) })),
+      visible.map((basket) => ({
+        id: basket.name,
+        value: Math.max(1, basket.rows.reduce((total, row) => total + weight(row.symbol), 0)),
+      })),
       0,
       0,
       W,
@@ -331,7 +394,7 @@ export default function SectorScopePage() {
       const basket = basketByName.get(group.id as (typeof GROUP_ORDER)[number])!;
       const inner: TreemapRect[] = group.w > PAD * 2 && group.h > HEADER + PAD * 2
         ? squarify(
-            basket.rows.map((row) => ({ id: row.symbol, value: Math.max(1, row.turnover) })),
+            basket.rows.map((row) => ({ id: row.symbol, value: weight(row.symbol) })),
             group.x + PAD,
             group.y + HEADER,
             group.w - PAD * 2,
@@ -340,9 +403,8 @@ export default function SectorScopePage() {
         : [];
       return { group, basket, stocks: inner.map((rect) => ({ rect, row: bySymbol.get(rect.id) })) };
     });
-  }, [baskets, basketByName, bySymbol]);
+  }, [baskets, basketByName, bySymbol, turnoverBySymbol]);
 
-  const live = data?.source === 'live' || data?.source === 'stale-live';
   const chart = useMemo(
     () => baskets
       .flatMap((basket) => (basket.chartPct != null ? [{ ...basket, chartPct: basket.chartPct }] : []))
@@ -350,38 +412,45 @@ export default function SectorScopePage() {
     [baskets],
   );
   const chartBound = Math.max(0.5, ...chart.map((basket) => Math.abs(basket.chartPct)));
-  const sourceLabel = live
-    ? 'LIVE · Dhan'
-    : data?.source === 'session'
-      ? `TODAY · ${data.sessionDate ?? 'Fyers session'}`
-      : `EOD · ${data?.sessionDate ?? 'stored session'}`;
+
+  /** How old the capture every number here comes from is. Beyond this the badge
+   *  turns amber — the page can no longer be assumed to reflect the market,
+   *  which is exactly the state that went unnoticed on 2026-08-10 when TF
+   *  signed the session out at 12:10 and the board silently froze. */
+  const STALE_AFTER_MIN = 10;
+  const capturedAgeMin = now != null && data?.tfCapturedAt
+    ? Math.floor((now - new Date(data.tfCapturedAt).getTime()) / 60_000)
+    : null;
+  const stale = capturedAgeMin != null && capturedAgeMin > STALE_AFTER_MIN;
 
   return (
     <div className="mx-auto max-w-7xl space-y-3 p-4">
       <div className="flex flex-wrap items-center gap-2">
         <Grid3x3 className="size-5 text-primary" />
         <h1 className="text-lg font-bold text-foreground">Sector Scope</h1>
-        <span
-          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-            live
-              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'
-              : 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400'
-          }`}
-          title={live ? 'Live Dhan prices and previous-close percentages.' : 'Stored Fyers/NSE session data until a live Dhan snapshot is available.'}
-        >
-          {sourceLabel}
-        </span>
+        {/* ONE freshness badge, because there is now only one source. It is the
+            page's whole honesty mechanism: every number comes from this capture
+            and is exactly this old. Amber past STALE_AFTER_MIN. */}
         {data && (
           <span
-            className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-500/10 dark:text-violet-400"
-            title="The R column shows TradeFinder's OWN R-Factor from their most recent captured board — this is how old that capture is, not how fresh the prices above are."
+            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+              stale
+                ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400'
+                : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'
+            }`}
+            title={
+              stale
+                ? `Every number on this page is from TradeFinder's board captured ${capturedAgeMin} minutes ago, and nothing newer has arrived. If that keeps growing, the TradeFinder session has probably been signed out — check /tf.`
+                : "Every number on this page is TradeFinder's own, from their most recently captured board."
+            }
           >
-            TF R-Factor: {data.tfCapturedAt ? formatTfCapturedAt(data.tfCapturedAt) : 'no capture yet'}
+            TF capture: {data.tfCapturedAt ? formatTfCapturedAt(data.tfCapturedAt) : 'none yet'}
+            {stale ? ` · ${capturedAgeMin}m old` : ''}
           </span>
         )}
         <button
           type="button"
-          onClick={() => void fetchOnce(true)}
+          onClick={() => void fetchOnce()}
           disabled={refreshing}
           className="ml-auto flex items-center gap-1 rounded-md bg-muted px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-70"
         >
@@ -390,9 +459,16 @@ export default function SectorScopePage() {
         </button>
       </div>
 
+      {stale && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-700 dark:text-amber-400">
+          TradeFinder&rsquo;s board hasn&rsquo;t updated for {capturedAgeMin} minutes — these numbers are frozen, not live. If it stays
+          stuck, their session has signed out; paste a fresh &quot;Copy as cURL&quot; on <a href="/tf" className="underline">/tf</a>.
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
         <span><b className="text-foreground">15 baskets · 196 stocks</b> — membership verified against TradeFinder&rsquo;s Sector Scope.</span>
-        <span><b className="text-foreground">LTP / prev close / %</b> — this app’s Dhan or Fyers/NSE data.</span>
+        <span><b className="text-foreground">Every number is TradeFinder&rsquo;s own</b> — prev close, %, and R-Factor straight from their board.</span>
         <span><b className="text-foreground">Tile size</b> = traded value; <b className="text-foreground">color</b> = % vs previous close.</span>
         <span className="flex items-center gap-1 font-mono"><span>−3%</span><span className="h-2.5 w-28 rounded-sm" style={{ background: LEGEND_GRADIENT }} /><span>+3%</span></span>
       </div>
@@ -489,23 +565,63 @@ export default function SectorScopePage() {
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {baskets.map((basket) => (
-              <section key={basket.name} className="rounded-xl border border-border bg-card p-3">
-                <div className="mb-2 flex items-baseline justify-between gap-2">
-                  <div>
-                    <h2 className="text-sm font-semibold text-foreground">{displayName(basket.name)}</h2>
-                    <p className="text-[10px] text-muted-foreground">{basket.priced.length}/{basket.rows.length} priced</p>
-                  </div>
-                  <span className={`text-xs font-semibold tabular-nums ${basket.averagePct >= 0 ? 'text-emerald-500' : 'text-red-400'}`}>{basket.averagePct >= 0 ? '+' : ''}{basket.averagePct.toFixed(2)}%</span>
+              /* Column set, order and sort match TradeFinder's own Sector Scope
+                 cards (screenshot, 2026-08-10): Symbol · Pre C · % · R Fact ·
+                 Signal, highest R-Factor first, under an up/down split bar.
+                 Their table shows no LTP, so neither does this one — param_0 is
+                 still captured and available, it just isn't what their board
+                 puts in front of you. Density follows the Live Urgency table
+                 (text-[10px], px-1.5 py-0.5) rather than a looser style of its
+                 own. */
+              <section key={basket.name} className="rounded-xl border border-border bg-card p-2.5">
+                <div className="mb-1.5 flex items-baseline justify-between gap-2">
+                  <h2 className="text-xs font-semibold text-foreground">{displayName(basket.name)}</h2>
+                  <span className={`text-[11px] font-semibold tabular-nums ${basket.averagePct >= 0 ? 'text-emerald-500' : 'text-red-400'}`}>{basket.averagePct >= 0 ? '+' : ''}{basket.averagePct.toFixed(2)}%</span>
                 </div>
+
+                {/* TradeFinder's up/down split bar. Widths are the share of
+                    PRICED stocks each way, so a card with missing prices can't
+                    show a bar that implies more coverage than it has. */}
+                {basket.priced.length > 0 && (
+                  <>
+                    <div className="mb-1 flex h-1 overflow-hidden rounded-full bg-muted">
+                      <div className="bg-emerald-500" style={{ width: `${(basket.up / basket.priced.length) * 100}%` }} />
+                      <div className="bg-red-400" style={{ width: `${(basket.down / basket.priced.length) * 100}%` }} />
+                    </div>
+                    <div className="mb-1.5 flex justify-between text-[9px] text-muted-foreground tabular-nums">
+                      <span className="text-emerald-600 dark:text-emerald-400">{basket.up} up ({((basket.up / basket.priced.length) * 100).toFixed(1)}%)</span>
+                      <span className="text-red-500 dark:text-red-400">{basket.down} down ({((basket.down / basket.priced.length) * 100).toFixed(1)}%)</span>
+                    </div>
+                  </>
+                )}
+
                 <div className="max-h-72 overflow-auto">
-                  <table className="w-full text-[11px]">
-                    <thead className="sticky top-0 bg-card text-[10px] text-muted-foreground">
-                      <tr className="border-b border-border"><th className="py-1.5 text-left font-medium">Symbol</th><th className="py-1.5 text-right font-medium">LTP</th><th className="py-1.5 text-right font-medium">Prev C</th><th className="py-1.5 text-right font-medium">%</th><th className="py-1.5 text-right font-medium" title="TradeFinder's own R-Factor, from their most recent captured board — not our estimate of it.">R</th></tr>
+                  <table className="w-full text-[10px]">
+                    <thead className="sticky top-0 bg-card text-muted-foreground">
+                      <tr className="border-b border-border text-[9px] font-semibold uppercase tracking-wider">
+                        <th className="px-1.5 py-1 text-left">Symbol</th>
+                        <th className="px-1.5 py-1 text-right">Pre C</th>
+                        <th className="px-1.5 py-1 text-right">%</th>
+                        <th className="px-1.5 py-1 text-right" title="TradeFinder's own R-Factor (param_3) from their most recent captured board — not our estimate of it.">R Fact</th>
+                        <th className="px-1.5 py-1 text-right">Sig</th>
+                      </tr>
                     </thead>
                     <tbody>
-                      {[...basket.rows].sort((a, b) => (b.changePctPrevClose ?? -Infinity) - (a.changePctPrevClose ?? -Infinity)).map((row) => {
+                      {basket.ranked.map((row) => {
                         const pct = row.changePctPrevClose;
-                        return <tr key={row.symbol} className="border-b border-border/60"><td className="py-1.5 font-medium text-foreground">{row.symbol}</td><td className="py-1.5 text-right tabular-nums">{formatPrice(row.ltp)}</td><td className="py-1.5 text-right tabular-nums text-muted-foreground">{formatPrice(row.previousClose)}</td><td className={`py-1.5 text-right font-medium tabular-nums ${pct == null ? 'text-muted-foreground' : pct >= 0 ? 'text-emerald-500' : 'text-red-400'}`}>{pct == null ? '-' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}</td><td className="py-1.5 text-right tabular-nums text-muted-foreground">{row.rFactor?.toFixed(2) ?? '-'}</td></tr>;
+                        const pctCls = pct == null ? 'text-muted-foreground' : pct >= 0 ? 'text-emerald-500' : 'text-red-400';
+                        return (
+                          <tr key={row.symbol} className="border-b border-border/60">
+                            <td className="px-1.5 py-0.5 font-medium text-foreground">{row.symbol}</td>
+                            <td className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{formatPrice(row.previousClose)}</td>
+                            <td className={`px-1.5 py-0.5 text-right font-medium tabular-nums ${pctCls}`}>{pct == null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}`}</td>
+                            <td className="px-1.5 py-0.5 text-right font-semibold tabular-nums text-violet-600 dark:text-violet-400">{row.rFactor?.toFixed(2) ?? '—'}</td>
+                            {/* Direction only — the same arrow TradeFinder shows,
+                                which tracks the sign of the day's move. It is NOT
+                                a trade signal and must not be read as one. */}
+                            <td className={`px-1.5 py-0.5 text-right ${pctCls}`}>{pct == null ? '—' : pct >= 0 ? '▲' : '▼'}</td>
+                          </tr>
+                        );
                       })}
                     </tbody>
                   </table>
