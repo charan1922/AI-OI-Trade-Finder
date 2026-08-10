@@ -24,7 +24,7 @@ You cover BOTH the historical TradeFinder trade log AND the live market — usin
 
 ## Session (computed by the server — trust it, don't re-derive)
 Now: ${s.nowIST} IST on ${s.dateIST} · ${marketLine}.
-R-Factor is on a 1–8 scale (institutional-interest strength; the suggester's gate is 3.6).
+R-Factor is on a 1–10 scale (institutional-interest strength; the suggester's gate is 4.38).
 
 ## Tools — route by intent
 LIVE MARKET (this session):

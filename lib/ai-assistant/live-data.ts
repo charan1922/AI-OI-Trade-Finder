@@ -124,7 +124,7 @@ export interface SymbolSnapshot {
     /** Intraday OI build metrics (session series). */
     sessionOiChangePct: number | null;
     oiUrgency: number | null;
-    /** R-Factor on the 1–8 scale + directional bias + factor agreement. */
+    /** R-Factor on the 1–10 scale + directional bias + factor agreement. */
     rFactor: number | null;
     rFactorBias: string | null;
     rFactorConfidence: number | null;

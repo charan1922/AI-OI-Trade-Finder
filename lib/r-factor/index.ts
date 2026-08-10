@@ -1,6 +1,6 @@
 /**
  * R-Factor — a self-contained, dependency-free library that scores a stock's
- * "R-Factor": institutional-interest STRENGTH (1.0–8.0) plus a directional BIAS,
+ * "R-Factor": institutional-interest STRENGTH (1.0–10.0) plus a directional BIAS,
  * from market data the caller supplies. No Dhan / Prisma / NSE / Next imports.
  *
  * Quick start:

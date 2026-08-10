@@ -26,6 +26,7 @@ import {
   type FuturesQuadrant,
   type OptionFlow,
 } from '@/lib/signals/oi-direction';
+import { rFactorAtRaw } from '@/lib/r-factor/scale';
 
 export interface BacktestResult {
   date: string;
@@ -1126,7 +1127,7 @@ export async function getTradeDetail(params: {
     const sig = computeSignals(equityBarsRaw, i, avgDailySpread);
     const rFactor = Math.max(1.0, 1.5596 * sig.spreadRatio);
     const direction: 'CE' | 'PE' = sig.plusDI > sig.minusDI ? 'CE' : 'PE';
-    const isHot = rFactor >= 2.0 && sig.adx >= 28;
+    const isHot = rFactor >= rFactorAtRaw(1 / 7) && sig.adx >= 28; // was 2.0 on the 1–8 span
 
     // Find matching option bar (closest timestamp)
     const optBar = optionBarsRaw.find((o) => o.timestamp === equityBarsRaw[i].timestamp);

@@ -15,9 +15,10 @@ import { deriveMorningTest } from './morning-test';
 import { buildLevels, type LevelInputs } from './levels';
 import type { SwingBar } from './swings';
 import type { BreakoutContext, BreakoutGrade, BreakoutSignal } from './types';
+import { rFactorAtRaw } from '@/lib/r-factor/scale';
 
-/** Check 2 pass — R-Factor at/above "moderate" on the live 1–8 scale. */
-export const EFFICIENCY_MIN_RFACTOR = 4.5;
+/** Check 2 pass — R-Factor at/above "moderate" (raw midpoint) on the live 1–10 scale. */
+export const EFFICIENCY_MIN_RFACTOR = rFactorAtRaw(0.5); // raw midpoint ("moderate")
 
 /**
  * Morning-break tolerance (%) — a break only counts when price trades this far

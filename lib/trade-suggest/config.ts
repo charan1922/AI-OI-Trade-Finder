@@ -11,6 +11,8 @@
  *   best liquidity); opening-range breakout with last-candle/range SL; 1:2 R:R.
  */
 
+import { rFactorAtRaw } from '@/lib/r-factor/scale';
+
 /** Suggestion window (IST minutes from midnight): 09:40 – 11:00. */
 export const WINDOW_START_MIN = 9 * 60 + 40;
 export const WINDOW_END_MIN = 11 * 60;
@@ -24,7 +26,10 @@ export const WINDOW_LABEL = { opensAt: '09:40 IST', closesAt: '11:00 IST' };
 export const SCAN_OUTSIDE_WINDOW = false;
 
 /** Hard gates — a candidate must clear ALL of these. */
-export const MIN_RFACTOR = 3.6; // 1–8 scale (was 2.5 on 1–5; same raw cutoff 0.375)
+// raw 0.375 of the R-Factor span, unchanged since it was 2.5 on 1–5 and 3.6
+// on 1–8. Stated via rFactorAtRaw so a future rescale cannot silently move
+// the gate: the bare number 3.6 would mean raw 0.289 on today's 1–10 span.
+export const MIN_RFACTOR = rFactorAtRaw(0.375);
 export const MIN_CONFIDENCE = 0.2; // directional-factor agreement [0,1]
 export const MIN_OI_LEVEL = 1.1; // futures OI ÷ 20d avg — the TF minimum fingerprint
 /**
@@ -88,7 +93,7 @@ export const USE_TF_BREAKOUT_GATE = false;
  *  Evidence (replay, 2026-07-07, N=1): at 4.0 the bypass was inert (NAUKRI sat
  *  at 3.6–4.0 at its 10:00 entry); at 3.6 it caught NAUKRI (+2R) and still
  *  excluded the no-breakout junk EXIDEIND (ΣR +1.00 → +3.00). */
-export const BREAKOUT_BYPASS_MIN_RFACTOR = 3.6;
+export const BREAKOUT_BYPASS_MIN_RFACTOR = rFactorAtRaw(0.375); // = base MIN_RFACTOR
 export const BREAKOUT_BYPASS_REQUIRE_TREND = true;
 
 /**
@@ -320,7 +325,7 @@ export const USE_EXTENDED_TREND_BYPASS = false;
 /** R-Factor floor for the extended-trend bypass. = base MIN_RFACTOR (extended
  *  survivors already cleared it); the breakout + VWAP + Supertrend trend is the
  *  real discriminator, so no extra R bar is imposed by default. */
-export const EXTENDED_BYPASS_MIN_RFACTOR = 3.6;
+export const EXTENDED_BYPASS_MIN_RFACTOR = rFactorAtRaw(0.375); // = base MIN_RFACTOR
 /** Require an actually-computed, aligned Supertrend(10,3) for the bypass (not just
  *  VWAP). True also blocks the first ~1h of raw-spike noise before the trend
  *  proves itself — the conservative default when overriding a 0-for-5 ban. */

@@ -7,6 +7,7 @@
  */
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import type { DecisionOpenPosition } from '@/lib/auto-trade/decision/context-policy';
+import { rFactorAtRaw } from '@/lib/r-factor/scale';
 
 export type ChipTone = 'good' | 'warn' | 'info';
 export interface Chip {
@@ -44,7 +45,7 @@ export function buildPicks(result: SuggestResponse): StoredPick[] {
     const f = p.factors;
     const bull = p.direction === 'bullish';
     const chips: Chip[] = [
-      { label: 'R-Factor', value: p.rFactor.toFixed(2), tone: p.rFactor >= 3.6 ? 'good' : 'warn' },
+      { label: 'R-Factor', value: p.rFactor.toFixed(2), tone: p.rFactor >= rFactorAtRaw(0.375) ? 'good' : 'warn' },
       { label: 'Fut OI', value: `${fmt(p.oiLevel)}×`, tone: p.oiLevel >= 1.1 ? 'good' : 'info' },
     ];
     if (f?.nseOiPct != null)

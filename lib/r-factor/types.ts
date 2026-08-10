@@ -104,7 +104,7 @@ export type RFactorWeights = Record<FactorKey, number>;
 /** Full result of computeRFactor(). */
 export interface RFactorResult {
   symbol: string;
-  /** Strength on a TradeFinder-like 1.0–8.0 scale (1 = quiet, 8 = very strong). */
+  /** Strength on a TradeFinder-like 1.0–10.0 scale (1 = quiet, 10 = very strong). */
   rFactor: number;
   /** Weighted strength in [0,1] before scaling — the raw blend over available factors. */
   rawScore: number;

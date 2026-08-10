@@ -53,7 +53,7 @@ const buildVariants = (BASE: Variant): Variant[] => [
   // caught the NAUKRI breakout the OI gate blocked, no junk added).
   {
     ...BASE,
-    name: 'breakout-bypass (R>=3.6)',
+    name: 'breakout-bypass (R>=base gate)',
     breakoutBypass: true,
     breakoutMinRFactor: 3.6,
   },

@@ -29,6 +29,17 @@ This file extends the parent repo's `../CLAUDE.md` with simulator-specific guida
 - **The page is exactly as fresh as the last capture, and says so.** A frozen board must never pass for a live one: the capture time is shown, turns amber past 10 minutes, and there is no fallback to live Dhan prices (that fallback is what made the two pages disagree in the first place).
 - **TF Running Race baseline is 09:35** (`WINDOW_START_MIN` in `lib/tf-live/race.ts`), moved back from 09:45 so accumulation right after the open is visible — on 2026-08-10 this turned RECLTD from +33 to **+192** (#206→#14) and NMDC from +5 to **+157**. 09:30 was tested and rejected: only 13 of 210 symbols were above R=1 at 09:30 vs 22 by 09:45, so ranks there swing on hundredths. `MIN_SPREAD_SYMBOLS` guards the BASELINE specifically — a capture may only anchor the race if enough symbols separated above R=1. Not hypothetical: the 09:16 capture that day had all 210 R-Factors at exactly 0 (TF resetting for the day), which would have ranked in arbitrary order and reported the whole board as climbing.
 
+## R-Factor scale — never write a cutoff as a bare number
+
+The span is **1–10** (`lib/r-factor/scale.ts`), widened from 1–8 on 2026-08-11 so ours is comparable with TradeFinder's board. It was 1–5 before that. **The raw [0,1] scoring has never changed across any rescale — only the span it prints on.**
+
+That is exactly what makes rescaling dangerous. Every calibrated cutoff was chosen as a position on the RAW scale and then written down on whichever span was current, so widening the span without moving the numbers silently loosens all of them: `MIN_RFACTOR = 3.6` is raw 0.375 on 1–8 but raw **0.289** on 1–10 — a materially laxer *trade gate* nobody chose. So cutoffs are now expressed as `rFactorAtRaw(0.375)`, and the next rescale needs no threshold edits.
+
+- `rFactorAtRaw()` is **exact, not rounded** — rounding 4.375 to 4.38 would put a gate at raw 0.3756. Callers that *display* round it themselves.
+- Gates currently at raw 0.375 → **4.375**: `MIN_RFACTOR`, `BREAKOUT_BYPASS_MIN_RFACTOR`, `EXTENDED_BYPASS_MIN_RFACTOR`. At raw 0.5 → **5.5**: `EFFICIENCY_MIN_RFACTOR`. Display bands sit at raw 0.75 / 0.50.
+- Note the old `3.6` literal was actually raw 0.3714, so the gate is now ~0.4% **stricter** and exactly at its documented intent.
+- **Stored history is NOT rewritten.** `live_urgency_eod.rFactor` and `trade_suggestions.rFactor` hold the value as displayed at the time, on the then-current span, matching how the 1–5 → 1–8 change was handled. Charts therefore show a step at each changeover. Use `rawFromRFactor(v, oldMax)` to compare across it; do not "fix" history by rewriting an audit trail.
+
 ## Option-chain evidence — MEASURED, NARRATED, DELIBERATELY NOT A GATE
 
 The Dhan option-chain read (`lib/r-factor-v2/option-evidence.ts`, collected by `option-shadow.ts`, shown on `/live` as **R V2 Shadow**) already classifies exactly what an operator reads by hand — *call buying / put writing are bullish; put buying / call writing bearish* — and Dhan returns `previous_oi`/`previous_volume` per strike, so buildup vs unwinding needs one call and no self-snapshotting.

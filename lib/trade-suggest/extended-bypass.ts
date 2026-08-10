@@ -36,7 +36,7 @@ export interface ExtendedTrendInput {
   supertrendAligned: boolean | null;
   /** Price on the favorable side of session VWAP; null when VWAP not computable. */
   vwapAligned: boolean | null;
-  /** R-Factor at this tick (1–8 scale). These names already cleared the base gate. */
+  /** R-Factor at this tick (1–10 scale). These names already cleared the base gate. */
   rFactor: number | null;
 }
 
