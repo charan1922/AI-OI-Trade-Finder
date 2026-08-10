@@ -6,7 +6,28 @@ import type { OptionActivityEvidence } from './types';
 
 const REFRESH_MS = 5 * 60_000;
 const REQUEST_SPACING_MS = 4_000;
-const MAX_TRACKED = 12;
+/**
+ * Raised 12 → 20 (2026-08-11) to answer a question the evidence could not.
+ *
+ * Phase 1 (scripts/measure-option-evidence.ts) paired 13 sessions of recorded
+ * chain reads against graded suggestions and came back inconclusive — but the
+ * reason was sample size, not a flat result: the chain CONTRADICTED the scanner
+ * only 6 times in 91 pairs, and six observations cannot settle anything. The
+ * bottleneck is coverage, because only the top MAX_TRACKED names by priority
+ * ever get a snapshot at all, and the chain read cannot be backfilled (Dhan's
+ * /v2/optionchain is live-only — there is no historical option-chain endpoint),
+ * so every extra name is evidence that otherwise never exists.
+ *
+ * Rate-limit headroom, so this stays honest: Dhan documents "one unique request
+ * every 3 seconds" for the option chain. 20 names at REQUEST_SPACING_MS (4s)
+ * cycle in ~80s, comfortably inside REFRESH_MS, and average one call per 15s —
+ * five times slower than the documented ceiling. Every call still goes out on
+ * the low-priority lane of lib/dhan/quote-gate.ts (which enforces the 3s
+ * option-chain sub-limit centrally, gives up after LOW_PRIORITY_GIVE_UP_MS and
+ * caps each request at SHADOW_REQUEST_TIMEOUT_MS), so a busy money path starves
+ * this worker rather than the other way round.
+ */
+const MAX_TRACKED = 20;
 const CACHE_FRESH_MS = 10 * 60_000;
 
 interface Candidate {

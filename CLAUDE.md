@@ -23,6 +23,20 @@ This file extends the parent repo's `../CLAUDE.md` with simulator-specific guida
 - **The page is exactly as fresh as the last capture, and says so.** A frozen board must never pass for a live one: the capture time is shown, turns amber past 10 minutes, and there is no fallback to live Dhan prices (that fallback is what made the two pages disagree in the first place).
 - **TF Running Race baseline is 09:35** (`WINDOW_START_MIN` in `lib/tf-live/race.ts`), moved back from 09:45 so accumulation right after the open is visible — on 2026-08-10 this turned RECLTD from +33 to **+192** (#206→#14) and NMDC from +5 to **+157**. 09:30 was tested and rejected: only 13 of 210 symbols were above R=1 at 09:30 vs 22 by 09:45, so ranks there swing on hundredths. `MIN_SPREAD_SYMBOLS` guards the BASELINE specifically — a capture may only anchor the race if enough symbols separated above R=1. Not hypothetical: the 09:16 capture that day had all 210 R-Factors at exactly 0 (TF resetting for the day), which would have ranked in arbitrary order and reported the whole board as climbing.
 
+## Option-chain evidence — MEASURED, NARRATED, DELIBERATELY NOT A GATE
+
+The Dhan option-chain read (`lib/r-factor-v2/option-evidence.ts`, collected by `option-shadow.ts`, shown on `/live` as **R V2 Shadow**) already classifies exactly what an operator reads by hand — *call buying / put writing are bullish; put buying / call writing bearish* — and Dhan returns `previous_oi`/`previous_volume` per strike, so buildup vs unwinding needs one call and no self-snapshotting.
+
+**It does not gate, size, or veto anything, and that is a result, not an oversight.** `scripts/measure-option-evidence.ts` paired it against every graded suggestion with a snapshot taken *at or before* the suggestion (strict no-lookahead — pairing with a later snapshot manufactures an edge that cannot be traded):
+
+- 91 usable pairs, 13 sessions. Chain **agrees with the scanner 81 of 91 times (89%)** — it largely echoes the same OI/flow the scanner already reads, so it is not an independent opinion.
+- Agree +0.316R vs contradict +0.073R, but contradictions are **n=6, ±0.612** — the gap is a fraction of its own error bar.
+- Vetoing contradicted trades would have earned **+0.017R per trade** while dropping 7% of them. The confidence buckets are incoherent (conf ≥ 0.5 contradictions *won*, +0.997R; conf ≥ 0.7 is n=1).
+
+Re-run that script before anyone promotes this to a filter. The blocker is coverage, not the idea: `MAX_TRACKED` was raised 12 → 20 to gather contradictions faster, and **the history cannot be backfilled** — Dhan's `/v2/optionchain` is live-only, so the sample only grows forward at roughly one session per day.
+
+**Narration rule (learned the hard way).** `describeOptionChain()` in `lib/ai-commentary/generate.ts` hands the model FINISHED ENGLISH and no numbers. The first cut passed the raw fields, and `scripts/dry-run-commentary.ts` caught the model turning `callOiChangePct: 74.3` into *"74% of today's move happened in the last 30 minutes"* — an open-interest figure fabricated into a price statistic a trader would act on. Never put a bare OI number in that payload; every other number in it is about price.
+
 ## /live Multi-Viewer Scaling
 
 `POST /api/live/quote` responses are shared through `app/api/live/_lib/quote-response-cache.ts` (globalThis TTL cache + in-flight coalescing, keyed by the exact symbol list): N open windows/users cost the same Dhan traffic as 1. The 6.5s TTL sits deliberately under the client's 7s poll (`QUOTE_POLL_MS`) so a single window always recomputes — change either constant only in step with the other. `fresh: true` bypasses the cache: the page's "Refresh all" button sends it, and `lib/trade-suggest/engine.ts` ALWAYS sends it (the scanner feeds real trade decisions — never let it read a stale cache). Errors are never cached; side effects (oi_intraday recording, universe enrollment, context warming) run once per compute.
