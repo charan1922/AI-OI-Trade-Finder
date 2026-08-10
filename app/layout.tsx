@@ -13,7 +13,7 @@ import { auth } from "@/auth"
 import { LayoutShell } from "@/components/layout-shell"
 import { RoleProvider, type RoleInfo } from "@/components/role-provider"
 import { ThemeHotkey } from "@/components/theme-hotkey"
-import { ROLE_HEADER, type Role } from "@/lib/auth/rbac"
+import { OWNER_HEADER, ROLE_HEADER, type Role } from "@/lib/auth/rbac"
 import { USERNAME_COOKIE } from "@/lib/auth/session"
 import { recordUserSeen } from "@/lib/auth/users"
 import { cn } from "@/lib/utils"
@@ -33,6 +33,9 @@ async function resolveRoleInfo(): Promise<RoleInfo> {
   const [hdrs, cookieStore] = [await headers(), await cookies()]
   const role: Role = hdrs.get(ROLE_HEADER) === "viewer" ? "viewer" : "admin"
   const gateEnabled = !!process.env.APP_PASSWORD
+  // Owner flag comes from the proxy's trusted header (stamped/stripped there,
+  // never client-supplied). Gate off = local dev = the operator's own machine.
+  const isOwner = !gateEnabled || hdrs.get(OWNER_HEADER) === "1"
   const rawUser = cookieStore.get(USERNAME_COOKIE)?.value
   let username = ""
   if (rawUser) {
@@ -59,7 +62,15 @@ async function resolveRoleInfo(): Promise<RoleInfo> {
     /* no Auth.js session — password/basic path */
   }
   if (!username) username = role === "viewer" ? "Guest" : "Analyst"
-  return { role, readOnly: role === "viewer", username: username.slice(0, 40), email, image, gateEnabled }
+  return {
+    role,
+    readOnly: role === "viewer",
+    isOwner,
+    username: username.slice(0, 40),
+    email,
+    image,
+    gateEnabled,
+  }
 }
 
 export default async function RootLayout({

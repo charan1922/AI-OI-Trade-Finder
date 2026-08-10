@@ -14,6 +14,10 @@ export interface RoleInfo {
   role: Role;
   /** True for the read-only login — disable every action control. */
   readOnly: boolean;
+  /** True for the account owner — the only one who may manage user access
+   *  (/users). A plain admin has full trading access but this is false. UX
+   *  only; the proxy + route handler are what enforce. */
+  isOwner: boolean;
   /** Display-only name from login (header greeting). */
   username: string;
   /** Google account email (null on password sessions). Display-only. */
@@ -28,6 +32,7 @@ export interface RoleInfo {
 const RoleContext = createContext<RoleInfo>({
   role: 'admin',
   readOnly: false,
+  isOwner: false,
   username: 'Analyst',
   email: null,
   image: null,

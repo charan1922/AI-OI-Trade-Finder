@@ -21,6 +21,8 @@
     "auto:target-audit": "node scripts/auto-target-audit.mjs --amount=1100 --basis=per_trade",
     "auto:entry-filter-audit": "tsx scripts/auto-entry-filter-audit.ts",
     "verify:r-factor-v2": "tsx scripts/verify-rfactor-v2.ts",
+    "verify:user-access": "tsx scripts/verify-user-access.ts",
+    "verify:user-access-store": "tsx scripts/verify-user-access-store.ts",
     "verify:r-factor-v2-store": "tsx scripts/verify-rfactor-v2-store.ts",
     "eval:r-factor-v2": "tsx scripts/eval-rfactor-v2.ts",
     "box:start": "node scripts/box.mjs start",

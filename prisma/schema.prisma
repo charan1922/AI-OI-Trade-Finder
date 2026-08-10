@@ -500,6 +500,10 @@ model AppUser {
   subscriptionEndsAt String?
   createdAt          String
   lastSeenAt         String
+  /// Set when the OWNER explicitly granted access on /users. NULL means the row
+  /// only records that this account signed in once and conveys NO access — the
+  /// role registry ignores it. Do not backfill this column.
+  grantedAt          String?
 
   @@map("app_users")
 }

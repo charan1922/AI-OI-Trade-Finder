@@ -30,6 +30,7 @@ import {
   Sparkles,
   Table2,
   Target,
+  Users,
   Zap,
 } from 'lucide-react';
 
@@ -44,7 +45,7 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from '@/components/ui/sidebar';
-import { isAdminOnlyPage } from '@/lib/auth/rbac';
+import { isAdminOnlyPage, isOwnerOnlyPath } from '@/lib/auth/rbac';
 import { useRole } from '@/lib/auth/use-role';
 import { cn } from '@/lib/utils';
 
@@ -114,6 +115,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: BookOpen,
     defaultCollapsed: true,
     children: [
+      { title: 'Users & Access', href: '/users', icon: Users },
       { title: 'Reminders', href: '/reminders', icon: AlarmClock },
       { title: 'Market Holidays', href: '/holidays', icon: CalendarDays },
       { title: 'F&O Lot Sizes', href: '/fno-lots', icon: Table2 },
@@ -175,16 +177,17 @@ function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: strin
 
 export function AppSidebar() {
   const pathname = usePathname();
-  const { readOnly } = useRole();
+  const { readOnly, isOwner } = useRole();
 
-  // Viewers never see admin-only entries (the rbac list is the single source —
-  // the proxy enforces, this hiding is the UX half). Groups left empty vanish.
-  const groups = readOnly
-    ? NAV_GROUPS.map((g) => ({
-        ...g,
-        children: g.children.filter((c) => !isAdminOnlyPage(c.href)),
-      })).filter((g) => g.children.length > 0)
-    : NAV_GROUPS;
+  // Viewers never see admin-only entries, and only the owner sees the
+  // owner-only ones (/users). The rbac lists are the single source — the proxy
+  // enforces, this hiding is the UX half. Groups left empty vanish.
+  const groups = NAV_GROUPS.map((g) => ({
+    ...g,
+    children: g.children.filter(
+      (c) => (!readOnly || !isAdminOnlyPage(c.href)) && (isOwner || !isOwnerOnlyPath(c.href))
+    ),
+  })).filter((g) => g.children.length > 0);
 
   return (
     <Sidebar collapsible="icon">

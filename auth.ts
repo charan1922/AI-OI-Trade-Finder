@@ -40,10 +40,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     // Verified email plus explicit role allowlist; unlisted accounts get no
     // Auth.js session even if Google OAuth itself accepts them.
-    signIn({ profile }) {
-      return (
-        profile?.email_verified === true && roleForGoogleEmail(profile.email, process.env.GOOGLE_VIEWER_EMAILS) != null
-      );
+    async signIn({ profile }) {
+      if (profile?.email_verified !== true) return false;
+      // Load the owner-managed registry (app_users) so someone the owner just
+      // added on /users can sign in with no redeploy. Dynamically imported:
+      // proxy.ts imports THIS file, so Prisma must not enter its static graph.
+      // A failure here falls through to the hardcoded lists in rbac.ts.
+      try {
+        const { refreshRoleRegistry } = await import('@/lib/auth/users');
+        await refreshRoleRegistry({ force: true });
+      } catch {
+        /* registry unavailable — hardcoded operators can still sign in */
+      }
+      return roleForGoogleEmail(profile.email, process.env.GOOGLE_VIEWER_EMAILS) != null;
     },
   },
 });
