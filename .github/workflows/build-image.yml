@@ -79,6 +79,12 @@ jobs:
       # (dotenv in measure-option-evidence.ts, TS2307, 2026-08-11). This check
       # compares imports against package.json itself, so it reproduces locally.
       - run: pnpm exec tsx scripts/verify-dependency-hygiene.ts
+      # The Dockerfile's runtime stage pins `playwright@<v> install-deps` so that
+      # apt layer can cache; the browser BINARY comes from the builder at the
+      # lockfile's version. Two sources, one number — drift would pair one
+      # Chromium's OS libs with another's binary and only fail on the box, mid
+      # session. Cheap to check, expensive to discover.
+      - run: pnpm exec tsx scripts/verify-playwright-pin.ts
       - run: pnpm lint
       # DB-free pure checks: quant-shadow math (re-anchor, observed-baseline
       # MFE/MAE, entry-candle exclusion, chgOpen bucketing, sector-rate rank) AND

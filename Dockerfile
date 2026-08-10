@@ -35,6 +35,37 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
+# Chromium for the TradeFinder relay, fetched HERE — after the lockfile install,
+# BEFORE any source is copied — so this ~150MB download is a layer keyed on the
+# lockfile alone and is reused by every build that doesn't change dependencies.
+#
+# It used to run in the runtime stage AFTER `COPY --from=builder /app ./`. That
+# copy changes on every commit, so the layer behind it was invalidated on every
+# commit and Chromium was re-downloaded on EVERY build (operator, 2026-08-11).
+# GHA layer caching was already configured in the workflow and could do nothing
+# about it: cache lookups stop at the first changed layer.
+#
+# PLAYWRIGHT_BROWSERS_PATH pins the download to a fixed, stage-independent
+# location so the runtime stage can copy exactly this directory. Without it the
+# browsers land in a per-user cache (~/.cache/ms-playwright) that differs
+# between stages. `/ms-playwright` is Playwright's own convention — their
+# official image sets exactly this. The SAME env var must be set at runtime or
+# Playwright looks in the default location and reports the browser as missing.
+#
+# WHY `pnpm exec` (the lockfile's version) and not a pinned npx here: Playwright
+# locates its browser by an exact revision-stamped directory name
+# (chromium-<revision>), so the binary MUST come from the same Playwright version
+# that ends up in runtime's node_modules. A mismatch is not caught at build time —
+# it surfaces as "Executable doesn't exist at …" when the relay first launches, on
+# the box, mid-session. Using the lockfile's own binary, in a layer keyed on that
+# lockfile, makes a version bump invalidate this layer automatically.
+#
+# `install chromium` also lays down chromium_headless_shell-* and ffmpeg-* plus
+# the .links bookkeeping dir, which is why the runtime stage copies the WHOLE
+# directory rather than a single browser folder.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN pnpm exec playwright install chromium
+
 # Source + build. No secrets are needed at build time — lib/env.ts treats every
 # var as optional, and the pages are client-rendered.
 COPY . .
@@ -56,20 +87,29 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 WORKDIR /app
 
+# ── Chromium's OS shared libraries (nss, atk, gbm, fonts, …) ──────────────────
+# BEFORE the app copy, so this apt layer caches too. `install-deps` installs ONLY
+# the OS packages — it downloads no browser — and the version is pinned so the
+# layer key is a literal string that changes only when we bump it deliberately.
+# scripts/verify-dependency-hygiene.ts is not enough here (the Dockerfile is not
+# TypeScript), so scripts/verify-playwright-pin.ts fails CI if this version drifts
+# from the lockfile — a mismatch would install libs for one Chromium and copy a
+# different one in below.
+RUN npx --yes playwright@1.62.1 install-deps chromium \
+  && rm -rf /var/lib/apt/lists/* /root/.npm
+
+# The browser binary itself, lifted from the builder's cached layer rather than
+# re-downloaded. Must land on the same PLAYWRIGHT_BROWSERS_PATH the builder used,
+# and that env var must persist into the running container.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+COPY --from=builder /ms-playwright /ms-playwright
+
 # The whole built working tree from the builder: node_modules (compiled .node
 # binaries + the generated Prisma client), .next, source, and the package files.
 # Same base OS/arch as the builder, so those native binaries load unchanged.
+# LAST on purpose — it is the layer that changes every commit, so everything
+# expensive above it stays cached.
 COPY --from=builder /app ./
-
-# The TradeFinder browser relay's ONLY extra runtime requirement: a real
-# Chromium binary plus the OS shared libraries it needs (nss, atk, gbm, fonts,
-# ...). `--with-deps` installs both via apt in one step. `playwright` itself is
-# already in node_modules (copied above); this is the large platform-specific
-# binary that deliberately does NOT live in git or the lockfile. This is the
-# real, accepted cost of that feature (2026-08-08) — the multi-stage split
-# above still keeps the C/C++ COMPILER toolchain out of this image, so this is
-# additive, not a reversion of that saving.
-RUN npx playwright install --with-deps chromium
 
 # Guarantee the mount point exists even if the volume is ever detached; the real
 # persistent volume is mounted over this at start time.
