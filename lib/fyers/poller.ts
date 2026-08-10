@@ -37,7 +37,7 @@ import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 import { startCycleTimeline } from '@/lib/ops/cycle-timeline';
 import { pruneRankSnapshots, recordRankSnapshot } from '@/lib/signals/rank-tracker';
 import { pruneQuoteSnapshots } from '@/lib/auto-trade/store';
-import { pruneRFactorV2Snapshots } from '@/lib/r-factor-v2/store';
+import { pruneOptionChainSnapshots } from '@/lib/option-chain/store';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import { reviewUngradedBacklog } from '@/lib/trade-suggest/review';
 import { pruneSectorSnapshots } from '@/lib/priority-refresh/sector-snapshot-store';
@@ -630,7 +630,7 @@ export async function runFyersCycle(
       // same reason as the neighbours above: the scanner drives the /live quote
       // route, which is what writes these rows.
       if (!state.captureRunning) {
-        await pruneRFactorV2Snapshots().catch((err) => {
+        await pruneOptionChainSnapshots().catch((err) => {
           console.warn(`${TAG} rfactor-v2 retention failed: ${(err as Error).message}`);
         });
       }

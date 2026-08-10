@@ -1,7 +1,7 @@
 /**
  * PHASE 1 — does the option chain's directional read actually predict anything?
  *
- * The option-chain evidence (lib/r-factor-v2/option-evidence.ts) has been
+ * The option-chain evidence (lib/option-chain/evidence.ts) has been
  * RECORDED for every strong scanner name since 2026-07-23 and displayed on
  * /live as "R V2 Shadow", but it has never influenced a single decision: grep
  * lib/trade-suggest, lib/auto-trade and lib/ai-commentary and it appears
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
 
   const snaps = (await prisma.$queryRawUnsafe(`
     SELECT date, symbol, capturedAt, direction, directionScore, directionConfidence, activityScore
-    FROM rfactor_v2_option_snapshots
+    FROM option_chain_snapshots
     ORDER BY symbol, capturedAt
   `)) as Snap[];
 

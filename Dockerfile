@@ -131,4 +131,15 @@ EXPOSE 5001
 #      real data. The app creates those raw tables itself at runtime
 #      (CREATE TABLE IF NOT EXISTS).
 #   3. Boot Next on Railway's injected $PORT.
-CMD ["sh", "-c", "if [ -f /app/data/project-r.db.import ]; then echo '[import] swapping migrated DB into place'; rm -f /app/data/project-r.db /app/data/project-r.db-wal /app/data/project-r.db-shm; mv /app/data/project-r.db.import /app/data/project-r.db; fi; if [ ! -f /app/data/project-r.db ]; then echo '[schema] fresh DB - running prisma db push'; pnpm prisma db push --config prisma/prisma.config.ts; else echo '[schema] existing DB - skipping db push'; fi; pnpm exec next start -p ${PORT:-5001} -H 0.0.0.0"]
+#   2b. One-time R-Factor V2 retirement (2026-08-11): copy the option-chain
+#       evidence to its new table, drop the three rfactor_v2_* tables, and drop
+#       the rFactorV2* columns off live_urgency_eod. Idempotent — a no-op on
+#       every boot after the first, and on a fresh DB. Runs HERE because the
+#       app's runtime CREATE TABLE only adds the new table; it cannot retire the
+#       old ones, and `db push` must never be used for this (it would drop the
+#       raw-SQL runtime tables not declared in schema.prisma).
+#       Deliberately NON-FATAL: if it fails the app still serves correctly (the
+#       new table is created at runtime; the old ones merely linger), and a
+#       trading server must not refuse to boot over a cleanup step. It logs
+#       loudly so a failure is visible rather than silent.
+CMD ["sh", "-c", "if [ -f /app/data/project-r.db.import ]; then echo '[import] swapping migrated DB into place'; rm -f /app/data/project-r.db /app/data/project-r.db-wal /app/data/project-r.db-shm; mv /app/data/project-r.db.import /app/data/project-r.db; fi; if [ ! -f /app/data/project-r.db ]; then echo '[schema] fresh DB - running prisma db push'; pnpm prisma db push --config prisma/prisma.config.ts; else echo '[schema] existing DB - skipping db push'; fi; pnpm exec tsx scripts/migrate-option-chain-table.ts || echo '[migrate] option-chain migration FAILED - app continues, old rfactor_v2_* tables may remain'; pnpm exec next start -p ${PORT:-5001} -H 0.0.0.0"]

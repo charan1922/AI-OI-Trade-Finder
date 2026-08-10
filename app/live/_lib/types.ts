@@ -107,19 +107,6 @@ export interface LiveUrgencyRow {
   /** Per-factor breakdown for the tooltip. */
   rFactors: RFactorRowDetail[] | null;
 
-  // R-factor V2 SHADOW. Nothing in trade-suggest or auto-trade consumes these
-  // fields; they exist only for measurement and evidence collection.
-  rFactorV2Activity?: number | null;
-  rFactorV2Percentile?: number | null;
-  rFactorV2Rank?: number | null;
-  rFactorV2Universe?: number | null;
-  rFactorV2Direction?: 'bullish' | 'bearish' | 'neutral' | null;
-  rFactorV2DirectionConfidence?: number | null;
-  rFactorV2Coverage?: number | null;
-  /** Coverage over the factors every name can supply — what ranking uses. */
-  rFactorV2ComparableCoverage?: number | null;
-  rFactorV2OptionStatus?: 'available' | 'pending' | null;
-  rFactorV2Factors?: RFactorV2RowDetail[] | null;
 
   // ── TradeFinder breakout (lib/breakout) ────────────────────────────────────
   /** 3-check TF verdict: morning test · R-Factor efficiency · levels cleared.
@@ -150,15 +137,6 @@ export interface RFactorRowDetail {
   label: string;
   score: number;
   vote: 'buy' | 'sell' | 'neutral';
-  available: boolean;
-  detail: string;
-}
-
-export interface RFactorV2RowDetail {
-  key: string;
-  label: string;
-  score: number;
-  weight: number;
   available: boolean;
   detail: string;
 }

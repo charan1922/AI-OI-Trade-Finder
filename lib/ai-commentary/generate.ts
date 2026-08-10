@@ -8,7 +8,7 @@
  */
 import { getNumberSetting } from '@/lib/config/feature-toggles';
 import { minuteOfDayIST } from '@/lib/ist';
-import { getCachedOptionEvidence } from '@/lib/r-factor-v2/option-shadow';
+import { getCachedOptionEvidence } from '@/lib/option-chain';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { getMimoClient, getMimoModel } from './client';
 
@@ -281,7 +281,7 @@ function describeOptionChain(
  *  and the grounding tight). */
 function trimForPrompt(r: SuggestResponse): unknown {
   // Dhan option-chain read per suggested name, from the in-memory shadow cache
-  // (lib/r-factor-v2/option-shadow.ts). Synchronous and I/O-free — a cache miss
+  // (lib/option-chain/shadow.ts). Synchronous and I/O-free — a cache miss
   // simply yields no `optionChain` key for that pick, never a blocking fetch, so
   // this cannot slow or fail a commentary run.
   //

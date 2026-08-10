@@ -17,7 +17,7 @@
 
 import { prisma } from '@/lib/db';
 import type { BreakoutSignal } from '@/lib/breakout';
-import type { LiveUrgencyRow, RFactorRowDetail, RFactorV2RowDetail } from '@/app/live/_lib/types';
+import type { LiveUrgencyRow, RFactorRowDetail } from '@/app/live/_lib/types';
 
 let tableReady = false;
 
@@ -49,16 +49,6 @@ export async function ensureLiveUrgencyEodTable(): Promise<void> {
       breakout           TEXT,
       nseOiPct           REAL,
       nseOiSlope30m      REAL,
-      rFactorV2Activity            REAL,
-      rFactorV2Percentile          REAL,
-      rFactorV2Rank                INTEGER,
-      rFactorV2Universe            INTEGER,
-      rFactorV2Direction           TEXT,
-      rFactorV2DirectionConfidence REAL,
-      rFactorV2Coverage            REAL,
-      rFactorV2ComparableCoverage  REAL,
-      rFactorV2OptionStatus        TEXT,
-      rFactorV2Factors             TEXT,
       capturedAt         TEXT    NOT NULL,
       PRIMARY KEY (date, symbol)
     )
@@ -71,24 +61,11 @@ export async function ensureLiveUrgencyEodTable(): Promise<void> {
   // this table but never added to the schema/INSERT/read-back — a real bug
   // (found 2026-08-06): the live page showed it, but a reload of an already-
   // captured session, or /live/history, always saw it as missing.
-  // The rFactorV2* block is the shadow score: it lives in rfactor_v2_snapshots
-  // under a 20-session retention, so freezing it here is what lets a past
-  // session still be graded shadow-vs-live after those rows are pruned.
   for (const col of [
     'breakout TEXT',
     'sinceEntryPct REAL',
     'nseOiPct REAL',
     'nseOiSlope30m REAL',
-    'rFactorV2Activity REAL',
-    'rFactorV2Percentile REAL',
-    'rFactorV2Rank INTEGER',
-    'rFactorV2Universe INTEGER',
-    'rFactorV2Direction TEXT',
-    'rFactorV2DirectionConfidence REAL',
-    'rFactorV2Coverage REAL',
-    'rFactorV2ComparableCoverage REAL',
-    'rFactorV2OptionStatus TEXT',
-    'rFactorV2Factors TEXT',
   ]) {
     try {
       await prisma.$executeRawUnsafe(`ALTER TABLE live_urgency_eod ADD COLUMN ${col}`);
@@ -107,8 +84,8 @@ export interface EodRow extends LiveUrgencyRow {
   dayLow: number | null;
 }
 
-const COLS = 35;
-const BATCH_ROWS = 28; // 35 cols × 28 rows = 980 params, under SQLite's 999 limit
+const COLS = 25;
+const BATCH_ROWS = 39; // 25 cols × 39 rows = 975 params, under SQLite's 999 limit
 
 /** Persist one session's rows. Idempotent: INSERT OR IGNORE on (date, symbol)
  *  — repeat calls (e.g. a retried capture) never overwrite an existing row. */
@@ -148,17 +125,18 @@ export async function insertEodRows(date: string, rows: EodRow[], nowMs: number 
         r.breakout ? JSON.stringify(r.breakout) : null,
         r.nseOiPct ?? null,
         r.nseOiSlope30m ?? null,
-        r.rFactorV2Activity ?? null,
-        r.rFactorV2Percentile ?? null,
-        r.rFactorV2Rank ?? null,
-        r.rFactorV2Universe ?? null,
-        r.rFactorV2Direction ?? null,
-        r.rFactorV2DirectionConfidence ?? null,
-        r.rFactorV2Coverage ?? null,
-        r.rFactorV2ComparableCoverage ?? null,
-        r.rFactorV2OptionStatus ?? null,
-        r.rFactorV2Factors == null ? null : JSON.stringify(r.rFactorV2Factors),
         capturedAt,
+      );
+    }
+    // COLS, the placeholder count and the pushed params are three statements of
+    // one number, and SQLite reports a mismatch only as an opaque bind error at
+    // write time — post-market, in a fire-and-forget capture nobody is watching.
+    // Removing the ten rFactorV2* columns (2026-08-11) left COLS at its old 35
+    // while params dropped to 25, so this is not hypothetical.
+    if (params.length !== chunk.length * COLS) {
+      throw new Error(
+        `live_urgency_eod column drift: ${params.length} params for ${chunk.length} rows × ${COLS} cols — ` +
+          `update COLS to match the values pushed above.`,
       );
     }
     await prisma.$executeRawUnsafe(
@@ -166,10 +144,7 @@ export async function insertEodRows(date: string, rows: EodRow[], nowMs: number 
          (date, symbol, ltp, changePctOpen, spreadPct, imbalance, futOi, oiLevel, turnover,
           dayHigh, dayLow, sessionOiChangePct, oiVelocity, oiAccel, oiUrgency, sinceEntryPct,
           rFactor, rFactorBias, rFactorConfidence, rFactorAfterEntry, rFactors,
-          breakout, nseOiPct, nseOiSlope30m,
-          rFactorV2Activity, rFactorV2Percentile, rFactorV2Rank, rFactorV2Universe,
-          rFactorV2Direction, rFactorV2DirectionConfidence, rFactorV2Coverage,
-          rFactorV2ComparableCoverage, rFactorV2OptionStatus, rFactorV2Factors, capturedAt)
+          breakout, nseOiPct, nseOiSlope30m, capturedAt)
        VALUES ${placeholders}`,
       ...params,
     );
@@ -217,15 +192,6 @@ function safeParseFactors(v: unknown): RFactorRowDetail[] | null {
   }
 }
 
-function safeParseV2Factors(v: unknown): RFactorV2RowDetail[] | null {
-  if (v == null) return null;
-  try {
-    const parsed = JSON.parse(String(v));
-    return Array.isArray(parsed) && parsed.length > 0 ? (parsed as RFactorV2RowDetail[]) : null;
-  } catch {
-    return null;
-  }
-}
 
 function safeParseBreakout(v: unknown): BreakoutSignal | null {
   if (v == null) return null;
@@ -265,16 +231,6 @@ function rowToEod(r: Record<string, unknown>): EodRow {
     nseOiSlope30m: toNumOrNull(r.nseOiSlope30m),
     // Shadow R-Factor, frozen at the close. Null for sessions captured before
     // these columns existed — the board renders "—" for those, never a zero.
-    rFactorV2Activity: toNumOrNull(r.rFactorV2Activity),
-    rFactorV2Percentile: toNumOrNull(r.rFactorV2Percentile),
-    rFactorV2Rank: toNumOrNull(r.rFactorV2Rank),
-    rFactorV2Universe: toNumOrNull(r.rFactorV2Universe),
-    rFactorV2Direction: (r.rFactorV2Direction as EodRow['rFactorV2Direction']) ?? null,
-    rFactorV2DirectionConfidence: toNumOrNull(r.rFactorV2DirectionConfidence),
-    rFactorV2Coverage: toNumOrNull(r.rFactorV2Coverage),
-    rFactorV2ComparableCoverage: toNumOrNull(r.rFactorV2ComparableCoverage),
-    rFactorV2OptionStatus: (r.rFactorV2OptionStatus as EodRow['rFactorV2OptionStatus']) ?? null,
-    rFactorV2Factors: safeParseV2Factors(r.rFactorV2Factors),
     dayHigh: toNumOrNull(r.dayHigh),
     dayLow: toNumOrNull(r.dayLow),
   };

@@ -497,65 +497,6 @@ function RFactorCell({ r }: { r: LiveUrgencyRow }) {
   );
 }
 
-const V2_DIRECTION_STYLE = {
-  bullish: { arrow: '▲', cls: 'text-emerald-600 dark:text-emerald-400' },
-  bearish: { arrow: '▼', cls: 'text-red-600 dark:text-red-400' },
-  neutral: { arrow: '·', cls: 'text-muted-foreground' },
-} as const;
-
-/** Measurement-only R-factor V2. It is deliberately not used by trading. */
-function RFactorV2Cell({ r }: { r: LiveUrgencyRow }) {
-  if (r.rFactorV2Activity == null) return <span className="text-muted-foreground/50">—</span>;
-  const direction = r.rFactorV2Direction ?? 'neutral';
-  const d = V2_DIRECTION_STYLE[direction];
-  const coverage = r.rFactorV2Coverage ?? 0;
-  // Ranking uses the factors every name can supply. Overall coverage tops out
-  // below 100% for any name that was not picked for an option chain, so both
-  // numbers are shown — otherwise a normal row looks like it has missing data.
-  const comparableCoverage = r.rFactorV2ComparableCoverage ?? coverage;
-  const factors = r.rFactorV2Factors ?? [];
-  const factorLines = factors
-    .map(
-      (factor) =>
-        `${factor.available ? '•' : '○'} ${factor.label}: ${factor.available ? factor.score.toFixed(2) : 'missing'} — ${factor.detail}`
-    )
-    .join('\n');
-  const rank =
-    r.rFactorV2Rank != null && r.rFactorV2Universe != null
-      ? `${r.rFactorV2Rank}/${r.rFactorV2Universe}`
-      : 'not ranked';
-  const percentile =
-    r.rFactorV2Percentile != null ? `${Math.round(r.rFactorV2Percentile * 100)}th percentile` : 'no percentile';
-  const tip = [
-    'R-Factor V2 SHADOW — measurement only; never changes trading.',
-    `Activity ${r.rFactorV2Activity.toFixed(2)} / 8 · ${direction} · direction confidence ${Math.round((r.rFactorV2DirectionConfidence ?? 0) * 100)}%`,
-    `Coverage ${Math.round(coverage * 100)}% overall · ${Math.round(comparableCoverage * 100)}% of the factors used for ranking`,
-    `${rank} · ${percentile} (ranked on factors every name can supply)`,
-    `Option-chain evidence: ${r.rFactorV2OptionStatus ?? 'pending'} — adds to the score shown, never to the rank`,
-    '',
-    factorLines,
-  ]
-    .filter(Boolean)
-    .join('\n');
-  const activityCls =
-    comparableCoverage < 0.55
-      ? 'text-muted-foreground'
-      : r.rFactorV2Activity >= 5.5
-        ? 'font-bold text-violet-600 dark:text-violet-400'
-        : r.rFactorV2Activity >= 4
-          ? 'font-semibold text-amber-600 dark:text-amber-400'
-          : 'text-muted-foreground';
-
-  return (
-    <span className={`inline-flex cursor-help items-center gap-1 tabular-nums ${activityCls}`} title={tip}>
-      {r.rFactorV2Activity.toFixed(1)}
-      <span className={d.cls}>{d.arrow}</span>
-      <span className="rounded bg-violet-500/10 px-1 text-[8px] font-medium text-violet-700 dark:text-violet-300">
-        shadow
-      </span>
-    </span>
-  );
-}
 
 type SortKey =
   // identity / price
@@ -565,7 +506,6 @@ type SortKey =
   | 'changePctOpen'
   // App block — our computed / derived signals
   | 'rFactor'
-  | 'rFactorV2Activity'
   | 'setup'
   | 'breakout'
   | 'sinceEntryPct'
@@ -661,7 +601,6 @@ const sortValue = (r: Row, key: SortKey): number | string => {
   if (key === 'setup') return r.verdict.rank;
   if (key === 'symbol') return r.symbol;
   if (key === 'rFactor') return r.rFactor ?? Number.NEGATIVE_INFINITY;
-  if (key === 'rFactorV2Activity') return r.rFactorV2Activity ?? Number.NEGATIVE_INFINITY;
   if (key === 'breakout') return breakoutRank(r);
   return (r[key] as number | null) ?? Number.NEGATIVE_INFINITY;
 };
@@ -758,13 +697,6 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               col="tfRFactor"
               align="right"
               title="TradeFinder's OWN R-Factor for this stock, from the most recent successful capture on /tf — not our estimate of it. Captured periodically, not live: can lag by minutes to a day. '—' until /tf has captured this symbol at least once."
-              {...th}
-            />
-            <Th
-              label="R V2 Shadow"
-              col="rFactorV2Activity"
-              align="right"
-              title="Experimental R-Factor V2: activity strength and independent direction, with explicit data coverage. Measurement only — it cannot select, approve, enter, or exit a trade. Hover a value for the evidence."
               {...th}
             />
             <Th
@@ -981,9 +913,6 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               </td>
               <td className="px-1.5 py-0.5 text-right font-semibold tabular-nums text-violet-600 dark:text-violet-400">
                 {r.tfRFactor != null ? r.tfRFactor.toFixed(1) : <span className="font-normal text-muted-foreground/50">—</span>}
-              </td>
-              <td className="px-1.5 py-0.5 text-right">
-                <RFactorV2Cell r={r} />
               </td>
               <td className="px-2 py-1">
                 <div className="flex items-center gap-1">

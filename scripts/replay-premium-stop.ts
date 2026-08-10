@@ -19,7 +19,7 @@
  *   auto_trades            the real fills, stops and outcomes
  *   auto_quote_snapshots   the guard's own 5-second option bid/ask samples
  *                          while each position was open (today's trades only)
- *   rfactor_v2_option_snapshots
+ *   option_chain_snapshots
  *                          per-strike option bid/ask/ltp captured all day, which
  *                          is what makes "would it have survived?" answerable
  *                          AFTER the real exit
@@ -89,7 +89,7 @@ async function dayBidPath(
   side: string
 ): Promise<{ capturedAt: string; bid: number }[]> {
   const rows = (await prisma.$queryRawUnsafe(
-    `SELECT capturedAt, evidence FROM rfactor_v2_option_snapshots WHERE symbol = ? AND date = ? ORDER BY capturedAt`,
+    `SELECT capturedAt, evidence FROM option_chain_snapshots WHERE symbol = ? AND date = ? ORDER BY capturedAt`,
     symbol,
     date
   )) as { capturedAt: string; evidence: string }[];

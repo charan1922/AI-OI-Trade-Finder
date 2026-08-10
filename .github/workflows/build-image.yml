@@ -137,17 +137,6 @@ jobs:
       # The pure helper check cannot see the DDL, and the DDL disagreed with it:
       # CREATE said DEFAULT 0 (public) while ALTER said 1 (PR#27 re-review).
       - run: pnpm exec tsx scripts/verify-commentary-store.ts
-      # DB-free pure checks for the R-Factor V2 SHADOW engine (activity/direction
-      # separation, fixed-denominator coverage, ranking that ignores the
-      # shortlist-only option factor, per-stock robust z, peer-excluded sector
-      # context, and the rule that an uninformative option chain casts no vote).
-      - run: pnpm exec tsx scripts/verify-rfactor-v2.ts
-      # R-Factor V2 STORE round-trip against an isolated throwaway SQLite DB:
-      # additive columns on a pre-existing table, batched multi-row param counts
-      # past one chunk, database-backed minute ownership across restarts and
-      # out-of-order arrivals, expiry- and version-scoped option baselines, and
-      # 20-session retention (PR#15 review).
-      - run: pnpm exec tsx scripts/verify-rfactor-v2-store.ts
       # DB-free pure checks for the ACCESS policy (lib/auth/rbac.ts): the owner
       # can never be locked out or downgraded, only the owner reaches /users, an
       # owner revoke beats the hardcoded admin list, and an unreachable database

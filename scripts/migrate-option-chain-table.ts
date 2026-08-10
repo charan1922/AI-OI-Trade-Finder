@@ -25,7 +25,16 @@
  *   npx tsx scripts/migrate-option-chain-table.ts            # apply
  *   npx tsx scripts/migrate-option-chain-table.ts --dry-run  # report only
  */
-process.loadEnvFile('.env.local');
+// Tolerant on purpose: this script runs BOTH locally (where .env.local exists)
+// and inside the container at start-up (where it does not — .env.local is
+// dockerignored, and the real values arrive as real env vars). process.loadEnvFile
+// THROWS on a missing file, so an unguarded call would make the migration fail on
+// every single prod boot while looking like a config problem.
+try {
+  process.loadEnvFile('.env.local');
+} catch {
+  // No .env.local — running in the container, where env vars are already set.
+}
 
 import { prisma } from '@/lib/db';
 import { ensureOptionChainTable } from '@/lib/option-chain/store';
