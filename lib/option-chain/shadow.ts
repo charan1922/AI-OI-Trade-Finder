@@ -1,6 +1,6 @@
 import { fetchDetailedOptionChainShadow, todayIST } from '@/lib/dhan/market-feed';
 import { prisma } from '@/lib/db';
-import { deriveOptionActivityEvidence } from './option-evidence';
+import { deriveOptionActivityEvidence } from './evidence';
 import { loadSameTimeOptionBaseline, recordOptionEvidence } from './store';
 import type { OptionActivityEvidence } from './types';
 
@@ -43,15 +43,15 @@ interface ShadowState {
   lastRequestAt: number;
 }
 
-const host = globalThis as unknown as { __rfactorV2OptionShadow?: ShadowState };
-host.__rfactorV2OptionShadow ??= {
+const host = globalThis as unknown as { __optionChainShadow?: ShadowState };
+host.__optionChainShadow ??= {
   candidates: new Map(),
   cache: new Map(),
   attemptedAt: new Map(),
   running: false,
   lastRequestAt: 0,
 };
-const state = host.__rfactorV2OptionShadow;
+const state = host.__optionChainShadow;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function getCachedOptionEvidence(symbols: string[], nowMs = Date.now()): Map<string, OptionActivityEvidence> {
@@ -146,7 +146,7 @@ async function runWorker(): Promise<void> {
         state.cache.set(candidate.symbol, evidence);
         await recordOptionEvidence(candidate.symbol, evidence);
       } catch (error) {
-        console.warn(`[RFactorV2] option shadow failed for ${candidate.symbol}: ${(error as Error).message}`);
+        console.warn(`[OptionChain] option shadow failed for ${candidate.symbol}: ${(error as Error).message}`);
       }
     }
   } finally {

@@ -4,7 +4,7 @@ import type {
   OptionActivityEvidence,
   OptionStrikeEvidence,
   PaceBaselineKind,
-  RFactorV2Direction,
+  OptionDirection,
 } from './types';
 
 /**
@@ -174,7 +174,7 @@ export function deriveOptionActivityEvidence(
     directionDenominator += economicWeight;
   }
   const directionScore = directionDenominator > 0 ? directionNumerator / directionDenominator : 0;
-  const direction: RFactorV2Direction =
+  const direction: OptionDirection =
     directionScore >= 0.15 ? 'bullish' : directionScore <= -0.15 ? 'bearish' : 'neutral';
 
   // Gamma evidence, recorded only. Reuses the existing NIFTY proxy so there is

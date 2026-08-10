@@ -317,10 +317,10 @@ failed ||= !managesPosition;
  * PCR/percentage recital, which the contract forbids everywhere.
  */
 const shadowHost = globalThis as unknown as {
-  __rfactorV2OptionShadow?: { cache: Map<string, unknown> };
+  __optionChainShadow?: { cache: Map<string, unknown> };
 };
-shadowHost.__rfactorV2OptionShadow ??= { cache: new Map() };
-shadowHost.__rfactorV2OptionShadow.cache.set('CDSL', {
+shadowHost.__optionChainShadow ??= { cache: new Map() };
+shadowHost.__optionChainShadow.cache.set('CDSL', {
   capturedAt: new Date().toISOString(),
   expiry: '2026-07-28',
   underlyingLtp: 1413,

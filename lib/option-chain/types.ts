@@ -1,4 +1,14 @@
-export type RFactorV2Direction = 'bullish' | 'bearish' | 'neutral';
+/**
+ * Dhan option-chain evidence — the shapes describing what the OPTIONS are doing.
+ *
+ * Extracted from the retired lib/r-factor-v2 module (2026-08-11). The R-Factor
+ * V2 scoring experiment it used to live inside was deleted; this read survived
+ * because it is independently useful and is what /live and the commentary
+ * narration actually consume. Nothing here scores or gates a trade — see
+ * scripts/measure-option-evidence.ts for why (measured, no predictive edge).
+ */
+
+export type OptionDirection = 'bullish' | 'bearish' | 'neutral';
 
 /**
  * How a "pace" factor's denominator was obtained. Every pace number carries one
@@ -42,7 +52,7 @@ export interface OptionActivityEvidence {
   totalStrikes: number;
   activityScore: number;
   directionScore: number;
-  direction: RFactorV2Direction;
+  direction: OptionDirection;
   directionConfidence: number;
   /**
    * How many option legs actually carried directional evidence (a fresh OI
@@ -85,60 +95,3 @@ export interface OptionActivityEvidence {
   rows: OptionStrikeEvidence[];
 }
 
-export interface RFactorV2Input {
-  symbol: string;
-  sector: string | null;
-  priceChangePct: number | null;
-  rangeRatio: number | null;
-  /** Same-clock cumulative futures turnover / prior-session same-clock mean. */
-  turnoverPace: number | null;
-  /**
-   * Per-stock z-score of today's same-clock turnover against that stock's own
-   * prior-session spread. This is the "2x in a quiet name is not the same as 2x
-   * in a violent name" correction; null until the stock has enough sessions.
-   */
-  turnoverZ: number | null;
-  turnoverBaselineKind: PaceBaselineKind;
-  oiLevel: number | null;
-  futuresOiChangePct: number | null;
-  oiVelocity: number | null;
-  nseCombinedOiChangePct: number | null;
-  nseOiSlope30m: number | null;
-  /** NSE option-premium value / prior-session same-clock mean. */
-  nsePremiumPace: number | null;
-  spreadPct: number | null;
-  imbalance: number | null;
-  option: OptionActivityEvidence | null;
-}
-
-export interface RFactorV2Factor {
-  key: string;
-  label: string;
-  score: number;
-  weight: number;
-  available: boolean;
-  detail: string;
-}
-
-export interface RFactorV2Result {
-  activityScore: number;
-  rawActivity: number;
-  /**
-   * Activity over the factors EVERY name can supply (option evidence excluded).
-   * Ranking uses this, not `rawActivity`: option chains are fetched only for
-   * names already leading, so ranking on a score they alone can earn would let
-   * today's leaders re-select themselves tomorrow.
-   */
-  comparableActivity: number;
-  activityPercentile: number;
-  activityRank: number;
-  universeSize: number;
-  direction: RFactorV2Direction;
-  directionScore: number;
-  directionConfidence: number;
-  coverage: number;
-  /** Coverage over the always-available factors only — what ranking relies on. */
-  comparableCoverage: number;
-  optionStatus: 'available' | 'pending';
-  factors: RFactorV2Factor[];
-}
