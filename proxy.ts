@@ -28,14 +28,55 @@
  */
 import { type NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
-import { requiredPermission, resolveRole, roleForGoogleEmail, ROLE_HEADER, roleHas, type Role } from '@/lib/auth/rbac';
+import {
+  isOwnerEmail,
+  isOwnerOnlyPath,
+  OWNER_HEADER,
+  requiredPermission,
+  resolveRole,
+  roleForGoogleEmail,
+  ROLE_HEADER,
+  roleHas,
+  type Role,
+} from '@/lib/auth/rbac';
 import { SESSION_COOKIE, verifySession } from '@/lib/auth/session';
 
-/** Forward the request with the TRUSTED role header (spoof-proof: always overwritten). */
-function forwardAs(req: NextRequest, role: Role): NextResponse {
+/** Forward the request with the TRUSTED role/owner headers (spoof-proof: both
+ *  are always written or deleted, never passed through from the client). */
+function forwardAs(req: NextRequest, role: Role, isOwner: boolean): NextResponse {
   const headers = new Headers(req.headers);
   headers.set(ROLE_HEADER, role);
+  if (isOwner) headers.set(OWNER_HEADER, '1');
+  else headers.delete(OWNER_HEADER);
   return NextResponse.next({ request: { headers } });
+}
+
+/** Drop both trusted headers — for the routes that authenticate themselves. */
+function forwardUnauthenticated(req: NextRequest): NextResponse {
+  const headers = new Headers(req.headers);
+  headers.delete(ROLE_HEADER);
+  headers.delete(OWNER_HEADER);
+  return NextResponse.next({ request: { headers } });
+}
+
+/**
+ * Load the DB-backed role registry (app_users → rbac's in-memory map) so a user
+ * the owner added on /users is honoured without a redeploy.
+ *
+ * Dynamically imported ON PURPOSE: this pulls in Prisma/better-sqlite3, and
+ * proxy runs on EVERY request. Next 16 runs proxy on the Node.js runtime, so
+ * the native module loads and shares globalThis with the route handlers — but
+ * if that ever stops being true, the catch keeps the gate working off the
+ * hardcoded operator lists instead of failing every request. TTL-throttled
+ * inside refreshRoleRegistry().
+ */
+async function hydrateRoleRegistry(): Promise<void> {
+  try {
+    const { refreshRoleRegistry } = await import('@/lib/auth/users');
+    await refreshRoleRegistry();
+  } catch (err) {
+    console.warn('[proxy] role registry unavailable, using code lists only:', (err as Error).message);
+  }
 }
 
 /** A top-level page navigation (as opposed to a fetch/XHR/API call). */
@@ -77,19 +118,11 @@ export const proxy = auth(async (req) => {
   const { pathname, searchParams } = req.nextUrl;
 
   // Health check stays public (Railway keep-alive pinger) — strip any spoofed role.
-  if (pathname === '/api/health') {
-    const headers = new Headers(req.headers);
-    headers.delete(ROLE_HEADER);
-    return NextResponse.next({ request: { headers } });
-  }
+  if (pathname === '/api/health') return forwardUnauthenticated(req);
 
   // Telegram webhook — Telegram's servers POST updates here; auth is via
   // X-Telegram-Bot-Api-Secret-Token header (verified in the route handler).
-  if (pathname === '/api/telegram/webhook') {
-    const headers = new Headers(req.headers);
-    headers.delete(ROLE_HEADER);
-    return NextResponse.next({ request: { headers } });
-  }
+  if (pathname === '/api/telegram/webhook') return forwardUnauthenticated(req);
 
   const adminPassword = process.env.APP_PASSWORD;
   // No password configured: in PRODUCTION this is a fatal misconfiguration —
@@ -102,7 +135,8 @@ export const proxy = auth(async (req) => {
         { status: 503 }
       );
     }
-    return forwardAs(req, 'admin');
+    // Local dev is the operator's own machine — owner too, so /users works.
+    return forwardAs(req, 'admin', true);
   }
 
   // Login/logout and the Auth.js endpoints (signin, callback/google, csrf,
@@ -118,25 +152,34 @@ export const proxy = auth(async (req) => {
     pathname === '/api/auth/error' ||
     pathname === '/api/auth/signout'
   ) {
-    return NextResponse.next();
+    // Strip the trusted headers here too. These routes don't read them today,
+    // but a bare NextResponse.next() would forward a CLIENT-SUPPLIED
+    // x-app-role/x-app-owner untouched — a trap for whoever later adds a role
+    // check to an /api/auth/* handler.
+    return forwardUnauthenticated(req);
   }
 
-  // Google session → role via the central policy (lib/auth/rbac.ts):
-  // the operator's email → admin, explicit viewer allowlist → viewer.
-  const googleRole: Role | null = roleForGoogleEmail(req.auth?.user?.email, process.env.GOOGLE_VIEWER_EMAILS);
+  // Google session → role via the central policy (lib/auth/rbac.ts): hardcoded
+  // operators → admin, then the owner-managed registry (app_users), then the
+  // viewer allowlist. Hydrate the registry first so a just-added user is live.
+  const googleEmail = req.auth?.user?.email;
+  if (googleEmail) await hydrateRoleRegistry();
+  const googleRole: Role | null = roleForGoogleEmail(googleEmail, process.env.GOOGLE_VIEWER_EMAILS);
 
   // Resolve the caller's role: password cookie, then Google session, then Basic Auth.
-  const role =
-    (await verifySession(req.cookies.get(SESSION_COOKIE)?.value, adminPassword)) ??
-    googleRole ??
-    roleFromBasicAuth(req, adminPassword);
+  const passwordRole = await verifySession(req.cookies.get(SESSION_COOKIE)?.value, adminPassword);
+  const role = passwordRole ?? googleRole ?? roleFromBasicAuth(req, adminPassword);
+
+  // Owner = the account that may manage other users' access. The break-glass
+  // password login counts: APP_PASSWORD is the operator's own credential, so he
+  // can still fix access if Google sign-in is down. Basic Auth deliberately
+  // does NOT — those are the internal engine/poller self-calls.
+  const isOwner = isOwnerEmail(googleEmail) || passwordRole === 'admin';
 
   // The login page: reachable when signed out; bounce to home when already in.
   if (pathname === '/login') {
     if (role) return NextResponse.redirect(new URL(searchParams.get('next') || '/', req.url));
-    const headers = new Headers(req.headers);
-    headers.delete(ROLE_HEADER);
-    return NextResponse.next({ request: { headers } });
+    return forwardUnauthenticated(req);
   }
 
   if (!role) {
@@ -166,7 +209,20 @@ export const proxy = auth(async (req) => {
     );
   }
 
-  return forwardAs(req, role);
+  // Access management is OWNER-only — a plain admin trades but cannot change
+  // who gets in (user rule 2026-08-10). Checked after the role policy so a
+  // viewer still gets the ordinary admin-only treatment.
+  if (isOwnerOnlyPath(pathname) && !isOwner) {
+    if (isBrowserNavigation(req) && !pathname.startsWith('/api/')) {
+      return NextResponse.redirect(new URL('/', req.url));
+    }
+    return NextResponse.json(
+      { success: false, error: 'Owner-only — only the account owner can manage user access.', role },
+      { status: 403 }
+    );
+  }
+
+  return forwardAs(req, role, isOwner);
 });
 
 /**

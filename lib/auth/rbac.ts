@@ -30,22 +30,98 @@ export type Role = 'admin' | 'viewer';
 /**
  * Google → role policy (user rule 2026-07-12). THE single source of truth for
  * what a Google sign-in is worth — auth.ts admits verified accounts, proxy.ts
- * maps them through roleForGoogleEmail():
- *   ADMIN_GOOGLE_EMAILS        → admin (the operator)
+ * maps them through roleForGoogleEmail(), in this order:
+ *   OWNER_GOOGLE_EMAILS       → admin (and the only accounts that may manage users)
+ *   ADMIN_GOOGLE_EMAILS       → admin (bootstrap operators, editable only in code)
+ *   the runtime registry      → admin | viewer (the owner's /users screen, app_users)
  *   GOOGLE_VIEWER_EMAILS      → viewer (explicit comma-separated allowlist)
  *   every other account       → denied before a session is issued
+ *
+ * The two hardcoded sets are checked FIRST so nothing done on /users (or a
+ * corrupted app_users table) can ever lock the operator out of his own app.
  */
 export const ADMIN_GOOGLE_EMAILS: ReadonlySet<string> = new Set([
   'charan192219@gmail.com',
   'kesardevi22161@gmail.com',
 ]);
 
+/**
+ * The OWNER — user rule 2026-08-10: "i am the main guy i should be able to add
+ * admin or viewer nd no other can". Owners may open /users and call
+ * /api/users; a plain admin has full trading access but CANNOT change who has
+ * access. Deliberately hardcoded and NOT manageable from the UI: the one grant
+ * that hands out every other grant must not be editable by whoever holds it.
+ */
+export const OWNER_GOOGLE_EMAILS: ReadonlySet<string> = new Set(['charan192219@gmail.com']);
+
+export function isOwnerEmail(email: string | null | undefined): boolean {
+  return !!email && OWNER_GOOGLE_EMAILS.has(email.trim().toLowerCase());
+}
+
+/**
+ * Runtime role registry — the DB-backed half of the policy, written from the
+ * owner's /users screen (table app_users, see lib/auth/users.ts).
+ *
+ * This module must stay import-free (proxy.ts imports it), so the registry
+ * lives on globalThis: users.ts reads app_users and calls setRoleRegistry();
+ * rbac.ts only ever READS it. Next 16 runs proxy.ts on the Node.js runtime —
+ * the same process as the route handlers — so both halves genuinely share one
+ * globalThis. (Under the old Edge middleware they would not have.)
+ *
+ * Failure behaviour: an empty/stale registry falls through to the code lists
+ * and then to null — i.e. it fails CLOSED for everyone except the hardcoded
+ * operators, never open.
+ */
+const registryHost = globalThis as unknown as {
+  __appRoleRegistry?: Map<string, Role>;
+  __appRoleRevoked?: Set<string>;
+};
+
+export function setRoleRegistry(entries: Iterable<readonly [string, Role]>, revoked: Iterable<string> = []): void {
+  const map = new Map<string, Role>();
+  for (const [email, role] of entries) {
+    const normalized = email.trim().toLowerCase();
+    if (normalized) map.set(normalized, role);
+  }
+  const revokedSet = new Set<string>();
+  for (const email of revoked) {
+    const normalized = email.trim().toLowerCase();
+    if (normalized) revokedSet.add(normalized);
+  }
+  registryHost.__appRoleRegistry = map;
+  registryHost.__appRoleRevoked = revokedSet;
+}
+
+export function roleFromRegistry(email: string | null | undefined): Role | null {
+  if (!email) return null;
+  return registryHost.__appRoleRegistry?.get(email.trim().toLowerCase()) ?? null;
+}
+
+/** True when the owner explicitly revoked this account on /users. Stored as a
+ *  tombstone row (status='revoked') rather than a deletion, precisely so it can
+ *  override the hardcoded ADMIN_GOOGLE_EMAILS list below. */
+export function isRevokedEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  return registryHost.__appRoleRevoked?.has(email.trim().toLowerCase()) ?? false;
+}
+
 export function roleForGoogleEmail(
   email: string | null | undefined,
   viewerEmails = process.env.GOOGLE_VIEWER_EMAILS
 ): Role | null {
   if (!email) return null;
-  const normalized = email.toLowerCase();
+  const normalized = email.trim().toLowerCase();
+  // 1. The owner always wins — no DB state can lock him out of his own app.
+  if (OWNER_GOOGLE_EMAILS.has(normalized)) return 'admin';
+  // 2. An explicit revoke on /users beats everything below, including the
+  //    hardcoded admin list — otherwise "Remove" would silently do nothing to a
+  //    code-listed operator and the screen would be lying.
+  if (isRevokedEmail(normalized)) return null;
+  // 3. The owner-managed registry (app_users) — also lets a code-listed admin be
+  //    downgraded to viewer, so it is checked BEFORE the code list.
+  const fromRegistry = roleFromRegistry(normalized);
+  if (fromRegistry) return fromRegistry;
+  // 4. Hardcoded bootstrap operators, for emails never touched on /users.
   if (ADMIN_GOOGLE_EMAILS.has(normalized)) return 'admin';
   const viewers = new Set(
     (viewerEmails ?? '')
@@ -59,6 +135,26 @@ export function roleForGoogleEmail(
 /** Request header the proxy stamps AFTER stripping any client-supplied value —
  *  downstream route handlers may trust it (see lib/auth/server.ts). */
 export const ROLE_HEADER = 'x-app-role';
+
+/** Companion to ROLE_HEADER: '1' when the caller is the owner. Same guarantee —
+ *  the proxy always overwrites whatever the client sent. */
+export const OWNER_HEADER = 'x-app-owner';
+
+/**
+ * OWNER-only surfaces — access management. A plain admin is blocked here (403
+ * on the API, redirect to home on the page), which is the whole point: admins
+ * trade, only the owner decides who gets in.
+ */
+export const OWNER_ONLY_PAGES: ReadonlySet<string> = new Set(['/users']);
+export const OWNER_ONLY_API_PREFIXES: readonly string[] = ['/api/users'];
+
+/** True when `pathname` is an owner-only page/API (exact match or a sub-path). */
+export function isOwnerOnlyPath(pathname: string): boolean {
+  for (const page of OWNER_ONLY_PAGES) {
+    if (pathname === page || pathname.startsWith(`${page}/`)) return true;
+  }
+  return OWNER_ONLY_API_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
 
 export type Permission =
   | 'app:write' // catch-all: any mutating API not explicitly classified below
@@ -131,6 +227,9 @@ export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set([
   '/replay-commentary',
   '/trade-assistant',
   '/reminders',
+  // Also OWNER-only (OWNER_ONLY_PAGES) — listed here too so the viewer
+  // machinery (proxy policy + sidebar hiding) covers it without a special case.
+  '/users',
 ]);
 
 /** True when `pathname` is an admin-only page or lives under one. */
@@ -154,6 +253,7 @@ export const ADMIN_ONLY_API_PREFIXES: readonly string[] = [
   '/api/prompts',
   '/api/replay-commentary',
   '/api/telegram/setup',
+  '/api/users', // narrowed further to the owner by OWNER_ONLY_API_PREFIXES
 ];
 
 export function isAdminOnlyApi(pathname: string): boolean {

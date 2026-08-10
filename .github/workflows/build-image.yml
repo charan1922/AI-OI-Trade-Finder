@@ -135,6 +135,15 @@ jobs:
       # out-of-order arrivals, expiry- and version-scoped option baselines, and
       # 20-session retention (PR#15 review).
       - run: pnpm exec tsx scripts/verify-rfactor-v2-store.ts
+      # DB-free pure checks for the ACCESS policy (lib/auth/rbac.ts): the owner
+      # can never be locked out or downgraded, only the owner reaches /users, an
+      # owner revoke beats the hardcoded admin list, and an unreachable database
+      # (empty registry) fails closed rather than open.
+      - run: pnpm exec tsx scripts/verify-user-access.ts
+      # app_users round-trip against an isolated throwaway SQLite DB: add before
+      # first sign-in, role change, revoke-as-tombstone, restore, owner immunity,
+      # and the rule that a later sign-in cannot re-promote a downgraded operator.
+      - run: pnpm exec tsx scripts/verify-user-access-store.ts
 
   build:
     needs: validate
