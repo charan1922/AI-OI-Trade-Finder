@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import type { BreakoutGrade } from '@/lib/breakout';
 import { setupScore, type SetupVerdict } from '../_lib/setup-score';
 import type { LiveUrgencyRow } from '../_lib/types';
+import { rFactorAtRaw } from '@/lib/r-factor/scale';
 
 const num = (n: number | null, d = 2): string => (n == null ? '—' : n.toFixed(d));
 
@@ -461,11 +462,13 @@ function RFactorCell({ r }: { r: LiveUrgencyRow }) {
   if (r.rFactor == null) return <span className="text-muted-foreground/50">—</span>;
   const bias = r.rFactorBias ?? 'neutral';
   const b = BIAS_STYLE[bias];
-  // Thresholds on the 1–8 scale (rescaled from the old 1–5: 4/5 → 6.25, 3/5 → 4.5)
+  // Raw positions, not span-specific numbers: 0.75 and 0.50 (they read 4/5 and
+  // 3/5 on the original 1–5 span, 6.25 and 4.5 on 1–8, 7.75 and 5.5 on today's
+  // 1–10). See lib/r-factor/scale.ts for why these are not written as literals.
   const strengthCls =
-    r.rFactor >= 6.25
+    r.rFactor >= rFactorAtRaw(0.75)
       ? 'font-bold text-emerald-600 dark:text-emerald-400'
-      : r.rFactor >= 4.5
+      : r.rFactor >= rFactorAtRaw(0.5)
         ? 'font-semibold text-amber-600 dark:text-amber-400'
         : 'text-muted-foreground';
 
@@ -602,14 +605,27 @@ const sortValue = (r: Row, key: SortKey): number | string => {
   if (key === 'symbol') return r.symbol;
   if (key === 'rFactor') return r.rFactor ?? Number.NEGATIVE_INFINITY;
   if (key === 'breakout') return breakoutRank(r);
+  // Since-9:45 sorts by MAGNITUDE, not signed value: what matters is how far a
+  // name has travelled since the entry window opened, and a hard move down is
+  // as informative as one up (it is the PE side of the same board). So −7.6
+  // outranks +6.0 outranks −5.9 outranks +3.0 (operator's own example,
+  // 2026-08-11). Direction is still visible in the cell's colour and sign.
+  if (key === 'sinceEntryPct') {
+    const v = r.sinceEntryPct;
+    return v == null ? Number.NEGATIVE_INFINITY : Math.abs(v);
+  }
   return (r[key] as number | null) ?? Number.NEGATIVE_INFINITY;
 };
 
 export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sectors?: Record<string, string> }) {
-  // Default to the watchlist order (= the NSE Movers / sector-leaders order the
-  // list was built in), so /live mirrors /nse/movers. Headers stay sortable.
-  const [sortKey, setSortKey] = useState<SortKey>('rank');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  // Default: biggest move SINCE 09:45, either direction first (operator request,
+  // 2026-08-11). This used to open in watchlist order to mirror /nse/movers, but
+  // that order says nothing about which names are actually doing something right
+  // now — Since-9:45 is the freshness read, so the board opens on whatever has
+  // travelled furthest since the entry window opened. Headers stay sortable, and
+  // 'rank' is still one click away for the /nse/movers ordering.
+  const [sortKey, setSortKey] = useState<SortKey>('sinceEntryPct');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   const onSort = (key: SortKey) => {
     if (key === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -725,7 +741,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               label="App Since 9:45"
               col="sinceEntryPct"
               align="right"
-              title="Price change since 09:45 (when our entry window opens). This is the FRESHNESS check: a big Chg% but almost 0 here means the whole move happened at the open — it's probably over. Chasing that is the classic trap."
+              title="Price change since 09:45 (when our entry window opens). This is the FRESHNESS check: a big Chg% but almost 0 here means the whole move happened at the open — it's probably over. Chasing that is the classic trap. The board sorts on this by default, by SIZE of move regardless of direction, so the hardest fallers rank alongside the hardest risers."
               {...th}
             />
             <Th

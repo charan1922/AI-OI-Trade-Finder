@@ -59,7 +59,7 @@ export const TOOL_DEFS: OpenAI.Responses.Tool[] = [
     description:
       'Run the LIVE near-ATM options scan (the /trade-suggest engine) NOW over the full ~166-name tradeable F&O ' +
       'universe and return up to MAX_PICKS (default 7, /config-tunable) evidence-backed picks: ' +
-      'contract (strike/expiry/lot), spot entry/SL/target, real premium + per-lot cost, R-Factor (1–8), OI evidence ' +
+      'contract (strike/expiry/lot), spot entry/SL/target, real premium + per-lot cost, R-Factor (1–10), OI evidence ' +
       '(futures level or NSE combined), combined-OI build rate (~30 min), opening-range breakout, sector alignment ' +
       '(turnover-weighted), and per-pick reasons. Use for "what should I trade ' +
       'now / today\'s picks / scan the market" questions. Only meaningful during market hours; the 09:40–11:00 IST ' +
@@ -97,7 +97,7 @@ export const TOOL_DEFS: OpenAI.Responses.Tool[] = [
     name: 'get_symbol_snapshot',
     description:
       'Deep-dive ONE stock right now: live quote row (LTP, change from open, spread, order-book imbalance, ' +
-      'futures OI + level vs 20-day avg, turnover, intraday OI build/urgency, R-Factor 1–8 with bias/confidence ' +
+      'futures OI + level vs 20-day avg, turnover, intraday OI build/urgency, R-Factor 1–10 with bias/confidence ' +
       'and per-factor breakdown), opening-range price action (above/below/inside the 09:15–09:45 range, day ' +
       'high/low from recorded 5-min bars), NSE combined futures+options OI change, and any /trade-suggest call ' +
       'made on it today. Post-market it returns the recorded closing snapshot (snapshot:true). Use for "how is ' +

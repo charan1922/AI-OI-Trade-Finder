@@ -24,6 +24,8 @@
  * catches the breakout winners without letting junk through.
  */
 
+import { rFactorAtRaw } from '@/lib/r-factor/scale';
+
 export interface BreakoutBypassInput {
   /** Confirmed opening-range breakout in the trade direction (CE→above OR high, PE→below OR low). */
   orBreakout: boolean;
@@ -31,7 +33,7 @@ export interface BreakoutBypassInput {
   supertrendAligned: boolean | null;
   /** Price on the favorable side of session VWAP; null when VWAP not computable. */
   vwapAligned: boolean | null;
-  /** R-Factor at this tick (1–8 scale). */
+  /** R-Factor at this tick (1–10 scale). */
   rFactor: number | null;
 }
 
@@ -46,7 +48,7 @@ export interface BreakoutBypassConfig {
 }
 
 export const DEFAULT_BREAKOUT_BYPASS_CONFIG: BreakoutBypassConfig = {
-  minRFactor: 3.6, // = base MIN_RFACTOR; the breakout+trend is the discriminator
+  minRFactor: rFactorAtRaw(0.375), // = base MIN_RFACTOR; breakout+trend is the discriminator
   requireTrendAlign: true,
 };
 

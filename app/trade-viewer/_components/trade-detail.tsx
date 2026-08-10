@@ -9,6 +9,7 @@ import { PnlChart } from './pnl-chart';
 import { SignalChart } from './signal-chart';
 import { HumanVerifiedBadge } from './human-verified-badge';
 import { TradeSearch } from './trade-search';
+import { rFactorAtRaw } from '@/lib/r-factor/scale';
 
 export function TradeDetailSection() {
   const [trades, setTrades] = useState<TFTradeItem[]>([]);
@@ -377,7 +378,7 @@ function SignalTable({ detail }: { detail: TradeDetailData }) {
               <span className={s.spreadRatio > 1.5 ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}>
                 {s.spreadRatio.toFixed(2)}
               </span>
-              <span className={s.rFactor >= 2.0 ? 'text-sky-600 dark:text-sky-400 font-bold' : 'text-muted-foreground'}>
+              <span className={s.rFactor >= rFactorAtRaw(1 / 7) ? 'text-sky-600 dark:text-sky-400 font-bold' : 'text-muted-foreground'}>
                 {s.rFactor.toFixed(2)}
               </span>
               <span className={s.adx >= 28 ? 'text-amber-600 dark:text-amber-400 font-bold' : 'text-muted-foreground'}>{s.adx || '\u2014'}</span>

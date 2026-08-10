@@ -15,7 +15,7 @@ export type ScoreWeights = Record<keyof typeof WEIGHTS, number>;
 
 /** Everything the composite score reads — assembled live or replayed as-of a tick. */
 export interface ScoreComponents {
-  rFactor: number | null; // 1–8
+  rFactor: number | null; // 1–10
   confidence: number | null; // [0,1]
   oiUrgency: number | null; // 0–10
   oiLevel: number | null; // ratio vs 20d avg

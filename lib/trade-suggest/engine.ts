@@ -6,7 +6,7 @@
  *     → one batched POST /api/live/quote  (R-Factor + bias, OI urgency, depth)
  *     → setupScore verdict + opening-range state (fyers_candles)
  *     → hard gates (TF fingerprint: OI evidence via futures level ≥1.1× OR
- *       NSE combined ≥5%, spread ≤0.3%, R-Factor ≥3.6 on the 1–8 scale,
+ *       NSE combined ≥5%, spread ≤0.3%, R-Factor ≥4.38 on the 1–10 scale,
  *       direction agreement)
  *     → composite score → top 3 → nearest listed ATM strike from
  *       master_contracts OPTSTK → spot-level entry/SL/target plan → persist.

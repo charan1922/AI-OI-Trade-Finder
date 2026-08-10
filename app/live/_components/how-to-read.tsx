@@ -59,7 +59,7 @@ export function HowToRead() {
             </p>
             <dl className="space-y-2.5">
               <Def term="R-Factor">
-                One score for <b>how much big money participated in the stock today</b>, on a <b>1–8</b> scale (higher =
+                One score for <b>how much big money participated in the stock today</b>, on a <b>1–10</b> scale (higher =
                 more institutional activity). The small arrow is the <b>direction</b>:{' '}
                 <span className="text-emerald-600 dark:text-emerald-400">▲ buyers</span> ·{' '}
                 <span className="text-red-600 dark:text-red-400">▼ sellers</span>. It&apos;s built live by blending OI,

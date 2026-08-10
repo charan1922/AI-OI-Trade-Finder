@@ -6,7 +6,8 @@
  *
  * computeRFactor runs all factors, blends their [0,1] strengths into one score
  * (renormalized over only the AVAILABLE factors), and derives the directional bias
- * from the majority vote. Output strength is scaled to a TradeFinder-like 1.0–5.0.
+ * from the majority vote. Output strength is scaled to a TradeFinder-like 1.0–10.0
+ * (see ./scale.ts — the span has moved twice; the raw [0,1] scoring never has).
  */
 
 import { breakoutSignal } from './breakout';
@@ -17,6 +18,7 @@ import { bidAskSpreadSignal } from './microstructure';
 import { futuresOiSignal, oiDirectionSignal, oiVsTwentyDaySignal } from './oi';
 import { callOptionOiSignal, pcrSignal, putOptionOiSignal } from './options';
 import { rangeSpreadSignal } from './range-spread';
+import { rFactorAtRaw } from './scale';
 import { isAfterEntryTime } from './timing';
 import type { FactorScore, RFactorInput, RFactorResult, RFactorWeights } from './types';
 
@@ -46,12 +48,6 @@ export interface RFactorConfig {
   /** Override any subset of the default blend weights. */
   weights?: Partial<RFactorWeights>;
 }
-
-/** R-Factor strength is reported on this scale. TradeFinder's displayed
- *  R-Factor runs past 5 (1–8); rescaled 2026-07-03 at the user's request —
- *  raw [0,1] scoring is unchanged, only the presentation span widened. */
-const RF_MIN = 1;
-const RF_MAX = 8;
 
 /** Compute the full R-Factor result for one symbol from supplied market data. */
 export function computeRFactor(input: RFactorInput, config: RFactorConfig = {}): RFactorResult {
@@ -94,7 +90,8 @@ export function computeRFactor(input: RFactorInput, config: RFactorConfig = {}):
     weightTotal += w;
   }
   const rawScore = weightTotal > 0 ? weightedSum / weightTotal : 0;
-  const rFactor = round(RF_MIN + (RF_MAX - RF_MIN) * rawScore, 2);
+  // rFactorAtRaw is exact; the DISPLAYED/stored value is what gets rounded.
+  const rFactor = round(rFactorAtRaw(rawScore), 2);
 
   const majority = majoritySignal(factors, weights);
   const { marketOpen, afterEntryWindow, istTime } = isAfterEntryTime(input.now, input.entryTimeIST);

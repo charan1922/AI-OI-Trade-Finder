@@ -2,6 +2,7 @@
 
 import { ExternalLink, Loader2, RefreshCw, Target } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { rFactorAtRaw } from '@/lib/r-factor/scale';
 
 /** Mirrors lib/trade-suggest API shapes (leaderboard + suggestions). */
 interface BoardRow {
@@ -236,8 +237,8 @@ function PickCard({ p }: { p: LivePick }) {
     {
       label: 'R-Factor',
       value: `${p.rFactor.toFixed(2)}`,
-      tone: p.rFactor >= 3.6 ? 'good' : 'warn',
-      title: `Institutional-interest strength, 1–8 scale (gate ≥ 3.6) · bias ${p.direction} · factor agreement ${(p.rFactorConfidence * 100).toFixed(0)}%`,
+      tone: p.rFactor >= rFactorAtRaw(0.375) ? 'good' : 'warn',
+      title: `Institutional-interest strength, 1–10 scale (gate ≥ ${rFactorAtRaw(0.375)}) · bias ${p.direction} · factor agreement ${(p.rFactorConfidence * 100).toFixed(0)}%`,
     },
     {
       label: 'Fut OI',
