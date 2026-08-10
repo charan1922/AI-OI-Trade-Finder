@@ -303,6 +303,76 @@ console.log(
 );
 failed ||= !managesPosition;
 
+/**
+ * Turn 3 — the option-chain read.
+ *
+ * trimForPrompt() pulls this from the option-shadow module's in-memory cache
+ * rather than from the scan result, so the ONLY way a bench can exercise it is
+ * to seed that cache. Done here directly on the globalThis handle the module
+ * itself uses — no production code exists purely for testing, and nothing about
+ * the real path changes.
+ *
+ * What is being tested is the HARD RULE, not the model's taste: the chain read
+ * must come out as positioning in plain words, and must never appear as a raw
+ * PCR/percentage recital, which the contract forbids everywhere.
+ */
+const shadowHost = globalThis as unknown as {
+  __rfactorV2OptionShadow?: { cache: Map<string, unknown> };
+};
+shadowHost.__rfactorV2OptionShadow ??= { cache: new Map() };
+shadowHost.__rfactorV2OptionShadow.cache.set('CDSL', {
+  capturedAt: new Date().toISOString(),
+  expiry: '2026-07-28',
+  underlyingLtp: 1413,
+  strikesUsed: 20,
+  totalStrikes: 40,
+  activityScore: 6,
+  directionScore: -0.62,
+  direction: 'bearish',
+  directionConfidence: 0.62,
+  directionEvidenceLegs: 14,
+  oiPcr: 0.48,
+  volumePcr: 0.41,
+  premiumValuePcr: 0.4,
+  moneynessWeightedOiPcr: 0.45,
+  premiumTurnoverPace: 3.2,
+  paceBaselineKind: 'prior-session-linear',
+  premiumValue: 1e9,
+  optionVolume: 1e6,
+  // Heavy call writing against a bullish scan pick — deliberately CONFLICTING,
+  // so the read has to voice the tension without turning it into a veto.
+  callOiChangePct: 74.3,
+  putOiChangePct: -8.1,
+  gammaNetSharePct: null,
+  gammaConcentrationStrike: null,
+  gammaConcentrationDistancePct: null,
+  grossGamma: 0,
+});
+
+console.log('\n══ Turn 3 — option chain contradicts the bullish pick (narration only) ══\n');
+const t3 = await generateCommentary(base, []);
+console.log(t3.text);
+const f3 = checkStructure(t3.text, ['CDSL', 'KPITTECH']);
+console.log(f3.length ? `\n✗ STRUCTURE: ${f3.join(' · ')}` : '\n✓ structure ok');
+failed ||= f3.length > 0;
+
+// Must TRANSLATE, never recite: "PCR 0.48" / "callOiChangePct" / a bare
+// "0.48"-style ratio in an options sentence is a contract breach.
+const recitesRaw = /\bPCR\b|callOiChangePct|putOiChangePct|premiumTurnoverPace|oiPcr/i.test(t3.text);
+console.log(
+  recitesRaw ? '✗ recites raw option-chain field names/PCR instead of translating' : '✓ no raw option-chain jargon',
+);
+failed ||= recitesRaw;
+
+// And it should actually SAY something about options positioning, since the
+// seeded evidence is strong (74% call-OI build, 14 legs of evidence).
+const mentionsPositioning = /\b(call|put)s?\b[^.]{0,80}\b(writ|writer|sold|selling|unwind|cover|build)/i.test(t3.text);
+console.log(
+  mentionsPositioning
+    ? '✓ voices the option-chain positioning in words'
+    : '⚠ said nothing about options positioning despite strong seeded evidence (not fatal — it is context-only)',
+);
+
 // exitCode (not process.exit) — lets Node drain the SDK's sockets on Windows
 // instead of asserting in libuv mid-close.
 process.exitCode = failed ? 1 : 0;

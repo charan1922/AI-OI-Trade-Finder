@@ -8,6 +8,7 @@
  */
 import { getNumberSetting } from '@/lib/config/feature-toggles';
 import { minuteOfDayIST } from '@/lib/ist';
+import { getCachedOptionEvidence } from '@/lib/r-factor-v2/option-shadow';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { getMimoClient, getMimoModel } from './client';
 
@@ -116,6 +117,13 @@ export const COMMENTARY_HARD_RULES = [
   '  entering now is chasing". "tfBreakout fakeout-risk" → "this breakout smells fake: the morning floor',
   '  already broke once — skip it". A number appears ONLY when it is the instruction itself:',
   '  entry, stop, target, premium, cost per lot, or the level to watch.',
+  '- optionChain.read is the Dhan option-chain positioning, ALREADY in plain English — repeat its',
+  '  meaning in your own words, never dress it up with numbers (it deliberately contains none, and',
+  '  every other number in the JSON is about PRICE, not open interest — never mix them up).',
+  '  optionChain.agreesWithPick false is the interesting case: voice the tension ("the chain is leaning',
+  '  the other way — options money is fading this"), then still make YOUR call from the scan. The chain',
+  '  is CONTEXT ONLY and has NOT been shown to predict outcomes: it may colour a call, and is NEVER by',
+  '  itself a reason to enter, exit, or skip. If optionChain is null, say nothing about options at all.',
   '- Never invent prices, premiums, projections or probabilities — and never state profit OR loss in',
   "  rupees anywhere: the JSON doesn't contain P&L, so describe progress/damage in spot POINTS from the",
   '  entry ("up 23 points", "2 points against you") — never "₹1 loss", never ₹-per-lot arithmetic.',
@@ -215,9 +223,76 @@ export const COMMENTARY_SYSTEM = [
   ...COMMENTARY_HARD_RULES,
 ].join('\n');
 
+/**
+ * Turn the option-chain evidence into FINISHED ENGLISH, never numbers.
+ *
+ * The first cut passed the raw fields (callOiChangePct, oiPcr, …) and the bench
+ * immediately produced a fabricated claim: with `callOiChangePct: 74.3` in the
+ * payload the model wrote "74% of today's move happened in the last 30 minutes",
+ * turning an OPEN-INTEREST figure into a PRICE statistic the trader would act
+ * on. A loose number in this payload is an invitation to misattribute it, and
+ * the contract already says the scan does the math while the model only
+ * narrates — so the translation belongs here, in code, deterministically.
+ *
+ * Nothing returned here is a decision. `agreesWithPick` is stated plainly so
+ * the read can voice the tension when the chain disagrees, but Phase 1
+ * (scripts/measure-option-evidence.ts, 91 graded suggestions) found the chain
+ * does NOT separate winners from losers, so it must never become a veto.
+ */
+function describeOptionChain(
+  e: { direction: string; callOiChangePct: number | null; putOiChangePct: number | null } | undefined,
+  side: string,
+): { read: string; agreesWithPick: boolean | null } | null {
+  if (e == null) return null;
+  const call = e.callOiChangePct;
+  const put = e.putOiChangePct;
+  const parts: string[] = [];
+  // "Building" vs "unwinding" per side, in the language a trader uses. The
+  // thresholds are coarse on purpose: this is colour, not a measurement.
+  const describe = (label: string, pct: number | null): string | null => {
+    if (pct == null) return null;
+    if (pct >= 25) return `heavy fresh ${label} open interest`;
+    if (pct >= 8) return `${label} open interest building`;
+    if (pct <= -25) return `${label} open interest being closed out fast`;
+    if (pct <= -8) return `${label} open interest unwinding`;
+    return null;
+  };
+  const c = describe('call', call);
+  const p = describe('put', put);
+  if (c) parts.push(c);
+  if (p) parts.push(p);
+  if (parts.length === 0) parts.push('no clear option positioning either way');
+
+  const lean =
+    e.direction === 'bullish'
+      ? 'options positioning leans bullish'
+      : e.direction === 'bearish'
+        ? 'options positioning leans bearish'
+        : 'options positioning is balanced';
+
+  const wantBullish = side === 'CE';
+  const agreesWithPick =
+    e.direction === 'neutral' ? null : e.direction === (wantBullish ? 'bullish' : 'bearish');
+
+  return { read: `${parts.join(', ')}; ${lean}`, agreesWithPick };
+}
+
 /** Trim the scan result to the fields worth narrating (keeps the prompt small
  *  and the grounding tight). */
 function trimForPrompt(r: SuggestResponse): unknown {
+  // Dhan option-chain read per suggested name, from the in-memory shadow cache
+  // (lib/r-factor-v2/option-shadow.ts). Synchronous and I/O-free — a cache miss
+  // simply yields no `optionChain` key for that pick, never a blocking fetch, so
+  // this cannot slow or fail a commentary run.
+  //
+  // NARRATION ONLY. Phase 1 (scripts/measure-option-evidence.ts) measured this
+  // read against 91 graded suggestions and found it does NOT separate winners
+  // from losers well enough to gate a trade, so it is deliberately absent from
+  // every decision path. It is here because it describes WHAT THE CHAIN IS
+  // DOING — call writing, put unwinding, where the premium is going — which is
+  // exactly the texture the operator reads by hand in Dhan and wants narrated.
+  // Do not promote it to a filter without re-running that study.
+  const optionEvidence = getCachedOptionEvidence((r.suggestions ?? []).map((s) => s.symbol));
   return {
     window: r.window,
     scanned: r.scanned,
@@ -300,6 +375,13 @@ function trimForPrompt(r: SuggestResponse): unknown {
         sectorPct: s.factors.sectorPct,
         sectorAligned: s.factors.sectorAligned,
       },
+      // Dhan option chain, near-money legs (see the optionEvidence note above).
+      // WORDS ONLY, ON PURPOSE — see describeOptionChain: raw OI percentages in
+      // this payload got misread as price statistics.
+      optionChain: describeOptionChain(
+        optionEvidence.get(s.symbol),
+        s.option?.optionType ?? (s.direction === 'bullish' ? 'CE' : 'PE'),
+      ),
       reasons: s.reasons,
     })),
   };
