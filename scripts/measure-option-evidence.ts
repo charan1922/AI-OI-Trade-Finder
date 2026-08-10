@@ -21,8 +21,12 @@
  *
  * Run: npx tsx scripts/measure-option-evidence.ts
  */
-import { config } from 'dotenv';
-config({ path: '.env.local' });
+// Node's built-in, NOT `dotenv` — that package is not a dependency of this repo.
+// It resolves locally only because pnpm hoists it transitively, so `pnpm
+// typecheck:scripts` passes on a dev machine and fails on CI's clean
+// --frozen-lockfile install (TS2307, caught 2026-08-11). Every other bench here
+// uses process.loadEnvFile for the same reason.
+process.loadEnvFile('.env.local');
 
 import { prisma } from '@/lib/db';
 
