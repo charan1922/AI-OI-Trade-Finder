@@ -35,7 +35,10 @@ export type Role = 'admin' | 'viewer';
  *   GOOGLE_VIEWER_EMAILS      → viewer (explicit comma-separated allowlist)
  *   every other account       → denied before a session is issued
  */
-export const ADMIN_GOOGLE_EMAILS: ReadonlySet<string> = new Set(['charan192219@gmail.com']);
+export const ADMIN_GOOGLE_EMAILS: ReadonlySet<string> = new Set([
+  'charan192219@gmail.com',
+  'kesardevi22161@gmail.com',
+]);
 
 export function roleForGoogleEmail(
   email: string | null | undefined,
