@@ -72,6 +72,13 @@ jobs:
       # surfaced as a runtime FAIL further down this job (PR#18). These benches
       # assert the money-touching rules; they must not drift from the types.
       - run: pnpm typecheck:scripts
+      # Runs BEFORE lint so the clearest failure surfaces first. `typecheck` and
+      # `typecheck:scripts` both read node_modules, where pnpm hoists transitive
+      # packages — so an import of an UNDECLARED package resolves fine on a dev
+      # machine and only explodes here on the clean --frozen-lockfile install
+      # (dotenv in measure-option-evidence.ts, TS2307, 2026-08-11). This check
+      # compares imports against package.json itself, so it reproduces locally.
+      - run: pnpm exec tsx scripts/verify-dependency-hygiene.ts
       - run: pnpm lint
       # DB-free pure checks: quant-shadow math (re-anchor, observed-baseline
       # MFE/MAE, entry-candle exclusion, chgOpen bucketing, sector-rate rank) AND

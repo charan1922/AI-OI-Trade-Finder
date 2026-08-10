@@ -2,6 +2,12 @@
 
 This file extends the parent repo's `../CLAUDE.md` with simulator-specific guidance. Where they conflict, this file wins (the simulator uses **ESLint + Prettier on port 5001**, not Biome/5000; validate with `pnpm lint` and `pnpm typecheck`).
 
+## Before you push: run the CI job, not a subset
+
+`pnpm lint` + `pnpm typecheck` is NOT the gate — `.github/workflows/build-image.yml` also runs **`pnpm typecheck:scripts`** (the root tsconfig excludes `scripts/`), **`scripts/verify-dependency-hygiene.ts`**, and ~14 `verify-*.ts` benches. Run all of them locally.
+
+**Env loading in `scripts/`: `process.loadEnvFile('.env.local')`, never `dotenv`.** `dotenv` is not a dependency of this repo. It resolves on a dev machine because pnpm hoists transitive packages into `node_modules` — which is exactly what `tsc` reads — so an undeclared import typechecks clean locally and then fails CI's `--frozen-lockfile` install with TS2307 (shipped in `measure-option-evidence.ts`, 2026-08-11; the parent repo's dotenv guidance does not apply here). `verify-dependency-hygiene.ts` now compares every bare import against `package.json` itself so this class of bug reproduces locally instead of only in CI. Do not "fix" a hygiene failure by running `pnpm add` — prefer a Node builtin, and ask the operator before introducing any new third-party package.
+
 ## Authentication (Google via Auth.js + RBAC)
 
 - **Google sign-in is THE browser login** (Auth.js / next-auth v5 — the beta tag is the App Router standard, per `authjs.dev`). Official layout: `auth.ts` (root config), `app/api/auth/[...nextauth]/route.ts` (handlers), `proxy.ts` wraps the existing gate with `auth()` so `req.auth` joins the role resolution.
