@@ -464,6 +464,19 @@ export async function getTfLiveCaptureForDate(
   }
 }
 
+/** Everything TradeFinder's own `all_sector` board carries per stock — the
+ *  complete set, verified against a real captured payload (2026-08-10: each
+ *  leaf holds exactly Symbol, param_0..param_3 and nothing else). /sector-scope
+ *  renders entirely from this, which is why `ltp` is here: without it that page
+ *  needed a Dhan quote call purely to fill one column TradeFinder was already
+ *  sending us. */
+export interface TfSymbolQuote {
+  ltp: number | null;
+  rFactor: number | null;
+  pctChange: number | null;
+  previousClose: number | null;
+}
+
 /**
  * Per-symbol lookup from the MOST RECENT successful `all_sector` capture,
  * whatever date that was — feeds the Live Urgency page's TF column. The schema
@@ -478,7 +491,7 @@ export async function getTfLiveCaptureForDate(
  */
 export async function getLatestTfRFactorBySymbol(): Promise<{
   capturedAt: string | null;
-  bySymbol: Map<string, { rFactor: number | null; pctChange: number | null; previousClose: number | null }>;
+  bySymbol: Map<string, TfSymbolQuote>;
 }> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(`
@@ -489,7 +502,7 @@ export async function getLatestTfRFactorBySymbol(): Promise<{
     LIMIT 1
   `)) as { capturedAt: string; payloadJson: string | null }[];
   const row = rows[0];
-  const bySymbol = new Map<string, { rFactor: number | null; pctChange: number | null; previousClose: number | null }>();
+  const bySymbol = new Map<string, TfSymbolQuote>();
   if (!row?.payloadJson) return { capturedAt: null, bySymbol };
 
   let parsed: unknown;
@@ -499,7 +512,7 @@ export async function getLatestTfRFactorBySymbol(): Promise<{
     return { capturedAt: null, bySymbol };
   }
   for (const r of parseAllSector(parsed)) {
-    bySymbol.set(r.symbol, { rFactor: r.rFactor, pctChange: r.pctChange, previousClose: r.previousClose });
+    bySymbol.set(r.symbol, { ltp: r.ltp, rFactor: r.rFactor, pctChange: r.pctChange, previousClose: r.previousClose });
   }
   return { capturedAt: row.capturedAt, bySymbol };
 }

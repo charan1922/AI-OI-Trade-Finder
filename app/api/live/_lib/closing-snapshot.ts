@@ -173,6 +173,7 @@ async function computeClosingRows(
       turnoverLvl: last.futTurnover > 0 && turnAvg != null && turnAvg > 0 ? last.futTurnover / turnAvg : null,
       nseOiPct: oiFeed?.nseOiPct ?? null,
       nseOiSlope30m: oiFeed?.slope30m ?? null,
+      nseOiSinceWindowPct: oiFeed?.sinceWindowPct ?? null,
       sessionOiChangePct: urgency.ok ? urgency.sessionOiChangePct : null,
       oiVelocity: urgency.ok ? urgency.oiVelocity : null,
       oiAccel: urgency.ok ? urgency.oiAccel : null,

@@ -14,8 +14,26 @@
 import { prisma } from '@/lib/db';
 import { parseAllSector } from '@/lib/tf-live/parse';
 
-const WINDOW_START_MIN = 9 * 60 + 45; // 09:45 IST
+/**
+ * 09:35 IST, moved back from 09:45 (operator, 2026-08-11) so accumulation that
+ * starts right after the open is visible instead of being cut off. 09:30 was
+ * considered and rejected on the real captures: TradeFinder's R-Factor is still
+ * bunched that early — on 2026-08-10 only 13 of 210 symbols were above R=1 at
+ * 09:30 versus 22 by 09:45 — so ranking there is dominated by hundredths and
+ * produces large, meaningless rank swings. See MIN_SPREAD_SYMBOLS.
+ */
+const WINDOW_START_MIN = 9 * 60 + 35; // 09:35 IST
 const WINDOW_END_MIN = 11 * 60; // 11:00 IST
+
+/**
+ * A capture may only serve as the RACE BASELINE if at least this many symbols
+ * have separated above R=1. Without this guard an early degenerate board
+ * silently becomes the yardstick and every climb measured off it is fiction —
+ * not hypothetical: the 09:16 capture on 2026-08-10 had ALL 210 R-Factors at
+ * exactly 0 (TradeFinder resetting for the new day), which would have ranked
+ * symbols in arbitrary object order and reported the entire board as "climbing".
+ */
+const MIN_SPREAD_SYMBOLS = 8;
 
 export interface TfRaceRunner {
   symbol: string;
@@ -29,10 +47,17 @@ export interface TfRaceRunner {
 
 export interface TfRaceResult {
   date: string;
-  /** True once at least 2 captures exist inside 09:45–11:00 IST today. */
+  /** True once at least 2 usable captures exist inside 09:35–11:00 IST today. */
   hasRace: boolean;
   /** Epoch-ms of every capture used, oldest → newest (the sparkline x-axis). */
   captureTimes: number[];
+  /** Epoch-ms of the capture the race is measured FROM. Surfaced so the card can
+   *  state the real baseline time instead of implying it is always 09:35 — when
+   *  early boards fail MIN_SPREAD_SYMBOLS the true baseline is later. */
+  baselineAt: number | null;
+  /** True when one or more captures at the front of the window were skipped for
+   *  failing MIN_SPREAD_SYMBOLS, so the UI can say the baseline slipped. */
+  baselineDelayed: boolean;
   runners: TfRaceRunner[];
   newEntrants: TfRaceRunner[];
 }
@@ -57,7 +82,15 @@ function minutesIST(iso: string): number {
  * race to names actually near the front (mirrors rank-tracker's `maxRank=20`).
  */
 export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20): Promise<TfRaceResult> {
-  const empty: TfRaceResult = { date, hasRace: false, captureTimes: [], runners: [], newEntrants: [] };
+  const empty: TfRaceResult = {
+    date,
+    hasRace: false,
+    captureTimes: [],
+    baselineAt: null,
+    baselineDelayed: false,
+    runners: [],
+    newEntrants: [],
+  };
 
   const captures = (await prisma.$queryRawUnsafe(
     `
@@ -70,33 +103,48 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     date
   )) as { id: number; capturedAt: string; payloadJson: string | null }[];
 
-  const inWindow = captures.filter((c) => {
+  const rawWindow = captures.filter((c) => {
     const min = minutesIST(c.capturedAt);
     return min >= WINDOW_START_MIN && min <= WINDOW_END_MIN;
   });
-  if (inWindow.length < 2) return empty;
+  if (rawWindow.length < 2) return empty;
 
-  // Rank each capture's symbols by R-Factor descending (rank 1 = highest).
-  const rankBoards: Map<string, number>[] = [];
-  const rFactorNowBySymbol = new Map<string, number>();
-  for (const [index, capture] of inWindow.entries()) {
-    const board = new Map<string, number>();
+  // Score every in-window capture ONCE, keeping the ranked board and how many
+  // symbols actually separated above R=1 (the spread measure the guard uses).
+  const scoredCaptures = rawWindow.map((capture) => {
+    let scored: { symbol: string; rFactor: number }[] = [];
     if (capture.payloadJson) {
       try {
-        const scored = parseAllSector(JSON.parse(capture.payloadJson))
+        scored = parseAllSector(JSON.parse(capture.payloadJson))
           .filter((r): r is typeof r & { rFactor: number } => r.rFactor != null)
-          .map((r) => ({ symbol: r.symbol, rFactor: r.rFactor }));
-        scored.sort((a, b) => b.rFactor - a.rFactor);
-        scored.forEach((s, i) => board.set(s.symbol, i + 1));
-        if (index === inWindow.length - 1) {
-          for (const s of scored) rFactorNowBySymbol.set(s.symbol, s.rFactor);
-        }
+          .map((r) => ({ symbol: r.symbol, rFactor: r.rFactor }))
+          .sort((a, b) => b.rFactor - a.rFactor);
       } catch {
         /* a malformed capture just contributes an empty board, not a crash */
       }
     }
-    rankBoards.push(board);
-  }
+    const board = new Map<string, number>();
+    scored.forEach((s, i) => board.set(s.symbol, i + 1));
+    return {
+      capturedAt: capture.capturedAt,
+      board,
+      scored,
+      spread: scored.filter((s) => s.rFactor > 1).length,
+    };
+  });
+
+  // THE GUARD. Drop degenerate boards from the FRONT only — they are unusable
+  // as a baseline but perfectly fine to have happened. Once a capture with real
+  // spread appears, everything from there on is kept, including any later thin
+  // board, because by then we are measuring against a sound yardstick.
+  const firstUsable = scoredCaptures.findIndex((c) => c.spread >= MIN_SPREAD_SYMBOLS);
+  if (firstUsable === -1) return empty;
+  const inWindow = scoredCaptures.slice(firstUsable);
+  if (inWindow.length < 2) return empty;
+
+  const rankBoards = inWindow.map((c) => c.board);
+  const rFactorNowBySymbol = new Map<string, number>();
+  for (const s of inWindow[inWindow.length - 1].scored) rFactorNowBySymbol.set(s.symbol, s.rFactor);
 
   const allSymbols = new Set<string>();
   for (const board of rankBoards) for (const symbol of board.keys()) allSymbols.add(symbol);
@@ -126,6 +174,8 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     date,
     hasRace: true,
     captureTimes: inWindow.map((c) => new Date(c.capturedAt).getTime()),
+    baselineAt: new Date(inWindow[0].capturedAt).getTime(),
+    baselineDelayed: firstUsable > 0,
     runners: runners.slice(0, limit),
     newEntrants: newEntrants.slice(0, limit),
   };

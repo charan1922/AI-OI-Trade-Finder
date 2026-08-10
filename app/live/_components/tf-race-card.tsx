@@ -2,7 +2,7 @@
 
 /**
  * TF Running Race — who TradeFinder's own R-Factor ranks as climbing fastest
- * inside the 09:45–11:00 IST entry window, mirroring ClimbersSection's
+ * inside the 09:35–11:00 IST entry window, mirroring ClimbersSection's
  * pattern but sourced from TradeFinder captures (lib/tf-live/race.ts) instead
  * of NSE's live pulse feeds.
  *
@@ -64,7 +64,7 @@ function RunnerRow({ r }: { r: TfRaceRunner }) {
       onClick={() =>
         window.open(`https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(r.symbol)}&interval=5`, '_blank', 'noopener,noreferrer')
       }
-      title={`${r.symbol} — now #${r.rankNow} in TF R-Factor, from #${r.rankAtWindowStart ?? '—'} at 09:45. Open chart.`}
+      title={`${r.symbol} — now #${r.rankNow} in TF R-Factor, from #${r.rankAtWindowStart ?? '—'} at the 09:35 baseline. "TF R ${r.rFactorNow?.toFixed(2) ?? '—'}" is TradeFinder's OWN R-Factor for this stock at the latest capture — not our estimate of it. Open chart.`}
       className="flex cursor-pointer items-center gap-1 rounded border border-border bg-muted/30 px-1 py-px hover:bg-muted/60"
     >
       <span className="w-6 shrink-0 text-center text-[11px] font-bold text-foreground tabular-nums">#{r.rankNow}</span>
@@ -74,8 +74,15 @@ function RunnerRow({ r }: { r: TfRaceRunner }) {
         {Math.abs(r.deltaSinceWindowStart ?? 0)}
       </span>
       <RankSparkline track={r.track} climbed={climbed} />
-      <span className="ml-auto text-[9px] text-muted-foreground tabular-nums">
-        {r.rFactorNow != null ? `R ${r.rFactorNow.toFixed(1)}` : '—'}
+      {/* Labelled "TF R", not "R" — this is TradeFinder's own number straight
+          off their board, and the bare "R" read as though it might be this
+          app's R-Factor (operator, 2026-08-11: "i am not sure what this is").
+          Two decimals to match every other place TF's R-Factor is shown. */}
+      <span
+        className="ml-auto text-[9px] text-muted-foreground tabular-nums"
+        title="TradeFinder's OWN R-Factor for this stock at the latest capture — not this app's R-Factor."
+      >
+        {r.rFactorNow != null ? `TF R ${r.rFactorNow.toFixed(2)}` : '—'}
       </span>
     </div>
   );
@@ -111,7 +118,7 @@ export function TfRaceCard() {
       <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1">
         <Target className="h-3.5 w-3.5 text-violet-500" />
         <h2 className="text-[12px] font-semibold tracking-wide text-foreground uppercase">TF Running Race</h2>
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">09:45–11:00 IST</span>
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">09:35–11:00 IST</span>
       </header>
       <p
         className="flex items-start gap-1 border-b border-amber-300/40 bg-amber-50 px-2 py-1 text-[10px] leading-snug text-amber-800 dark:bg-amber-500/10 dark:text-amber-300"
@@ -130,7 +137,7 @@ export function TfRaceCard() {
           <p className="py-3 text-center text-[11px] text-red-600 dark:text-red-400">{data.error ?? 'unavailable'}</p>
         ) : !data.hasRace ? (
           <p className="py-3 text-center text-[11px] text-muted-foreground">
-            Needs at least 2 captures inside today&apos;s 09:45–11:00 IST window to show a race —{' '}
+            Needs at least 2 captures inside today&apos;s 09:35–11:00 IST window to show a race —{' '}
             <a href="/tf" className="underline">
               check /tf
             </a>{' '}
@@ -146,7 +153,7 @@ export function TfRaceCard() {
             {newEntrants.length > 0 && (
               <div>
                 <p className="flex items-center gap-1 text-[9px] font-medium text-muted-foreground">
-                  <Sparkles className="h-2.5 w-2.5 text-amber-500" /> New since 09:45
+                  <Sparkles className="h-2.5 w-2.5 text-amber-500" /> New since 09:35
                 </p>
                 <div className="flex flex-wrap gap-1">
                   {newEntrants.map((r) => (

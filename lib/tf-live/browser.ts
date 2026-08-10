@@ -210,10 +210,24 @@ async function handleResponse(response: import('playwright').Response): Promise<
     const detail = shape?.code ? `${shape.code}: ${shape.message ?? 'rejected'}` : `HTTP ${response.status()}`;
     await recordTfLiveCapture({ endpoint: tag, status: 'error', error: `TradeFinder rejected it (${detail})` });
     s.consecutiveFailures += 1;
-    if (s.consecutiveFailures >= CONSECUTIVE_FAILURE_LIMIT && !s.sawFirstSuccess) {
+    // A session that dies PART-WAY THROUGH the day must raise the alarm just
+    // as loudly as one that was never valid. This condition used to carry
+    // `&& !s.sawFirstSuccess`, so once any request had ever succeeded the
+    // warning could never fire again — and that is exactly what happened on
+    // 2026-08-10: captures ran cleanly until 12:10 IST, TradeFinder then
+    // answered TOKEN_ERROR: UNAUTHORISED to every single request for the next
+    // 3h20m (263 of them), and because the morning had succeeded, `lastError`
+    // stayed NULL and /tf kept showing a green "browser running" badge with no
+    // warning anywhere. The operator's report was "it failed, I could not know
+    // the reason". TradeFinder signs this account out roughly daily (see the
+    // module note above), so mid-session death is the NORMAL failure, not the
+    // exotic one.
+    if (s.consecutiveFailures >= CONSECUTIVE_FAILURE_LIMIT) {
       await recordTfBrowserOutcome(
         false,
-        'the injected session looks logged out (repeated rejections with zero successes) — paste a fresh "Copy as cURL" on /tf'
+        s.sawFirstSuccess
+          ? `TradeFinder signed this session out mid-session — it was capturing fine earlier today, then rejected ${s.consecutiveFailures} requests in a row (${detail}). Paste a fresh "Copy as cURL" below to resume.`
+          : `the injected session looks logged out (repeated rejections with zero successes, ${detail}) — paste a fresh "Copy as cURL" on /tf`
       );
     }
     return;

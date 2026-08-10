@@ -301,6 +301,33 @@ export interface NseOiLatest {
   nseOiPct: number;
   /** Trailing ~30-min build in pct-points (combined-oi-slope); null when the series is too short. */
   slope30m: number | null;
+  /**
+   * Combined OI build in pct-points since OI_WINDOW_START_MIN (09:35 IST) — the
+   * OI counterpart of the table's "Since 9:45" price column, answering "how much
+   * of today's OI build happened AFTER the open settled" rather than "how much
+   * has built since yesterday".
+   *
+   * Both ends are NSE's own cumulative-vs-previous-EOD figure, so subtracting
+   * them yields the intraday build directly — nothing is recomputed from raw OI
+   * (operator's point, 2026-08-11: the NSE feed already carries this). Null when
+   * no bucket at/after 09:35 has been recorded yet, never 0 — an absent baseline
+   * is "no evidence", not "no build".
+   */
+  sinceWindowPct: number | null;
+}
+
+/** IST minute-of-day the intraday OI baseline anchors to — 09:35. Deliberately
+ *  NOT 09:30: the first minutes after the open are auction noise, and NSE's
+ *  oi-spurts feed is itself still settling then. Chosen with the operator
+ *  (2026-08-11) over both 09:30 and the price column's 09:45. */
+export const OI_WINDOW_START_MIN = 9 * 60 + 35;
+
+/** Epoch-SECONDS of OI_WINDOW_START_MIN on the given IST calendar date. The
+ *  buckets stored in fyers_candles are epoch seconds, so the comparison has to
+ *  happen in the same unit — and the IST offset is fixed (+05:30, no DST),
+ *  which is why this can be a plain arithmetic conversion. */
+export function oiWindowStartTs(date: string): number {
+  return Math.floor(Date.parse(`${date}T00:00:00+05:30`) / 1000) + OI_WINDOW_START_MIN * 60;
 }
 
 /**
@@ -328,11 +355,18 @@ export async function getNseOiLatestForSymbols(symbols: string[], date: string):
     arr.push({ bucketTs: toNum(r.bucketTs), nseOiPct: Number(r.nseOiPct) });
     bySymbol.set(s, arr);
   }
+  const windowStartTs = oiWindowStartTs(date);
   for (const [symbol, series] of bySymbol) {
     const latest = series[series.length - 1];
+    // The FIRST reading at or after 09:35 is the baseline. `series` is already
+    // ordered by bucketTs ASC from the query above, so find() takes the earliest
+    // qualifying bucket. A symbol whose recording only started later simply has
+    // no baseline and reports null rather than borrowing an earlier one.
+    const baseline = series.find((p) => p.bucketTs >= windowStartTs);
     out.set(symbol, {
       nseOiPct: latest.nseOiPct,
       slope30m: combinedOiSlope(series, latest.bucketTs),
+      sinceWindowPct: baseline ? latest.nseOiPct - baseline.nseOiPct : null,
     });
   }
   return out;

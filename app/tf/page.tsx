@@ -84,14 +84,34 @@ export default function TfPage() {
   const [pastedCurl, setPastedCurl] = useState('');
   const [browserBusy, setBrowserBusy] = useState(false);
   const [browserNotice, setBrowserNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
+  /**
+   * Never fail silently. This used to be `if (j.success) setData(j)` wrapped in
+   * an empty catch, so THREE different failures all rendered as an unexplained
+   * blank page: an expired browser login (the API answers 401
+   * `{success:false,error:'Authentication required.'}`), a 500 from the API, and
+   * a dropped network request. The operator's report was exactly that — "it
+   * failed, I could not know the reason" (2026-08-10). Whatever went wrong now
+   * says so on screen, and the last good data stays visible underneath instead
+   * of vanishing.
+   */
   const refresh = useCallback(async () => {
     try {
       const res = await fetch('/api/tf/browser-session', { cache: 'no-store' });
-      const j = (await res.json()) as TfStatus;
-      if (j.success) setData(j);
-    } catch {
-      /* transient — next poll retries */
+      if (res.status === 401 || res.status === 403) {
+        setStatusError('Your app login expired — reload the page and sign in again to see the TradeFinder status.');
+        return;
+      }
+      const j = (await res.json().catch(() => null)) as TfStatus | null;
+      if (!res.ok || !j?.success) {
+        setStatusError(j?.error ?? `Status check failed (HTTP ${res.status}).`);
+        return;
+      }
+      setData(j);
+      setStatusError(null);
+    } catch (e) {
+      setStatusError(`Could not reach the server: ${(e as Error).message}`);
     }
   }, []);
 
@@ -214,7 +234,13 @@ export default function TfPage() {
             <Badge tone={data.session.configured ? 'ok' : 'neutral'}>
               {data.session.configured ? 'cookies stored' : 'not configured'}
             </Badge>
-            <Badge tone={data.running ? 'ok' : 'neutral'}>{data.running ? 'browser running' : 'browser stopped'}</Badge>
+            {/* "running" alone is not "working" — on 2026-08-10 the browser
+                stayed up for 3h20m after TradeFinder signed the session out,
+                rejecting every request while this badge sat green. When
+                there's a live error, say so here rather than imply health. */}
+            <Badge tone={data.running ? (data.session.lastError ? 'warn' : 'ok') : 'neutral'}>
+              {data.running ? (data.session.lastError ? 'running, not capturing' : 'browser running') : 'browser stopped'}
+            </Badge>
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
@@ -228,6 +254,19 @@ export default function TfPage() {
           </button>
         </div>
       </div>
+
+      {/* Why the page couldn't load its own status — shown ABOVE everything
+          else, because when this is set the rest of the screen may be stale or
+          empty and the operator needs to know that's the reason. */}
+      {statusError && (
+        <div className="flex items-center gap-2 rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            {statusError}
+            {data && ' Showing the last status that loaded successfully.'}
+          </span>
+        </div>
+      )}
 
       {/* A missing/broken cookie session is the ONE state that needs action —
           everything else (a failed tick, the browser being off outside market
