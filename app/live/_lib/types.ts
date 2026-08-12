@@ -57,13 +57,6 @@ export interface LiveUrgencyRow {
   /** Trailing ~30-min build of nseOiPct in pct-points — OUR derived combined-OI
    *  rate ("still building now" vs "stalled"). Shown in the App block. */
   nseOiSlope30m?: number | null;
-  /** Combined (futures+options) OI build in pct-points SINCE 09:35 IST — the OI
-   *  counterpart of the `sinceEntryPct` price column, answering "how much of
-   *  today's OI build arrived after the open settled" rather than "since
-   *  yesterday". Both ends are NSE's own cumulative figure, subtracted — nothing
-   *  is recomputed from raw OI. Null when no bar at/after 09:35 was recorded;
-   *  null means no evidence, never zero build. */
-  nseOiSinceWindowPct?: number | null;
   // ── NSE oi-spurts feed columns (LIVE-feed join, shown verbatim as NSE reports) ─
   // These are the exact per-underlying values from NSE's
   // live-analysis-oi-spurts-underlyings feed — the same numbers /nse/movers and
@@ -96,7 +89,7 @@ export interface LiveUrgencyRow {
   // ── R-Factor (lib/r-factor, live intraday) ─────────────────────────────────
   // Recomputed every poll from the live snapshot against fixed EOD baselines.
   // Null when there's no usable price. Weights are provisional until calibrated.
-  /** Strength on a 1.0–8.0 scale (TradeFinder-like). Higher = stronger interest. */
+  /** Strength on a 1.0–10.0 scale (TradeFinder-like). Higher = stronger interest. */
   rFactor: number | null;
   /** Net directional read from the voting factors. */
   rFactorBias: 'buy' | 'sell' | 'neutral' | null;

@@ -167,8 +167,19 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
       }
     }
   }
-  runners.sort((a, b) => (b.deltaSinceWindowStart ?? 0) - (a.deltaSinceWindowStart ?? 0) || a.rankNow - b.rankNow);
-  newEntrants.sort((a, b) => a.rankNow - b.rankNow);
+  // Ordered by TF's own R-Factor, strongest first (operator, 2026-08-11). WHO is
+  // climbing is still the entry criterion — a name only appears here if it
+  // gained ground since the baseline — but among those, the board should read
+  // strongest-first, so the biggest R sits at the top rather than whoever
+  // happened to travel the most rank places. A name that climbed 190 places into
+  // R 1.5 is a smaller fish than one that climbed 30 into R 2.5.
+  // Ties fall back to the larger climb, then the better current rank.
+  const byRFactor = (a: TfRaceRunner, b: TfRaceRunner): number =>
+    (b.rFactorNow ?? Number.NEGATIVE_INFINITY) - (a.rFactorNow ?? Number.NEGATIVE_INFINITY) ||
+    (b.deltaSinceWindowStart ?? 0) - (a.deltaSinceWindowStart ?? 0) ||
+    a.rankNow - b.rankNow;
+  runners.sort(byRFactor);
+  newEntrants.sort(byRFactor);
 
   return {
     date,

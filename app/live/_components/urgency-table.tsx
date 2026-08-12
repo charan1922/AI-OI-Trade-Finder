@@ -390,43 +390,6 @@ function AppOiSlopeCell({ v }: { v: number | null | undefined }) {
   );
 }
 
-/**
- * "App OI Since 9:35" — combined (futures + options) OI build in pct-points
- * since 09:35 IST. The OI counterpart of the Since-9:45 price cell: it separates
- * OI that arrived while the day was actually trading from OI that was already
- * there at the open. A big NSE %Chng with ~0 here means the build is stale —
- * the same gap-and-flat trap the price column warns about.
- *
- * Never fabricates: "—" means no bar at/after 09:35 was recorded (off-hours,
- * a symbol absent from NSE's feed, or a poller gap), which is NOT the same as a
- * zero build and must not be shown as one.
- */
-function AppOiSinceWindowCell({ v }: { v: number | null | undefined }) {
-  if (v == null) return <span className="text-muted-foreground/50">—</span>;
-  const cls =
-    v >= 0.5
-      ? 'font-semibold text-emerald-600 dark:text-emerald-400'
-      : v <= -0.5
-        ? 'text-red-600 dark:text-red-400'
-        : 'text-muted-foreground';
-  const state =
-    v >= 0.5
-      ? 'positions have been ADDED since the open settled — a fresh build'
-      : v <= -0.5
-        ? 'positions have been CLOSED since 09:35 — unwinding'
-        : 'almost nothing added since 09:35 — whatever built came at the open and has stalled';
-  return (
-    <span
-      className={`tabular-nums ${cls}`}
-      title={`NSE combined futures+options OI, change in percentage points since 09:35 IST — ${state}.`}
-    >
-      {v >= 0 ? '+' : ''}
-      {v.toFixed(2)}
-      {v >= 0.5 ? ' ▲' : v <= -0.5 ? ' ▼' : ''}
-    </span>
-  );
-}
-
 /** Turnover level — cumulative futures turnover vs its time-of-day-adjusted 20d norm. */
 function TurnoverLvlCell({ v }: { v: number | null | undefined }) {
   if (v == null) return <span className="text-muted-foreground/50">—</span>;
@@ -519,7 +482,6 @@ type SortKey =
   | 'oiUrgency'
   | 'nseOptShare'
   | 'nseOiSlope30m'
-  | 'nseOiSinceWindowPct'
   | 'turnoverLvl'
   | 'turnover'
   // NSE block — verbatim oi-spurts feed values
@@ -794,13 +756,6 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               {...th}
             />
             <Th
-              label="App OI Since 9:35"
-              col="nseOiSinceWindowPct"
-              align="right"
-              title="How much of today's combined futures+options OI build arrived AFTER 09:35 IST, in percentage points. The OI version of 'Since 9:45' for price: a big NSE %Chng with ~0 here means the positions were already there at the open and nothing has been added since — a stale build, not a fresh one."
-              {...th}
-            />
-            <Th
               label="App Turn Lvl"
               col="turnoverLvl"
               align="right"
@@ -985,9 +940,6 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               </td>
               <td className="px-1.5 py-0.5 text-right">
                 <AppOiSlopeCell v={r.nseOiSlope30m} />
-              </td>
-              <td className="px-1.5 py-0.5 text-right">
-                <AppOiSinceWindowCell v={r.nseOiSinceWindowPct} />
               </td>
               <td className="px-1.5 py-0.5 text-right">
                 <TurnoverLvlCell v={r.turnoverLvl} />
