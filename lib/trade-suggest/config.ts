@@ -126,8 +126,8 @@ export const MOMENTUM_MIN_CHANGE_PCT = 1.5;
  * (N=4, 2026-07-15/16): both auto-trade losers opened at 5.5×/5.7×, both
  * winners at 2.5×/2.9×; full table + honest over-fitting caveat in the module
  * doc. Default ON at the user's explicit request (2026-07-17) — the standing
- * multi-day-replay discipline still applies: the /reminders entry tracks the
- * accruing evidence, and this switch comes OFF if the replay turns against it.
+ * multi-day-replay discipline still applies: this switch comes OFF if the
+ * replay turns against it.
  */
 export const USE_CHAOTIC_OPEN_GATE = true;
 /** Skip when opening-range ÷ settled-ATR exceeds this. Calibrated at 5 by the
@@ -158,8 +158,8 @@ export const CHAOTIC_OPEN_MAX_RATIO = 5;
  * the same day this lands, and you never debut live with an unproven, MORE-
  * permissive gate on top of a first-time change. With this false the scanner is
  * byte-identical to the proven code. Turn it ON from /config (or flip this back
- * to true) once live has run clean for a few days — the /reminders entry and the
- * replay-grid `rank-climb catch` variants track its accruing verdict until then.
+ * to true) once live has run clean for a few days — the replay-grid
+ * `rank-climb catch` variants track its accruing verdict until then.
  */
 export const USE_RANK_CLIMB_GATE = false;
 /** Spots climbed (best of gainers/OI boards) over ~30 min to qualify. 1 = any

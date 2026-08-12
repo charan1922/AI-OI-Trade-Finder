@@ -48,6 +48,11 @@ interface TfRaceResponse {
   /** Per-symbol daily-screen verdict, keyed by symbol. Absent when the screen
    *  could not run at all — the race still renders. */
   screen?: Record<string, ScreenResult>;
+  /** IST date the board actually came from — not always today (see `stale`). */
+  date?: string;
+  /** True when today has no usable race yet and this is a RETAINED board from an
+   *  earlier session. The header says so; a held-over board must never read as live. */
+  stale?: boolean;
   error?: string;
 }
 
@@ -173,8 +178,19 @@ export function TfRaceCard() {
     <section className="flex h-full flex-col rounded-lg border border-border bg-card">
       <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1">
         <Target className="h-3.5 w-3.5 text-violet-500" />
-        <h2 className="text-[12px] font-semibold tracking-wide text-foreground uppercase">TF Running Race</h2>
+        {/* Display label only — lib/tf-live/race.ts and /api/tf/race are unchanged. */}
+        <h2 className="text-[12px] font-semibold tracking-wide text-foreground uppercase">TF Climbers</h2>
         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">09:35–11:00 IST</span>
+        {/* Retained board — labelled with the session it belongs to, in the same
+            amber the rest of /live uses for "this is not live". */}
+        {data?.stale && data.date ? (
+          <span
+            className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400"
+            title="Today has no usable TradeFinder race yet, so this is the last session that did. It is a closing snapshot, not a live board."
+          >
+            closing snapshot · {data.date}
+          </span>
+        ) : null}
       </header>
       <p
         className="flex items-start gap-1 border-b border-amber-300/40 bg-amber-50 px-2 py-1 text-[10px] leading-snug text-amber-800 dark:bg-amber-500/10 dark:text-amber-300"
@@ -200,7 +216,8 @@ export function TfRaceCard() {
           <p className="py-3 text-center text-[11px] text-red-600 dark:text-red-400">{data.error ?? 'unavailable'}</p>
         ) : !data.hasRace ? (
           <p className="py-3 text-center text-[11px] text-muted-foreground">
-            Needs at least 2 captures inside today&apos;s 09:35–11:00 IST window to show a race —{' '}
+            No TradeFinder race on record yet — today needs 2+ captures inside 09:35–11:00 IST, and no
+            earlier session has one either. Check{' '}
             <a href="/tf" className="underline">
               check /tf
             </a>{' '}

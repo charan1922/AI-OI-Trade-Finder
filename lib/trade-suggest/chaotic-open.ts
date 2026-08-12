@@ -2,7 +2,7 @@
  * Chaotic-open gate — skip names whose OPENING was a violent spike relative to
  * their own normal 5-minute movement.
  *
- * WHY THIS EXISTS (2026-07-15/16 evidence, N=4 — see the /reminders entry)
+ * WHY THIS EXISTS (2026-07-15/16 evidence, N=4)
  * -----------------------------------------------------------------------
  * Both auto-trade losers opened in a mess and both winners opened calmly:
  *

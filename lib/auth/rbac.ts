@@ -226,7 +226,6 @@ export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set([
   '/trade-viewer',
   '/replay-commentary',
   '/trade-assistant',
-  '/reminders',
   // Also OWNER-only (OWNER_ONLY_PAGES) — listed here too so the viewer
   // machinery (proxy policy + sidebar hiding) covers it without a special case.
   '/users',

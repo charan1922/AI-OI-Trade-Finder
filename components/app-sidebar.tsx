@@ -5,7 +5,6 @@ import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import {
   Activity,
-  AlarmClock,
   Banknote,
   Bot,
   BookOpen,
@@ -23,13 +22,11 @@ import {
   KeyRound,
   LayoutGrid,
   type LucideIcon,
-  NotebookText,
   Radio,
   ScrollText,
   ScanSearch,
   Sparkles,
   Table2,
-  Target,
   Users,
   Zap,
 } from 'lucide-react';
@@ -82,7 +79,6 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Assistant',
     icon: Bot,
     children: [
-      { title: 'Trade Suggest', href: '/trade-suggest', icon: Target },
       { title: 'Trade Commentary', href: '/trade-commentary', icon: Sparkles },
       { title: 'Auto Trade', href: '/auto-trade', icon: Zap },
       { title: 'Server Logs', href: '/logs', icon: ScrollText },
@@ -95,7 +91,6 @@ const NAV_GROUPS: NavGroup[] = [
     defaultCollapsed: true,
     children: [
       { title: 'EOD Auto Trade', href: '/auto-trade/history', icon: Zap },
-      { title: 'EOD Trade Log', href: '/trade-suggest/history', icon: NotebookText },
       { title: 'EOD Live Urgency', href: '/live/history', icon: Gauge },
       { title: 'EOD Movers', href: '/nse/movers-history', icon: Flame },
       { title: 'EOD TF R-Factor', href: '/tf/history', icon: KeyRound },
@@ -116,7 +111,6 @@ const NAV_GROUPS: NavGroup[] = [
     defaultCollapsed: true,
     children: [
       { title: 'Users & Access', href: '/users', icon: Users },
-      { title: 'Reminders', href: '/reminders', icon: AlarmClock },
       { title: 'Market Holidays', href: '/holidays', icon: CalendarDays },
       { title: 'F&O Lot Sizes', href: '/fno-lots', icon: Table2 },
       { title: 'Database', href: '/db-explorer', icon: Database },
@@ -127,10 +121,9 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 /** One collapsible nav group. Expanded by default; a defaultCollapsed group
- *  starts (and stays) collapsed until the user clicks it — even when one of its
- *  pages is active. Normal groups auto-open when a child route is active. */
+ *  starts collapsed. Either way the user's click is the ONLY thing that decides
+ *  open/closed afterwards. */
 function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: string }) {
-  const isChildActive = group.children.some((c) => pathname.startsWith(c.href));
   const [open, setOpen] = useState(!group.defaultCollapsed);
 
   return (
@@ -154,7 +147,12 @@ function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: strin
         </button>
       </SidebarGroupLabel>
 
-      {(open || (isChildActive && !group.defaultCollapsed)) && (
+      {/* `open` alone. The old condition also re-opened the group whenever one of
+          its own pages was active, which meant a group could never be collapsed
+          while you were standing on it — clicking the header set open=false and
+          the active-route term immediately forced it back (reported on
+          "Live Market" from /live, 2026-08-13). */}
+      {open && (
         <SidebarMenu className="mt-1">
           {group.children.map((item) => {
             const active = pathname.startsWith(item.href);

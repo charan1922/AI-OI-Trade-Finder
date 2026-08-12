@@ -91,10 +91,14 @@ export default function LiveUrgencyPage() {
         </div>
       </div>
 
-      <div className="grid items-start gap-2 xl:grid-cols-[minmax(20rem,0.8fr)_minmax(0,2fr)]">
+      {/* Equal halves (operator, 2026-08-13) — the two climber boards are peers,
+          so neither gets more room than the other. minmax(0,1fr) rather than a
+          bare 1fr: a grid track's default min-content floor would let either
+          card's widest row push the column past 50% and overflow the page. */}
+      <div className="grid items-start gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <TfRaceCard />
 
-        {/* Running race - rank-momentum across the feeds, above the static tables */}
+        {/* Rank-momentum across the NSE feeds, above the static tables */}
         <ClimbersSection refreshSignal={refreshNonce} />
       </div>
 
