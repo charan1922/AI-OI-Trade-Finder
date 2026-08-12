@@ -86,7 +86,7 @@ import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
 import { classifyMoveFreshness, isStaleMove, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
 import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
 import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
-import { getTfBoardsForDate, getTfRaceForWindow, raceAtMinute } from '@/lib/tf-live/race';
+import { getTfBoardsForDate, getTfRaceForWindow, getTfSectorBoard, raceAtMinute } from '@/lib/tf-live/race';
 import {
   describeRejections,
   selectTfCandidates,
@@ -883,7 +883,23 @@ export async function runTradeSuggest(
       extended: s.extended,
     });
   }
-  survivors.sort((a, b) => b.score - a.score);
+  // ORDER. On the TF path the composite score must NOT decide which names get
+  // traded: 30% of its weight is App R-Factor + confidence and another 30% is
+  // the OI stack, while TF's own R-Factor carries ZERO weight. Sorting by it
+  // would re-rank TF's board by exactly the number this path exists to stop
+  // consulting — and since auto-trade takes the top MAX_PICKS, App R-Factor
+  // would still be choosing the trades (caught in review, 2026-08-13).
+  //
+  // The selector already returns candidates ranked by TF R-Factor desc, so the
+  // fix is to preserve that order. The score is still COMPUTED and stored as
+  // display evidence; it just stops steering the money on this path.
+  if (tfBySymbol) {
+    const tfOrder = new Map([...tfBySymbol.keys()].map((symbol, i) => [symbol, i]));
+    const orderOf = (s: Enriched) => tfOrder.get(s.row.symbol) ?? Number.MAX_SAFE_INTEGER;
+    survivors.sort((a, b) => orderOf(a) - orderOf(b) || b.score - a.score);
+  } else {
+    survivors.sort((a, b) => b.score - a.score);
+  }
 
   // 6. Resolve contracts + live premiums for the top candidates (oversampled so
   //    an unaffordable contract can be replaced by the next qualified name),
@@ -1252,7 +1268,10 @@ export async function runTradeSuggest(
   // trajectory from one point (see tf-live/race.ts).
   try {
     const race = await getTfRaceForWindow(date);
+    // TF's own sector board — evidence only, never a gate (see TfScanContext).
+    const sectors = await getTfSectorBoard(date).catch(() => ({ rows: [] }));
     base.tfContext = {
+      sectors: sectors.rows,
       available: tfSnapshot.available,
       capturedAt: tfSnapshot.capturedAt,
       ageMinutes: tfSnapshot.ageMinutes,

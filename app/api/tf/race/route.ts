@@ -4,7 +4,10 @@ import { prisma } from '@/lib/db';
 import { adminOnly } from '@/lib/auth/server';
 import { todayIST } from '@/lib/dhan/market-feed';
 import { screenDaily, type ScreenResult } from '@/lib/signals/daily-screen';
-import { getTfRaceForWindow } from '@/lib/tf-live/race';
+import { boardAtMinute, getTfBoardsForDate, getTfRaceForWindow } from '@/lib/tf-live/race';
+import { buildRecordedTfContext } from '@/lib/tf-live/context';
+import { DEFAULT_TF_SELECTOR_CONFIG, selectTfCandidates } from '@/lib/tf-live/selector';
+import { TF_RACE_MAX_RANK } from '@/lib/trade-suggest/config';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -69,8 +72,109 @@ export async function GET(req: Request) {
       console.warn(`[TfRace] daily screen failed: ${(error as Error).message}`);
     }
 
-    return NextResponse.json({ success: true, ...result, screen, stale });
+    // ── The FULL board, not just names that climbed ────────────────────────
+    //
+    // Rank-climb is a poor proxy for "accumulating": rank is relative and
+    // capped, so a name already strong at the 09:35 baseline cannot climb and
+    // vanished from the card entirely. Measured against the real boards, the
+    // climb filter hid 6 of TF's top 20 on 2026-08-11 and 8 on 2026-08-12 —
+    // including PNB at TF R 4.33, the SECOND-strongest name on the whole board.
+    // It also kept showing names that climbed early then froze, which is the
+    // profile that measured -0.286R (n=1160) against +0.474R for surging ones.
+    //
+    // So the card now shows TF's top N ranked by R-Factor, with the accumulation
+    // RATE as the signal and the climb demoted to context. `runners` /
+    // `newEntrants` above are left untouched for any existing consumer.
+    let board: TfBoardRow[] = [];
+    try {
+      const boards = await getTfBoardsForDate(date);
+      const asOfMinute = boards.length > 0 ? boards[boards.length - 1].minuteIST : 0;
+      const full = boardAtMinute(boards, asOfMinute, TF_RACE_MAX_RANK);
+
+      // Verdict from the SAME rule the auto-trader uses, on point-in-time
+      // recorded evidence. Reusing selectTfCandidates is deliberate: a card that
+      // re-implemented the gates would drift from the engine and quietly start
+      // disagreeing with the trades actually being taken.
+      const entries = full.runners.map((r) => ({
+        symbol: r.symbol,
+        side: (r.pctChange ?? 0) > 0 ? ('CE' as const) : ('PE' as const),
+      }));
+      const context = await buildRecordedTfContext(date, entries, asOfMinute);
+      const picked = new Set(selectTfCandidates(full.runners, context).candidates.map((c) => c.symbol));
+
+      board = full.runners.map((r) => {
+        const side: 'CE' | 'PE' = (r.pctChange ?? 0) > 0 ? 'CE' : 'PE';
+        const ctx = context.get(r.symbol);
+        return {
+          symbol: r.symbol,
+          rankNow: r.rankNow,
+          rankAtBaseline: r.rankAtBaseline,
+          climb: r.climb,
+          rFactor: r.rFactorNow,
+          deltaR: r.deltaR,
+          pctChange: r.pctChange,
+          side,
+          tradeable: picked.has(r.symbol),
+          // First failing gate, in the order selectTfCandidates checks them, so
+          // the card explains the engine instead of guessing alongside it.
+          blockedBy: picked.has(r.symbol) ? null : firstBlock(r.deltaR, r.pctChange, ctx),
+          premValueCr: ctx?.premValueCr ?? null,
+          sinceEntryPct: ctx?.sinceEntryPct ?? null,
+          supertrendAligned: ctx?.supertrendAligned ?? null,
+          breakout: ctx?.breakout ?? null,
+        };
+      });
+    } catch (error) {
+      // The board is an enhancement; its failure must not blank the card.
+      console.warn(`[TfRace] full board unavailable: ${(error as Error).message}`);
+    }
+
+    return NextResponse.json({ success: true, ...result, screen, stale, date, board });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
+}
+
+
+/** One row of the full TF board, as the /live card renders it. */
+interface TfBoardRow {
+  symbol: string;
+  rankNow: number;
+  rankAtBaseline: number;
+  climb: number;
+  rFactor: number;
+  /** TF R-Factor gained over the trailing 30 min. Null = no earlier board. */
+  deltaR: number | null;
+  pctChange: number | null;
+  side: 'CE' | 'PE';
+  tradeable: boolean;
+  blockedBy: string | null;
+  premValueCr: number | null;
+  sinceEntryPct: number | null;
+  supertrendAligned: boolean | null;
+  breakout: boolean | null;
+}
+
+/**
+ * The FIRST gate a name fails, checked in `selectTfCandidates`'s own order so
+ * the reason shown is the reason it was actually dropped — not whichever
+ * condition happens to read worst.
+ */
+function firstBlock(
+  deltaR: number | null,
+  pctChange: number | null,
+  ctx: { supertrendAligned: boolean | null; breakout: boolean | null; premValueCr: number | null; sinceEntryPct: number | null } | undefined
+): string {
+  const cfg = DEFAULT_TF_SELECTOR_CONFIG;
+  if (deltaR == null) return 'no earlier board to measure the rate';
+  if (deltaR <= cfg.minDeltaR) return 'R-Factor stopped climbing';
+  if (pctChange == null || Math.abs(pctChange) < cfg.minAbsPctChange) return 'not moving enough to call a direction';
+  if (ctx == null) return 'no recorded evidence';
+  if (ctx.supertrendAligned == null) return 'too few candles for Supertrend';
+  if (!ctx.supertrendAligned) return 'Supertrend disagrees';
+  if (cfg.requireBreakout && ctx.breakout !== true) return 'no opening-range breakout';
+  if (ctx.premValueCr == null) return 'no options premium reading';
+  if (ctx.premValueCr < cfg.minPremValueCr) return `options pool only Rs ${Math.round(ctx.premValueCr)} Cr`;
+  if (ctx.sinceEntryPct != null && ctx.sinceEntryPct >= cfg.maxSinceEntryPct) return 'move already extended';
+  return 'below the pick limit';
 }

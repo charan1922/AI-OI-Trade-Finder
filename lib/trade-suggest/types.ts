@@ -279,6 +279,17 @@ export interface TfScanContext {
   climbers: { symbol: string; rankNow: number; deltaSinceWindowStart: number | null; rFactorNow: number | null }[];
   /** Names that appeared on the board mid-window (no window-start rank). */
   newEntrants: { symbol: string; rankNow: number; rFactorNow: number | null }[];
+  /**
+   * TradeFinder's own per-INDEX R-Factor (the /sector-scope numbers), strongest
+   * first. EVIDENCE ONLY — nothing gates, ranks or sizes on it. There is no
+   * measurement yet that sector strength separates winners from losers, and an
+   * unmeasured signal does not get to touch the money path.
+   *
+   * These are R-FACTORS, not percentages. Anything that narrates them must
+   * convert to finished English first — a raw 3.35 invites "BANK is up 3.35%",
+   * which is false. Same rule as describeOptionChain.
+   */
+  sectors?: { name: string; rFactor: number | null }[];
 }
 
 /** A persisted suggestion read back from trade_suggestions. */
