@@ -38,6 +38,8 @@ import { getAdapterById } from '../brokers';
 import { EXIT_FAILURE_ESCALATE, exitRetryWaitMs, shouldAlertOnExitFailure } from './exit-backoff';
 import { activateRiskLatch, clearRiskLatchReason } from './latch';
 import { supertrend } from '@/lib/signals/indicators';
+import { TRAIL_R } from '@/lib/trade-suggest/config';
+import { isTighterStop, trailedSpotStop } from './trailing-stop';
 import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
 import { barsAfterEntryBucket, excursionR } from '../quant/reanchor';
 
@@ -261,6 +263,62 @@ async function recordShadowExcursion(trade: AutoTrade, date: string, actions: st
     }
   } catch (err) {
     console.warn(`${TAG} shadow excursion failed for ${trade.symbol}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Ratchet the spot stop up behind a winning trade (TRAIL_R), replacing the old
+ * fixed 1:2 target as the way a winner is closed.
+ *
+ * The favourable extreme comes from candle HIGH/LOW EXCLUDING the entry bar —
+ * the same `barsAfterEntryBucket` rule the shadow excursion uses, and for the
+ * same reason: with 5-min OHLC the entry candle's extreme may have printed
+ * before the fill, so counting it would trail against profit that was never
+ * available to this trade.
+ *
+ * Anchored on `entryObservedSpot`/`entryObservedRiskPoints` (the observed fill
+ * and its measured risk), NOT the planned levels, so the trail measures what
+ * this position actually did.
+ *
+ * Best-effort: any failure leaves the existing stop untouched. A trailing stop
+ * that cannot be computed must never widen or clear the stop already in force.
+ */
+async function advanceTrailingStop(trade: AutoTrade, date: string, actions: string[]): Promise<void> {
+  if (TRAIL_R == null) return;
+  try {
+    const observedSpot = trade.entryObservedSpot;
+    const observedRisk = trade.entryObservedRiskPoints;
+    if (observedSpot == null || observedRisk == null || !(observedRisk > 0)) return;
+    if (trade.slSpot == null || trade.openedAt == null) return;
+
+    const bars = await getFyersCandles(trade.symbol, date, 'EQ');
+    const sinceEntry = barsAfterEntryBucket(bars, fyersBucketFor(new Date(trade.openedAt).getTime()));
+    if (sinceEntry.length === 0) return;
+    const bullish = trade.direction === 'bullish';
+    const extreme = bullish
+      ? Math.max(...sinceEntry.map((b) => b.high))
+      : Math.min(...sinceEntry.map((b) => b.low));
+
+    const next = trailedSpotStop({
+      direction: trade.direction,
+      entrySpot: observedSpot,
+      currentStop: trade.slSpot,
+      riskPoints: observedRisk,
+      favourableExtreme: extreme,
+      trailR: TRAIL_R,
+    });
+    if (!isTighterStop(trade.direction, trade.slSpot, next)) return;
+
+    const rounded = Math.round(next * 100) / 100;
+    if (!isTighterStop(trade.direction, trade.slSpot, rounded)) return; // rounding erased the move
+    await updateTrade(trade.id, { slSpot: rounded });
+    const mfeR = Math.round(((bullish ? extreme - observedSpot : observedSpot - extreme) / observedRisk) * 100) / 100;
+    const line = `${trade.symbol}: trailing stop ${trade.slSpot} -> ${rounded} (best +${mfeR}R since entry, giving back ${TRAIL_R}R)`;
+    trade.slSpot = rounded; // so this pass's exit check reads the level just written
+    actions.push(line);
+    console.log(`${TAG} ${line}`);
+  } catch (err) {
+    console.warn(`${TAG} trailing stop failed for ${trade.symbol}: ${(err as Error).message}`);
   }
 }
 
@@ -512,6 +570,11 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
             actions.push(line);
             console.warn(`${TAG} ${line}`);
           } else if (spotRead != null) {
+            // Advance the trailing stop BEFORE evaluating exits, so a stop that
+            // has ratcheted up this pass is the one the exit check uses. Only
+            // ever tightens (trailing-stop.ts clamps), so this cannot widen risk
+            // on an open position.
+            await advanceTrailingStop(trade, date, actions);
             reason = spotExitReason(trade, spotRead.price);
           }
         }

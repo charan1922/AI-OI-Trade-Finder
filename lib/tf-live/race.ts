@@ -62,6 +62,66 @@ export interface TfRaceResult {
   newEntrants: TfRaceRunner[];
 }
 
+/**
+ * One ranked TradeFinder board, at one capture time — the unit the point-in-time
+ * form below is built from.
+ */
+export interface TfBoardAt {
+  /** Minutes past midnight IST of the capture this board came from. */
+  minuteIST: number;
+  capturedAt: string;
+  /** symbol → 1-based rank by TF R-Factor (1 = highest). */
+  rank: Map<string, number>;
+  /** symbol → TF R-Factor. */
+  rFactor: Map<string, number>;
+  /** symbol → TF's own % change on the day (the ONLY direction TF gives us). */
+  pctChange: Map<string, number | null>;
+  /** How many symbols separated above R = 1 — the MIN_SPREAD_SYMBOLS measure. */
+  spread: number;
+}
+
+/** A race runner as of a specific minute, carrying the accumulation RATE. */
+export interface TfRunnerAt {
+  symbol: string;
+  rankNow: number;
+  rankAtBaseline: number;
+  /** Places gained since the baseline board. Always > 0 for a runner. */
+  climb: number;
+  rFactorNow: number;
+  /** TF R-Factor `LOOKBACK_MIN` earlier, or null when no earlier board exists. */
+  rFactorAgo: number | null;
+  /**
+   * Accumulation RATE: rFactorNow − rFactorAgo over the trailing window.
+   * Null (not 0) when there is no earlier board — "unknown" and "flat" must not
+   * collapse, because the selector REJECTS flat and must also reject unknown.
+   */
+  deltaR: number | null;
+  pctChange: number | null;
+}
+
+export interface TfRaceAt {
+  /** False when no usable baseline board exists yet — treat as no evidence. */
+  available: boolean;
+  boardMinuteIST: number | null;
+  capturedAt: string | null;
+  baselineMinuteIST: number | null;
+  /** Ranked by TF R-Factor desc, as the /tf page ranks them. */
+  runners: TfRunnerAt[];
+}
+
+/** Trailing window for the accumulation rate (minutes). 30 min was measured as
+ *  the span over which a frozen board separates from a still-building one — see
+ *  the design note in docs/superpowers/specs/2026-08-13-tf-rfactor-selector-design.md. */
+export const DELTA_R_LOOKBACK_MIN = 30;
+
+const EMPTY_RACE_AT: TfRaceAt = {
+  available: false,
+  boardMinuteIST: null,
+  capturedAt: null,
+  baselineMinuteIST: null,
+  runners: [],
+};
+
 function minutesIST(iso: string): number {
   const parts = new Intl.DateTimeFormat('en-IN', {
     timeZone: 'Asia/Kolkata',
@@ -74,6 +134,129 @@ function minutesIST(iso: string): number {
   return hour * 60 + minute;
 }
 
+
+/**
+ * Every successful `all_sector` capture for `date`, parsed and ranked, oldest
+ * first. One board per CLOCK MINUTE — the collector can write several captures
+ * inside one minute and they carry identical values, which would otherwise let
+ * a "30 minutes ago" lookup land 30 *captures* back instead.
+ *
+ * Shared by the display race below and by the point-in-time selector form, so
+ * both see byte-identical boards.
+ */
+export async function getTfBoardsForDate(date: string): Promise<TfBoardAt[]> {
+  const captures = (await prisma.$queryRawUnsafe(
+    `
+    SELECT capturedAt, payloadJson
+    FROM tf_live_captures
+    WHERE endpoint = 'all_sector' AND status = 'success'
+      AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
+    ORDER BY capturedAt ASC
+  `,
+    date
+  )) as { capturedAt: string; payloadJson: string | null }[];
+
+  const boards: TfBoardAt[] = [];
+  for (const capture of captures) {
+    if (!capture.payloadJson) continue;
+    let scored: { symbol: string; rFactor: number; pctChange: number | null }[] = [];
+    try {
+      scored = parseAllSector(JSON.parse(capture.payloadJson))
+        .filter((r): r is typeof r & { rFactor: number } => r.rFactor != null && Number.isFinite(r.rFactor))
+        .map((r) => ({ symbol: r.symbol.toUpperCase(), rFactor: r.rFactor, pctChange: r.pctChange }))
+        .sort((a, b) => b.rFactor - a.rFactor);
+    } catch {
+      continue; // a malformed capture contributes nothing, never a crash
+    }
+    if (scored.length === 0) continue;
+    const minuteIST = minutesIST(capture.capturedAt);
+    // Collapse same-minute duplicates: keep the FIRST, which is the one whose
+    // timestamp the rest of the pipeline reports.
+    if (boards.length > 0 && boards[boards.length - 1].minuteIST === minuteIST) continue;
+    boards.push({
+      minuteIST,
+      capturedAt: capture.capturedAt,
+      rank: new Map(scored.map((s, i) => [s.symbol, i + 1])),
+      rFactor: new Map(scored.map((s) => [s.symbol, s.rFactor])),
+      pctChange: new Map(scored.map((s) => [s.symbol, s.pctChange])),
+      spread: scored.filter((s) => s.rFactor > 1).length,
+    });
+  }
+  return boards;
+}
+
+/**
+ * The race AS OF one minute of the session — the form the trade selector needs.
+ *
+ * Differs from `getTfRaceForWindow` in exactly one way that matters: it uses
+ * only boards captured at or before `asOfMinuteIST`, so a replay at 10:15
+ * cannot see 10:20's board. That is what makes the backtest and the live path
+ * comparable; the display function deliberately always reports the latest.
+ *
+ * Returns `available: false` — never an empty runner list — when no board has
+ * yet cleared MIN_SPREAD_SYMBOLS, because "TF has nothing usable" and "TF says
+ * nobody is running" are different facts and the caller must not conflate them.
+ */
+export function raceAtMinute(
+  boards: TfBoardAt[],
+  asOfMinuteIST: number,
+  maxRank = 20,
+  lookbackMin = DELTA_R_LOOKBACK_MIN
+): TfRaceAt {
+  const upTo = boards.filter((b) => b.minuteIST <= asOfMinuteIST);
+  if (upTo.length === 0) return EMPTY_RACE_AT;
+
+  // The baseline is the first board in the window with real spread. The guard
+  // exists because TradeFinder zeroes the whole board while resetting for the
+  // day (2026-08-10 09:16: all 210 R-Factors exactly 0), and anchoring there
+  // ranks symbols in arbitrary order and calls the entire board "climbing".
+  const baseline = upTo.find((b) => b.minuteIST >= WINDOW_START_MIN && b.spread >= MIN_SPREAD_SYMBOLS);
+  if (!baseline) return EMPTY_RACE_AT;
+
+  // Need two DISTINCT points for a trajectory. Compared on minuteIST, not
+  // capturedAt: the minute is what identifies a board here (same-minute captures
+  // were already collapsed upstream), and a string compare would also make this
+  // depend on timestamp formatting rather than on time.
+  const now = upTo[upTo.length - 1];
+  if (now.minuteIST === baseline.minuteIST) return EMPTY_RACE_AT;
+
+  const ago = [...upTo].reverse().find((b) => b.minuteIST <= asOfMinuteIST - lookbackMin) ?? null;
+
+  const runners: TfRunnerAt[] = [];
+  for (const [symbol, rankNow] of now.rank) {
+    if (rankNow > maxRank) continue;
+    const rankAtBaseline = baseline.rank.get(symbol);
+    if (rankAtBaseline == null) continue; // no baseline rank = no measurable climb
+    const climb = rankAtBaseline - rankNow;
+    if (climb <= 0) continue;
+    const rFactorNow = now.rFactor.get(symbol)!;
+    const rFactorAgo = ago?.rFactor.get(symbol) ?? null;
+    runners.push({
+      symbol,
+      rankNow,
+      rankAtBaseline,
+      climb,
+      rFactorNow,
+      rFactorAgo,
+      deltaR: rFactorAgo == null ? null : rFactorNow - rFactorAgo,
+      pctChange: now.pctChange.get(symbol) ?? null,
+    });
+  }
+  // Strongest R first — same order the /tf board uses (operator, 2026-08-11):
+  // a name that climbed 190 places into R 1.5 is a smaller fish than one that
+  // climbed 30 into R 2.5. Ties fall back to the larger climb, then better rank.
+  runners.sort(
+    (a, b) => b.rFactorNow - a.rFactorNow || b.climb - a.climb || a.rankNow - b.rankNow
+  );
+
+  return {
+    available: true,
+    boardMinuteIST: now.minuteIST,
+    capturedAt: now.capturedAt,
+    baselineMinuteIST: baseline.minuteIST,
+    runners,
+  };
+}
 
 /**
  * Ranks every symbol by TF's own R-Factor at each successful `all_sector`

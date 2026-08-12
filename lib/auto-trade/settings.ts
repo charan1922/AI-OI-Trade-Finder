@@ -149,7 +149,7 @@ export const SETTING_DEFS: SettingDef[] = [
     serialize: String,
     label: 'Daily loss halt (₹)',
     description:
-      'Realized loss on the day at which new entries stop. Set it above “Max risk per lot” — at or below it, a single full-stop loss halts the day.',
+      'Realized loss on the day at which new entries stop. Now defaults to EXACTLY “Max risk per lot” (₹2,500), so one full-stop loss ends the day — deliberate since 2026-08-13. With winners no longer capped by a fixed target, a second trade taken to recover the first is the worst use of the day’s remaining risk; the benchmark this strategy copies never lost more than one stop in a session. Raise it above “Max risk per lot” only if you want a second attempt after a loss.',
   },
   {
     key: 'profitTargetMode',

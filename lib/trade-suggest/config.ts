@@ -279,15 +279,66 @@ export const CAPITAL_BUDGET = 60_000;
 export const PICK_OVERSAMPLE = 3;
 
 
-/** Reward:risk multiple for the spot target (entry ± N × risk). */
+/** Reward:risk multiple for the DISPLAYED spot target (entry ± N × risk).
+ *
+ *  With TRAIL_R active this is a reference level shown to the operator, NOT a
+ *  hard exit — the position is not closed on touching it. See TRAIL_R. */
 export const TARGET_RR = 2;
 
-/** Minimum stop distance as % of entry. A last-5-min-candle SL can be
- *  degenerately tight when that bar is small (seen live: MARICO risk of
- *  0.05 pts on an ₹842 stock) — a stop inside normal 5-min noise is a
- *  guaranteed stop-out, not a plan. Structural SLs tighter than this floor
- *  are widened to it (slBasis: 'floor'). */
-export const MIN_RISK_PCT = 0.35;
+/**
+ * Trailing stop, in R, or null to keep the old fixed-target exit.
+ *
+ * Once a trade is this far onside, the stop advances to
+ * (best favourable price − TRAIL_R × risk) and NEVER loosens. There is no fixed
+ * profit target; the 15:12 square-off still terminates everything.
+ *
+ * WHY. The operator's benchmark (TradeFinder, Sensibull-verified, 23 sessions
+ * 2026-07-09 → 2026-08-10) makes its money entirely on the exit:
+ *
+ *   every losing day:  −0.14R  −0.98R  −0.94R  −0.84R   (never once beyond 1R)
+ *   winning days:      3.5 … 9.6R,  avg winning day ₹15,430 vs losing ₹1,812
+ *   profit factor 40.4,  82.6% winning days,  all exits 15:31–16:02 IST
+ *
+ * The 82.6% win rate is an OUTPUT of two rules — one stop ends the day, and
+ * winners run to the close — not a target to aim at directly. Our engine did
+ * the opposite: every winner capped at 2R while a second loss was still allowed.
+ *
+ * Measured on TF-race candidates, one entry per name per day, 1% stop: a fixed
+ * 1:2 target capped the best available trade at exactly 2.0R; removing it
+ * surfaced a 6.4R winner in the same three sessions. avg +0.700R → +0.840R.
+ *
+ * CAVEAT, deliberately loud: that measurement walks the SPOT path. Holding an
+ * option to 15:12 pays a full day of theta, which a spot path cannot see, and
+ * this change holds LONGER than the previous one. Paper mode records real
+ * premiums and is how the gap gets measured — see the spec's §3a.
+ */
+export const TRAIL_R: number | null = 2;
+
+/**
+ * Minimum stop distance as % of entry. A last-5-min-candle SL can be
+ * degenerately tight when that bar is small (seen live: MARICO risk of
+ * 0.05 pts on an ₹842 stock) — a stop inside normal 5-min noise is a
+ * guaranteed stop-out, not a plan. Structural SLs tighter than this floor
+ * are widened to it (slBasis: 'floor').
+ *
+ * WIDENED 0.35 → 1.0 on 2026-08-13. This is not a tuning change; it fixes a
+ * disagreement between two stops that were supposed to describe one policy.
+ *
+ * The premium stop is OPTION_STOP_PCT = 25% of the option's own entry price.
+ * For a near-ATM option (delta ≈ 0.5, premium ≈ 2% of spot) a 1% adverse SPOT
+ * move is worth roughly a 25% premium move — so 1.0% is where the spot stop and
+ * the premium stop finally describe the same risk. At 0.35% the spot stop fired
+ * about THREE TIMES sooner than the premium stop the operator actually chose,
+ * and the tighter, unchosen one won every time.
+ *
+ * Measured over 2026-08-10..12 on TF-race candidates at a 1:2 target, changing
+ * ONLY this number: win rate 42% → 74%, ₹625 → ₹2,184 per trade. Both improved,
+ * which is the signature of a bug being removed rather than a trade-off being
+ * chosen. Same reasoning as the 2026-07-23 premium-stop widening (see the SRF
+ * case in CLAUDE.md) — that fix was applied to the premium side only, and the
+ * spot plan never got it.
+ */
+export const MIN_RISK_PCT = 1.0;
 /** Volatility floor: risk floor becomes max(MIN_RISK_PCT%, SL_ATR_MULT × ATR14
  *  of the 5-min series). 0 = % floor only. Set from the replay benchmark
  *  (scripts/replay-window.ts) — change ONLY with fresh replay evidence. */
@@ -374,3 +425,39 @@ export const CANDIDATE_SOURCES = [
   'nse-active-value',
   'nse-active-volume',
 ] as const;
+
+// ─── TF Running Race selector (2026-08-13) ───────────────────────────────────
+
+/**
+ * Take trade candidates from TradeFinder's Running Race instead of the App
+ * R-Factor sweep. Operator rule: auto-trade considers ONLY race stocks.
+ *
+ * The gates that used to live here — MIN_RFACTOR, MIN_CONFIDENCE, MIN_OI_LEVEL,
+ * MIN_NSE_OI_PCT, MIN_TURNOVER_SCORE — are bypassed on this path. They all
+ * re-asked the question TF's R-Factor already answers (is big money here?), and
+ * the App R-Factor that fed them had NO discriminating power: over the three
+ * sessions with TF captures it scored every graded pick 3.65–6.45 while half of
+ * them sat below TF R = 1.0 and lost. Tradeability gates (spread, lot cost vs
+ * capital, chaotic open) still apply — those ask a different question.
+ *
+ * Flip to false to restore the previous engine wholesale; nothing else needs
+ * changing, which is the intended rollback path.
+ */
+export const USE_TF_SELECTOR = true;
+
+/**
+ * How stale TradeFinder's board may be before the selector refuses to trade
+ * (minutes). TradeFinder signs this account out roughly daily and INCLUDING
+ * mid-session — on 2026-08-10 captures ran cleanly until 12:10 IST, then 263
+ * consecutive requests failed for 3h20m. A stale board is exactly how you buy a
+ * name that stopped accumulating an hour ago, so there is deliberately NO
+ * fallback to the old engine: no fresh board means no new entries, and the
+ * reason is surfaced rather than swallowed. Open positions keep being managed.
+ */
+export const TF_BOARD_MAX_AGE_MIN = 10;
+
+/** Only names inside TF's own top-N count as "on the board". Matches the /tf
+ *  race display (`maxRank`). Rank ≤ 20 corresponded to TF R ≈ 1.4 on all three
+ *  measured sessions, which is what makes the sub-1.0 band (−0.317R, t=−11.12)
+ *  structurally unreachable rather than merely discouraged. */
+export const TF_RACE_MAX_RANK = 20;
