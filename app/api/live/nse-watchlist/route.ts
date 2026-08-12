@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { SectorLeadersResponse, SectorPick, WatchlistSource } from '@/app/live/_lib/types';
 import type { ActiveStock, MoverStock, OiStock } from '@/lib/nse/pulse';
+import { LIVE_PATH_NSE_WAIT_MS } from '@/lib/nse/combined-oi';
 import { getPulseFeed } from '@/lib/nse/pulse-cache';
 import { classifyFno, loadFnoUniverse, loadLiveFutureUnderlyings } from '../_lib/fno-universe';
 
@@ -32,10 +33,18 @@ const OI_DISPLAY = 24;
  * panel displays. Feeds come through the shared 30s pulse cache, so this reuses
  * whatever the Market Movers page already warmed instead of hitting (and being
  * throttled by) NSE again.
+ *
+ * Every read is capped at LIVE_PATH_NSE_WAIT_MS: this route builds the /live
+ * watchlists, so it sits on the page's critical path alongside the quote poll,
+ * and a stalled NSE miss (see lib/nse/pulse-cache.ts) must not hold the page.
+ * Past the cap the last captured list is served and the fetch completes in the
+ * background.
  */
+const WAIT = { maxWaitMs: LIVE_PATH_NSE_WAIT_MS } as const;
+
 async function oiMovers(): Promise<{ symbol: string; pct: number }[]> {
   // Signed change desc (biggest OI gains first), top 24 — the panel's exact view.
-  const oi = (await getPulseFeed<OiStock[]>('oiSpurts')).data;
+  const oi = (await getPulseFeed<OiStock[]>('oiSpurts', WAIT)).data;
   return [...oi]
     .sort((a, b) => b.changeInOiPct - a.changeInOiPct)
     .slice(0, OI_DISPLAY)
@@ -44,12 +53,12 @@ async function oiMovers(): Promise<{ symbol: string; pct: number }[]> {
 
 async function activeMovers(by: 'value' | 'volume'): Promise<{ symbol: string; pct: number }[]> {
   const feed = by === 'value' ? 'mostActiveValue' : 'mostActiveVolume';
-  return (await getPulseFeed<ActiveStock[]>(feed)).data.map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
+  return (await getPulseFeed<ActiveStock[]>(feed, WAIT)).data.map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
 }
 
 async function moverGroup(kind: 'gainers' | 'losers'): Promise<{ symbol: string; pct: number }[]> {
   // FOSec = NSE's F&O-securities group (the equity-wide list mostly isn't F&O).
-  return ((await getPulseFeed<Record<string, MoverStock[]>>(kind)).data.FOSec ?? []).map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
+  return ((await getPulseFeed<Record<string, MoverStock[]>>(kind, WAIT)).data.FOSec ?? []).map((s) => ({ symbol: s.symbol, pct: s.pctChange }));
 }
 
 /** Produce [symbol, pct] in NSE's ranked order for the chosen source. */

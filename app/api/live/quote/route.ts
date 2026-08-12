@@ -4,7 +4,7 @@ import { prisma } from '@/lib/db';
 import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { computeRFactor } from '@/lib/r-factor';
 import { getNseOiLatestForSymbols } from '@/lib/fyers/candle-store';
-import { getNseOiRowMap } from '@/lib/nse/combined-oi';
+import { getNseOiRowMap, LIVE_PATH_NSE_WAIT_MS } from '@/lib/nse/combined-oi';
 import type { OiStock } from '@/lib/nse/pulse';
 import { addToUniverse } from '@/lib/fyers/symbols';
 import {
@@ -191,7 +191,15 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
   // Rich oi-spurts row per symbol (options premium, fut/opt value split, options
   // share, absolute combined OI) — live-feed snapshot through the shared 30s NSE
   // cache. Display columns for the F&O OI Build-up view; missing → "—", never faked.
-  const nseOiRows = await getNseOiRowMap().catch(() => new Map<string, OiStock>());
+  //
+  // Bounded by LIVE_PATH_NSE_WAIT_MS: an NSE miss from a datacentre IP can stall
+  // for tens of seconds (cookie warm-up + API timeout + one retry), and this
+  // route must answer well inside the client's 8s abort. Past the cap we take
+  // the last captured rows and the fetch finishes in the background — these are
+  // display-only columns, so a couple of seconds of age beats a dead request.
+  const nseOiRows = await getNseOiRowMap({ maxWaitMs: LIVE_PATH_NSE_WAIT_MS }).catch(
+    () => new Map<string, OiStock>(),
+  );
   // Fraction of the session elapsed — the Turn-Lvl divisor (same math the
   // R-Factor turnover factor uses, surfaced as its own column).
   const sessionFrac = sessionFractionElapsed(now);

@@ -11,7 +11,17 @@
  */
 
 import type { OiStock } from '@/lib/nse/pulse';
-import { getPulseFeed } from '@/lib/nse/pulse-cache';
+import { getPulseFeed, type PulseFeedOptions } from '@/lib/nse/pulse-cache';
+
+/**
+ * How long a latency-bound caller (the /live quote path) will wait on NSE before
+ * settling for the last captured rows. These feed DISPLAY columns; the /live
+ * client abandons a quote after 8s, so a slow NSE must cost the response a
+ * couple of seconds at worst, never the whole request. See the module doc in
+ * lib/nse/pulse-cache.ts for why an NSE miss can otherwise run for tens of
+ * seconds.
+ */
+export const LIVE_PATH_NSE_WAIT_MS = 2_500;
 
 export async function getNseCombinedOiPctMap(): Promise<Map<string, number>> {
   try {
@@ -35,9 +45,9 @@ export async function getNseCombinedOiPctMap(): Promise<Map<string, number>> {
  * `optShare` field is the one worth wiring into gates later — it's the only
  * value here that doesn't ratchet with the day.
  */
-export async function getNseOiRowMap(): Promise<Map<string, OiStock>> {
+export async function getNseOiRowMap(opts: PulseFeedOptions = {}): Promise<Map<string, OiStock>> {
   try {
-    const res = await getPulseFeed<OiStock[]>('oiSpurts');
+    const res = await getPulseFeed<OiStock[]>('oiSpurts', opts);
     return new Map((res.data ?? []).filter((s) => s.symbol).map((s) => [s.symbol, s]));
   } catch (err) {
     console.warn(`[CombinedOi] NSE oi-spurts feed unavailable: ${(err as Error).message}`);

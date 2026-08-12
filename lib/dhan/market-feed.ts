@@ -1,5 +1,5 @@
 import { clearCachedToken, getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/auth';
-import { fetchJsonWithTimeout, isAbortError } from '@/lib/dhan/fetch-timeout';
+import { fetchJsonWithTimeout, fetchWithTimeout, isAbortError } from '@/lib/dhan/fetch-timeout';
 import {
   noteQuote429,
   noteQuoteOk,
@@ -38,6 +38,17 @@ export type MarketFeedResponse = Record<string, Record<string, MarketFeedQuote>>
 // tested in CI: lib/env parses at import and throws without credentials, so
 // nothing importing THIS module can run there (PR#15 re-review).
 
+/**
+ * Deadline for a foreground Quote-API request. EVERY call in this file runs
+ * inside the process-wide serial quote gate, which has exactly one execution
+ * slot — so an unbounded request does not just fail slowly, it stops all Dhan
+ * quote traffic for as long as the socket stays open (Node's fetch never times
+ * out on its own). The /live client abandons a quote after 8s
+ * (FETCH_TIMEOUT_MS in app/live/_lib/quote-scheduler.ts) and the gate spaces
+ * dispatches 1.5s apart, so 5s is comfortably above a healthy response
+ * (~200–500ms) while keeping a stall to a single missed poll.
+ */
+const MARKET_FEED_TIMEOUT_MS = 5_000;
 
 
 /**
@@ -154,15 +165,30 @@ export async function dhanMarketFeed(
   // successor 5s later — waits the account out. Drop this poll and return empty.
   return throughQuoteGate(async () => {
     try {
-    const resp = await fetch(`https://api.dhan.co/v2/marketfeed/${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'access-token': token,
-        'client-id': clientId,
-        'Content-Type': 'application/json',
+    // fetchJsonWithTimeout, NOT a bare fetch: this runs INSIDE the serial quote
+    // gate and reads the body there too, so an unbounded call would wedge the
+    // one execution slot the whole process shares — every /live poll, the
+    // scanner and the option shadow queue behind it forever. Node's fetch has
+    // no default timeout, so "wedged" is a real state, not a theoretical one.
+    // MARKET_FEED_TIMEOUT_MS is far above a healthy Dhan quote and far below the
+    // /live client's 8s abort, so a stall costs one poll instead of the session.
+    const { response: resp, json: body } = await fetchJsonWithTimeout<{
+      data?: Record<string, Record<string, unknown>>;
+      Data?: Record<string, Record<string, unknown>>;
+      status?: string;
+    }>(
+      `https://api.dhan.co/v2/marketfeed/${endpoint}`,
+      {
+        method: 'POST',
+        headers: {
+          'access-token': token,
+          'client-id': clientId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestPayload),
       },
-      body: JSON.stringify(requestPayload),
-    });
+      MARKET_FEED_TIMEOUT_MS
+    );
 
     if (resp.status === 429) {
       noteQuote429();
@@ -173,19 +199,14 @@ export async function dhanMarketFeed(
     }
 
     if (!resp.ok) {
-      const body = await resp.text().catch(() => '');
-      console.warn(`[Dhan] marketfeed/${endpoint} HTTP ${resp.status}: ${body}`);
+      console.warn(`[Dhan] marketfeed/${endpoint} HTTP ${resp.status}`);
       if (resp.status === 401 || resp.status === 400) {
         clearCachedToken();
       }
       return {};
     }
 
-    const json = (await resp.json()) as {
-      data?: Record<string, Record<string, unknown>>;
-      Data?: Record<string, Record<string, unknown>>;
-      status?: string;
-    };
+    const json = body ?? {};
     const responsePayload = json.data ?? json.Data;
     if ((json.status ?? '').toLowerCase() !== 'success' || !responsePayload) return {};
     noteQuoteOk();
@@ -252,18 +273,22 @@ export async function fetchOptionExpiries(
   // under-spacing risks a 429 whose cooldown freezes ALL quote traffic.
   const resp = await throughQuoteGate(
     () =>
-      fetch('https://api.dhan.co/v2/optionchain/expirylist', {
-        method: 'POST',
-        headers: {
-          'access-token': token,
-          'client-id': clientId,
-          'Content-Type': 'application/json',
+      fetchWithTimeout(
+        'https://api.dhan.co/v2/optionchain/expirylist',
+        {
+          method: 'POST',
+          headers: {
+            'access-token': token,
+            'client-id': clientId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            UnderlyingScrip: underlyingSecId,
+            UnderlyingSeg: underlyingSeg,
+          }),
         },
-        body: JSON.stringify({
-          UnderlyingScrip: underlyingSecId,
-          UnderlyingSeg: underlyingSeg,
-        }),
-      }),
+        MARKET_FEED_TIMEOUT_MS
+      ),
     { optionChain: true }
   );
   if (resp.status === 429) noteQuote429();
@@ -329,19 +354,23 @@ async function fetchOptionChainGreeksSnapshot(
   const clientId = env.DHAN_CLIENT_ID!;
   const resp = await throughQuoteGate(
     () =>
-      fetch('https://api.dhan.co/v2/optionchain', {
-        method: 'POST',
-        headers: {
-          'access-token': token,
-          'client-id': clientId,
-          'Content-Type': 'application/json',
+      fetchWithTimeout(
+        'https://api.dhan.co/v2/optionchain',
+        {
+          method: 'POST',
+          headers: {
+            'access-token': token,
+            'client-id': clientId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            UnderlyingScrip: underlyingSecId,
+            UnderlyingSeg: 'IDX_I',
+            Expiry: expiry,
+          }),
         },
-        body: JSON.stringify({
-          UnderlyingScrip: underlyingSecId,
-          UnderlyingSeg: 'IDX_I',
-          Expiry: expiry,
-        }),
-      }),
+        MARKET_FEED_TIMEOUT_MS
+      ),
     // Same endpoint, same 1-per-3s sub-limit as the shadow chain — a foreground
     // caller that skipped this flag would neither wait for nor stamp the shared
     // option-chain clock, leaving the rule enforceable only in one direction.
@@ -544,19 +573,23 @@ export async function fetchOptionChain(underlyingSecId: number, expiry: string):
   // and it additionally carries its own 1-per-3s interval (optionChain: true).
   const resp = await throughQuoteGate(
     () =>
-      fetch('https://api.dhan.co/v2/optionchain', {
-        method: 'POST',
-        headers: {
-          'access-token': token,
-          'client-id': clientId,
-          'Content-Type': 'application/json',
+      fetchWithTimeout(
+        'https://api.dhan.co/v2/optionchain',
+        {
+          method: 'POST',
+          headers: {
+            'access-token': token,
+            'client-id': clientId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            UnderlyingScrip: underlyingSecId,
+            UnderlyingSeg: 'NSE_FNO',
+            Expiry: expiry,
+          }),
         },
-        body: JSON.stringify({
-          UnderlyingScrip: underlyingSecId,
-          UnderlyingSeg: 'NSE_FNO',
-          Expiry: expiry,
-        }),
-      }),
+        MARKET_FEED_TIMEOUT_MS
+      ),
     { optionChain: true }
   );
 
