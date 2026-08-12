@@ -25,13 +25,68 @@ interface TfRaceRunner {
   track: (number | null)[];
 }
 
+/** One condition of the operator's daily screen. `pass: null` = could not be
+ *  evaluated (no candles today / no prior bhavcopy), which is NOT a pass. */
+interface ScreenCheck {
+  key: string;
+  label: string;
+  pass: boolean | null;
+  detail: string;
+}
+interface ScreenResult {
+  symbol: string;
+  passes: boolean;
+  checks: ScreenCheck[];
+}
+
 interface TfRaceResponse {
   success: boolean;
   hasRace: boolean;
   captureTimes: number[];
   runners: TfRaceRunner[];
   newEntrants: TfRaceRunner[];
+  /** Per-symbol daily-screen verdict, keyed by symbol. Absent when the screen
+   *  could not run at all — the race still renders. */
+  screen?: Record<string, ScreenResult>;
   error?: string;
+}
+
+/**
+ * Screen badge. THREE states, not two — "we could not check" must never look
+ * like "it qualifies": we record intraday candles for ~166 symbols while the
+ * F&O universe is ~216, so a runner can be unevaluable purely for lack of data.
+ */
+function ScreenBadge({ s }: { s: ScreenResult | undefined }) {
+  if (s == null) return null;
+  const unevaluable = s.checks.every((c) => c.pass === null);
+  const failed = s.checks.filter((c) => c.pass === false);
+  const tip = s.checks.map((c) => `${c.pass === true ? '✓' : c.pass === false ? '✗' : '?'} ${c.label} — ${c.detail}`).join('\n');
+
+  if (unevaluable) {
+    return (
+      <span className="rounded bg-muted px-1 text-[8px] font-medium text-muted-foreground" title={`Daily screen could not be evaluated:\n${tip}`}>
+        no data
+      </span>
+    );
+  }
+  if (s.passes) {
+    return (
+      <span
+        className="rounded bg-emerald-500/15 px-1 text-[8px] font-semibold text-emerald-700 dark:text-emerald-300"
+        title={`Clears the daily screen:\n${tip}`}
+      >
+        screen ✓
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded bg-muted px-1 text-[8px] font-medium text-muted-foreground"
+      title={`Does not clear the daily screen:\n${tip}`}
+    >
+      {failed.length === 1 ? `fails ${failed[0].key}` : `fails ${failed.length}`}
+    </span>
+  );
 }
 
 function RankSparkline({ track, climbed }: { track: (number | null)[]; climbed: boolean }) {
@@ -57,7 +112,7 @@ function RankSparkline({ track, climbed }: { track: (number | null)[]; climbed: 
   );
 }
 
-function RunnerRow({ r }: { r: TfRaceRunner }) {
+function RunnerRow({ r, screen }: { r: TfRaceRunner; screen?: ScreenResult }) {
   const climbed = (r.deltaSinceWindowStart ?? 0) > 0;
   return (
     <div
@@ -74,6 +129,7 @@ function RunnerRow({ r }: { r: TfRaceRunner }) {
         {Math.abs(r.deltaSinceWindowStart ?? 0)}
       </span>
       <RankSparkline track={r.track} climbed={climbed} />
+      <ScreenBadge s={screen} />
       {/* Labelled "TF R", not "R" — this is TradeFinder's own number straight
           off their board, and the bare "R" read as though it might be this
           app's R-Factor (operator, 2026-08-11: "i am not sure what this is").
@@ -128,6 +184,13 @@ export function TfRaceCard() {
         Who&apos;s climbing TradeFinder&apos;s own board right now — participation evidence, NOT a buy signal by itself.
         Confirm with the scanner&apos;s gates before entering.
       </p>
+      {/* Legend for the badge. Sorted by TF R-Factor, so the caption says so —
+          the list is NOT ordered by how far each name climbed. */}
+      <p className="border-b border-border px-2 py-1 text-[9px] leading-snug text-muted-foreground">
+        Ordered by TF R-Factor. <span className="font-semibold text-emerald-700 dark:text-emerald-300">screen ✓</span> = also
+        clears your daily screen (close &gt; VWAP, close &gt; prior day&apos;s high, volume &gt; 5,00,000, close &gt; 900).
+        Hover a badge for the numbers. Nothing is hidden — a name that fails the screen is still climbing.
+      </p>
       <div className="flex-1 px-2 py-1.5">
         {!data ? (
           <p className="flex items-center justify-center gap-2 py-3 text-[11px] text-muted-foreground">
@@ -148,7 +211,7 @@ export function TfRaceCard() {
         ) : (
           <div className="flex flex-col gap-1">
             {runners.map((r) => (
-              <RunnerRow key={r.symbol} r={r} />
+              <RunnerRow key={r.symbol} r={r} screen={data.screen?.[r.symbol]} />
             ))}
             {newEntrants.length > 0 && (
               <div>
