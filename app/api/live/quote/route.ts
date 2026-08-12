@@ -279,7 +279,6 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
       turnoverLvl,
       nseOiPct: oiFeed?.nseOiPct ?? null,
       nseOiSlope30m: oiFeed?.slope30m ?? null,
-      nseOiSinceWindowPct: oiFeed?.sinceWindowPct ?? null,
       // NSE-native columns — straight from the LIVE oi-spurts feed so they match
       // NSE's site exactly (the DB-recorded nseOiPct above lags by up to one poll).
       nseChgOiPct: oiRow?.changeInOiPct ?? null,
