@@ -309,7 +309,16 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "relative flex w-full flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
+        // min-w-0 is load-bearing, not cosmetic. This <main> is a flex CHILD of
+        // the sidebar row, and a flex item defaults to min-width:auto — it
+        // refuses to shrink below its content's intrinsic width. Without it,
+        // expanding the sidebar could not narrow the page: the content kept its
+        // full width, the sidebar's 16rem was added on top, and the whole
+        // document overflowed horizontally, clipping the left of every page
+        // (reported on /live, 2026-08-13). Wide children (the urgency table)
+        // already scroll inside their own overflow container, so once this can
+        // shrink, they reflow into the available space instead of pushing it.
+        "relative flex w-full min-w-0 flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
         className
       )}
       {...props}

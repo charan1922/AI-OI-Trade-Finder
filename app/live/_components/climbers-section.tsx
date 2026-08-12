@@ -113,7 +113,8 @@ export function ClimbersSection({ refreshSignal }: { refreshSignal: number }) {
     <section className="rounded-lg border border-border bg-card">
       <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1">
         <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />
-        <h2 className="text-[12px] font-semibold tracking-wide text-foreground uppercase">Running race</h2>
+        {/* Display label only — the route, hook and data shape stay `climbers`. */}
+        <h2 className="text-[12px] font-semibold tracking-wide text-foreground uppercase">NSE Climbers</h2>
         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
           into the top 20 · since open{checks > 0 ? ` · ${checks} checks` : ''}
         </span>
