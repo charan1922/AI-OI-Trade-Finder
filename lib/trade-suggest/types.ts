@@ -365,6 +365,32 @@ export interface SuggestResponse {
   managedPositionSignals?: ManagedPositionSignal[];
   /** TradeFinder's independent board + entry-window race (evidence only). */
   tfContext?: TfScanContext;
+  /** What the TF Running Race selector did this pass — present only when
+   *  USE_TF_SELECTOR is on. Carries the REASON an empty board produced no
+   *  picks, so a quiet scan is explainable instead of mysterious. */
+  tfSelection?: TfSelectionSummary;
   note?: string;
   error?: string;
+}
+
+/** Outcome of one TF-selector pass, surfaced on /trade-suggest and /auto-trade. */
+export interface TfSelectionSummary {
+  /** False when TF's board was missing, unranked or too stale to trade on.
+   *  When false, NO entries are taken — there is no fallback engine. */
+  available: boolean;
+  /** Plain-English reason: either why nothing qualified, or why we can't trade. */
+  reason: string;
+  /** Age of the board used, in minutes. Null when unavailable. */
+  boardAgeMin: number | null;
+  /** Race runners offered before the selector's gates ran. */
+  considered: number;
+  selected: {
+    symbol: string;
+    side: 'CE' | 'PE';
+    tfRFactor: number;
+    tfRankNow: number;
+    /** TF R-Factor gained over the trailing 30 min — the accumulation RATE. */
+    deltaR: number;
+    premValueCr: number;
+  }[];
 }

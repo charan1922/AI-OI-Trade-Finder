@@ -26,6 +26,7 @@ import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { getEqBucketStatus, getFyersCandles, getNseOiSeries, fyersBucketFor, type StoredFyersBar } from '@/lib/fyers/candle-store';
 import { evaluateFreshnessBestEffort, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { getNseOiRowMap } from '@/lib/nse/combined-oi';
+import type { OiStock } from '@/lib/nse/pulse';
 import { resolveStockOptionFromMaster, type StockOptionResolution } from '@/lib/options/stock-option-resolver';
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
@@ -49,6 +50,9 @@ import {
   MIN_OPT_PREMIUM_CR,
   MIN_OPT_SHARE,
   MIN_RFACTOR,
+  TF_BOARD_MAX_AGE_MIN,
+  TF_RACE_MAX_RANK,
+  USE_TF_SELECTOR,
   MIN_TURNOVER_SCORE,
   MOMENTUM_MIN_CHANGE_PCT,
   PICK_OVERSAMPLE,
@@ -82,11 +86,23 @@ import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
 import { classifyMoveFreshness, isStaleMove, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
 import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
 import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
-import { getTfRaceForWindow } from '@/lib/tf-live/race';
+import { getTfBoardsForDate, getTfRaceForWindow, raceAtMinute } from '@/lib/tf-live/race';
+import {
+  describeRejections,
+  selectTfCandidates,
+  type TfCandidate,
+  type TfSymbolContext,
+} from '@/lib/tf-live/selector';
 import { attachPremiums, type PremiumPolicy } from '@/lib/trade-suggest/premiums';
 import { buildSpotPlan, computeCompositeScore } from '@/lib/trade-suggest/scoring';
 import { getSuggestions, upsertSuggestions } from '@/lib/trade-suggest/store';
-import type { OptionPlan, SuggestResponse, SuggestWindow, TradeSuggestion } from '@/lib/trade-suggest/types';
+import type {
+  OptionPlan,
+  SuggestResponse,
+  SuggestWindow,
+  TfSelectionSummary,
+  TradeSuggestion,
+} from '@/lib/trade-suggest/types';
 
 const TAG = '[TradeSuggest]';
 
@@ -284,6 +300,7 @@ export async function runTradeSuggest(
   const useChaoticOpenGate = await getToggle('USE_CHAOTIC_OPEN_GATE', USE_CHAOTIC_OPEN_GATE);
   const useRankClimbGate = await getToggle('USE_RANK_CLIMB_GATE', USE_RANK_CLIMB_GATE);
   const useMoveFreshnessGate = await getToggle('USE_MOVE_FRESHNESS_GATE', USE_MOVE_FRESHNESS_GATE);
+  const useTfSelector = await getToggle('USE_TF_SELECTOR', USE_TF_SELECTOR);
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
   // Capital budget = the auto-trade page's editable maxCapitalRupees (one source
   // of truth). A pick whose single lot costs more than this is skipped, so the
@@ -585,7 +602,35 @@ export async function runTradeSuggest(
   }
   const survivors: Enriched[] = [];
 
+  // ── TF Running Race selector (USE_TF_SELECTOR) ────────────────────────────
+  // The ONLY candidate source when enabled: auto-trade considers race stocks
+  // and nothing else (operator rule, 2026-08-13). Built BEFORE the sweep so the
+  // loop below can be restricted to these names, and so a stale/absent TF board
+  // short-circuits the whole scan rather than silently falling back to the App
+  // R-Factor engine — which is the engine measuring −0.199R.
+  let tfBySymbol: Map<string, TfCandidate> | null = null;
+  if (useTfSelector) {
+    const tf = await buildTfSelection(date, quotes.rows, nseOiRowMap);
+    base.tfSelection = tf.summary;
+    if (!tf.tradeable) {
+      gated.tfBoardStale = (gated.tfBoardStale ?? 0) + 1;
+      console.log(`${TAG} TF selector: ${tf.summary.reason}`);
+      base.gated = gated;
+      base.suggestions = [];
+      return base;
+    }
+    tfBySymbol = new Map(tf.candidates.map((c) => [c.symbol, c]));
+  }
+
   for (const row of quotes.rows) {
+    // On the TF path, a name that is not a qualified race runner is not a
+    // candidate at all. Counted once so the operator sees the funnel.
+    const tfPick = tfBySymbol?.get(row.symbol) ?? null;
+    if (tfBySymbol && !tfPick) {
+      gated.notOnTfRace = (gated.notOnTfRace ?? 0) + 1;
+      continue;
+    }
+
     const ltp = row.ltp ?? 0;
     if (ltp <= 0) {
       gated.noPrice++;
@@ -596,7 +641,9 @@ export async function runTradeSuggest(
       gated.illiquid++;
       continue;
     }
-    if (row.rFactorBias == null || row.rFactorBias === 'neutral') {
+    // Direction: TF's own % change on the TF path (App R-Factor's bias is not
+    // consulted at all), otherwise the legacy rFactorBias.
+    if (!tfPick && (row.rFactorBias == null || row.rFactorBias === 'neutral')) {
       gated.neutralBias++;
       continue;
     }
@@ -606,7 +653,13 @@ export async function runTradeSuggest(
     // VWAP hard gates and the pick's plan — one computation, no duplicates.
     // (Costs a candle read for names the R gate would have dropped — local
     // SQLite, same order the replay harness already uses.)
-    const direction = row.rFactorBias === 'buy' ? 'bullish' : 'bearish';
+    const direction: 'bullish' | 'bearish' = tfPick
+      ? tfPick.side === 'CE'
+        ? 'bullish'
+        : 'bearish'
+      : row.rFactorBias === 'buy'
+        ? 'bullish'
+        : 'bearish';
     const bars = await getFyersCandles(row.symbol, date, 'EQ');
     const sc = deriveSessionContext(bars);
     const orBreakout =
@@ -639,11 +692,15 @@ export async function runTradeSuggest(
       );
     if (momentumOk) gated.momentumAdmitted = (gated.momentumAdmitted ?? 0) + 1;
 
-    if (!momentumOk && (row.rFactor ?? 0) < MIN_RFACTOR) {
+    // App R-Factor gates. SKIPPED ENTIRELY on the TF path: TF's own R-Factor has
+    // already answered "is big money here", and the App number demonstrably has
+    // not — over the three sessions with TF captures it scored every graded pick
+    // 3.65–6.45 while half of them sat below TF R = 1.0 and lost −1R each.
+    if (!tfPick && !momentumOk && (row.rFactor ?? 0) < MIN_RFACTOR) {
       gated.weakRFactor++;
       continue;
     }
-    if (!momentumOk && (row.rFactorConfidence ?? 0) < dynamicMinConfidence) {
+    if (!tfPick && !momentumOk && (row.rFactorConfidence ?? 0) < dynamicMinConfidence) {
       gated.lowConfidence++;
       continue;
     }
@@ -689,15 +746,21 @@ export async function runTradeSuggest(
         }
       );
     }
-    if (!futOiOk && !nseOiOk && !breakoutOk && !momentumOk) {
+    // OI evidence gate — also skipped on the TF path, for the same reason: it
+    // re-asks the participation question TF's R-Factor answers directly, and on
+    // the measured sessions it cost real winners (NAUKRI was rank #17 with no
+    // futures-OI build while its TF R climbed 1.16 → 3.46 and price ran +8%).
+    if (!tfPick && !futOiOk && !nseOiOk && !breakoutOk && !momentumOk) {
       gated.lowOiLevel++;
       continue;
     }
     // Third TF pillar: turnover ≥1.2× its time-adjusted 20-day average. The
     // R-Factor turnover score encodes the ratio (score = (ratio−1)/2), so the
     // gate reads the factor instead of re-deriving the ratio.
+    // Turnover gate — derived from the App R-Factor factor breakdown, so it goes
+    // with the rest of that stack on the TF path.
     const turnoverFactor = row.rFactors?.find((f) => f.label.startsWith('Turnover'));
-    if (!turnoverFactor?.available || turnoverFactor.score < MIN_TURNOVER_SCORE) {
+    if (!tfPick && (!turnoverFactor?.available || turnoverFactor.score < MIN_TURNOVER_SCORE)) {
       gated.lowTurnover++;
       continue;
     }
@@ -1232,4 +1295,124 @@ export async function runTradeSuggest(
     `${TAG} scanned ${base.scanned}, survivors ${survivors.length}, picks ${picks.length}: ${picks.map((p) => `${p.symbol} ${p.option?.strike ?? '?'}${p.option?.optionType ?? ''}`).join(', ') || '—'}`
   );
   return base;
+}
+
+/**
+ * Bridge between the LIVE data the engine already holds and the PURE selector
+ * in lib/tf-live/selector.ts.
+ *
+ * Everything the selector needs that it cannot read off TF's board — Supertrend
+ * alignment, opening-range breakout, the options premium pool, the move since
+ * 09:45 — is assembled here from the same quote rows and candles the rest of
+ * the scan uses, so a candidate's evidence is the evidence the operator sees.
+ *
+ * FAILS CLOSED. A missing/stale board, a DB error, or an unparseable capture all
+ * return `tradeable: false` with a stated reason. There is deliberately NO
+ * fallback to the App R-Factor engine: that is the path measuring −0.199R, and
+ * silently reverting to it is how a TF outage turns into a losing session.
+ */
+async function buildTfSelection(
+  date: string,
+  rows: LiveUrgencyRow[],
+  nseOiRowMap: Map<string, OiStock>
+): Promise<{
+  tradeable: boolean;
+  candidates: TfCandidate[];
+  summary: TfSelectionSummary;
+}> {
+  const nowMin = istMinutesNow();
+  const notTradeable = (reason: string): {
+    tradeable: false;
+    candidates: TfCandidate[];
+    summary: TfSelectionSummary;
+  } => ({
+    tradeable: false,
+    candidates: [],
+    summary: { available: false, reason, boardAgeMin: null, considered: 0, selected: [] },
+  });
+
+  let boards;
+  try {
+    boards = await getTfBoardsForDate(date);
+  } catch (err) {
+    return notTradeable(`TradeFinder captures unreadable: ${(err as Error).message}`);
+  }
+  if (boards.length === 0) return notTradeable('No TradeFinder capture today — not trading blind.');
+
+  const race = raceAtMinute(boards, nowMin, TF_RACE_MAX_RANK);
+  if (!race.available || race.boardMinuteIST == null) {
+    return notTradeable(
+      "TradeFinder's board has not yet separated enough to rank (needs a baseline after 09:35)."
+    );
+  }
+  const ageMin = nowMin - race.boardMinuteIST;
+  if (ageMin > TF_BOARD_MAX_AGE_MIN) {
+    // The normal failure, not the rare one: TF signs this account out roughly
+    // daily and mid-session (263 consecutive failures over 3h20m on 2026-08-10).
+    return notTradeable(
+      `TradeFinder board is ${ageMin} min old (max ${TF_BOARD_MAX_AGE_MIN}) — no new entries until it refreshes.`
+    );
+  }
+
+  // Per-symbol context, from data already in hand.
+  const byRow = new Map(rows.map((r) => [r.symbol, r]));
+  const context = new Map<string, TfSymbolContext>();
+  for (const runner of race.runners) {
+    const row = byRow.get(runner.symbol);
+    const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
+    const bars = await getFyersCandles(runner.symbol, date, 'EQ').catch(() => [] as StoredFyersBar[]);
+    const sc = deriveSessionContext(bars);
+    const st = supertrend(bars);
+    const ltp = row?.ltp ?? null;
+    context.set(runner.symbol, {
+      supertrendAligned: st == null ? null : side === 'CE' ? st.direction === 'up' : st.direction === 'down',
+      breakout:
+        ltp == null || !sc.openRangeComplete
+          ? null
+          : side === 'CE'
+            ? sc.openRangeHigh != null && ltp > sc.openRangeHigh
+            : sc.openRangeLow != null && ltp < sc.openRangeLow,
+      // Prefer the LIVE oi-spurts reading (matches NSE exactly); fall back to
+      // whatever the quote row recorded. Null stays null — never zero, which
+      // would read as "thin" instead of "unknown" and silently pass a gate.
+      premValueCr: nseOiRowMap.get(runner.symbol)?.premValueCr ?? row?.nsePremValueCr ?? null,
+      // Direction-aware: positive means the move has gone OUR way since 09:45.
+      sinceEntryPct:
+        row?.sinceEntryPct == null ? null : side === 'CE' ? row.sinceEntryPct : -row.sinceEntryPct,
+    });
+  }
+
+  const result = selectTfCandidates(race.runners, context);
+  return {
+    tradeable: true,
+    candidates: result.candidates,
+    summary: {
+      available: true,
+      reason: describeRejections(result.rejected, result.considered),
+      boardAgeMin: ageMin,
+      considered: result.considered,
+      selected: result.candidates.map((c) => ({
+        symbol: c.symbol,
+        side: c.side,
+        tfRFactor: c.tfRFactor,
+        tfRankNow: c.tfRankNow,
+        deltaR: c.deltaR,
+        premValueCr: c.premValueCr,
+      })),
+    },
+  };
+}
+
+/** Minutes past midnight IST, now. */
+function istMinutesNow(): number {
+  const parts = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date());
+  return (
+    Number(parts.find((p) => p.type === 'hour')?.value ?? 0) * 60 +
+    Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
+  );
 }

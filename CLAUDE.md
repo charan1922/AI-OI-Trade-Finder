@@ -66,6 +66,67 @@ Everything trading-critical runs on the server with NO page open. `instrumentati
 
 **`/dhan` page + `GET|POST /api/dhan/status`**: the Dhan sibling of `/fyers` (chips + New-token + Test-call). `GET /api/dhan/status` is STRICTLY PASSIVE (poll-safe) — NEVER poll `GET /api/dhan/token`, which GENERATES a token as a side effect. `POST /api/dhan/status {action:'test-call'}` fetches one RELIANCE quote to prove the token works end-to-end (admin-only via default-deny; works off-hours too).
 
+## TF Running Race is THE trade selector (2026-08-13) — App R-Factor decides nothing
+
+`USE_TF_SELECTOR` (default **on**) makes TradeFinder's Running Race the **only** candidate source for
+`/trade-suggest` and the auto-trader. App R-Factor still renders as a `/live` column; it no longer
+gates, ranks or directs anything. Flipping the flag off restores the previous engine wholesale — that
+is the rollback path.
+
+- **The statistic that forced it:** pairing every graded suggestion with the TF board captured *at or
+  before* it, **TF R-Factor < 1.0 → −0.317R over n=1603, t = −11.12**. 81% of what the old engine
+  considered tradeable sat there. App R-Factor scored those same picks 3.65–6.45 (i.e. "strong") with
+  no discriminating power at all — LUPIN at TF R 0.22, LICI 0.68, BOSCHLTD 0.55, all −1R. The race's
+  `maxRank = 20` cap corresponded to TF R ≈ 1.4 on every measured session, so sub-1.0 names are
+  **structurally unreachable** through this path rather than merely discouraged.
+- **R-Factor is a COUNTER, not a gauge.** Across 107,726 intraday readings TF's R-Factor decreased
+  0.47% of the time — it only ratchets up within a session. The *level* is cumulative money in; the
+  *slope* is money arriving now. `selectTfCandidates` requires **ΔR over 30 min > 0.05**, and a
+  **null ΔR rejects** (unknown ≠ flat). Why: APOLLOHOSP 2026-08-11 froze at R 3.50 from 09:51, held
+  rank **#1 all day**, chopped, and lost. FORTIS 2026-08-12 climbed 1.76 → 4.66 in lockstep with
+  price and paid +2R.
+- **TF R-Factor is DIRECTIONLESS.** CROMPTON topped TF's board on 2026-08-07 while trading −6.39%.
+  Direction comes from TF's own `param_2` % change and **must be confirmed by Supertrend**
+  (+0.075R → +0.227R). **VWAP was tested and rejected** — it diluted every variant it was added to
+  (Supertrend alone +0.227R vs Supertrend+VWAP +0.187R). Do not "restore" it.
+- **No fresh board = no entries.** Past `TF_BOARD_MAX_AGE_MIN` (10) the scanner returns zero picks
+  and says why; there is deliberately **no fallback to the App engine** (that is the −0.199R engine).
+  TF signs this account out roughly daily *and mid-session* — 263 consecutive failures over 3h20m on
+  2026-08-10 — so this is the normal path, not the rare one. Open positions keep being managed.
+- **Missing evidence always rejects.** Null Supertrend, null breakout, null premium pool each drop the
+  name. `selectTfCandidates` never reads "could not check" as "passed".
+- Bench: `npx tsx scripts/verify-tf-selector.ts` (49 pure checks — no lookahead, degenerate-board
+  refusal, frozen-R rejection, tighten-only trailing). Proof harness: `scripts/replay-tf-selector.ts`.
+
+### Exit model: cut at 1R, let winners run (replaces the fixed 1:2 target)
+
+Derived from the operator's benchmark — TradeFinder's Sensibull-verified daily P&L, 23 sessions
+2026-07-09 → 2026-08-10: **every losing day was −0.14R, −0.98R, −0.94R, −0.84R** (never once past 1R)
+while winning days ran **3.5R–9.6R**; 82.6% winning days, profit factor 40.4, all exits 15:31–16:02.
+The high win rate is an **output** of two rules, not a target to aim at.
+
+- **`TRAIL_R = 2`** (`lib/trade-suggest/config.ts`) — no fixed profit target. Once 2R onside the stop
+  advances to (favourable extreme − 2R) and **never loosens**. `TARGET_RR` is now a *displayed*
+  reference only. Measured: the fixed target capped the best available trade at exactly 2.0R;
+  removing it surfaced a **6.4R** winner in the same three sessions.
+- **`MIN_RISK_PCT` 0.35 → 1.0.** Not a tuning change — it fixes two stops that disagreed. For a
+  near-ATM option (delta ≈ 0.5, premium ≈ 2% of spot) a **1% adverse spot move ≈ a 25% premium loss**,
+  so 1.0% is where the spot stop and the existing `OPTION_STOP_PCT` finally describe one policy. At
+  0.35% the spot stop fired ~3× sooner than the premium stop the operator actually chose. Changing
+  only this number moved win rate 42% → 74% and ₹625 → ₹2,184 per trade — **both improved**, which is
+  a bug being removed, not a trade-off. Same lesson as the 2026-07-23 SRF premium-stop widening,
+  which was only ever applied to the premium side.
+- **`dailyLossHaltRupees` 5,000 → 2,500 — ONE full stop ends the day.** This deliberately **inverts**
+  the older "keep the halt above `maxRiskPerLotRupees`" rule, which assumed a fixed-target system
+  where a second trade could recover the first. With winners uncapped, a revenge trade is the worst
+  use of the day's remaining risk. `verify-tf-selector.ts` asserts `halt === maxRiskPerLotRupees` so
+  nobody "fixes" it back.
+- **THETA IS NOT MODELLED and it works against this change.** `grade.ts` and the replay walk the
+  **spot** path; holding an option to 15:12 pays a full day of decay a spot path cannot see, and this
+  model holds *longer* than the one it replaces. Every rupee figure from the replay is optimistic by
+  an unmeasured amount. **Paper mode is the experiment that measures it** — do not promote past paper
+  until the spot-R vs premium-R gap is known.
+
 ## Auto-Trade Module (`lib/auto-trade/`)
 
 AI-driven order execution over the deterministic `/trade-suggest` scanner. Design law: **the AI proposes, code disposes** — every mutating tool re-runs `risk/gates.ts` in code; no prompt failure can bypass a limit.
@@ -100,7 +161,9 @@ Changed 2026-07-23 after reviewing all 9 completed live trades. **Never restore 
 - `backstopsFromProposalFill()` recovers the stop WIDTH from the proposal (`slPremium ÷ entryPremium`) exactly as it recovers the cash target, so changing `optionStopPct` while an approval is pending cannot move levels a human already approved.
 - Evidence is reproducible: `npx tsx scripts/replay-premium-stop.ts` replays every recorded live trade against the new rule and prints its own caveats (n=9 IN-SAMPLE; full-day option prices exist only for 2026-07-23; bid figures are the lowest RETAINED SNAPSHOT, not a continuous tape; lot cost and old stop width are the same underlying variable).
 - The pure stop/risk assertions live in `scripts/premium-stop-checks.ts` and run in **CI** via `verify-quant-shadow.ts`. Do not move money-touching pure checks back into `verify-auto-trade.ts` — that bench needs a populated DB and is box-only, so anything living only there is claimed, not verified.
-- **Keep `dailyLossHaltRupees` above `maxRiskPerLotRupees`** or one full-stop loss ends the day.
+- ~~**Keep `dailyLossHaltRupees` above `maxRiskPerLotRupees`**~~ — **REVERSED 2026-08-13.** One full
+  stop now ends the day *on purpose* (halt = ₹2,500 = the per-lot risk). See the exit-model section
+  above for why the old rule stopped applying once winners became uncapped.
 
 ### Brokers (adapter pattern in `brokers/`)
 

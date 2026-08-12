@@ -113,6 +113,14 @@ jobs:
       # datacentre IP can run for tens of seconds — that mismatch is what filled
       # the network tab with `(canceled)` quotes on 2026-08-12.
       - run: pnpm exec tsx scripts/verify-nse-pulse-cache.ts
+      # DB-free, network-free checks for the TF Running Race selector (the ONLY
+      # candidate source since 2026-08-13) and the trailing stop that replaced
+      # the fixed 1:2 target. Both modules are pure, so the money-touching
+      # properties are verified HERE rather than only in the DB-dependent
+      # verify-auto-trade bench: no lookahead, degenerate boards refused as a
+      # baseline, sub-1.0 TF R structurally unreachable, frozen R rejected,
+      # missing evidence rejected, and the trailing stop tighten-only.
+      - run: pnpm exec tsx scripts/verify-tf-selector.ts
       # DB-free contract for AI context/tool selection: management passes see
       # only held-symbol signals and one authoritative held plan; commentary
       # cards match that context; global blockers suppress entry tools; MiMo

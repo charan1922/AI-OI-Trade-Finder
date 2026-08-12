@@ -38,7 +38,17 @@ export const DEFAULT_SETTINGS: AutoTradeSettings = {
   maxCapitalRupees: 60_000, // user rule: ₹50–60k account — ₹-cap on deployed premium
   optionStopPct: OPTION_STOP_PCT, // premium stop width, sized to the OPTION's own noise
   maxRiskPerLotRupees: MAX_RISK_PER_LOT_RUPEES, // ₹ ceiling per lot — refuses over-sized contracts
-  dailyLossHaltRupees: 5_000, // 2 × the ₹2.5k/lot risk ceiling — then stop for the day
+  // ONE full stop ends the day (= maxRiskPerLotRupees, not 2× it).
+  //
+  // Changed 5_000 → 2_500 on 2026-08-13. This DELIBERATELY inverts the older
+  // "keep the halt above the per-lot risk" note: that rule assumed a fixed-target
+  // system in which a second trade could recover the first. With winners now
+  // uncapped (TRAIL_R in lib/trade-suggest/config.ts), one good trade is worth
+  // several R and a revenge trade after a stop is the worst use of the day's
+  // remaining risk. The operator's benchmark — Sensibull-verified, 23 sessions —
+  // never lost more than 1R in a day (worst: −₹2,460) while winning days ran to
+  // 5–9R; that asymmetry IS the strategy, not a by-product.
+  dailyLossHaltRupees: 2_500,
   profitTargetMode: 'per_trade', // fixed cash profit for the whole position
   profitTargetRupees: 1_100, // requested default; editable without a redeploy
   maxSpreadPct: 3, // option bid-ask ceiling — see ORDER_ENTRY_MAX_SPREAD_PCT below for the evidence
