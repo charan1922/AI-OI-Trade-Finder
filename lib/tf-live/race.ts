@@ -12,7 +12,7 @@
  * this says so rather than inventing a rank from a single data point.
  */
 import { prisma } from '@/lib/db';
-import { parseAllSector } from '@/lib/tf-live/parse';
+import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
 
 /**
  * 09:35 IST, moved back from 09:45 (operator, 2026-08-11) so accumulation that
@@ -259,6 +259,70 @@ export function raceAtMinute(
 }
 
 /**
+ * TF's top-N board as of one minute, WITHOUT the climbed-since-baseline filter.
+ *
+ * Why this exists alongside `raceAtMinute`: rank-climb is a poor proxy for
+ * "accumulating". Rank is relative and has a ceiling, so a name that was
+ * already strong at the 09:35 baseline cannot climb much and disappears from a
+ * climb-filtered list no matter how much money keeps arriving. Measured on the
+ * real boards, that filter hid 6 of TF's top 20 on 2026-08-11 and 8 on
+ * 2026-08-12 — including **PNB at TF R 4.33, the second-strongest name on the
+ * entire board**, whose only crime was starting high.
+ *
+ * It fails the other way too: a name that climbed early and then froze stays on
+ * a climb-filtered list forever. Frozen R measured −0.286R (n=1160) against
+ * +0.474R for genuinely surging names, so the climb filter promotes the losers
+ * and hides the winners.
+ *
+ * `deltaR` is therefore the signal this returns and `climb` is demoted to
+ * context. `raceAtMinute` is deliberately left UNCHANGED — the trade selector
+ * calls it, and altering what the auto-trader sees is a trade-logic decision
+ * that needs its own measurement, not a display change.
+ */
+export function boardAtMinute(
+  boards: TfBoardAt[],
+  asOfMinuteIST: number,
+  topN = 20,
+  lookbackMin = DELTA_R_LOOKBACK_MIN
+): TfRaceAt {
+  const upTo = boards.filter((b) => b.minuteIST <= asOfMinuteIST);
+  if (upTo.length === 0) return EMPTY_RACE_AT;
+
+  const baseline = upTo.find((b) => b.minuteIST >= WINDOW_START_MIN && b.spread >= MIN_SPREAD_SYMBOLS);
+  const now = upTo[upTo.length - 1];
+  const ago = [...upTo].reverse().find((b) => b.minuteIST <= asOfMinuteIST - lookbackMin) ?? null;
+
+  const runners: TfRunnerAt[] = [];
+  for (const [symbol, rankNow] of now.rank) {
+    if (rankNow > topN) continue;
+    const rFactorNow = now.rFactor.get(symbol)!;
+    const rFactorAgo = ago?.rFactor.get(symbol) ?? null;
+    // A name absent from the baseline board has no measurable climb — reported
+    // as its current rank with climb 0, never as a fabricated jump.
+    const rankAtBaseline = baseline?.rank.get(symbol) ?? rankNow;
+    runners.push({
+      symbol,
+      rankNow,
+      rankAtBaseline,
+      climb: rankAtBaseline - rankNow,
+      rFactorNow,
+      rFactorAgo,
+      deltaR: rFactorAgo == null ? null : rFactorNow - rFactorAgo,
+      pctChange: now.pctChange.get(symbol) ?? null,
+    });
+  }
+  runners.sort((a, b) => b.rFactorNow - a.rFactorNow || a.rankNow - b.rankNow);
+
+  return {
+    available: runners.length > 0,
+    boardMinuteIST: now.minuteIST,
+    capturedAt: now.capturedAt,
+    baselineMinuteIST: baseline?.minuteIST ?? null,
+    runners,
+  };
+}
+
+/**
  * Ranks every symbol by TF's own R-Factor at each successful `all_sector`
  * capture inside today's 09:45–11:00 IST window, then reports who climbed
  * from the FIRST capture in that window to the LATEST. `maxRank` keeps the
@@ -373,4 +437,50 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     runners: runners.slice(0, limit),
     newEntrants: newEntrants.slice(0, limit),
   };
+}
+
+/** TradeFinder's own per-INDEX R-Factor — the /sector-scope numbers. */
+export interface TfSectorRow {
+  name: string;
+  rFactor: number | null;
+}
+
+/**
+ * TF's sector board for `date`, strongest first, from the latest successful
+ * `daily-index` capture.
+ *
+ * EVIDENCE ONLY, and deliberately so. It is attached to the scan context so the
+ * operator and the AI can SEE which sectors TradeFinder rates strongest, but
+ * nothing gates, ranks or sizes on it: there is no measurement that sector
+ * R-Factor improves outcomes, and this codebase's standing rule is that an
+ * unmeasured signal does not get to touch the money path. Promoting it needs a
+ * replay showing it separates winners from losers — see the design note in
+ * docs/superpowers/specs/2026-08-13-tf-selector-ranking-and-board-design.md.
+ *
+ * NOTE FOR ANY FUTURE NARRATION: these are R-FACTORS, not percentages. Handing
+ * the raw number to a model invites "BANK is up 3.35%", which is false and
+ * exactly the class of fabrication `describeOptionChain` exists to prevent.
+ * Convert to finished English before it reaches a prompt, and re-run
+ * scripts/dry-run-commentary.ts when you do.
+ */
+export async function getTfSectorBoard(date: string): Promise<{ capturedAt: string | null; rows: TfSectorRow[] }> {
+  try {
+    const rows = (await prisma.$queryRawUnsafe(
+      `SELECT capturedAt, payloadJson FROM tf_live_captures
+       WHERE endpoint = 'daily-index' AND status = 'success'
+         AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
+       ORDER BY capturedAt DESC LIMIT 1`,
+      date
+    )) as { capturedAt: string; payloadJson: string | null }[];
+    const row = rows[0];
+    if (!row?.payloadJson) return { capturedAt: null, rows: [] };
+    const parsed = parseDailyIndex(JSON.parse(row.payloadJson))
+      .filter((r) => r.value != null)
+      .map((r) => ({ name: r.name, rFactor: r.value }))
+      .sort((a, b) => (b.rFactor ?? 0) - (a.rFactor ?? 0));
+    return { capturedAt: row.capturedAt, rows: parsed };
+  } catch {
+    // Missing sector evidence is never an error worth failing a scan over.
+    return { capturedAt: null, rows: [] };
+  }
 }

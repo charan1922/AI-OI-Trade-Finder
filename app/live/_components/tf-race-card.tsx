@@ -53,8 +53,33 @@ interface TfRaceResponse {
   /** True when today has no usable race yet and this is a RETAINED board from an
    *  earlier session. The header says so; a held-over board must never read as live. */
   stale?: boolean;
+  /** TF's top-N by R-Factor — NOT filtered to names that climbed. See the route. */
+  board?: TfBoardRow[];
   error?: string;
 }
+
+/** One row of TF's board, carrying the accumulation RATE and the engine verdict. */
+interface TfBoardRow {
+  symbol: string;
+  rankNow: number;
+  rankAtBaseline: number;
+  climb: number;
+  rFactor: number;
+  deltaR: number | null;
+  pctChange: number | null;
+  side: 'CE' | 'PE';
+  tradeable: boolean;
+  blockedBy: string | null;
+  premValueCr: number | null;
+  sinceEntryPct: number | null;
+  supertrendAligned: boolean | null;
+  breakout: boolean | null;
+}
+
+/** At or below this, TF's R-Factor is not meaningfully advancing — the frozen
+ *  state that measured −0.286R (n=1160) against +0.474R for surging names.
+ *  Mirrors DEFAULT_TF_SELECTOR_CONFIG.minDeltaR. */
+const FROZEN_DELTA_R = 0.05;
 
 /**
  * Screen badge. THREE states, not two — "we could not check" must never look
@@ -149,6 +174,83 @@ function RunnerRow({ r, screen }: { r: TfRaceRunner; screen?: ScreenResult }) {
   );
 }
 
+/**
+ * One board row. Rank is context; the RATE is the signal.
+ *
+ * A frozen name is DIMMED, never hidden — the operator should be able to see
+ * that TF's own #1 has stopped accumulating, which is precisely what the old
+ * climb-filtered list concealed. And a name that never climbed (PNB at TF R
+ * 4.33, second on the whole board) now appears at all.
+ */
+function BoardRow({ r }: { r: TfBoardRow }) {
+  const frozen = r.deltaR == null || r.deltaR <= FROZEN_DELTA_R;
+  const bull = r.side === 'CE';
+  const lines = [
+    `${r.symbol} — TF R-Factor ${r.rFactor.toFixed(2)}, rank #${r.rankNow}${
+      r.climb > 0 ? ` (up ${r.climb} from #${r.rankAtBaseline})` : ` (was #${r.rankAtBaseline} at the baseline)`
+    }`,
+    `Accumulation rate: ${
+      r.deltaR == null
+        ? 'unknown — no board 30 min earlier'
+        : `${r.deltaR >= 0 ? '+' : ''}${r.deltaR.toFixed(2)} TF R over the last 30 min`
+    }`,
+    `TF has it ${bull ? 'up' : 'down'} ${Math.abs(r.pctChange ?? 0).toFixed(2)}% today`,
+    r.premValueCr != null ? `Options premium pool ₹${Math.round(r.premValueCr)} Cr` : 'No options premium reading',
+    r.tradeable ? 'The scanner would take this' : `Not tradeable: ${r.blockedBy}`,
+    'Open chart.',
+  ];
+  return (
+    <div
+      onClick={() =>
+        window.open(
+          `https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(r.symbol)}&interval=5`,
+          '_blank',
+          'noopener,noreferrer'
+        )
+      }
+      title={lines.join('\n')}
+      className={`flex cursor-pointer items-center gap-1 rounded border px-1 py-px hover:bg-muted/60 ${
+        r.tradeable
+          ? 'border-emerald-500/40 bg-emerald-500/5'
+          : frozen
+            ? 'border-border bg-muted/10 opacity-55'
+            : 'border-border bg-muted/30'
+      }`}
+    >
+      <span className="w-6 shrink-0 text-center text-[11px] font-bold text-foreground tabular-nums">#{r.rankNow}</span>
+      <span className="w-16 truncate text-[10px] font-medium text-foreground">{r.symbol}</span>
+      <span
+        className="w-10 shrink-0 text-[10px] font-semibold text-violet-600 tabular-nums dark:text-violet-400"
+        title="TradeFinder's OWN R-Factor — how much big money has gone in today, cumulatively."
+      >
+        {r.rFactor.toFixed(2)}
+      </span>
+      {/* THE signal: the rate money is arriving, not the level already there. */}
+      <span
+        className={`w-11 shrink-0 text-[10px] font-semibold tabular-nums ${
+          frozen ? 'text-muted-foreground' : 'text-emerald-600 dark:text-emerald-400'
+        }`}
+        title="Change in TF R-Factor over the trailing 30 minutes. Flat = the build has stalled."
+      >
+        {r.deltaR == null ? '—' : frozen ? 'flat' : `+${r.deltaR.toFixed(2)}`}
+      </span>
+      <span
+        className={`w-12 shrink-0 text-[9px] tabular-nums ${bull ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
+      >
+        {(r.pctChange ?? 0) >= 0 ? '+' : ''}
+        {(r.pctChange ?? 0).toFixed(2)}%
+      </span>
+      {r.tradeable ? (
+        <span className="ml-auto shrink-0 rounded bg-emerald-500/15 px-1 text-[8px] font-bold text-emerald-700 dark:text-emerald-300">
+          {r.side} ✓
+        </span>
+      ) : (
+        <span className="ml-auto truncate pl-1 text-[8px] text-muted-foreground">{r.blockedBy}</span>
+      )}
+    </div>
+  );
+}
+
 export function TfRaceCard() {
   const [data, setData] = useState<TfRaceResponse | null>(null);
 
@@ -173,6 +275,9 @@ export function TfRaceCard() {
 
   const runners = data?.runners ?? [];
   const newEntrants = data?.newEntrants ?? [];
+  // The full board is preferred when the route supplies it; the climb-filtered
+  // runner list stays as the fallback so an older/failing route still renders.
+  const board = data?.board ?? [];
 
   return (
     <section className="flex h-full flex-col rounded-lg border border-border bg-card">
@@ -203,9 +308,10 @@ export function TfRaceCard() {
       {/* Legend for the badge. Sorted by TF R-Factor, so the caption says so —
           the list is NOT ordered by how far each name climbed. */}
       <p className="border-b border-border px-2 py-1 text-[9px] leading-snug text-muted-foreground">
-        Ordered by TF R-Factor. <span className="font-semibold text-emerald-700 dark:text-emerald-300">screen ✓</span> = also
-        clears your daily screen (close &gt; VWAP, close &gt; prior day&apos;s high, volume &gt; 5,00,000, close &gt; 900).
-        Hover a badge for the numbers. Nothing is hidden — a name that fails the screen is still climbing.
+        TradeFinder&apos;s top 20 by their own R-Factor — columns are rank · TF R · 30-min rate · move.{' '}
+        <span className="font-semibold text-emerald-700 dark:text-emerald-300">Green</span> = the scanner would take it;
+        every other row shows the first gate it fails. <span className="font-semibold">flat</span> = the R-Factor has
+        stopped climbing (the money is already in, none is arriving) — dimmed, never hidden. Hover any row for the numbers.
       </p>
       <div className="flex-1 px-2 py-1.5">
         {!data ? (
@@ -223,6 +329,12 @@ export function TfRaceCard() {
             </a>{' '}
             is capturing successfully.
           </p>
+        ) : board.length > 0 ? (
+          <div className="flex flex-col gap-1">
+            {board.map((r) => (
+              <BoardRow key={r.symbol} r={r} />
+            ))}
+          </div>
         ) : runners.length === 0 && newEntrants.length === 0 ? (
           <p className="py-3 text-center text-[11px] text-muted-foreground">No one&apos;s climbed TF&apos;s board in this window yet.</p>
         ) : (

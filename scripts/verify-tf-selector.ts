@@ -23,7 +23,7 @@ import {
   selectTfCandidates,
   type TfSymbolContext,
 } from '@/lib/tf-live/selector';
-import { raceAtMinute, type TfBoardAt } from '@/lib/tf-live/race';
+import { boardAtMinute, raceAtMinute, type TfBoardAt } from '@/lib/tf-live/race';
 import { isTighterStop, trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
 import { MIN_RISK_PCT, TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK, TRAIL_R } from '@/lib/trade-suggest/config';
 import { DEFAULT_SETTINGS } from '@/lib/auto-trade/config';
@@ -241,6 +241,49 @@ function main(): void {
       `halt ${DEFAULT_SETTINGS.dailyLossHaltRupees} vs risk ${DEFAULT_SETTINGS.maxRiskPerLotRupees}`
     );
     check('paper is not the shipped default mode by accident', DEFAULT_SETTINGS.mode === 'off');
+  }
+
+  // ── 11. The full board hides nothing (the PNB regression) ───────────────
+  // rank-climb is a poor proxy for accumulation: rank is capped, so a name
+  // already strong at the baseline cannot climb. On the real 2026-08-12 board
+  // that hid PNB at TF R 4.33 — the SECOND-strongest name on the whole board.
+  {
+    const boards = [
+      // ALREADY-STRONG never climbs (it is #1 at the baseline and stays #1).
+      board(9 * 60 + 36, [['ALREADYSTRONG', 4.3, 3], ['CLIMBER', 1.1, 2], ...filler(12)]),
+      board(10 * 60 + 6, [['ALREADYSTRONG', 4.3, 3], ['CLIMBER', 2.0, 2], ...filler(12)]),
+      board(10 * 60 + 36, [['ALREADYSTRONG', 4.4, 3], ['CLIMBER', 3.0, 2], ...filler(12)]),
+    ];
+    const race = raceAtMinute(boards, 10 * 60 + 36, TF_RACE_MAX_RANK);
+    const full = boardAtMinute(boards, 10 * 60 + 36, TF_RACE_MAX_RANK);
+    check(
+      'climb-filtered race HIDES an already-strong name',
+      !race.runners.some((r) => r.symbol === 'ALREADYSTRONG')
+    );
+    check('full board SHOWS it', full.runners.some((r) => r.symbol === 'ALREADYSTRONG'));
+    check('full board leads with the highest TF R', full.runners[0]?.symbol === 'ALREADYSTRONG');
+    check(
+      'full board is ordered by TF R desc',
+      full.runners.every((r, i) => i === 0 || full.runners[i - 1].rFactorNow >= r.rFactorNow)
+    );
+    check(
+      'full board still reports the accumulation rate',
+      Math.abs((full.runners.find((r) => r.symbol === 'CLIMBER')?.deltaR ?? 0) - 1.0) < 1e-9
+    );
+    check('a non-climber gets climb 0, never a fabricated jump',
+      full.runners.find((r) => r.symbol === 'ALREADYSTRONG')?.climb === 0);
+  }
+
+  // ── 12. Sector evidence must stay OUT of the selector ──────────────────
+  // The operator asked whether sectors are considered. They are surfaced as
+  // evidence only; if someone later wires sector strength into a gate without
+  // a measurement, this is the check that should stop them.
+  {
+    check(
+      'selectTfCandidates has no sector input at all',
+      !('sector' in DEFAULT_TF_SELECTOR_CONFIG) &&
+        !JSON.stringify(DEFAULT_TF_SELECTOR_CONFIG).toLowerCase().includes('sector')
+    );
   }
 
   console.log(`\n${passed} passed, ${failures.length} failed\n`);
