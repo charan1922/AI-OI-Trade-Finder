@@ -12,8 +12,17 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 const COOKIE_TTL_MS = 3 * 60 * 1000;
+/**
+ * How long to skip the warm-up after it produced nothing. The warm-up costs two
+ * page loads with a 6s timeout each, so a blocked/stalled NSE made every single
+ * API call pay ~12s before even attempting the request (the empty string cached
+ * below fails the truthiness check, so it was never treated as a cache hit).
+ * Backing off means one wasted warm-up per window instead of one per call.
+ */
+const COOKIE_FAILURE_COOLDOWN_MS = 60 * 1000;
 let cookieCache: { value: string; at: number } | null = null;
 let cookiePromise: Promise<string> | null = null;
+let cookieRetryAfter = 0;
 
 export const num = (v: unknown): number => {
   const n = typeof v === 'string' ? Number(v) : (v as number);
@@ -67,10 +76,18 @@ async function getCookie(force = false): Promise<string> {
   }
   // Dedupe: if a warm-up is already in flight, share it instead of stampeding NSE.
   if (cookiePromise) return cookiePromise;
+  // The last warm-up came back empty — don't burn another ~12s on it yet. NSE
+  // sometimes still answers the API without a fresh cookie, so we go on and try.
+  if (!force && Date.now() < cookieRetryAfter) return cookieCache?.value ?? '';
   cookiePromise = (async () => {
     try {
       const value = await freshCookie();
-      cookieCache = { value, at: Date.now() };
+      if (value) {
+        cookieCache = { value, at: Date.now() };
+        cookieRetryAfter = 0;
+      } else {
+        cookieRetryAfter = Date.now() + COOKIE_FAILURE_COOLDOWN_MS;
+      }
       return value;
     } finally {
       cookiePromise = null;

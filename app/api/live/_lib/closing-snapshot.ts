@@ -34,7 +34,7 @@ import {
   getLatestSnapshotDate,
 } from '@/lib/signals/oi-intraday';
 import { type EodRow, getEodForDate, hasEodCapture, insertEodRows } from '@/lib/signals/live-urgency-eod';
-import { getNseOiRowMap } from '@/lib/nse/combined-oi';
+import { getNseOiRowMap, LIVE_PATH_NSE_WAIT_MS } from '@/lib/nse/combined-oi';
 import { classifyFno, excludeReasonLabel, loadFnoUniverse } from './fno-universe';
 import { getMorningContext } from './morning-candles';
 import { buildLiveRFactorInput } from './rfactor-inputs';
@@ -277,7 +277,9 @@ async function getFrozenRows(
  * into live_urgency_eod — this is a display-only join, mutating the rows in place.
  */
 async function attachOiSpurtsColumns(rows: LiveUrgencyRow[]): Promise<void> {
-  const map = await getNseOiRowMap().catch(() => new Map());
+  // Same wait cap as the market-hours path: this runs inside POST /api/live/quote,
+  // whose client abandons the request after 8s.
+  const map = await getNseOiRowMap({ maxWaitMs: LIVE_PATH_NSE_WAIT_MS }).catch(() => new Map());
   for (const r of rows) {
     const o = map.get(r.symbol);
     r.nseChgOiPct = o?.changeInOiPct ?? null;

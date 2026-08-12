@@ -106,6 +106,13 @@ jobs:
       # stale-candle ENTRY gate (fresh→allow, stale/missing→reject, block OFF→
       # existing gates decide). Same reproducible `pnpm exec tsx` runner.
       - run: pnpm exec tsx scripts/verify-freshness-gate.ts
+      # DB-free, network-free checks for the NSE pulse cache's latency guards:
+      # concurrent-miss coalescing, the post-failure cooldown, the per-caller
+      # wait cap and its honest stale flagging. POST /api/live/quote awaits this
+      # feed and the /live client gives up after 8s, while an NSE miss from a
+      # datacentre IP can run for tens of seconds — that mismatch is what filled
+      # the network tab with `(canceled)` quotes on 2026-08-12.
+      - run: pnpm exec tsx scripts/verify-nse-pulse-cache.ts
       # DB-free contract for AI context/tool selection: management passes see
       # only held-symbol signals and one authoritative held plan; commentary
       # cards match that context; global blockers suppress entry tools; MiMo
