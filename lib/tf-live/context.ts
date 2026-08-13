@@ -20,9 +20,10 @@
  * A verdict shown against a 10:30 board is therefore the verdict that was
  * available at 10:30 — never one improved by the rest of the day.
  *
- * MISSING EVIDENCE STAYS NULL. Never zero, never false. `selectTfCandidates`
- * treats null as a rejection, and a fabricated 0 would read as "thin" instead of
- * "unknown" and quietly pass a gate it should fail.
+ * MISSING EVIDENCE STAYS NULL. Never zero, never false. The selector rejects a
+ * missing breakout or premium pool; Supertrend is display-only and ignored.
+ * A fabricated 0 would read as "thin" instead of "unknown" and hide the real
+ * data-quality failure.
  */
 
 import { prisma } from '@/lib/db';
@@ -50,7 +51,7 @@ function bucketMinuteIST(bucketTs: number): number {
 
 export interface TfContextRequest {
   symbol: string;
-  /** Direction under consideration — Supertrend and breakout are direction-aware. */
+  /** Direction under consideration — breakout and display-only Supertrend are direction-aware. */
   side: 'CE' | 'PE';
 }
 

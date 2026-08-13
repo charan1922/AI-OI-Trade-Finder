@@ -5,11 +5,11 @@ node_modules
 dist
 out
 
-# Local persistent state — the DB, token caches and parquet live on the Railway
+# Local persistent state — the DB, token caches and parquet live on the AWS host
 # volume at runtime, never baked into the image (also keeps secrets out).
 data
 
-# Secrets — set these as Railway service variables instead.
+# Secrets — injected as production environment variables instead.
 .env
 .env.*
 *.local
@@ -17,8 +17,9 @@ data
 # Dev-only standalone tooling (tsx scripts, replay harness). Not part of the
 # deployable app, and some import dev-only modules (e.g. dotenv) that aren't
 # dependencies — keeping them out of the image avoids type-checking them in the
-# production `next build`. Nothing in app/lib/components imports from here.
-scripts
+# production `next build`. The startup migration below is the runtime exception.
+scripts/*
+!scripts/migrate-option-chain-table.ts
 
 # Docs, notes, design vaults and validation journals — referenced only in code
 # COMMENTS, never imported/read at runtime (verified: no app/lib/components
