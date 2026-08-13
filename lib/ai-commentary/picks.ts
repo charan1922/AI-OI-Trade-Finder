@@ -6,6 +6,7 @@
  * the trade-suggest page). Pure data — no React.
  */
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
+import { tfSelectedSuggestions } from '@/lib/trade-suggest/tf-provenance';
 import type { DecisionOpenPosition } from '@/lib/auto-trade/decision/context-policy';
 import { rFactorAtRaw } from '@/lib/r-factor/scale';
 
@@ -41,7 +42,7 @@ const fmt = (v: number | null | undefined, d = 2) => (v == null ? '—' : v.toFi
 
 /** Build the pill rows for each suggestion (mirrors trade-suggest PickCard chips). */
 export function buildPicks(result: SuggestResponse): StoredPick[] {
-  return (result.suggestions ?? []).map((p) => {
+  return tfSelectedSuggestions(result).map((p) => {
     const f = p.factors;
     const bull = p.direction === 'bullish';
     const chips: Chip[] = [
@@ -72,13 +73,13 @@ export function buildPicks(result: SuggestResponse): StoredPick[] {
         tone: b.grade === 'strong' || b.grade === 'confirmed' ? 'good' : b.grade === 'fakeout-risk' ? 'warn' : 'info',
       });
     }
+    if (f?.vwap != null) chips.push({ label: 'VWAP', value: fmt(f.vwap), tone: f.vwapAligned ? 'good' : 'warn' });
     if (f?.supertrend != null)
       chips.push({
         label: 'Supertrend',
         value: `${f.supertrend === 'up' ? '↑' : '↓'} ${fmt(f.supertrendLine)}`,
         tone: f.supertrendAligned ? 'good' : 'warn',
       });
-    if (f?.vwap != null) chips.push({ label: 'VWAP', value: fmt(f.vwap), tone: f.vwapAligned ? 'good' : 'warn' });
     if (f?.sectorAligned != null && f?.sectorPct != null)
       chips.push({
         label: 'Sector',

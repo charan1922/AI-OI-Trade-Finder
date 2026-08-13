@@ -15,7 +15,7 @@ timestamp: 2026-07-05T00:00:00Z
 The candidate pool for [trade-suggest](../engine/index.md) — exactly what the
 `/nse/movers` page surfaces (the user's primary hunting ground).
 
-## Feeds (`CANDIDATE_SOURCES`)
+## Legacy mover feeds
 
 | Source | Content |
 |--------|---------|

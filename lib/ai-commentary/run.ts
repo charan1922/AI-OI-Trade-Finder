@@ -15,6 +15,7 @@ import { isTelegramConfigured, sendCommentaryToTelegram } from '@/lib/telegram';
 import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import { getTradesByDate } from '@/lib/auto-trade/store';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
+import { tfSelectedSuggestions } from '@/lib/trade-suggest/tf-provenance';
 import { COMMENTARY_SYSTEM, generateCommentary } from './generate';
 import { buildPicks } from './picks';
 import { getCommentary, insertCommentary } from './store';
@@ -114,7 +115,7 @@ export async function runAndStoreCommentary(
       date: today,
       asOf: result.window?.nowIST ? `${today} ${result.window.nowIST}` : new Date().toISOString(),
       windowActive: Boolean(result.window?.active),
-      picksCount: result.suggestions?.length ?? 0,
+      picksCount: tfSelectedSuggestions(result).length,
       model: c.model,
       text: c.text,
       picks: buildPicks(result),

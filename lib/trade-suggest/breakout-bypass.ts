@@ -19,9 +19,8 @@
  * EXIDEIND 2026-07-07: no OI, no breakout, −1R). This module is the predicate;
  * the caller supplies the already-derived breakout/trend booleans.
  *
- * PURE (no imports) so it can be unit-tested and driven by the replay harness.
- * Opt-in via USE_BREAKOUT_BYPASS in config.ts — off until the replay shows it
- * catches the breakout winners without letting junk through.
+ * Historical replay predicate only. The live TF-only engine has no breakout
+ * bypass toggle or OI admission gate; this remains for point-in-time research.
  */
 
 import { rFactorAtRaw } from '@/lib/r-factor/scale';

@@ -6,7 +6,7 @@ import { isTradingDay, todayIST } from '@/lib/dhan/market-feed';
 import { screenDaily, type ScreenResult } from '@/lib/signals/daily-screen';
 import { boardAtMinute, getTfBoardsForDate, getTfRaceForWindow, istMinutesNow } from '@/lib/tf-live/race';
 import { buildRecordedTfContext } from '@/lib/tf-live/context';
-import { DEFAULT_TF_SELECTOR_CONFIG, selectTfCandidates } from '@/lib/tf-live/selector';
+import { LIVE_TF_SELECTOR_CONFIG, selectTfCandidates } from '@/lib/tf-live/selector';
 import { TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK } from '@/lib/trade-suggest/config';
 
 export const dynamic = 'force-dynamic';
@@ -161,7 +161,7 @@ export async function GET(req: Request) {
         side: (r.pctChange ?? 0) > 0 ? ('CE' as const) : ('PE' as const),
       }));
       const context = await buildRecordedTfContext(date, entries, asOfMinute);
-      const picked = new Set(selectTfCandidates(full.runners, context).candidates.map((c) => c.symbol));
+      const picked = new Set(selectTfCandidates(full.runners, context, LIVE_TF_SELECTOR_CONFIG).candidates.map((c) => c.symbol));
 
       board = full.runners.map((r) => {
         const side: 'CE' | 'PE' = (r.pctChange ?? 0) > 0 ? 'CE' : 'PE';
@@ -250,13 +250,11 @@ function firstBlock(
   pctChange: number | null,
   ctx: { supertrendAligned: boolean | null; breakout: boolean | null; premValueCr: number | null; sinceEntryPct: number | null } | undefined
 ): string {
-  const cfg = DEFAULT_TF_SELECTOR_CONFIG;
+  const cfg = LIVE_TF_SELECTOR_CONFIG;
   if (deltaR == null) return 'no earlier board to measure the rate';
   if (deltaR <= cfg.minDeltaR) return 'R-Factor stopped climbing';
   if (pctChange == null || Math.abs(pctChange) < cfg.minAbsPctChange) return 'not moving enough to call a direction';
   if (ctx == null) return 'no recorded evidence';
-  if (ctx.supertrendAligned == null) return 'too few candles for Supertrend';
-  if (!ctx.supertrendAligned) return 'Supertrend disagrees';
   if (cfg.requireBreakout && ctx.breakout !== true) return 'no opening-range breakout';
   if (ctx.premValueCr == null) return 'no options premium reading';
   if (ctx.premValueCr < cfg.minPremValueCr) return `options pool only Rs ${Math.round(ctx.premValueCr)} Cr`;

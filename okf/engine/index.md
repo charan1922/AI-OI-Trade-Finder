@@ -2,9 +2,9 @@
 type: Index
 title: Trade-Suggest engine
 description: >
-  The /trade-suggest option engine — scans the NSE movers feeds in the
-  09:40–11:00 window, hard-gates on the TF fingerprint, scores survivors,
-  resolves near-ATM contracts, and builds two-layer exit plans. Analysis only.
+  The /trade-suggest option engine — takes only fresh TradeFinder Running Race
+  climbers, applies tradeability gates, resolves near-ATM contracts, and builds
+  two-layer exit plans. Analysis only.
 resource: lib/trade-suggest
 tags: [engine, trade-suggest, options, index]
 timestamp: 2026-07-05T00:00:00Z
@@ -12,7 +12,7 @@ timestamp: 2026-07-05T00:00:00Z
 
 # Trade-Suggest engine
 
-Produces up to 3 ranked near-ATM option picks (CE for bullish, PE for bearish)
+Produces up to `MAX_PICKS` ranked near-ATM option picks (CE for bullish, PE for bearish)
 during the morning window. It **never places orders** — it is signal analysis.
 Config lives in one file (`lib/trade-suggest/config.ts`); the scoring + plan math
 is pure and shared with the [replay harness](../method/point-in-time-replay.md).
@@ -20,9 +20,8 @@ is pure and shared with the [replay harness](../method/point-in-time-replay.md).
 ## Flow
 
 1. **Window + market gate** — only 09:40–11:00 IST on a trading day ([window.md](window.md)).
-2. **Candidates** — union of the NSE movers feeds (`CANDIDATE_SOURCES`): OI spurts,
-   F&O gainers/losers, most-active by value and by volume. All F&O-gated. See
-   [data-sources/nse-feeds.md](../data-sources/nse-feeds.md).
+2. **Candidates** — current TradeFinder Running Race climbers only, filtered to
+   tradeable F&O names. Missing/stale TF data produces no entry candidates.
 3. **Hard gates** — a candidate must clear ALL ([gates.md](gates.md)).
 4. **Composite score** — rank survivors ([scoring.md](scoring.md)); top `MAX_PICKS = 3`.
 5. **Option plan** — resolve the nearest ATM strike on the nearest monthly expiry

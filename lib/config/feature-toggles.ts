@@ -17,14 +17,10 @@ import { BLOCK_STALE_AUTO_ENTRY } from '@/lib/priority-refresh/config';
 import {
   EXCLUDE_EXTENDED,
   MAX_PICKS,
-  SCAN_FULL_UNIVERSE,
   SCAN_OUTSIDE_WINDOW,
-  USE_BREAKOUT_BYPASS,
   USE_CHAOTIC_OPEN_GATE,
   USE_EXTENDED_TREND_BYPASS,
-  USE_MOMENTUM_BREAKOUT,
   USE_MOVE_FRESHNESS_GATE,
-  USE_RANK_CLIMB_GATE,
   USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
   WINDOW_START_MIN,
@@ -43,28 +39,12 @@ export interface ToggleDef {
  *  write to any key not listed here is rejected. */
 export const TOGGLE_DEFS: ToggleDef[] = [
   {
-    key: 'USE_BREAKOUT_BYPASS',
-    label: 'Breakout bypass',
-    category: 'Trade Suggest',
-    default: USE_BREAKOUT_BYPASS,
-    description:
-      'Normally a stock is only suggested when "open interest" (how many option/futures contracts big players are holding) is clearly rising — proof that money is flowing in. Some fast stocks jump on price first and that proof only shows up later, so the normal rule skips them. ON: a stock with no open-interest proof yet can still qualify — but only if its price has clearly broken above its early-morning range in the trade direction, the trend indicators agree, and its overall strength score is high. OFF (default): open-interest proof is always required. Trade-off: ON catches early breakouts but on thinner proof — keep OFF until the nightly test shows it picks more winners than junk.',
-  },
-  {
     key: 'USE_TF_BREAKOUT_GATE',
     label: 'TF breakout gate',
     category: 'Trade Suggest',
     default: USE_TF_BREAKOUT_GATE,
     description:
       'An extra-strict filter on top of the normal rules. ON: a stock is suggested only when its Breakout badge (the /live column) says the breakout is CONFIRMED in the trade direction — the morning low held (for buys) or the morning high held (for sells), AND price has already cleared an important level such as the early-morning-range high, yesterday’s high, or a multi-day high. Stocks still forming, looking like a false breakout, or missing data are dropped (the scan shows how many). OFF (default): the badge is shown as information only and never blocks a suggestion. Keep OFF for now — testing showed the breakout signal points the right way at the right time, but filtering on it has NOT yet been shown to produce better trades.',
-  },
-  {
-    key: 'SCAN_FULL_UNIVERSE',
-    label: 'Scan the full F&O universe',
-    category: 'Trade Suggest',
-    default: SCAN_FULL_UNIVERSE,
-    description:
-      'How many stocks the scanner even looks at. OFF (default): only the stocks already on NSE’s "movers" lists — biggest open-interest jumps, top gainers, top losers, most active — the same names the /nse/movers page shows (usually 50–80). ON: it checks all ~166 tradeable F&O stocks instead. The quality rules are the same either way — this only widens who gets LOOKED at, not who qualifies. ON also records data for every stock, which the nightly test needs.',
   },
   {
     key: 'SCAN_OUTSIDE_WINDOW',
@@ -97,22 +77,6 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     default: USE_CHAOTIC_OPEN_GATE,
     description:
       'Skip a stock whose FIRST 15 MINUTES were a wild spike compared to its own normal pace (more than 5× its usual 5-minute bar). Why: a stock that burns all its energy at the open tends to fade right after — both auto-trade losers opened this wildly and faded within 30 minutes, while the winners opened calmer and trended. The 5× line is deliberately not tighter: a 4× line would have wrongly blocked some genuine trend days. ON (default): wild-open stocks are skipped; the scan shows how many. OFF: the open is still noted on each pick as information. Honest note: this rests on only 2 recorded days — the nightly scorecard is still gathering proof, and this switch comes OFF if results turn against it.',
-  },
-  {
-    key: 'USE_RANK_CLIMB_GATE',
-    label: 'Rank-climb catch path',
-    category: 'Trade Suggest',
-    default: USE_RANK_CLIMB_GATE,
-    description:
-      'A stock with only a small rise in open interest (1–5%, below the usual 5% bar) can still qualify on the options path IF it is actively climbing NSE’s movers leaderboard (top gainers or open-interest board) over the last ~30 minutes and its options activity checks out. This catches the kind of stock we once missed while others made money on it. ON: turns this extra path on. OFF (default): only the plain 5% rule qualifies — exactly like the proven version. It ships OFF for the live-trading start; turn it ON here once live has run cleanly for a few days. Evidence so far is just 1 day, tracked by the nightly test.',
-  },
-  {
-    key: 'USE_MOMENTUM_BREAKOUT',
-    label: 'Momentum-breakout path',
-    category: 'Trade Suggest',
-    default: USE_MOMENTUM_BREAKOUT,
-    description:
-      'A fourth way for a stock to qualify, built for "short-covering" breakouts — price rising while open interest FALLS (traders who bet against it rushing to exit). These score badly on every normal rule by design, yet can be big winners. ON: a stock with no build-up evidence at all (low strength score, no open-interest build, quiet setup) can still be suggested — but ONLY with a confirmed early-morning-range breakout, BOTH trend tools agreeing, and at least a 1.5% move from the open in the trade direction. Liquidity, activity and direction rules still apply. OFF (default): keep it off until the nightly test proves it catches these winners without letting false breakouts through over several days — one good day is not proof.',
   },
   {
     key: 'USE_MOVE_FRESHNESS_GATE',

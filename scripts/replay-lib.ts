@@ -44,8 +44,6 @@ import { atr, sessionVwap, supertrend } from '../lib/signals/indicators';
 import { computeOiUrgency, type OiPoint } from '../lib/signals/oi-intraday';
 import { deriveSessionContext } from '../lib/signals/session-context';
 import {
-  BREAKOUT_BYPASS_MIN_RFACTOR,
-  BREAKOUT_BYPASS_REQUIRE_TREND,
   EXCLUDE_EXTENDED,
   EXTENDED_BYPASS_MIN_RFACTOR,
   EXTENDED_BYPASS_REQUIRE_SUPERTREND,
@@ -59,25 +57,21 @@ import {
   MIN_OPT_SHARE,
   MIN_RFACTOR,
   MIN_TURNOVER_SCORE,
-  MOMENTUM_MIN_CHANGE_PCT,
-  RANK_CLIMB_MIN_NSE_OI_PCT,
-  RANK_CLIMB_MIN_SPOTS,
   SL_ATR_MULT,
   TARGET_RR,
-  USE_BREAKOUT_BYPASS,
   USE_EXTENDED_TREND_BYPASS,
-  USE_MOMENTUM_BREAKOUT,
-  USE_RANK_CLIMB_GATE,
   WEIGHTS,
 } from '../lib/trade-suggest/config';
 import { getToggle } from '../lib/config/feature-toggles';
-import { qualifiesByBreakout } from '../lib/trade-suggest/breakout-bypass';
+import { DEFAULT_BREAKOUT_BYPASS_CONFIG, qualifiesByBreakout } from '../lib/trade-suggest/breakout-bypass';
 import { qualifiesExtendedTrend } from '../lib/trade-suggest/extended-bypass';
-import { qualifiesMomentumBreakout } from '../lib/trade-suggest/momentum-breakout';
+import { DEFAULT_MOMENTUM_BREAKOUT_CONFIG, qualifiesMomentumBreakout } from '../lib/trade-suggest/momentum-breakout';
 import { buildSpotPlan, computeCompositeScore, type ScoreWeights } from '../lib/trade-suggest/scoring';
 
 const db = new Database('./data/project-r.db', { readonly: true });
 const REPLAY_DAILY_TRADE_CAP = 2;
+const HISTORICAL_RANK_CLIMB_MIN_SPOTS = 1;
+const HISTORICAL_RANK_CLIMB_MIN_NSE_OI_PCT = 1;
 
 /** Harness modes (NOT strategy knobs — those live on Variant).
  *  allFires: drop the daily trade cap so EVERY first-seen qualified fire is
@@ -129,7 +123,7 @@ export interface Variant {
    *  (pct-points; lib/signals/combined-oi-slope.ts) — "the build must be
    *  live, not a stale morning print". Null = off (prod has no slope gate). */
   minNseOiSlope: number | null;
-  /** Rank-climb CATCH path (USE_RANK_CLIMB_GATE, live since 2026-07-17) —
+  /** Historical rank-climb CATCH path —
    *  mirrors engine.ts exactly: the ≥minNseOiPct rule is untouched, and
    *  ADDITIONALLY a smaller build (≥ rankClimbMinNsePct, < minNseOiPct) with
    *  qualifying options legs passes IF the name is CLIMBING the gainers/OI
@@ -191,15 +185,15 @@ export const SHIPPED_VARIANT: Variant = {
   minConfidence: MIN_CONFIDENCE,
   minOiLevel: MIN_OI_LEVEL,
   minNseOiPct: MIN_NSE_OI_PCT,
-  breakoutBypass: USE_BREAKOUT_BYPASS,
-  breakoutMinRFactor: BREAKOUT_BYPASS_MIN_RFACTOR,
-  breakoutRequireTrend: BREAKOUT_BYPASS_REQUIRE_TREND,
-  momentumBreakout: USE_MOMENTUM_BREAKOUT,
-  momentumMinChangePct: MOMENTUM_MIN_CHANGE_PCT,
+  breakoutBypass: false,
+  breakoutMinRFactor: DEFAULT_BREAKOUT_BYPASS_CONFIG.minRFactor,
+  breakoutRequireTrend: DEFAULT_BREAKOUT_BYPASS_CONFIG.requireTrendAlign,
+  momentumBreakout: false,
+  momentumMinChangePct: DEFAULT_MOMENTUM_BREAKOUT_CONFIG.minChangePct,
   minNseOiSlope: null,
-  rankClimbCatch: USE_RANK_CLIMB_GATE,
-  rankClimbMinSpots: RANK_CLIMB_MIN_SPOTS,
-  rankClimbMinNsePct: RANK_CLIMB_MIN_NSE_OI_PCT,
+  rankClimbCatch: false,
+  rankClimbMinSpots: HISTORICAL_RANK_CLIMB_MIN_SPOTS,
+  rankClimbMinNsePct: HISTORICAL_RANK_CLIMB_MIN_NSE_OI_PCT,
   rankClimbGainersOnly: false,
   rankClimbMaxRank: null,
   requireSectorAlign: false,
@@ -217,26 +211,23 @@ export const SHIPPED_VARIANT: Variant = {
  * "replay it first", and the replay could not reproduce it.
  *
  * NOT modelled by Variant, so still not covered by any replay: MAX_PICKS,
- * SCAN_OUTSIDE_WINDOW, SCAN_FULL_UNIVERSE, USE_TF_BREAKOUT_GATE and
+ * SCAN_OUTSIDE_WINDOW, USE_TF_BREAKOUT_GATE and
  * USE_CHAOTIC_OPEN_GATE. Treat a replay as evidence about the gates it models,
  * not as a full simulation of the live scanner.
  */
 export async function loadLiveVariant(): Promise<Variant> {
-  const [banExtended, extendedTrendBypass, breakoutBypass, momentumBreakout, rankClimbCatch] = await Promise.all([
+  const [banExtended, extendedTrendBypass] = await Promise.all([
     getToggle('EXCLUDE_EXTENDED', EXCLUDE_EXTENDED),
     getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS),
-    getToggle('USE_BREAKOUT_BYPASS', USE_BREAKOUT_BYPASS),
-    getToggle('USE_MOMENTUM_BREAKOUT', USE_MOMENTUM_BREAKOUT),
-    getToggle('USE_RANK_CLIMB_GATE', USE_RANK_CLIMB_GATE),
   ]);
   return {
     ...SHIPPED_VARIANT,
     name: 'live (DB toggles)',
     banExtended,
     extendedTrendBypass,
-    breakoutBypass,
-    momentumBreakout,
-    rankClimbCatch,
+    breakoutBypass: false,
+    momentumBreakout: false,
+    rankClimbCatch: false,
   };
 }
 
@@ -246,9 +237,6 @@ export function describeVariantDrift(live: Variant): string[] {
   const pairs: [string, boolean, boolean][] = [
     ['EXCLUDE_EXTENDED', live.banExtended, SHIPPED_VARIANT.banExtended],
     ['USE_EXTENDED_TREND_BYPASS', live.extendedTrendBypass ?? false, SHIPPED_VARIANT.extendedTrendBypass ?? false],
-    ['USE_BREAKOUT_BYPASS', live.breakoutBypass, SHIPPED_VARIANT.breakoutBypass],
-    ['USE_MOMENTUM_BREAKOUT', live.momentumBreakout, SHIPPED_VARIANT.momentumBreakout],
-    ['USE_RANK_CLIMB_GATE', live.rankClimbCatch, SHIPPED_VARIANT.rankClimbCatch],
   ];
   return pairs
     .filter(([, now, file]) => now !== file)

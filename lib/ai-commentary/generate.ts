@@ -10,6 +10,7 @@ import { getNumberSetting } from '@/lib/config/feature-toggles';
 import { minuteOfDayIST } from '@/lib/ist';
 import { getCachedOptionEvidence } from '@/lib/option-chain';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
+import { tfSelectedSuggestions } from '@/lib/trade-suggest/tf-provenance';
 import { getMimoClient, getMimoModel } from './client';
 
 /**
@@ -292,7 +293,8 @@ function trimForPrompt(r: SuggestResponse): unknown {
   // DOING — call writing, put unwinding, where the premium is going — which is
   // exactly the texture the operator reads by hand in Dhan and wants narrated.
   // Do not promote it to a filter without re-running that study.
-  const optionEvidence = getCachedOptionEvidence((r.suggestions ?? []).map((s) => s.symbol));
+  const suggestions = tfSelectedSuggestions(r);
+  const optionEvidence = getCachedOptionEvidence(suggestions.map((suggestion) => suggestion.symbol));
   return {
     window: r.window,
     scanned: r.scanned,
@@ -312,7 +314,7 @@ function trimForPrompt(r: SuggestResponse): unknown {
       targetSpot: t.targetSpot,
       ltp: t.ltp,
     })),
-    suggestions: (r.suggestions ?? []).map((s) => ({
+    suggestions: suggestions.map((s) => ({
       symbol: s.symbol,
       direction: s.direction,
       side: s.option?.optionType ?? (s.direction === 'bullish' ? 'CE' : 'PE'),
@@ -362,7 +364,7 @@ function trimForPrompt(r: SuggestResponse): unknown {
       targetSpot: s.plan.targetSpot,
       premium: s.option?.premium?.ltp ?? null,
       perLotCost: s.option?.premium?.perLotCost ?? null,
-      // Evidence/caution factors — the ⚠ signals (Supertrend, VWAP, sector, OI rate).
+      // Evidence/caution factors — Supertrend, VWAP, sector, OI rate, liquidity and volatility.
       factors: s.factors && {
         vwapAligned: s.factors.vwapAligned,
         supertrend: s.factors.supertrend,

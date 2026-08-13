@@ -150,7 +150,7 @@ function main(): void {
     }
     // No context row at all.
     const none = selectTfCandidates([{ symbol: 'X', ...base }], new Map());
-    check('rejects: no context row at all', none.candidates.length === 0);
+    check('rejects: no context row at all', none.candidates.length === 0 && none.rejected.noBoard === 1);
     // A null deltaR is UNKNOWN, and unknown must not be treated as flat-but-ok.
     const nullDelta = selectTfCandidates(
       [{ symbol: 'X', ...base, rFactorAgo: null, deltaR: null }],

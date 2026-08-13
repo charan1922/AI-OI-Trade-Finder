@@ -31,12 +31,8 @@ import { resolveStockOptionFromMaster, type StockOptionResolution } from '@/lib/
 import { aggregateSectors, type SectorAggregate } from '@/lib/sector/aggregate';
 import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
-import { detectRegime } from '@/lib/signals/regime-detector';
-import { getRecentRankClimbs } from '@/lib/signals/rank-tracker';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
-  BREAKOUT_BYPASS_MIN_RFACTOR,
-  BREAKOUT_BYPASS_REQUIRE_TREND,
   CAPITAL_BUDGET,
   CHAOTIC_OPEN_MAX_RATIO,
   EXCLUDE_EXTENDED,
@@ -44,28 +40,16 @@ import {
   EXTENDED_BYPASS_REQUIRE_SUPERTREND,
   MAX_PICKS,
   SUGGESTION_MAX_SPREAD_PCT,
-  MIN_CONFIDENCE,
   MIN_NSE_OI_PCT,
   MIN_OI_LEVEL,
-  MIN_OPT_PREMIUM_CR,
-  MIN_OPT_SHARE,
-  MIN_RFACTOR,
   TF_BOARD_MAX_AGE_MIN,
   TF_RACE_MAX_RANK,
-  USE_TF_SELECTOR,
-  MIN_TURNOVER_SCORE,
-  MOMENTUM_MIN_CHANGE_PCT,
   PICK_OVERSAMPLE,
-  RANK_CLIMB_MIN_NSE_OI_PCT,
-  RANK_CLIMB_MIN_SPOTS,
   SCAN_OUTSIDE_WINDOW,
   SL_ATR_MULT,
-  USE_BREAKOUT_BYPASS,
   USE_CHAOTIC_OPEN_GATE,
   USE_EXTENDED_TREND_BYPASS,
-  USE_MOMENTUM_BREAKOUT,
   USE_MOVE_FRESHNESS_GATE,
-  USE_RANK_CLIMB_GATE,
   USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
   WINDOW_START_MIN,
@@ -79,12 +63,10 @@ import {
   internalOrigin,
   type CandidateSnapshot,
 } from '@/lib/trade-suggest/candidates';
-import { qualifiesByBreakout } from '@/lib/trade-suggest/breakout-bypass';
 import { chaoticOpenRatio } from '@/lib/trade-suggest/chaotic-open';
 import { detectConsolidationBreakout } from '@/lib/trade-suggest/consolidation-breakout';
 import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
 import { classifyMoveFreshness, isStaleMove, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
-import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
 import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
 // istMinutesNow is imported, NOT redefined here. It was duplicated in this file
 // while /api/tf/race used the exported copy — two implementations of the same
@@ -303,15 +285,11 @@ export async function runTradeSuggest(
 
   // Runtime feature toggles (flipped from /config; config.ts values are the
   // defaults/fallback). Resolved once here, not per-candidate.
-  const useBreakoutBypass = await getToggle('USE_BREAKOUT_BYPASS', USE_BREAKOUT_BYPASS);
   const excludeExtended = await getToggle('EXCLUDE_EXTENDED', EXCLUDE_EXTENDED);
   const useExtendedTrendBypass = await getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS);
   const useTfBreakoutGate = await getToggle('USE_TF_BREAKOUT_GATE', USE_TF_BREAKOUT_GATE);
-  const useMomentumBreakout = await getToggle('USE_MOMENTUM_BREAKOUT', USE_MOMENTUM_BREAKOUT);
   const useChaoticOpenGate = await getToggle('USE_CHAOTIC_OPEN_GATE', USE_CHAOTIC_OPEN_GATE);
-  const useRankClimbGate = await getToggle('USE_RANK_CLIMB_GATE', USE_RANK_CLIMB_GATE);
   const useMoveFreshnessGate = await getToggle('USE_MOVE_FRESHNESS_GATE', USE_MOVE_FRESHNESS_GATE);
-  const useTfSelector = await getToggle('USE_TF_SELECTOR', USE_TF_SELECTOR);
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
   // Capital budget = the auto-trade page's editable maxCapitalRupees (one source
   // of truth). A pick whose single lot costs more than this is skipped, so the
@@ -340,11 +318,10 @@ export async function runTradeSuggest(
     console.warn(`${TAG} TradeFinder snapshot unavailable: ${(err as Error).message}`);
   }
 
-  // 1. Candidates from the live NSE feeds (F&O-gated, sector attached),
-  //    widened to the full tracked universe when SCAN_FULL_UNIVERSE is on
+  // 1. Current TF Running Race candidates (F&O-gated, sector attached). The
+  //    discovery path has no legacy NSE-mover/full-universe fallback.
   const candidateSnapshot = opts.candidateSnapshot ?? (await discoverCandidateSnapshot());
   const sectorBySymbol = new Map(candidateSnapshot.sectorEntries);
-  const oiSpurtSymbols = new Set(candidateSnapshot.oiSpurtSymbols);
   // Names suggested EARLIER today stay in the quote batch even after they drop
   // off the movers lists / below the gates: an open position needs its live
   // price all day so the commentary can call HOLD / EXIT with real numbers
@@ -363,7 +340,9 @@ export async function runTradeSuggest(
   const symbols = [...sectorBySymbol.keys()];
   base.scanned = symbols.length;
   if (symbols.length === 0) {
-    base.note = 'No candidates from the NSE watchlist feeds (feeds may be throttled — retry next iteration).';
+    const tf = await buildTfSelection(date, [], new Map());
+    base.tfSelection = tf.summary;
+    base.note = tf.summary.reason;
     return base;
   }
 
@@ -381,12 +360,7 @@ export async function runTradeSuggest(
   // check the build is GENUINELY options-led (optShare) and the options
   // tradeable (premValue), not just infer it from combined-OI %-change.
   const nseOiRowMap = await getNseOiRowMap();
-
-  // Rank-climb catch path input (USE_RANK_CLIMB_GATE): best ~30-min leaderboard
-  // climb per symbol (gainers/OI boards) from today's rank_snapshots. One local
-  // query per scan; empty map when the toggle is off or history is thin — a
-  // name absent here simply cannot qualify via the climb path.
-  const rankClimbBySymbol = useRankClimbGate ? await getRecentRankClimbs(date) : new Map<string, number>();
+  const oiSpurtSymbols = new Set(nseOiRowMap.keys());
 
   // Position-management feed: every earlier-today call with its live price,
   // regardless of whether the name still clears any gate this scan.
@@ -544,39 +518,10 @@ export async function runTradeSuggest(
     })
   );
 
-  // 3. Detect market regime (once per scan, using first available symbol as
-  //    proxy for the broad market). The regime adjusts the confidence threshold
-  //    dynamically: relax in good regimes, tighten in bad ones.
-  let regimeMultiplier = 1.0;
-  let regimeLabel = 'no regime data';
-  try {
-    // Pick the first symbol with candles for regime detection
-    for (const sym of symbols.slice(0, 5)) {
-      const regimeBars = await getFyersCandles(sym, date, 'EQ');
-      if (regimeBars.length >= 30) {
-        const regime = detectRegime(regimeBars);
-        regimeMultiplier = regime.confidenceMultiplier;
-        regimeLabel = regime.label;
-        console.log(`${TAG} regime: ${regimeLabel} → confidence×${regimeMultiplier.toFixed(2)}`);
-        break;
-      }
-    }
-  } catch {
-    // Regime detection is best-effort
-  }
-  const dynamicMinConfidence = MIN_CONFIDENCE * regimeMultiplier;
-
   // Gate + enrich
   const gated: Record<string, number> = {
     noPrice: 0,
     illiquid: 0,
-    neutralBias: 0,
-    weakRFactor: 0,
-    lowConfidence: 0,
-    lowOiLevel: 0,
-    lowTurnover: 0,
-    directionDisagree: 0,
-    quietSetup: 0,
   };
 
   interface Enriched {
@@ -594,50 +539,33 @@ export async function runTradeSuggest(
     nseOiPct: number | null;
     /** Options share of fut+opt value (NSE oi-spurts) — how options-led the build is. */
     optShare: number | null;
-    /** True when admitted via the momentum-breakout path (accumulation gates bypassed). */
-    momentumPath: boolean;
-    /** True when the OI gate passed ONLY via the breakout bypass (price broke out,
-     *  no OI evidence). Recorded so these admissions are visible in the Trade Log
-     *  — every other permissive path already stamps a reason, this one did not,
-     *  which made the toggle impossible to evaluate (audit 2026-07-23). */
-    breakoutBypassPath: boolean;
     /** Opening 15-min range ÷ settled 5-min ATR (chaotic-open.ts); null = not yet computable. */
     chaosRatio: number | null;
-    /** Best ~30-min leaderboard climb (gainers/OI boards); null = no board history. */
-    rankClimb: number | null;
-    /** True when the OI gate passed via the rank-climb catch path (NSE 1–5% + climbing). */
-    climbPath: boolean;
     /** Direction-aware "App Since 9:45" reading (move-freshness.ts). */
     moveFreshness: MoveFreshness;
     score: number;
   }
   const survivors: Enriched[] = [];
 
-  // ── TF Running Race selector (USE_TF_SELECTOR) ────────────────────────────
-  // The ONLY candidate source when enabled: auto-trade considers race stocks
-  // and nothing else (operator rule, 2026-08-13). Built BEFORE the sweep so the
-  // loop below can be restricted to these names, and so a stale/absent TF board
-  // short-circuits the whole scan rather than silently falling back to the App
-  // R-Factor engine — which is the engine measuring −0.199R.
-  let tfBySymbol: Map<string, TfCandidate> | null = null;
-  if (useTfSelector) {
-    const tf = await buildTfSelection(date, quotes.rows, nseOiRowMap);
-    base.tfSelection = tf.summary;
-    if (!tf.tradeable) {
-      gated.tfBoardStale = (gated.tfBoardStale ?? 0) + 1;
-      console.log(`${TAG} TF selector: ${tf.summary.reason}`);
-      base.gated = gated;
-      base.suggestions = [];
-      return base;
-    }
-    tfBySymbol = new Map(tf.candidates.map((c) => [c.symbol, c]));
+  // ── TF Running Race selector ─────────────────────────────────────────────
+  // Permanent, fail-closed entry universe. There is no runtime switch and no
+  // legacy App R-Factor fallback: a missing/stale board produces zero entries.
+  const tf = await buildTfSelection(date, quotes.rows, nseOiRowMap);
+  base.tfSelection = tf.summary;
+  if (!tf.tradeable) {
+    gated.tfBoardStale = (gated.tfBoardStale ?? 0) + 1;
+    console.log(`${TAG} TF selector: ${tf.summary.reason}`);
+    base.gated = gated;
+    base.suggestions = [];
+    return base;
   }
+  const tfBySymbol = new Map(tf.candidates.map((candidate) => [candidate.symbol, candidate]));
 
   for (const row of quotes.rows) {
     // On the TF path, a name that is not a qualified race runner is not a
     // candidate at all. Counted once so the operator sees the funnel.
-    const tfPick = tfBySymbol?.get(row.symbol) ?? null;
-    if (tfBySymbol && !tfPick) {
+    const tfPick = tfBySymbol.get(row.symbol);
+    if (!tfPick) {
       gated.notOnTfRace = (gated.notOnTfRace ?? 0) + 1;
       continue;
     }
@@ -652,25 +580,10 @@ export async function runTradeSuggest(
       gated.illiquid++;
       continue;
     }
-    // Direction: TF's own % change on the TF path (App R-Factor's bias is not
-    // consulted at all), otherwise the legacy rFactorBias.
-    if (!tfPick && (row.rFactorBias == null || row.rFactorBias === 'neutral')) {
-      gated.neutralBias++;
-      continue;
-    }
-    // Direction + candles + breakout + trend indicators are computed BEFORE the
-    // R-Factor/confidence gates so the momentum-breakout path (and the OI-gate
-    // breakout bypass below) can use them; the same values feed the Supertrend/
-    // VWAP hard gates and the pick's plan — one computation, no duplicates.
-    // (Costs a candle read for names the R gate would have dropped — local
-    // SQLite, same order the replay harness already uses.)
-    const direction: 'bullish' | 'bearish' = tfPick
-      ? tfPick.side === 'CE'
-        ? 'bullish'
-        : 'bearish'
-      : row.rFactorBias === 'buy'
-        ? 'bullish'
-        : 'bearish';
+    // Direction comes only from TF's own board move. App R-Factor bias is
+    // display evidence and never chooses CE versus PE.
+    // Candles confirm the TF direction and provide the structural stop plan.
+    const direction: 'bullish' | 'bearish' = tfPick.side === 'CE' ? 'bullish' : 'bearish';
     const bars = await getFyersCandles(row.symbol, date, 'EQ');
     const sc = deriveSessionContext(bars);
     const orBreakout =
@@ -679,127 +592,21 @@ export async function runTradeSuggest(
         ? sc.openRangeHigh != null && ltp > sc.openRangeHigh
         : sc.openRangeLow != null && ltp < sc.openRangeLow);
     const st = supertrend(bars);
-    const vw = sessionVwap(bars);
     const supertrendAligned =
       st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
-    const vwapAligned = vw == null ? null : direction === 'bullish' ? ltp > vw : ltp < vw;
 
-    // Momentum-breakout path (USE_MOMENTUM_BREAKOUT, off by default): a
-    // confirmed OR breakout with BOTH trend indicators agreeing and a real move
-    // behind it clears the R-Factor, confidence, OI and quiet-setup gates — the
-    // short-covering class every accumulation factor rejects by design
-    // (ADANIGREEN 2026-07-14; see momentum-breakout.ts). All other gates apply.
-    const momentumOk =
-      useMomentumBreakout &&
-      qualifiesMomentumBreakout(
-        {
-          orBreakout,
-          supertrendAligned,
-          vwapAligned,
-          changePctOpen: row.changePctOpen,
-          direction,
-        },
-        { minChangePct: MOMENTUM_MIN_CHANGE_PCT }
-      );
-    if (momentumOk) gated.momentumAdmitted = (gated.momentumAdmitted ?? 0) + 1;
 
-    // App R-Factor gates. SKIPPED ENTIRELY on the TF path: TF's own R-Factor has
-    // already answered "is big money here", and the App number demonstrably has
-    // not — over the three sessions with TF captures it scored every graded pick
-    // 3.65–6.45 while half of them sat below TF R = 1.0 and lost −1R each.
-    if (!tfPick && !momentumOk && (row.rFactor ?? 0) < MIN_RFACTOR) {
-      gated.weakRFactor++;
-      continue;
-    }
-    if (!tfPick && !momentumOk && (row.rFactorConfidence ?? 0) < dynamicMinConfidence) {
-      gated.lowConfidence++;
-      continue;
-    }
-
-    // OI evidence, three paths: sustained futures positioning (level vs 20-day
-    // avg) OR an options-led build futures-only OI misses (NSE combined OI
-    // change — the SUNPHARMA lesson, 2026-07-03) OR, when USE_BREAKOUT_BYPASS
-    // is on, a confirmed trend-aligned breakout with no OI yet (the price leads
-    // its OI — ADANIENSOL/NAUKRI; see breakout-bypass.ts).
-    const futOiOk = (row.oiLevel ?? 0) >= MIN_OI_LEVEL;
+    // NSE/Futures OI remains attached as descriptive evidence, but it no longer
+    // admits a non-TF name or rejects a qualified TF runner.
     const oiRow = nseOiRowMap.get(row.symbol) ?? null;
     const nseOiPct = oiRow?.changeInOiPct ?? null;
     const optShare = oiRow?.optShare ?? null;
-    const premValueCr = oiRow?.premValueCr ?? null;
-    // Options-led path: the combined-OI build must be real (%-change), actually
-    // options-led (optShare above the single-stock norm) AND tradeable (premium
-    // pool above the thin-liquidity floor) — see MIN_OPT_SHARE / MIN_OPT_PREMIUM_CR.
-    const nseOptionsLegsOk =
-      optShare != null && optShare >= MIN_OPT_SHARE && premValueCr != null && premValueCr >= MIN_OPT_PREMIUM_CR;
-    // Rank-climb CATCH path (USE_RANK_CLIMB_GATE): today's ≥MIN_NSE_OI_PCT rule
-    // is untouched; ADDITIONALLY a smaller build (≥RANK_CLIMB_MIN_NSE_OI_PCT)
-    // qualifies when the name is actively climbing the gainers/OI leaderboard —
-    // the ADANIENSOL profile (config.ts doc). A name with no board history has
-    // no climb evidence and does NOT qualify via this path.
-    const rankClimbSpots = rankClimbBySymbol.get(row.symbol) ?? null;
-    const climbCatchOk =
-      useRankClimbGate &&
-      nseOiPct != null &&
-      nseOiPct >= RANK_CLIMB_MIN_NSE_OI_PCT &&
-      nseOiPct < MIN_NSE_OI_PCT &&
-      nseOptionsLegsOk &&
-      rankClimbSpots != null &&
-      rankClimbSpots >= RANK_CLIMB_MIN_SPOTS;
-    const nseOiOk = (nseOiPct != null && nseOiPct >= MIN_NSE_OI_PCT && nseOptionsLegsOk) || climbCatchOk;
-    if (climbCatchOk) gated.climbAdmitted = (gated.climbAdmitted ?? 0) + 1;
-    let breakoutOk = false;
-    if (useBreakoutBypass && !futOiOk && !nseOiOk && orBreakout) {
-      breakoutOk = qualifiesByBreakout(
-        { orBreakout, supertrendAligned, vwapAligned, rFactor: row.rFactor },
-        {
-          minRFactor: BREAKOUT_BYPASS_MIN_RFACTOR,
-          requireTrendAlign: BREAKOUT_BYPASS_REQUIRE_TREND,
-        }
-      );
-    }
-    // OI evidence gate — also skipped on the TF path, for the same reason: it
-    // re-asks the participation question TF's R-Factor answers directly, and on
-    // the measured sessions it cost real winners (NAUKRI was rank #17 with no
-    // futures-OI build while its TF R climbed 1.16 → 3.46 and price ran +8%).
-    if (!tfPick && !futOiOk && !nseOiOk && !breakoutOk && !momentumOk) {
-      gated.lowOiLevel++;
-      continue;
-    }
-    // Third TF pillar: turnover ≥1.2× its time-adjusted 20-day average. The
-    // R-Factor turnover score encodes the ratio (score = (ratio−1)/2), so the
-    // gate reads the factor instead of re-deriving the ratio.
-    // Turnover gate — derived from the App R-Factor factor breakdown, so it goes
-    // with the rest of that stack on the TF path.
-    const turnoverFactor = row.rFactors?.find((f) => f.label.startsWith('Turnover'));
-    if (!tfPick && (!turnoverFactor?.available || turnoverFactor.score < MIN_TURNOVER_SCORE)) {
-      gated.lowTurnover++;
-      continue;
-    }
 
-    // Price must agree with the bias: moving the right way since open, or an OR breakout.
-    const chg = row.changePctOpen ?? 0;
-    const priceAgrees = direction === 'bullish' ? chg > 0 || orBreakout : chg < 0 || orBreakout;
-    if (!priceAgrees) {
-      gated.directionDisagree++;
-      continue;
-    }
 
-    // Supertrend(10,3) alignment gate — replay benchmark (July 10-13) showed
-    // 0/3 wins for Supertrend-misaligned picks. Enforce as a hard gate
-    // (computed once above; null = not yet computable = gate skipped).
+    // Supertrend alignment remains a hard entry gate: the project replay
+    // benchmark showed materially worse expectancy without it.
     if (supertrendAligned === false) {
       gated.supertrendDisagree = (gated.supertrendDisagree ?? 0) + 1;
-      continue;
-    }
-
-    // Session VWAP alignment gate — price must be on the correct side of VWAP.
-    if (vwapAligned === false) {
-      gated.vwapDisagree = (gated.vwapDisagree ?? 0) + 1;
-      continue;
-    }
-
-    if (verdict.level === 'quiet' && !momentumOk) {
-      gated.quietSetup++;
       continue;
     }
 
@@ -856,14 +663,7 @@ export async function runTradeSuggest(
       extended: verdict.extended,
       nseOiPct,
       optShare,
-      momentumPath: momentumOk,
-      // Credit the bypass only when it is what actually opened the door: if the
-      // momentum path also qualified this name, the bypass was not load-bearing
-      // and marking it would overstate the toggle's contribution.
-      breakoutBypassPath: breakoutOk && !momentumOk,
       chaosRatio,
-      rankClimb: rankClimbSpots,
-      climbPath: climbCatchOk,
       moveFreshness,
       score: 0,
     });
@@ -894,7 +694,7 @@ export async function runTradeSuggest(
       extended: s.extended,
     });
   }
-  // ORDER. On the TF path the composite score must NOT decide which names get
+  // ORDER. The composite score must NOT decide which names get
   // traded: 30% of its weight is App R-Factor + confidence and another 30% is
   // the OI stack, while TF's own R-Factor carries ZERO weight. Sorting by it
   // would re-rank TF's board by exactly the number this path exists to stop
@@ -904,13 +704,9 @@ export async function runTradeSuggest(
   // The selector already returns candidates ranked by TF R-Factor desc, so the
   // fix is to preserve that order. The score is still COMPUTED and stored as
   // display evidence; it just stops steering the money on this path.
-  if (tfBySymbol) {
-    const tfOrder = new Map([...tfBySymbol.keys()].map((symbol, i) => [symbol, i]));
-    const orderOf = (s: Enriched) => tfOrder.get(s.row.symbol) ?? Number.MAX_SAFE_INTEGER;
-    survivors.sort((a, b) => orderOf(a) - orderOf(b) || b.score - a.score);
-  } else {
-    survivors.sort((a, b) => b.score - a.score);
-  }
+  const tfOrder = new Map([...tfBySymbol.keys()].map((symbol, i) => [symbol, i]));
+  const orderOf = (candidate: Enriched) => tfOrder.get(candidate.row.symbol) ?? Number.MAX_SAFE_INTEGER;
+  survivors.sort((a, b) => orderOf(a) - orderOf(b) || b.score - a.score);
 
   // 6. Resolve contracts + live premiums for the top candidates (oversampled so
   //    an unaffordable contract can be replaced by the next qualified name),
@@ -1106,16 +902,6 @@ export async function runTradeSuggest(
               : `⚠ already moved ${(r.changePctOpen ?? 0) >= 0 ? '+' : ''}${(r.changePctOpen ?? 0).toFixed(1)}% from open — late to chase, score penalized`,
           ]
         : []),
-      ...(s.momentumPath
-        ? [
-            '⚡ MOMENTUM-BREAKOUT path: no accumulation evidence (low R-Factor / no OI build) — entered on confirmed OR breakout + Supertrend + VWAP + move ≥1.5%. Short-covering profile; expect speed, respect the stop.',
-          ]
-        : []),
-      ...(s.breakoutBypassPath
-        ? [
-            '🚪 BREAKOUT-BYPASS path: both OI gates failed (no futures build, no qualifying NSE combined build) — admitted on a confirmed OR breakout with Supertrend + VWAP agreeing and R-Factor ≥ 3.6. Price led, open interest did not confirm.',
-          ]
-        : []),
       // Move freshness FIRST among the evidence: it is the one line that says
       // whether the move is still in front of the trade or already behind it.
       ...(s.moveFreshness.profile === 'unknown'
@@ -1131,24 +917,11 @@ export async function runTradeSuggest(
       ...(tfCorroboration ? [tfCorroboration.detail] : []),
       `R-Factor ${r.rFactor?.toFixed(2)} (${s.direction}, confidence ${((r.rFactorConfidence ?? 0) * 100).toFixed(0)}%)`,
       `futures OI ${r.oiLevel?.toFixed(2)}× 20-day avg${r.oiUrgency != null && r.oiUrgency > 0 ? `, urgency ${r.oiUrgency.toFixed(1)}/10` : ''}`,
-      ...(s.nseOiPct != null && (s.nseOiPct >= MIN_NSE_OI_PCT || s.climbPath)
+      ...(s.nseOiPct != null && s.nseOiPct >= MIN_NSE_OI_PCT
         ? [
             `NSE combined OI ${s.nseOiPct >= 0 ? '+' : ''}${s.nseOiPct.toFixed(1)}% (futures+options${(r.oiLevel ?? 0) < MIN_OI_LEVEL ? ' — options-led build' : ''}${s.optShare != null ? `, opt-share ${(s.optShare * 100).toFixed(0)}%` : ''})`,
           ]
         : []),
-      // Rank-climb catch path (USE_RANK_CLIMB_GATE): flag the admission loudly —
-      // the OI build is BELOW the usual 5% bar and the leaderboard trajectory is
-      // what let it in. Plus the plain climb evidence on every pick that has
-      // board history, so the nightly scorecard accrues per-climb outcomes.
-      ...(s.climbPath
-        ? [
-            `🪜 RANK-CLIMB catch path: combined OI below the ${MIN_NSE_OI_PCT}% norm, but the name is climbing the movers board +${s.rankClimb} spots/~30 min with qualifying options flow (ADANIENSOL profile) — smaller evidence base, respect the stop.`,
-          ]
-        : s.rankClimb != null
-          ? [
-              `leaderboard ${s.rankClimb > 0 ? `climbing +${s.rankClimb}` : s.rankClimb < 0 ? `slipping ${s.rankClimb}` : 'holding ±0'} spots/~30 min (best of gainers/OI boards)`,
-            ]
-          : []),
       ...(combinedOiLevel != null && combinedOiLevel >= 1.1
         ? [`combined fut+opt OI ≈${combinedOiLevel.toFixed(2)}× 20-day avg (derived from bhavcopy + NSE live %)`]
         : []),

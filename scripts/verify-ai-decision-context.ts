@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import OpenAI from 'openai';
-import { buildOpenPositionPicks } from '../lib/ai-commentary/picks';
+import { buildOpenPositionPicks, buildPicks } from '../lib/ai-commentary/picks';
 import { executionStateFlag } from '../lib/ai-commentary/store';
 import { MIMO_DEFAULT_MODEL, resolveMimoModel } from '../lib/ai-commentary/client';
 import { commentaryForRole, timelinesForRole, tradeSuggestForRole } from '../lib/auth/trading-privacy';
@@ -88,6 +88,16 @@ const scan = {
   scanned: 40,
   gated: 2,
   suggestions: [suggestion('INFY', 2_750, 2_805), suggestion('TCS', 3_000, 3_050)],
+  tfSelection: {
+    available: true,
+    reason: '2 TF race candidates qualified',
+    boardAgeMin: 1,
+    considered: 2,
+    selected: [
+      { symbol: 'INFY', side: 'PE', tfRFactor: 3.2, tfRankNow: 4, deltaR: 0.8, premValueCr: 35 },
+      { symbol: 'TCS', side: 'PE', tfRFactor: 2.7, tfRankNow: 8, deltaR: 0.5, premValueCr: 28 },
+    ],
+  },
   tracked: [
     {
       symbol: 'INFY',
@@ -249,9 +259,29 @@ check('management commentary cards equal the exact model-visible held positions'
   assert.equal(cards[0].slSpot, 2_780);
 });
 
-check('entry context still carries every scanner candidate', () => {
+check('entry context carries every TF-proven scanner candidate', () => {
   const context = buildScanContext(scan) as { picks: { symbol: string }[] };
   assert.deepEqual(context.picks.map((pick) => pick.symbol), ['INFY', 'TCS']);
+});
+
+check('entry context and commentary cards reject suggestions without matching TF provenance', () => {
+  const injected = {
+    ...scan,
+    suggestions: [...scan.suggestions, suggestion('RELIANCE', 1_500, 1_520)],
+  } as SuggestResponse;
+  const context = buildScanContext(injected) as { picks: { symbol: string }[] };
+  assert.deepEqual(context.picks.map((pick) => pick.symbol), ['INFY', 'TCS']);
+  assert.deepEqual(buildPicks(injected).map((pick) => pick.symbol), ['INFY', 'TCS']);
+});
+
+check('missing or stale TF provenance exposes no entry candidates', () => {
+  const unavailable = {
+    ...scan,
+    tfSelection: { ...scan.tfSelection!, available: false, selected: [] },
+  } as SuggestResponse;
+  const context = buildScanContext(unavailable) as { picks: { symbol: string }[] };
+  assert.deepEqual(context.picks, []);
+  assert.deepEqual(buildPicks(unavailable), []);
 });
 
 check('management previous read keeps only held position and Bottom line', () => {

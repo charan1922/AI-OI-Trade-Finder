@@ -5,6 +5,7 @@
  */
 
 import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types';
+import { tfSelectedSuggestions } from '@/lib/trade-suggest/tf-provenance';
 import type { AccountState } from '../types';
 
 export interface DecisionOpenPosition {
@@ -125,7 +126,14 @@ export function buildScanContext(
     // shape even when empty so `available: false` reads as "no TF evidence
     // today" rather than the field silently vanishing.
     tf: scan.tfContext ?? { available: false, hasRace: false, climbers: [], newEntrants: [] },
-    picks: (scan.suggestions ?? []).map(trimEntryPick),
+    tfSelection: scan.tfSelection ?? {
+      available: false,
+      reason: 'missing TF selector provenance',
+      boardAgeMin: null,
+      considered: 0,
+      selected: [],
+    },
+    picks: tfSelectedSuggestions(scan).map(trimEntryPick),
   };
 }
 

@@ -43,7 +43,9 @@ const { detectConsolidationBreakout } = await import('../lib/trade-suggest/conso
 const { classifyMoveFreshness } = await import('../lib/trade-suggest/move-freshness');
 const { deriveSessionContext } = await import('../lib/signals/session-context');
 const { deriveBreakoutContext, evaluateBreakout } = await import('../lib/breakout');
-const { qualifiesByBreakout } = await import('../lib/trade-suggest/breakout-bypass');
+const { DEFAULT_BREAKOUT_BYPASS_CONFIG, qualifiesByBreakout } = await import(
+  '../lib/trade-suggest/breakout-bypass'
+);
 const { qualifiesExtendedTrend } = await import('../lib/trade-suggest/extended-bypass');
 const { buildSpotPlan, computeCompositeScore } = await import('../lib/trade-suggest/scoring');
 const cfg = await import('../lib/trade-suggest/config');
@@ -216,7 +218,7 @@ function scanAtTick(tick: number): SuggestResponse {
     const nseOiOk = nseOiPct != null && nseOiPct >= cfg.MIN_NSE_OI_PCT;
     let breakoutOk = false;
     if (!futOiOk && !nseOiOk && orBreakout) {
-      // Deployed server runs USE_BREAKOUT_BYPASS = ON — replay matches it.
+      // Historical breakout-bypass replay variant; retired from production.
       const vw = sessionVwap(bars);
       const st = supertrend(bars);
       breakoutOk = qualifiesByBreakout(
@@ -228,8 +230,8 @@ function scanAtTick(tick: number): SuggestResponse {
           rFactor: row.rFactor,
         },
         {
-          minRFactor: cfg.BREAKOUT_BYPASS_MIN_RFACTOR,
-          requireTrendAlign: cfg.BREAKOUT_BYPASS_REQUIRE_TREND,
+          minRFactor: DEFAULT_BREAKOUT_BYPASS_CONFIG.minRFactor,
+          requireTrendAlign: DEFAULT_BREAKOUT_BYPASS_CONFIG.requireTrendAlign,
         }
       );
     }

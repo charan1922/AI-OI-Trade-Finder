@@ -82,6 +82,8 @@ export interface TfSelectorConfig {
   maxSinceEntryPct: number;
   /** Require an opening-range breakout in the trade's direction. */
   requireBreakout: boolean;
+  /** Require Supertrend agreement. */
+  requireSupertrend: boolean;
   /** Cap on returned candidates. */
   maxCandidates: number;
 }
@@ -151,7 +153,15 @@ export const DEFAULT_TF_SELECTOR_CONFIG: TfSelectorConfig = {
   minPremValueCr: 20,
   maxSinceEntryPct: 2,
   requireBreakout: true,
+  requireSupertrend: true,
   maxCandidates: 7,
+};
+
+/** Display-only /live configuration. It reports participation without making
+ * Supertrend decide the board; the trade selector keeps the strict default. */
+export const LIVE_TF_SELECTOR_CONFIG: TfSelectorConfig = {
+  ...DEFAULT_TF_SELECTOR_CONFIG,
+  requireSupertrend: false,
 };
 
 /**
@@ -195,15 +205,21 @@ export function selectTfCandidates(
     const side: 'CE' | 'PE' = pct > 0 ? 'CE' : 'PE';
 
     const ctx = context.get(runner.symbol);
-
-    // ③ Trend confirmation.
-    if (ctx?.supertrendAligned == null) {
-      rejected.supertrendUnknown++;
+    if (ctx == null) {
+      rejected.noBoard++;
       continue;
     }
-    if (!ctx.supertrendAligned) {
-      rejected.supertrendDisagrees++;
-      continue;
+
+    // Trade selection requires Supertrend; display-only consumers may opt out.
+    if (cfg.requireSupertrend) {
+      if (ctx.supertrendAligned == null) {
+        rejected.supertrendUnknown++;
+        continue;
+      }
+      if (!ctx.supertrendAligned) {
+        rejected.supertrendDisagrees++;
+        continue;
+      }
     }
 
     // ④ Breakout.
@@ -247,7 +263,7 @@ export function selectTfCandidates(
       reasons: [
         `TF R-Factor ${runner.rFactorNow.toFixed(2)}, rank #${runner.rankNow} (up ${runner.climb} from #${runner.rankAtBaseline})`,
         `still accumulating: TF R +${runner.deltaR.toFixed(2)} over the last 30 min`,
-        `TF has it ${pct > 0 ? 'up' : 'down'} ${Math.abs(pct).toFixed(2)}% — Supertrend agrees`,
+        `TF has it ${pct > 0 ? 'up' : 'down'} ${Math.abs(pct).toFixed(2)}%${cfg.requireSupertrend ? ' — Supertrend agrees' : ''}`,
         ctx.breakout === true ? 'cleared its opening range in that direction' : 'no opening-range breakout',
         `options premium pool ₹${Math.round(ctx.premValueCr)} Cr`,
         ctx.sinceEntryPct == null
@@ -266,6 +282,7 @@ export function selectTfCandidates(
 export function describeRejections(r: TfSelectorRejections, considered: number): string {
   if (considered === 0) return 'TradeFinder has no runners climbing its board right now.';
   const parts: [number, string][] = [
+    [r.noBoard, 'missing quote/candle context'],
     [r.frozenR, 'R-Factor stopped climbing'],
     [r.unknownDeltaR, 'no earlier board to measure the rate against'],
     [r.flatPrice, 'not moving enough to call a direction'],

@@ -13,6 +13,8 @@ import { getEqBucketStatus } from '@/lib/fyers/candle-store';
 import { BLOCK_STALE_AUTO_ENTRY } from '@/lib/priority-refresh/config';
 import { evaluateFreshness, requiredCompletedBucket } from '@/lib/priority-refresh/freshness';
 import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generate';
+import { runTradeSuggest } from '@/lib/trade-suggest/engine';
+import { findTfSelectedSuggestion } from '@/lib/trade-suggest/tf-provenance';
 import { getExecutionAdapter } from './brokers';
 import { MAX_RISK_PER_LOT_FALLBACK, minuteOfDayIST } from './config';
 import { placeEntryOrder, type ExecOutcome } from './execution';
@@ -52,6 +54,32 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     return {
       ok: false,
       message: `approval blocked because runtime mode is ${settings.mode}; switch back to approval and re-evaluate the proposal`,
+    };
+  }
+
+  // Approval may happen minutes after the AI proposed the order. Re-run the
+  // live scanner and require the same symbol/side to remain a current,
+  // TF-proven candidate; generic price/risk gates alone cannot prove that the
+  // participation thesis is still present. Missing/stale TF data fails closed.
+  const currentScan = await runTradeSuggest('approval');
+  const currentPick = findTfSelectedSuggestion(currentScan, trade.symbol);
+  const currentSide = currentPick?.option?.optionType ??
+    (currentPick?.direction === 'bullish' ? 'CE' : currentPick?.direction === 'bearish' ? 'PE' : null);
+  if (!currentPick || currentSide !== trade.optionType) {
+    const detail = currentScan.tfSelection?.reason ?? currentScan.note ?? 'missing TF selector provenance';
+    await insertDecision({
+      date,
+      pass: 'approval',
+      provider: null,
+      model: null,
+      summary: `Approval of ${trade.symbol} REFUSED: no longer a current TF ${trade.optionType} candidate — ${detail}`,
+      toolTrace: [],
+      promptTokens: null,
+      completionTokens: null,
+    });
+    return {
+      ok: false,
+      message: `${trade.symbol} is no longer a current TF ${trade.optionType} candidate — approval refused`,
     };
   }
 
