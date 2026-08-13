@@ -58,7 +58,7 @@ export const TOOL_DEFS: OpenAI.Responses.Tool[] = [
     name: 'get_live_suggestions',
     description:
       'Run the LIVE near-ATM options scan (the /trade-suggest engine) NOW over the full ~166-name tradeable F&O ' +
-      'universe and return up to MAX_PICKS (default 7, /config-tunable) evidence-backed picks: ' +
+      'universe and return up to MAX_PICKS (default 7, /config capacity setting) evidence-backed picks: ' +
       'contract (strike/expiry/lot), spot entry/SL/target, real premium + per-lot cost, R-Factor (1–10), OI evidence ' +
       '(futures level or NSE combined), combined-OI build rate (~30 min), opening-range breakout, sector alignment ' +
       '(turnover-weighted), and per-pick reasons. Use for "what should I trade ' +

@@ -87,9 +87,9 @@ export interface LiveUrgencyRow {
   nsePrevOi?: number | null;
 
   // ── R-Factor (lib/r-factor, live intraday) ─────────────────────────────────
-  // Recomputed every poll from the live snapshot against fixed EOD baselines.
-  // Null when there's no usable price. Weights are provisional until calibrated.
-  /** Strength on a 1.0–10.0 scale (TradeFinder-like). Higher = stronger interest. */
+  // Recomputed every poll from the live snapshot against fixed EOD baselines,
+  // then calibrated point-in-time against captured TF boards. Display-only.
+  /** Approximate TF R-Factor on its observed 0–10 scale. */
   rFactor: number | null;
   /** Net directional read from the voting factors. */
   rFactorBias: 'buy' | 'sell' | 'neutral' | null;

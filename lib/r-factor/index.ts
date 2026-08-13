@@ -25,6 +25,7 @@ export { majoritySignal } from './majority';
 export type { MajorityResult } from './majority';
 export { isAfterEntryTime } from './timing';
 export type { EntryTimeStatus } from './timing';
+export { approximateTfRFactor, TF_APPROX_CALIBRATION } from './tf-approx';
 
 // Math primitives (handy for tests and custom factors).
 export { clamp, round, isPos, safeDiv, pctChange, scoreFromRatio, scoreFromMagnitude, direction } from './math';

@@ -37,7 +37,6 @@ import type { AutoOrder, AutoTrade } from '../types';
 import { getAdapterById } from '../brokers';
 import { EXIT_FAILURE_ESCALATE, exitRetryWaitMs, shouldAlertOnExitFailure } from './exit-backoff';
 import { activateRiskLatch, clearRiskLatchReason } from './latch';
-import { supertrend } from '@/lib/signals/indicators';
 import { TRAIL_R } from '@/lib/trade-suggest/config';
 import { isTighterStop, trailedSpotStop } from './trailing-stop';
 import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
@@ -540,23 +539,6 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
             }
           }
 
-          // Momentum exit: if Supertrend flips against the trade AND premium
-          // has dropped below entry (giveback of gains), exit to protect capital.
-          if (!reason) {
-            try {
-              const bars = await getFyersCandles(trade.symbol, date, 'EQ');
-              const st = supertrend(bars);
-              if (st != null) {
-                const bullish = trade.direction === 'bullish';
-                const stFlipped = bullish ? st.direction === 'down' : st.direction === 'up';
-                if (stFlipped && stopPx < trade.entryFillPremium) {
-                  reason = `momentum exit: Supertrend flipped ${st.direction} + premium ₹${stopPx} below entry ₹${trade.entryFillPremium}`;
-                }
-              }
-            } catch {
-              // Supertrend check is best-effort — don't fail the guard
-            }
-          }
         }
         // Spot plan levels (scanner's structure-based stop, AI-tightened). A
         // STALE close must not drive them: a stalled recorder would otherwise
@@ -584,7 +566,7 @@ async function runPositionGuardCore(date: string): Promise<PositionGuardCoreResu
       // (~4,500 rows per trade per session), which is far more resolution than
       // any target study needs for a quiet minute. Routine samples are kept once
       // per minute; anything that actually DECIDED something — a stop, a target,
-      // a square-off, a momentum exit — is always kept, because those are the
+      // a square-off, or another deterministic exit — is always kept, because those are the
       // rows an audit is looking for.
       if (snapshotCandidate != null) {
         const minuteKey = Math.floor(Date.parse(snapshotCandidate.capturedAt) / 60_000);

@@ -127,7 +127,7 @@ CLAIM <n>: PASS or FAIL — <the exact observed value(s) you used as evidence>
 5. GET /api/trade-suggest?view=leaderboard returns a leaderboard for session 2026-07-02 with a universe greater than 100 names.
 6. The replay benchmark for 2026-07-03 (run_replay) shows the 'shipped' variant producing 2 picks: DMART PE hitting TARGET and POLICYBZR PE hitting SL, net ΣR +1.00.
 7. tracking/autoresearch-log.jsonl exists and contains a baseline record plus experiment records with accepted true/false fields.
-8. lib/trade-suggest/config.ts sets EXCLUDE_EXTENDED = true and MIN_RFACTOR = 3.6.
+8. lib/tf-live/selector.ts requires TF breakout and Supertrend alignment and caps movement since 09:45 at 2%.
 
 After the 8 verdicts, output one line: SUMMARY: <passCount>/8 PASS."""
 

@@ -15,13 +15,7 @@
 import { prisma } from '@/lib/db';
 import { BLOCK_STALE_AUTO_ENTRY } from '@/lib/priority-refresh/config';
 import {
-  EXCLUDE_EXTENDED,
   MAX_PICKS,
-  SCAN_OUTSIDE_WINDOW,
-  USE_CHAOTIC_OPEN_GATE,
-  USE_EXTENDED_TREND_BYPASS,
-  USE_MOVE_FRESHNESS_GATE,
-  USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
   WINDOW_START_MIN,
 } from '@/lib/trade-suggest/config';
@@ -39,61 +33,13 @@ export interface ToggleDef {
  *  write to any key not listed here is rejected. */
 export const TOGGLE_DEFS: ToggleDef[] = [
   {
-    key: 'USE_TF_BREAKOUT_GATE',
-    label: 'TF breakout gate',
-    category: 'Trade Suggest',
-    default: USE_TF_BREAKOUT_GATE,
-    description:
-      'An extra-strict filter on top of the normal rules. ON: a stock is suggested only when its Breakout badge (the /live column) says the breakout is CONFIRMED in the trade direction — the morning low held (for buys) or the morning high held (for sells), AND price has already cleared an important level such as the early-morning-range high, yesterday’s high, or a multi-day high. Stocks still forming, looking like a false breakout, or missing data are dropped (the scan shows how many). OFF (default): the badge is shown as information only and never blocks a suggestion. Keep OFF for now — testing showed the breakout signal points the right way at the right time, but filtering on it has NOT yet been shown to produce better trades.',
-  },
-  {
-    key: 'SCAN_OUTSIDE_WINDOW',
-    label: 'Scan outside the 09:40–11:00 window',
-    category: 'Trade Suggest',
-    default: SCAN_OUTSIDE_WINDOW,
-    description:
-      'When the scanner may suggest trades. OFF (safe default): only during the proven morning window, 09:40–11:00 — the whole strategy was built and tested on morning entries, when the best moves begin. ON: it suggests trades any time the market is open. Note: out-of-window picks are saved and mixed into the daily scorecard, so they affect your stats. Turn ON only when you really want all-day scanning.',
-  },
-  {
-    key: 'EXCLUDE_EXTENDED',
-    label: 'Skip already-extended movers',
-    category: 'Trade Suggest',
-    default: EXCLUDE_EXTENDED,
-    description:
-      'ON (safe default): skip any stock that has already moved 3% or more from today’s open. By the time you could enter, most of the move is over, and chasing late has lost every time we tried it (0 wins out of 5). OFF: the scanner may suggest these big early movers too. Keep ON unless you deliberately want to chase.',
-  },
-  {
-    key: 'USE_EXTENDED_TREND_BYPASS',
-    label: 'Extended-trend bypass',
-    category: 'Trade Suggest',
-    default: USE_EXTENDED_TREND_BYPASS,
-    description:
-      'Works together with “Skip already-extended movers”. That rule drops every stock already 3%+ from the open — but on a real trending day a stock can keep running much further. ON: such a stock is allowed back in, but ONLY while it is still making fresh highs/lows, staying on the right side of the day’s average-price line (VWAP), and its trend indicator agrees with the direction — one that has stalled or slipped back stays out. Any stock let back in still carries a scoring penalty, so it ranks cautiously. OFF (default): every 3%+ mover stays out, no exceptions. Experimental — turn ON only to gather evidence before trusting it. (Only does anything while “Skip already-extended movers” above is ON.)',
-  },
-  {
-    key: 'USE_CHAOTIC_OPEN_GATE',
-    label: 'Skip chaotic opens',
-    category: 'Trade Suggest',
-    default: USE_CHAOTIC_OPEN_GATE,
-    description:
-      'Skip a stock whose FIRST 15 MINUTES were a wild spike compared to its own normal pace (more than 5× its usual 5-minute bar). Why: a stock that burns all its energy at the open tends to fade right after — both auto-trade losers opened this wildly and faded within 30 minutes, while the winners opened calmer and trended. The 5× line is deliberately not tighter: a 4× line would have wrongly blocked some genuine trend days. ON (default): wild-open stocks are skipped; the scan shows how many. OFF: the open is still noted on each pick as information. Honest note: this rests on only 2 recorded days — the nightly scorecard is still gathering proof, and this switch comes OFF if results turn against it.',
-  },
-  {
-    key: 'USE_MOVE_FRESHNESS_GATE',
-    label: 'Skip stale moves (Since 9:45)',
-    category: 'Trade Suggest',
-    default: USE_MOVE_FRESHNESS_GATE,
-    description:
-      'Uses the "Since 9:45" number — how much a stock has moved since the entry window opened — to throw out stocks whose move is already BEHIND them. Two cases get dropped: "spent" (a big move on the day but almost nothing since 09:45 — the jump happened at the open and it has sat still for an hour) and "fading" (it is actively giving the move back since 09:45, so buying strength here means buying into the unwind). A stock still moving your way ("fresh") is untouched, and a stock with no 09:45 reading recorded is NEVER dropped — missing information is not evidence of staleness. OFF (default): nothing is filtered, but every pick still SHOWS its freshness reading, and both the commentary and the auto-trader are told to treat "spent" and "fading" as no-trade. Honest reason it ships OFF: the 09:45 number was only saved from 7 Aug 2026 onward, so there is no history yet to test the filter against. Turn ON once the nightly test has ~10 days and shows it drops more losers than winners.',
-  },
-  {
     // Exposing this is REQUIRED: the gate reads this key from SQLite every entry
     // check, so a hidden stored `false` (e.g. from an earlier build) would
     // silently disable the protection if it weren't visible/manageable here
-    // (PR#11 re-review B1). SAFETY toggle → drift-reported like Trade Suggest.
+    // (PR#11 re-review B1). SAFETY toggle → drift-reported in Trade Suggest.
     key: 'BLOCK_STALE_AUTO_ENTRY',
     label: 'Block stale-candle Auto-Trade entries',
-    category: 'Candle Freshness',
+    category: 'Trade Suggest',
     default: BLOCK_STALE_AUTO_ENTRY,
     description:
       'SAFETY — ON by default. Auto-Trade refuses a NEW entry unless the stock’s latest FINISHED 5-minute candle was refreshed after it closed this cycle. The scanner builds its stop and target from that candle, so entering on an old or half-formed one means acting on a stale picture. Exits, stop moves, and the 15:12 square-off are NEVER affected. Leave ON unless you are deliberately debugging.',
@@ -140,7 +86,7 @@ export const NUMBER_DEFS: NumberDef[] = [
     min: 9 * 60 + 15,
     max: 13 * 60,
     description:
-      'When the scan window OPENS, in IST minutes from midnight (default 580 = 09:40, the proven morning window). This is when suggestions are normal; the “Scan outside the window” switch overrides it completely when ON.',
+      'When the scan window OPENS, in IST minutes from midnight (default 580 = 09:40, the proven morning window). Autonomous suggestions do not run before this time.',
   },
   {
     key: 'WINDOW_END_MIN',
@@ -233,9 +179,9 @@ export async function getToggle(key: string, fallback: boolean): Promise<boolean
  *  open/close + the commentary entry cutoff. */
 const DRIFT_NUMBER_CATEGORIES = new Set(['Trade Suggest', 'Entry & Exit Times']);
 /** Toggle categories whose off-default state is drift-reported + Telegram-alerted.
- *  'Candle Freshness' is included so the BLOCK_STALE_AUTO_ENTRY safety switch
- *  turned OFF is surfaced immediately + in the pre-open reminder (PR#11 re-review). */
-const DRIFT_TOGGLE_CATEGORIES = new Set(['Trade Suggest', 'Candle Freshness']);
+ *  BLOCK_STALE_AUTO_ENTRY now lives in Trade Suggest, so turning that safety
+ *  switch OFF is surfaced immediately and in the pre-open reminder. */
+const DRIFT_TOGGLE_CATEGORIES = new Set(['Trade Suggest']);
 
 /** IST clock-style number setting (minutes-from-midnight) → render as HH:MM in
  *  the summary. Mirrors the /config page heuristic (key ends _MIN, ≥ 06:00). */
@@ -245,53 +191,10 @@ function isClockNumberSetting(key: string, min: number): boolean {
 const minToHHMM = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 /**
- * Toggles that are only ever REACHED from inside another toggle's branch.
- *
- * A switch listed here, turned ON while its parent is OFF, is unreachable code
- * wearing the costume of a live permission. It is not drift — both values may
- * sit at their own defaults — so the drift summary above cannot catch it.
- *
- * Found 2026-07-23: `USE_EXTENDED_TREND_BYPASS` was ON while `EXCLUDE_EXTENDED`
- * had been switched OFF that morning. The bypass only ever runs inside the
- * `excludeExtended && s.extended` branch in trade-suggest/engine.ts, so it did
- * nothing at all — while /config showed it enabled. Nothing in the app said so.
- */
-export const TOGGLE_PARENTS: { child: string; parent: string; why: string }[] = [
-  {
-    child: 'USE_EXTENDED_TREND_BYPASS',
-    parent: 'EXCLUDE_EXTENDED',
-    why: 'the bypass only re-admits names that “Skip already-extended movers” has excluded — with the parent OFF nothing is excluded, so there is nothing to re-admit',
-  },
-];
-
-/**
- * PURE: bypass switches that are ON but unreachable because the rule they hang
- * off is OFF. Separate from drift on purpose — this is a *combination* fault,
- * and both halves can be at their own defaults while the pair is meaningless.
- */
-export function buildUnreachableToggleWarnings(
-  toggles: Pick<ToggleState, 'key' | 'label' | 'value'>[]
-): string[] {
-  const byKey = new Map(toggles.map((t) => [t.key, t]));
-  const out: string[] = [];
-  for (const link of TOGGLE_PARENTS) {
-    const child = byKey.get(link.child);
-    const parent = byKey.get(link.parent);
-    if (child == null || parent == null) continue;
-    if (child.value && !parent.value) {
-      out.push(
-        `“${child.label}” is ON but does nothing: it only runs inside “${parent.label}”, which is OFF — ${link.why}. Turn the parent back ON to use it, or turn this OFF so the page reflects what is actually running.`
-      );
-    }
-  }
-  return out;
-}
-
-/**
  * PURE: which scanner/trading-relevant settings currently differ from their
  * coded-safe default. Every default IS the safe state; a drifted value is
  * exactly the class of thing that caused the COLPAL 2026-07-20 loss
- * (USE_EXTENDED_TREND_BYPASS left ON since 2026-07-10, unnoticed for 10 days).
+ * (a stored experimental strategy override left enabled and unnoticed).
  * Split out from the DB read so it is unit-testable without a database
  * (scripts/config-drift-checks.ts, run in CI). Covers 'Trade Suggest' toggles
  * AND the numeric window/pick/cutoff settings (PR#2 review 2026-07-20).
@@ -322,13 +225,6 @@ export function buildConfigOverrideSummary(
 export async function tradeSuggestConfigOverrideSummary(): Promise<string[]> {
   const [toggles, numbers] = await Promise.all([getAllToggles(), getAllNumberSettings()]);
   return buildConfigOverrideSummary(toggles, numbers);
-}
-
-/** Bypass switches currently ON but unreachable (parent rule OFF). Reported
- *  alongside the drift summary in the pre-open reminder — an operator reading
- *  "bypass ON" deserves to know it is inert. */
-export async function unreachableToggleWarnings(): Promise<string[]> {
-  return buildUnreachableToggleWarnings(await getAllToggles());
 }
 
 /** Persist a toggle. Unknown keys are rejected (the registry is the allowlist).

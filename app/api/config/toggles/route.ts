@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 
 import {
-  buildUnreachableToggleWarnings,
   getAllNumberSettings,
   getAllToggles,
   setNumberSetting,
@@ -17,10 +16,7 @@ export async function GET(req: Request) {
   if (denied) return denied;
   try {
     const [data, numbers] = [await getAllToggles(), await getAllNumberSettings()];
-    // Computed server-side: buildUnreachableToggleWarnings lives beside the DB
-    // reader, whose module imports prisma — importing it into the client page
-    // would drag prisma into the browser bundle.
-    return NextResponse.json({ success: true, data, numbers, warnings: buildUnreachableToggleWarnings(data) });
+    return NextResponse.json({ success: true, data, numbers });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
@@ -39,10 +35,7 @@ export async function POST(req: Request) {
     if (typeof body.value === 'boolean') await setToggle(body.key, body.value);
     else await setNumberSetting(body.key, body.value);
     const [data, numbers] = [await getAllToggles(), await getAllNumberSettings()];
-    // Computed server-side: buildUnreachableToggleWarnings lives beside the DB
-    // reader, whose module imports prisma — importing it into the client page
-    // would drag prisma into the browser bundle.
-    return NextResponse.json({ success: true, data, numbers, warnings: buildUnreachableToggleWarnings(data) });
+    return NextResponse.json({ success: true, data, numbers });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });
   }

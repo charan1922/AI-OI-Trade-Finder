@@ -175,8 +175,8 @@ export interface TradeSuggestion {
    *  capture exists. Null means TF has no data — not that TF ranks it poorly. */
   tfCorroboration: TfCorroboration | null;
   setupLevel: string;
-  /** Already moved ≥3% from open at suggestion time. With EXCLUDE_EXTENDED
-   *  these are gated out (0-for-5 evidence); kept for the flag-off path. */
+  /** Already moved ≥3% from open at suggestion time. Evidence only on the TF
+   *  path; the selector's measured since-09:45 band owns chase prevention. */
   extended: boolean;
   factors: PickFactors | null;
   reasons: string[];

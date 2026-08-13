@@ -4,8 +4,7 @@
  * POST /api/trade-commentary route.
  *
  * Only narrates when a REAL scan happened (`scanned > 0`) — which the engine
- * decides per the config window (in-window always; outside-window only when
- * SCAN_OUTSIDE_WINDOW is on). So this respects the /config page setting.
+ * decides per the fixed scanner window (or an explicit forced diagnostic run).
  */
 import { todayIST } from '@/lib/dhan/market-feed';
 import { hasMimo } from '@/lib/env';

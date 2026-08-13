@@ -44,9 +44,6 @@ import { atr, sessionVwap, supertrend } from '../lib/signals/indicators';
 import { computeOiUrgency, type OiPoint } from '../lib/signals/oi-intraday';
 import { deriveSessionContext } from '../lib/signals/session-context';
 import {
-  EXCLUDE_EXTENDED,
-  EXTENDED_BYPASS_MIN_RFACTOR,
-  EXTENDED_BYPASS_REQUIRE_SUPERTREND,
   EXTENDED_SCORE_MULT,
   MAX_PICKS,
   SUGGESTION_MAX_SPREAD_PCT,
@@ -59,12 +56,9 @@ import {
   MIN_TURNOVER_SCORE,
   SL_ATR_MULT,
   TARGET_RR,
-  USE_EXTENDED_TREND_BYPASS,
   WEIGHTS,
 } from '../lib/trade-suggest/config';
-import { getToggle } from '../lib/config/feature-toggles';
 import { DEFAULT_BREAKOUT_BYPASS_CONFIG, qualifiesByBreakout } from '../lib/trade-suggest/breakout-bypass';
-import { qualifiesExtendedTrend } from '../lib/trade-suggest/extended-bypass';
 import { DEFAULT_MOMENTUM_BREAKOUT_CONFIG, qualifiesMomentumBreakout } from '../lib/trade-suggest/momentum-breakout';
 import { buildSpotPlan, computeCompositeScore, type ScoreWeights } from '../lib/trade-suggest/scoring';
 
@@ -91,12 +85,7 @@ export interface Variant {
   name: string;
   atrMult: number; // risk floor = max(0.35%, atrMult × ATR14)
   extendedMult: number; // score multiplier for ≥3%-moved names (flag-off path)
-  banExtended: boolean; // hard-skip extended movers at pick time (EXCLUDE_EXTENDED)
-  /** Trend-aligned bypass of the extended ban (see extended-bypass.ts). Optional;
-   *  undefined = off, so existing variant literals need no change. */
-  extendedTrendBypass?: boolean;
-  extendedBypassMinRFactor?: number;
-  extendedBypassRequireSupertrend?: boolean;
+  banExtended: boolean; // research-only pre-TF hard-skip experiment
   weights: ScoreWeights;
   /** The R-Factor engine's INTERNAL 12-factor blend — searchable per variant
    *  (the engine renormalizes over available factors, so no sum constraint). */
@@ -159,26 +148,15 @@ export interface Variant {
 /**
  * The COMPILE-TIME defaults from config.ts.
  *
- * WARNING: this is not necessarily what runs. Every gate below is overridable
- * at runtime from the `feature_toggles` table, and engine.ts reads that table
- * (engine.ts:274-281) — so on a box where toggles have been flipped, this
- * baseline simulates a system nobody trades. Measured 2026-07-28: 8 of 10
- * toggles differed from the file, and replaying this baseline over 23/24/27 Jul
- * produced 0 picks against 38/42/9 live, because the file bans extended movers
- * and has the momentum path off while the live box has the opposite.
- *
- * Use `loadLiveVariant()` as the baseline for anything that is meant to grade
- * what you actually run. Keep this export for a deliberate "what would stock
- * config do?" comparison only.
+ * This harness reconstructs the retired App-factor strategy, not the current TF
+ * selector. Its extended-mover switches remain research dimensions only and no
+ * longer mirror runtime /config controls.
  */
 export const SHIPPED_VARIANT: Variant = {
   name: 'shipped',
   atrMult: SL_ATR_MULT,
   extendedMult: EXTENDED_SCORE_MULT,
-  banExtended: EXCLUDE_EXTENDED,
-  extendedTrendBypass: USE_EXTENDED_TREND_BYPASS,
-  extendedBypassMinRFactor: EXTENDED_BYPASS_MIN_RFACTOR,
-  extendedBypassRequireSupertrend: EXTENDED_BYPASS_REQUIRE_SUPERTREND,
+  banExtended: false,
   weights: WEIGHTS,
   rfWeights: RF_DEFAULT_WEIGHTS,
   minRFactor: MIN_RFACTOR,
@@ -200,31 +178,13 @@ export const SHIPPED_VARIANT: Variant = {
 };
 
 /**
- * The baseline that reflects what the box ACTUALLY runs: SHIPPED_VARIANT with
- * every gate the `feature_toggles` table overrides applied on top, read through
- * the same `getToggle()` engine.ts uses (file constant = fallback, so a fresh
- * install is identical to SHIPPED_VARIANT).
- *
- * This is what a variant grid should compare against. Grading an experiment
- * against the file defaults measures a system that is not trading, which is how
- * the momentum-breakout path went live ungraded on 22 Jul: the reminder said
- * "replay it first", and the replay could not reproduce it.
- *
- * NOT modelled by Variant, so still not covered by any replay: MAX_PICKS,
- * SCAN_OUTSIDE_WINDOW, USE_TF_BREAKOUT_GATE and
- * USE_CHAOTIC_OPEN_GATE. Treat a replay as evidence about the gates it models,
- * not as a full simulation of the live scanner.
+ * Compatibility wrapper used by the old variant CLIs. Runtime strategy toggles
+ * were removed from the money path, so there is no DB overlay to apply.
  */
 export async function loadLiveVariant(): Promise<Variant> {
-  const [banExtended, extendedTrendBypass] = await Promise.all([
-    getToggle('EXCLUDE_EXTENDED', EXCLUDE_EXTENDED),
-    getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS),
-  ]);
   return {
     ...SHIPPED_VARIANT,
-    name: 'live (DB toggles)',
-    banExtended,
-    extendedTrendBypass,
+    name: 'fixed legacy baseline',
     breakoutBypass: false,
     momentumBreakout: false,
     rankClimbCatch: false,
@@ -234,13 +194,8 @@ export async function loadLiveVariant(): Promise<Variant> {
 /** Human-readable diff of live toggles vs the file defaults — printed by the
  *  replay scripts so a run always states which system it just graded. */
 export function describeVariantDrift(live: Variant): string[] {
-  const pairs: [string, boolean, boolean][] = [
-    ['EXCLUDE_EXTENDED', live.banExtended, SHIPPED_VARIANT.banExtended],
-    ['USE_EXTENDED_TREND_BYPASS', live.extendedTrendBypass ?? false, SHIPPED_VARIANT.extendedTrendBypass ?? false],
-  ];
-  return pairs
-    .filter(([, now, file]) => now !== file)
-    .map(([key, now, file]) => `${key}: file ${file ? 'ON' : 'OFF'} -> live ${now ? 'ON' : 'OFF'}`);
+  void live;
+  return [];
 }
 
 // ─── Day data ────────────────────────────────────────────────────────────────
@@ -926,33 +881,7 @@ export function replayVariant(
 
     const tiltUp = upCount > downCount * 1.5;
     const tiltDown = downCount > upCount * 1.5;
-    const eligible = variant.banExtended
-      ? survivors.filter((sv) => {
-          if (!sv.extended) return true;
-          // Extended + ban on. Trend-aligned bypass (variant experiment): re-admit
-          // only genuine trend-day continuations — breakout + VWAP + Supertrend —
-          // exactly as the live engine does (lib/trade-suggest/extended-bypass.ts).
-          if (!variant.extendedTrendBypass) return false;
-          const ltp = sv.row.ltp ?? 0;
-          const vw = sessionVwap(sv.bars);
-          const st = supertrend(sv.bars);
-          const vwapAligned = vw == null ? null : sv.direction === 'bullish' ? ltp > vw : ltp < vw;
-          const supertrendAligned =
-            st == null ? null : sv.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
-          return qualifiesExtendedTrend(
-            {
-              orBreakout: sv.orBreakout,
-              supertrendAligned,
-              vwapAligned,
-              rFactor: sv.row.rFactor,
-            },
-            {
-              minRFactor: variant.extendedBypassMinRFactor ?? EXTENDED_BYPASS_MIN_RFACTOR,
-              requireSupertrend: variant.extendedBypassRequireSupertrend ?? EXTENDED_BYPASS_REQUIRE_SUPERTREND,
-            }
-          );
-        })
-      : survivors;
+    const eligible = variant.banExtended ? survivors.filter((sv) => !sv.extended) : survivors;
     for (const sv of eligible.slice(0, MAX_PICKS)) {
       if (!opts?.allFires && firstSeen.size >= REPLAY_DAILY_TRADE_CAP) break;
       const side: 'CE' | 'PE' = sv.direction === 'bullish' ? 'CE' : 'PE';

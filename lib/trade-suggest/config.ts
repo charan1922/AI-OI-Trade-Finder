@@ -18,14 +18,7 @@ export const WINDOW_START_MIN = 9 * 60 + 40;
 export const WINDOW_END_MIN = 11 * 60;
 export const WINDOW_LABEL = { opensAt: '09:40 IST', closesAt: '11:00 IST' };
 
-/** When true, scans run any time the market is open — the 09:40–11:00 window
- *  becomes advisory instead of a gate. OFF by default: entries outside the
- *  window are unproven for this strategy (TF's real tickets cluster
- *  10:00–10:40), and out-of-window picks persist into trade_suggestions and
- *  dilute the scorecard stats. Runtime-flippable from /config. */
-export const SCAN_OUTSIDE_WINDOW = false;
-
-/** Hard gates — a candidate must clear ALL of these. */
+/** Historical App-factor replay thresholds. Production selection is TF-only. */
 // raw 0.375 of the R-Factor span, unchanged since it was 2.5 on 1–5 and 3.6
 // on 1–8. Stated via rFactorAtRaw so a future rescale cannot silently move
 // the gate: the bare number 3.6 would mean raw 0.289 on today's 1–10 span.
@@ -60,39 +53,10 @@ export const MIN_NSE_OI_PCT = 5;
 export const MIN_OPT_SHARE = 0.1;
 export const MIN_OPT_PREMIUM_CR = 5;
 
-/**
- * EXPERIMENTAL hard gate on the TF 3-check breakout verdict (lib/breakout).
- * Off by default. When on, a candidate must grade `confirmed` (or `strong`) in
- * the trade's direction — morning test held + ≥1 named level cleared — to be
- * suggested; watch/fakeout-risk/none/no-candles are gated out (reported as
- * gated.tfBreakoutGate).
- *
- * Why OFF: the 320-trade TF-book backtest (scripts/backtest-breakout.ts)
- * validated the signal's DIRECTION (91.4%) and timing (98% ≤10:30), but its
- * grades did NOT separate TF's wins from losses (their edge is exit discipline
- * — only 6/25 losses were un-confirmed at entry, and entry-time fakeout flags
- * were all wins). Enable only after a replay A/B over recorded live sessions
- * (the full scan universe, not TF's curated book) shows the gate improves picks.
- */
-export const USE_TF_BREAKOUT_GATE = false;
-/**
- * EXPERIMENTAL chaotic-open gate (lib/trade-suggest/chaotic-open.ts): skip a
- * candidate whose opening 15-min range exceeded CHAOTIC_OPEN_MAX_RATIO × its
- * own settled 5-min ATR — the "violent open, spike, fade" profile. Evidence
- * (N=4, 2026-07-15/16): both auto-trade losers opened at 5.5×/5.7×, both
- * winners at 2.5×/2.9×; full table + honest over-fitting caveat in the module
- * doc. Default ON at the user's explicit request (2026-07-17) — the standing
- * multi-day-replay discipline still applies: this switch comes OFF if the
- * replay turns against it.
- */
-export const USE_CHAOTIC_OPEN_GATE = true;
-/** Skip when opening-range ÷ settled-ATR exceeds this. Calibrated at 5 by the
- *  2026-07-17 full-universe backtest: 4 would have blocked the trend-day class
- *  at ~10:30 (KALYANKJIL 4.46, SIEMENS 4.37, CGPOWER 4.29 — the exact winners
- *  the strategy lives on), while 5 keeps them all AND still blocks both proven
- *  chaotic-open losers (HYUNDAI 5.48 at its 09:48 entry, SRF 5.74) plus 6
- *  losing picks with zero winners lost. Margin over HYUNDAI is only 0.48 —
- *  don't raise further without new evidence. */
+/** Descriptive threshold for the opening-range ÷ settled-ATR evidence stamped
+ *  on every pick. This is deliberately not a gate: its original N=4 result was
+ *  too small to justify rejecting candidates, and the current TF replay does
+ *  not model it. Keep collecting the field for a future point-in-time ablation. */
 export const CHAOTIC_OPEN_MAX_RATIO = 5;
 
 /** Bid-ask spread ceiling on the UNDERLYING EQUITY, as % of mid — a candidate
@@ -270,61 +234,9 @@ export const MIN_RISK_PCT = 1.0;
  *  (scripts/replay-window.ts) — change ONLY with fresh replay evidence. */
 export const SL_ATR_MULT = 0;
 
-/** Score multiplier for 'extended' movers (setupScore flags |chg from open|
- *  ≥3%) — the soft-penalty path, active only when EXCLUDE_EXTENDED is off. */
+/** Display-score multiplier for movers already ≥3% from the open. Composite
+ *  score is evidence-only on the TF path, so this cannot re-rank TF's board. */
 export const EXTENDED_SCORE_MULT = 0.6;
-/** Hard-skip extended movers at pick time. Evidence: extended picks are
- *  0-for-5 (live 2026-07-03: MUTHOOTFIN/POLICYBZR/MARICO all stopped; replay
- *  benchmark same day: banning was the ONLY variant that improved ΣR, +1.00
- *  vs 0.00). Revisit if a recorded day shows extended continuation working —
- *  flip to false to fall back to the ×0.6 penalty, or leave ON and use the
- *  trend-aligned bypass below to admit only genuine trend-day continuations. */
-export const EXCLUDE_EXTENDED = true;
-
-/** Extended-trend bypass (opt-in). When EXCLUDE_EXTENDED hard-gates a name that
- *  has run ≥3% from open, this lets a genuine TREND-day continuation back in —
- *  breakout still extending AND price holding VWAP AND Supertrend(10,3) aligned.
- *  Evidence FOR: KALYANKJIL 2026-07-09 gap-open +4.5% → +17.5% with <2.2%
- *  pullbacks, refused on all 91 scans. The guard it preserves: the 0-for-5 chase
- *  losers (MUTHOOTFIN/POLICYBZR/MARICO, 2026-07-03) reversed — they lost
- *  VWAP/Supertrend, so the predicate still rejects them. Score keeps the extended
- *  ×0.6 penalty, so a bypassed name ranks conservatively. OFF by default.
- *  REPLAY RESULT (2026-07-09, N=1): turning this ON made the day WORSE —
- *  ΣR +0.00 vs shipped +2.00. The predicate DID admit KALYANKJIL correctly
- *  (breakout+VWAP+Supertrend all aligned), but the TRADE still stopped out −1R:
- *  the 10:20 entry @420 was late (+10.6% from open) and the tight last-candle SL
- *  (₹417) was run by a routine 1.1% pullback before the stock resumed to +17.5%.
- *  PAGEIND (also extended, admitted) stopped too. Lesson: admitting extended
- *  trends is not enough — they need a WIDER (opening-range/ATR) stop to survive
- *  normal pullbacks. Keep OFF until that pairing is built and re-validated.
- *  See extended-bypass.ts. */
-export const USE_EXTENDED_TREND_BYPASS = false;
-/** R-Factor floor for the extended-trend bypass. = base MIN_RFACTOR (extended
- *  survivors already cleared it); the breakout + VWAP + Supertrend trend is the
- *  real discriminator, so no extra R bar is imposed by default. */
-export const EXTENDED_BYPASS_MIN_RFACTOR = rFactorAtRaw(0.375); // = base MIN_RFACTOR
-/** Require an actually-computed, aligned Supertrend(10,3) for the bypass (not just
- *  VWAP). True also blocks the first ~1h of raw-spike noise before the trend
- *  proves itself — the conservative default when overriding a 0-for-5 ban. */
-export const EXTENDED_BYPASS_REQUIRE_SUPERTREND = true;
-
-/**
- * EXPERIMENTAL stale-move gate (lib/trade-suggest/move-freshness.ts): drop a
- * candidate whose move is already BEHIND it — the gap-and-flat profile (a big
- * day move with ~nothing since 09:45) and the fading profile (giving it back
- * since 09:45). This is the "App Since 9:45" column finally acting on a scan
- * instead of only being displayed.
- *
- * Ships OFF, and the reason is not timidity: `sinceEntryPct` was never
- * PERSISTED to the EOD table until 2026-08-07, so there is no multi-day history
- * to replay this against. Turning it on now would be a guess wearing a gate's
- * clothes. Everything the gate would use is attached to every pick as evidence
- * regardless (`moveFreshness`), it is written into the entry bar both AIs read,
- * and it is surfaced in the reasons list — so the signal is fully in play
- * today. Flip this ON from /config once the replay has ~10 sessions of
- * sinceEntryPct history and shows the profiles separate winners from losers.
- */
-export const USE_MOVE_FRESHNESS_GATE = false;
 
 // ─── TF Running Race selector (2026-08-13) ───────────────────────────────────
 
@@ -332,13 +244,14 @@ export const USE_MOVE_FRESHNESS_GATE = false;
  * Take trade candidates from TradeFinder's Running Race instead of the App
  * R-Factor sweep. Operator rule: auto-trade considers ONLY race stocks.
  *
- * The gates that used to live here — MIN_RFACTOR, MIN_CONFIDENCE, MIN_OI_LEVEL,
- * MIN_NSE_OI_PCT, MIN_TURNOVER_SCORE — are bypassed on this path. They all
+ * The historical App-factor replay thresholds — MIN_RFACTOR, MIN_CONFIDENCE,
+ * MIN_OI_LEVEL, MIN_NSE_OI_PCT, MIN_TURNOVER_SCORE — do not gate this path. They all
  * re-asked the question TF's R-Factor already answers (is big money here?), and
  * the App R-Factor that fed them had NO discriminating power: over the three
  * sessions with TF captures it scored every graded pick 3.65–6.45 while half of
  * them sat below TF R = 1.0 and lost. Tradeability gates (spread, lot cost vs
- * capital, chaotic open) still apply — those ask a different question.
+ * capital) still apply — those ask a different question. Chaotic-open and
+ * move-freshness classifications remain descriptive evidence only.
  *
  * This is a permanent fail-closed invariant, not a runtime toggle. Missing or
  * stale TF data means no new entry while open positions remain manageable.

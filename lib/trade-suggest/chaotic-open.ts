@@ -29,13 +29,12 @@
  * stock keeps moving, its settled ATR grows and the open stops looking
  * anomalous (SIEMENS: 4.37 at 10:30 → 1.83 by its 10:45 pick).
  *
- * HONEST CAVEAT: 2 recorded days is a hypothesis, not proof. Default ON at the
- * user's explicit request (2026-07-17); the nightly scorecard + 20-session
- * candle retention accrue the replay evidence to confirm or kill it. Skipped
- * names are counted transparently (gated.chaoticOpen).
+ * HONEST CAVEAT: 2 recorded days is a hypothesis, not proof. The old hard gate
+ * was retired when TF became the only candidate selector; this classifier is
+ * retained as descriptive research evidence only.
  *
  * PURE (no imports) so it is unit-testable and the replay harness can A/B it
- * across recorded days — same convention as extended-bypass.ts.
+ * across recorded days.
  */
 
 export interface OpenBar {

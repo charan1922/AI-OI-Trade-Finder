@@ -27,7 +27,7 @@ score =
 + 0.08 · sectorBreadth ((sectorPeers − 1) / 2)      # same-sector same-direction survivors
 + 0.05 · setupStrong   (1 if setup 'strong' else 0.5)
 
-if extended:  score ×= 0.6   # EXTENDED_SCORE_MULT (only when EXCLUDE_EXTENDED is off)
+if extended:  score ×= 0.6   # evidence score only; never re-ranks TF candidates
 ```
 
 ## Why R-Factor and OR-breakout co-lead

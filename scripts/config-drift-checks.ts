@@ -4,7 +4,7 @@
  * feature is covered in CI, not only claimed (PR#2 review 2026-07-20). Run by
  * both the box bench and the DB-free CI runner (scripts/verify-quant-shadow.ts).
  */
-import { buildConfigOverrideSummary, buildUnreachableToggleWarnings } from '../lib/config/feature-toggles';
+import { buildConfigOverrideSummary } from '../lib/config/feature-toggles';
 import {
   buildDriftMessage,
   type DriftReminderDeps,
@@ -29,7 +29,7 @@ function fakeDeps(over: Partial<DriftReminderDeps> = {}): {
     releaseLease: async () => {
       calls.leaseReleased++;
     },
-    getOverrides: async () => ['Breakout bypass: ON (safe default OFF)'],
+    getOverrides: async () => ['Block stale-candle auto entry: OFF (safe default ON)'],
     send: async (m) => {
       calls.sent.push(m);
       return { ok: true };
@@ -56,13 +56,13 @@ const number = (key: string, label: string, category: string, value: number, def
 export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
   // 1. A non-default 'Trade Suggest' toggle appears.
   const s1 = buildConfigOverrideSummary(
-    [toggle('Extended-trend bypass', 'Trade Suggest', true, false)],
+    [toggle('Block stale-candle auto entry', 'Trade Suggest', false, true)],
     []
   );
-  check('config-drift: non-default Trade Suggest toggle appears', s1.length === 1 && s1[0].includes('Extended-trend bypass') && s1[0].includes('ON') && s1[0].includes('safe default OFF'), s1[0]);
+  check('config-drift: non-default Trade Suggest toggle appears', s1.length === 1 && s1[0].includes('Block stale-candle auto entry') && s1[0].includes('OFF') && s1[0].includes('safe default ON'), s1[0]);
 
   // 2. A toggle AT its default is excluded.
-  const s2 = buildConfigOverrideSummary([toggle('Skip already-extended movers', 'Trade Suggest', true, true)], []);
+  const s2 = buildConfigOverrideSummary([toggle('Block stale-candle auto entry', 'Trade Suggest', true, true)], []);
   check('config-drift: toggle at default is excluded', s2.length === 0);
 
   // 3. A NON-default toggle in another category (Server) is excluded.
@@ -88,8 +88,8 @@ export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
   // 8. Mixed set: counts only the drifted, relevant ones.
   const s8 = buildConfigOverrideSummary(
     [
-      toggle('Breakout bypass', 'Trade Suggest', true, false), // in
-      toggle('TF breakout gate', 'Trade Suggest', false, false), // out (default)
+      toggle('Block stale-candle auto entry', 'Trade Suggest', false, true), // in
+      toggle('Another safe-default switch', 'Trade Suggest', false, false), // out (default)
       toggle('Auto power-off', 'Server', true, false), // out (category)
     ],
     [
@@ -100,7 +100,7 @@ export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
   check('config-drift: mixed set counts only drifted+relevant', s8.length === 2, `got ${s8.length}: ${JSON.stringify(s8)}`);
 
   const staleOff = buildConfigOverrideSummary(
-    [toggle('Block stale-candle auto entry', 'Candle Freshness', false, true)],
+    [toggle('Block stale-candle auto entry', 'Trade Suggest', false, true)],
     []
   );
   check(
@@ -109,7 +109,7 @@ export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
     staleOff[0]
   );
   const staleOn = buildConfigOverrideSummary(
-    [toggle('Block stale-candle auto entry', 'Candle Freshness', true, true)],
+    [toggle('Block stale-candle auto entry', 'Trade Suggest', true, true)],
     []
   );
   check('config-drift: BLOCK_STALE_AUTO_ENTRY ON is excluded', staleOn.length === 0);
@@ -121,7 +121,7 @@ export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
 
   // ── Reminder WINDOW (PR#2 review: must span the whole session, not stop 11:00) ──
   check('window: pre-open 08:45 weekday → in window', inDriftReminderWindow(istAt(8, 45)) === true);
-  check('window: 12:00 weekday (SCAN_OUTSIDE_WINDOW late-restart case) → in window', inDriftReminderWindow(istAt(12, 0)) === true);
+  check('window: 12:00 weekday late-restart case → in window', inDriftReminderWindow(istAt(12, 0)) === true);
   check('window: 15:00 weekday → still in window (before 15:30 close)', inDriftReminderWindow(istAt(15, 0)) === true);
   check('window: 08:00 (too early) → out', inDriftReminderWindow(istAt(8, 0)) === false);
   check('window: 16:00 (after close) → out', inDriftReminderWindow(istAt(16, 0)) === false);
@@ -133,7 +133,7 @@ export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
     const { deps, calls } = fakeDeps();
     const r = await runConfigDriftReminderCore(deps);
     check('reminder: success → status sent, one send, marker written', r.status === 'sent' && calls.sent.length === 1 && calls.marked === 1 && r.completedToday, r.status);
-    check('reminder: success message lists the drifted setting', calls.sent[0]?.includes('Breakout bypass'));
+    check('reminder: success message lists the drifted setting', calls.sent[0]?.includes('Block stale-candle auto entry'));
     check('reminder: lease released after a successful send', calls.leaseReleased === 1);
   }
   // Telegram failure → NO marker, NOT completed → retries next tick.
@@ -168,65 +168,6 @@ export async function runConfigDriftChecks(check: CheckFn): Promise<void> {
     check('reminder: sent but marker write failed → markedPersisted false (honest)', r.status === 'sent' && r.markedPersisted === false && r.completedToday);
   }
 
-  // ── Unreachable-bypass detection (a bypass ON while its parent rule is OFF) ──
-  // This is NOT drift: both halves can sit at their own defaults while the pair
-  // is meaningless, which is exactly why the summary above cannot catch it.
-  const tg = (key: string, label: string, value: boolean) => ({ key, label, value });
-  {
-    const w = buildUnreachableToggleWarnings([
-      tg('USE_EXTENDED_TREND_BYPASS', 'Extended-trend bypass', true),
-      tg('EXCLUDE_EXTENDED', 'Skip already-extended movers', false),
-    ]);
-    check(
-      'unreachable: bypass ON + parent OFF is reported (the 2026-07-23 state)',
-      w.length === 1 && w[0].includes('Extended-trend bypass') && w[0].includes('Skip already-extended movers'),
-      w[0]
-    );
-  }
-  {
-    const w = buildUnreachableToggleWarnings([
-      tg('USE_EXTENDED_TREND_BYPASS', 'Extended-trend bypass', true),
-      tg('EXCLUDE_EXTENDED', 'Skip already-extended movers', true),
-    ]);
-    check('unreachable: bypass ON + parent ON is fine', w.length === 0);
-  }
-  {
-    const w = buildUnreachableToggleWarnings([
-      tg('USE_EXTENDED_TREND_BYPASS', 'Extended-trend bypass', false),
-      tg('EXCLUDE_EXTENDED', 'Skip already-extended movers', false),
-    ]);
-    check('unreachable: bypass OFF + parent OFF is fine (nothing claims to be live)', w.length === 0);
-  }
-  {
-    const w = buildUnreachableToggleWarnings([tg('USE_EXTENDED_TREND_BYPASS', 'Extended-trend bypass', true)]);
-    check('unreachable: a missing parent is skipped, not guessed at', w.length === 0);
-  }
-
-  // ── The reminder must carry unreachable warnings, including with zero drift ──
-  {
-    const { deps, calls } = fakeDeps({ getOverrides: async () => [], getUnreachable: async () => ['X is ON but inert'] });
-    const r = await runConfigDriftReminderCore(deps);
-    check(
-      'reminder: no drift but an inert switch → still sends',
-      r.status === 'sent' && calls.sent.length === 1 && calls.sent[0].includes('X is ON but inert')
-    );
-  }
-  {
-    const { deps, calls } = fakeDeps({ getOverrides: async () => [], getUnreachable: async () => [] });
-    const r = await runConfigDriftReminderCore(deps);
-    check('reminder: nothing drifted and nothing inert → still silent', r.status === 'no-drift' && calls.sent.length === 0);
-  }
-  {
-    const { deps } = fakeDeps({});
-    const r = await runConfigDriftReminderCore(deps);
-    check('reminder: an absent getUnreachable dep keeps older callers working', r.status === 'sent');
-  }
-  {
-    const msg = buildDriftMessage(['A: ON (safe default OFF)'], ['B is ON but inert']);
-    check(
-      'message: drift and inert switches are reported as SEPARATE sections',
-      msg.includes('off their safe default') && msg.includes('ON but doing nothing'),
-      msg.split('\n').join(' | ')
-    );
-  }
+  const msg = buildDriftMessage(['A: ON (safe default OFF)']);
+  check('message: drift setting is reported', msg.includes('off their safe default') && msg.includes('A: ON'));
 }

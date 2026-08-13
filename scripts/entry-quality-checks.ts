@@ -18,7 +18,7 @@ import {
   DEFAULT_CONSOLIDATION_CONFIG,
   detectConsolidationBreakout,
 } from '../lib/trade-suggest/consolidation-breakout';
-import { classifyMoveFreshness, isStaleMove } from '../lib/trade-suggest/move-freshness';
+import { classifyMoveFreshness } from '../lib/trade-suggest/move-freshness';
 import { TF_ENDPOINT_URL, TF_ENDPOINTS, TF_PARSED_ENDPOINTS } from '../lib/tf-live/endpoints';
 import type { IndicatorBar } from '../lib/signals/indicators';
 
@@ -168,13 +168,11 @@ export function runEntryQualityChecks(check: CheckFn): void {
   {
     const spent = classifyMoveFreshness({ sinceEntryPct: 0.05, changePctOpen: 2.4, direction: 'bullish' });
     check('freshness: big day move with nothing since 09:45 reads spent', spent.profile === 'spent', spent.profile);
-    check('freshness: spent counts as a stale move', isStaleMove(spent.profile));
   }
 
   {
     const fading = classifyMoveFreshness({ sinceEntryPct: -0.9, changePctOpen: 3.0, direction: 'bullish' });
     check('freshness: giving the move back reads fading', fading.profile === 'fading', fading.profile);
-    check('freshness: fading counts as a stale move', isStaleMove(fading.profile));
   }
 
   {
@@ -194,17 +192,12 @@ export function runEntryQualityChecks(check: CheckFn): void {
   {
     const unknown = classifyMoveFreshness({ sinceEntryPct: null, changePctOpen: 2.0, direction: 'bullish' });
     check('freshness: a missing 09:45 reference reads unknown', unknown.profile === 'unknown');
-    check(
-      'freshness: unknown is NOT treated as stale (missing evidence never blocks)',
-      !isStaleMove(unknown.profile)
-    );
     check('freshness: unknown reports no directional value', unknown.sinceEntryDirectional === null);
   }
 
   {
     const quiet = classifyMoveFreshness({ sinceEntryPct: 0.05, changePctOpen: 0.2, direction: 'bullish' });
     check('freshness: flat on a flat day is quiet, not spent', quiet.profile === 'quiet', quiet.profile);
-    check('freshness: quiet is not a stale move (nothing was spent)', !isStaleMove(quiet.profile));
     check('freshness: freshShare is suppressed on a too-small day move', quiet.freshShare === null);
   }
 

@@ -7,7 +7,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import type { BreakoutGrade } from '@/lib/breakout';
 import { setupScore, type SetupVerdict } from '../_lib/setup-score';
 import type { LiveUrgencyRow } from '../_lib/types';
-import { rFactorAtRaw } from '@/lib/r-factor/scale';
 
 const num = (n: number | null, d = 2): string => (n == null ? '—' : n.toFixed(d));
 
@@ -416,22 +415,18 @@ const BIAS_STYLE: Record<'buy' | 'sell' | 'neutral', { arrow: string; cls: strin
 };
 
 /**
- * R-Factor cell — the live institutional-interest score (1.0–8.0) plus its
- * directional bias arrow, colored by strength. The hover tooltip breaks down every
- * contributing factor. Values are provisional until the blend weights are
- * calibrated to TradeFinder. "—" when there's no usable price (never fabricated).
+ * R-Factor cell — the App's point-in-time approximation of TF's 0–10 score,
+ * plus the App factor-vote direction. The estimate is display evidence only;
+ * TF's captured value remains the trading selector's source of truth.
  */
 function RFactorCell({ r }: { r: LiveUrgencyRow }) {
   if (r.rFactor == null) return <span className="text-muted-foreground/50">—</span>;
   const bias = r.rFactorBias ?? 'neutral';
   const b = BIAS_STYLE[bias];
-  // Raw positions, not span-specific numbers: 0.75 and 0.50 (they read 4/5 and
-  // 3/5 on the original 1–5 span, 6.25 and 4.5 on 1–8, 7.75 and 5.5 on today's
-  // 1–10). See lib/r-factor/scale.ts for why these are not written as literals.
   const strengthCls =
-    r.rFactor >= rFactorAtRaw(0.75)
+    r.rFactor >= 2
       ? 'font-bold text-emerald-600 dark:text-emerald-400'
-      : r.rFactor >= rFactorAtRaw(0.5)
+      : r.rFactor >= 1
         ? 'font-semibold text-amber-600 dark:text-amber-400'
         : 'text-muted-foreground';
 
@@ -444,13 +439,13 @@ function RFactorCell({ r }: { r: LiveUrgencyRow }) {
   const naLabels = factors.filter((f) => !f.available).map((f) => f.label);
 
   const tip = [
-    `R-Factor ${r.rFactor.toFixed(2)} / 8 · bias ${bias} · agreement ${conf}`,
-    'Measures big-money PARTICIPATION today (where money is) — not entry timing. It ratchets up through a heavy day and stays high after the move is done; use Setup + Breakout + Since 9:45 for the "enter now?" question.',
+    `App estimate ${r.rFactor.toFixed(2)} / 10 · factor-vote bias ${bias} · agreement ${conf}`,
+    'Approximates TradeFinder R-Factor from the same-time App snapshot. Display evidence only: actual TF R-Factor and its measured gates remain the trading source of truth.',
     r.rFactorAfterEntry === false ? '⚠ before the 09:45 IST entry window — may be opening noise' : '',
     '',
     active,
     naLabels.length ? `\nNot available: ${naLabels.join(', ')}` : '',
-    '\nProvisional — blend weights not yet calibrated to TradeFinder.',
+    '\nCalibrated on 27,060 point-in-time pairs across 4 sessions; held-out-day MAE 0.31, correlation 0.59. Limited history means this remains approximate.',
   ]
     .filter(Boolean)
     .join('\n');
@@ -667,7 +662,7 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               col="rFactor"
               align="right"
               className={BLOCK_EDGE}
-              title="Our score, 1 to 8: how much BIG money is active in this stock today. Higher = more big-player activity; the arrow shows which way they lean. Careful: it says WHERE the money is, not WHEN to enter — it stays high even after the move is over. For timing, use Setup + Breakout + Since 9:45. Hover a value to see what drove it."
+              title="Our point-in-time estimate of TradeFinder's 0–10 R-Factor, calibrated on captured TF boards. Approximate and display-only; the actual TF R-Factor column remains the source of truth for trading. Hover for validation evidence and factor details."
               {...th}
             />
             <Th

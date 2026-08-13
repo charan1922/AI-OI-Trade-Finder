@@ -235,7 +235,7 @@ check('held symbol retains current thesis signals after dropping from suggestion
   assert.equal(signals[0].symbol, 'INFY');
   assert.equal(signals[0].combinedOiSlope30m, -1.8);
   assert.equal(signals[0].vwapAligned, false);
-  assert.equal(signals[0].supertrendAligned, false);
+  assert.ok(!Object.hasOwn(signals[0], 'supertrendAligned'));
 });
 
 check('held contract and tightened stop are the only authoritative plan', () => {
@@ -260,8 +260,9 @@ check('management commentary cards equal the exact model-visible held positions'
 });
 
 check('entry context carries every TF-proven scanner candidate', () => {
-  const context = buildScanContext(scan) as { picks: { symbol: string }[] };
+  const context = buildScanContext(scan) as { picks: { symbol: string; factors?: Record<string, unknown> }[] };
   assert.deepEqual(context.picks.map((pick) => pick.symbol), ['INFY', 'TCS']);
+  assert.ok(context.picks.every((pick) => !Object.hasOwn(pick.factors ?? {}, 'supertrendAligned')));
 });
 
 check('entry context and commentary cards reject suggestions without matching TF provenance', () => {

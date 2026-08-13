@@ -49,7 +49,7 @@ Data Engine → Scanner → AI → Safety Gates → Broker
 | Max 7 picks shown, "1–3 in practice" | MAX_PICKS = 7 | `lib/trade-suggest/config.ts` |
 | Gate 2: futures OI **AND** live combined OI | **OR** — either path passes | `engine.ts:606` |
 | 12-factor R-Factor | Only ~8 factors can ever be available live (options factors structurally absent — no option chain on live path) | `rfactor-inputs.ts` |
-| Extended ×0.6 penalty | Dormant — `EXCLUDE_EXTENDED=true` hard-bans instead | `config.ts` |
+| Extended ×0.6 penalty | Evidence-only; TF order is preserved and chase risk uses the since-09:45 band | `config.ts` |
 | Fixed 09:45–11:00 window, 15:12 square-off | Runtime-tunable (clamped) settings | `lib/auto-trade/settings.ts` |
 | Guard = stops/targets/square-off | Plus two undocumented exits: +30% breakeven trail, Supertrend flip | `position-guard.ts` |
 

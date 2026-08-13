@@ -1,6 +1,6 @@
 /**
  * Structured pick summary stored WITH each commentary so the page can render the
- * same pill/badge design as /trade-suggest (R-Factor, Supertrend ⚠, VWAP, sector,
+ * same pill/badge design as /trade-suggest (R-Factor, VWAP, sector,
  * OI…) alongside MiMo's narration. Mirrors the chip vocabulary of that page's
  * PickCard, kept here so the MiMo feature stays self-contained (no import from
  * the trade-suggest page). Pure data — no React.
@@ -8,7 +8,6 @@
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { tfSelectedSuggestions } from '@/lib/trade-suggest/tf-provenance';
 import type { DecisionOpenPosition } from '@/lib/auto-trade/decision/context-policy';
-import { rFactorAtRaw } from '@/lib/r-factor/scale';
 
 export type ChipTone = 'good' | 'warn' | 'info';
 export interface Chip {
@@ -46,7 +45,7 @@ export function buildPicks(result: SuggestResponse): StoredPick[] {
     const f = p.factors;
     const bull = p.direction === 'bullish';
     const chips: Chip[] = [
-      { label: 'R-Factor', value: p.rFactor.toFixed(2), tone: p.rFactor >= rFactorAtRaw(0.375) ? 'good' : 'warn' },
+      { label: 'App R≈TF', value: p.rFactor.toFixed(2), tone: p.rFactor >= 1 ? 'good' : 'warn' },
       { label: 'Fut OI', value: `${fmt(p.oiLevel)}×`, tone: p.oiLevel >= 1.1 ? 'good' : 'info' },
     ];
     if (f?.nseOiPct != null)
@@ -74,12 +73,6 @@ export function buildPicks(result: SuggestResponse): StoredPick[] {
       });
     }
     if (f?.vwap != null) chips.push({ label: 'VWAP', value: fmt(f.vwap), tone: f.vwapAligned ? 'good' : 'warn' });
-    if (f?.supertrend != null)
-      chips.push({
-        label: 'Supertrend',
-        value: `${f.supertrend === 'up' ? '↑' : '↓'} ${fmt(f.supertrendLine)}`,
-        tone: f.supertrendAligned ? 'good' : 'warn',
-      });
     if (f?.sectorAligned != null && f?.sectorPct != null)
       chips.push({
         label: 'Sector',

@@ -1050,9 +1050,8 @@ const DRIFT_LEASE = 'config-drift-reminder';
 
 /**
  * Config-drift reminder (AT-review 2026-07-20 op-fix; hardened per PR#2 review).
- * Any scanner setting left off its coded-safe default — the toggle OR a numeric
- * like WINDOW_END_MIN (the USE_EXTENDED_TREND_BYPASS drift that caused the
- * COLPAL 2026-07-20 loss sat unnoticed for 10 days) — is pushed once per trading
+ * Any scanner setting left off its coded-safe default — a safety toggle or a
+ * numeric like WINDOW_END_MIN — is pushed once per trading
  * day so a forgotten override keeps nagging instead of going silent. Complements
  * the immediate on-change alert in setToggle/setNumberSetting.
  *
@@ -1066,8 +1065,7 @@ const DRIFT_LEASE = 'config-drift-reminder';
  *    poller's own POLLER_LEASE), so overlapping deploy processes can't both fire;
  *  - the marker is set ONLY after CONFIRMED delivery, and markToday reports
  *    whether it actually persisted — a failed read/send/write retries next tick;
- *  - the window spans 08:40–15:30 (market close), so a late start with
- *    SCAN_OUTSIDE_WINDOW ON (which can trade past 11:00) still gets alerted.
+ *  - the window spans 08:40–15:30 (market close), so a late start still alerts.
  *  Autonomous-server only, like the sibling EOD jobs. Callable from both the
  *  market-closed and market-open paths — the guards make it idempotent. Never
  *  throws to the poller.
@@ -1079,16 +1077,13 @@ async function runConfigDriftReminder(state: PollerState): Promise<void> {
   if (state.lastConfigDriftAlertDate === today) return; // fast in-memory path
   if (await isMarketHoliday(today)) return;
 
-  const { tradeSuggestConfigOverrideSummary, unreachableToggleWarnings } = await import(
-    '@/lib/config/feature-toggles'
-  );
+  const { tradeSuggestConfigOverrideSummary } = await import('@/lib/config/feature-toggles');
   const { sendMessageAsync } = await import('@/lib/telegram');
   const outcome = await runConfigDriftReminderCore({
     wasMarked: () => wasMarkedToday(DRIFT_MARKER, today),
     acquireLease: () => tryAcquireRuntimeLease(DRIFT_LEASE, 120_000),
     releaseLease: () => releaseRuntimeLease(DRIFT_LEASE),
     getOverrides: tradeSuggestConfigOverrideSummary,
-    getUnreachable: unreachableToggleWarnings,
     send: async (message) => {
       const r = await sendMessageAsync(message);
       return { ok: r.ok, error: r.error };

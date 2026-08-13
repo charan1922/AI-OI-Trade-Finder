@@ -35,9 +35,6 @@ import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   CAPITAL_BUDGET,
   CHAOTIC_OPEN_MAX_RATIO,
-  EXCLUDE_EXTENDED,
-  EXTENDED_BYPASS_MIN_RFACTOR,
-  EXTENDED_BYPASS_REQUIRE_SUPERTREND,
   MAX_PICKS,
   SUGGESTION_MAX_SPREAD_PCT,
   MIN_NSE_OI_PCT,
@@ -45,18 +42,13 @@ import {
   TF_BOARD_MAX_AGE_MIN,
   TF_RACE_MAX_RANK,
   PICK_OVERSAMPLE,
-  SCAN_OUTSIDE_WINDOW,
   SL_ATR_MULT,
-  USE_CHAOTIC_OPEN_GATE,
-  USE_EXTENDED_TREND_BYPASS,
-  USE_MOVE_FRESHNESS_GATE,
-  USE_TF_BREAKOUT_GATE,
   WINDOW_END_MIN,
   WINDOW_START_MIN,
 } from '@/lib/trade-suggest/config';
 import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import { getOpenTrades } from '@/lib/auto-trade/store';
-import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
+import { getNumberSetting } from '@/lib/config/feature-toggles';
 import {
   discoverCandidateSnapshot,
   internalAuthHeaders,
@@ -65,8 +57,7 @@ import {
 } from '@/lib/trade-suggest/candidates';
 import { chaoticOpenRatio } from '@/lib/trade-suggest/chaotic-open';
 import { detectConsolidationBreakout } from '@/lib/trade-suggest/consolidation-breakout';
-import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
-import { classifyMoveFreshness, isStaleMove, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
+import { classifyMoveFreshness, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
 import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
 // istMinutesNow is imported, NOT redefined here. It was duplicated in this file
 // while /api/tf/race used the exported copy — two implementations of the same
@@ -265,31 +256,23 @@ export async function runTradeSuggest(
     earlierToday: await getSuggestions(date),
   };
 
-  // SCAN_OUTSIDE_WINDOW turns the 09:40–11:00 gate advisory: scans run any
-  // time the market is open. Resolved before the early return; the market-
-  // closed guard below still applies (no live quotes = no suggestions).
-  const scanOutsideWindow = await getToggle('SCAN_OUTSIDE_WINDOW', SCAN_OUTSIDE_WINDOW);
-  if (!window.active && !opts.force && !(scanOutsideWindow && base.marketOpen)) {
+  // The measured morning window is a production invariant. `force` remains an
+  // explicit diagnostic escape hatch for the API; autonomous scans cannot
+  // silently widen the strategy through a stored toggle.
+  if (!window.active && !opts.force) {
     base.note = base.marketOpen
       ? `Outside the suggestion window (${window.opensAt}–${window.closesAt}).`
       : 'Market is closed.';
     return base;
   }
   if (!window.active && base.marketOpen) {
-    base.note = `Out-of-window scan (${scanOutsideWindow ? 'SCAN_OUTSIDE_WINDOW is ON' : 'forced'}) — entries outside ${window.opensAt}–${window.closesAt} are unproven for this strategy.`;
+    base.note = `Forced out-of-window scan — entries outside ${window.opensAt}–${window.closesAt} are unproven for this strategy.`;
   }
   if (!base.marketOpen) {
     base.note = 'Market is closed — live quotes unavailable, no suggestions possible.';
     return base;
   }
 
-  // Runtime feature toggles (flipped from /config; config.ts values are the
-  // defaults/fallback). Resolved once here, not per-candidate.
-  const excludeExtended = await getToggle('EXCLUDE_EXTENDED', EXCLUDE_EXTENDED);
-  const useExtendedTrendBypass = await getToggle('USE_EXTENDED_TREND_BYPASS', USE_EXTENDED_TREND_BYPASS);
-  const useTfBreakoutGate = await getToggle('USE_TF_BREAKOUT_GATE', USE_TF_BREAKOUT_GATE);
-  const useChaoticOpenGate = await getToggle('USE_CHAOTIC_OPEN_GATE', USE_CHAOTIC_OPEN_GATE);
-  const useMoveFreshnessGate = await getToggle('USE_MOVE_FRESHNESS_GATE', USE_MOVE_FRESHNESS_GATE);
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
   // Capital budget = the auto-trade page's editable maxCapitalRupees (one source
   // of truth). A pick whose single lot costs more than this is skipped, so the
@@ -534,8 +517,6 @@ export async function runTradeSuggest(
     setupLevel: string;
     setupReasons: string[];
     extended: boolean;
-    /** True when an extended name was re-admitted by the trend-aligned bypass. */
-    extendedBypassed?: boolean;
     nseOiPct: number | null;
     /** Options share of fut+opt value (NSE oi-spurts) — how options-led the build is. */
     optShare: number | null;
@@ -591,11 +572,6 @@ export async function runTradeSuggest(
       (direction === 'bullish'
         ? sc.openRangeHigh != null && ltp > sc.openRangeHigh
         : sc.openRangeLow != null && ltp < sc.openRangeLow);
-    const st = supertrend(bars);
-    const supertrendAligned =
-      st == null ? null : direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
-
-
     // NSE/Futures OI remains attached as descriptive evidence, but it no longer
     // admits a non-TF name or rejects a qualified TF runner.
     const oiRow = nseOiRowMap.get(row.symbol) ?? null;
@@ -603,54 +579,19 @@ export async function runTradeSuggest(
     const optShare = oiRow?.optShare ?? null;
 
 
-    // Supertrend alignment remains a hard entry gate: the project replay
-    // benchmark showed materially worse expectancy without it.
-    if (supertrendAligned === false) {
-      gated.supertrendDisagree = (gated.supertrendDisagree ?? 0) + 1;
-      continue;
-    }
-
-    // EXPERIMENTAL TF-breakout gate (USE_TF_BREAKOUT_GATE, off by default):
-    // require the TF 3-check verdict — morning level held + ≥1 named level
-    // cleared — in the trade's direction. The verdict rides in on the live row
-    // (computed by /api/live/quote from lib/breakout); null (candles not
-    // recorded yet) fails the gate, transparently counted. Evidence status in
-    // config.ts — do not enable without a replay A/B.
-    if (useTfBreakoutGate) {
-      const b = row.breakout;
-      const tfOk = b != null && (b.grade === 'confirmed' || b.grade === 'strong') && b.direction === direction;
-      if (!tfOk) {
-        gated.tfBreakoutGate = (gated.tfBreakoutGate ?? 0) + 1;
-        continue;
-      }
-    }
-
-    // EXPERIMENTAL chaotic-open gate (USE_CHAOTIC_OPEN_GATE): skip a name whose
-    // opening 15 min was a violent spike vs its own settled 5-min ATR — the
-    // HYUNDAI/SRF "blow the energy at the open, then fade" loser profile
-    // (evidence + caveat in chaotic-open.ts). Null ratio (early session, thin
-    // bars) skips the gate, never blocks.
+    // Opening character remains evidence on every pick. The old hard veto was
+    // based on four trades and was never represented in the TF replay, so it
+    // must not silently change the tested candidate set.
     const chaosRatio = chaoticOpenRatio(bars);
-    if (useChaoticOpenGate && chaosRatio != null && chaosRatio > CHAOTIC_OPEN_MAX_RATIO) {
-      gated.chaoticOpen = (gated.chaoticOpen ?? 0) + 1;
-      continue;
-    }
 
-    // Move freshness — the "App Since 9:45" read (move-freshness.ts). Computed
-    // for EVERY survivor because it is attached as evidence regardless; the
-    // GATE (drop 'spent'/'fading') is opt-in and off until sinceEntryPct has
-    // replayable history. 'unknown' never blocks: missing evidence is not
-    // evidence of staleness.
+    // Move freshness is evidence, not a second selector. The TF selector owns
+    // the measured 0–2% since-09:45 chase band; its ablation found a separate
+    // freshness hard gate slightly harmful.
     const moveFreshness = classifyMoveFreshness({
       sinceEntryPct: row.sinceEntryPct ?? null,
       changePctOpen: row.changePctOpen ?? null,
       direction,
     });
-    if (useMoveFreshnessGate && isStaleMove(moveFreshness.profile)) {
-      gated.staleMove = (gated.staleMove ?? 0) + 1;
-      continue;
-    }
-
     survivors.push({
       row,
       sector: sectorBySymbol.get(row.symbol) ?? '',
@@ -711,45 +652,10 @@ export async function runTradeSuggest(
   // 6. Resolve contracts + live premiums for the top candidates (oversampled so
   //    an unaffordable contract can be replaced by the next qualified name),
   //    then keep the first MAX_PICKS that fit the capital budget.
-  //    Extended movers (≥3% from open) are hard-skipped here when
-  //    EXCLUDE_EXTENDED — 0-for-5 evidence, see config.
+  //    Extension from the open is evidence-only here. The TF selector already
+  //    owns the replayed do-not-chase rule (movement since 09:45), so an older
+  //    pre-TF hard ban must not create an untested second candidate set.
   const shortlist = survivors
-    .filter((s) => {
-      // Not gated (not extended, or the hard ban is off) → keep.
-      if (!(excludeExtended && s.extended)) return true;
-      // Extended AND the hard ban is on. Trend-aligned bypass (opt-in): a genuine
-      // trend-day continuation — breakout still extending, price holding VWAP,
-      // Supertrend aligned — is re-admitted; a spent spike that lost VWAP/Supertrend
-      // is not (the 0-for-5 chase profile). The score still carries the extended
-      // ×0.6 penalty (computed above), so a bypassed name ranks conservatively.
-      if (useExtendedTrendBypass) {
-        const ltp = s.row.ltp ?? 0;
-        const vw = sessionVwap(s.bars);
-        const st = supertrend(s.bars);
-        const vwapAligned = vw == null ? null : s.direction === 'bullish' ? ltp > vw : ltp < vw;
-        const supertrendAligned =
-          st == null ? null : s.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down';
-        if (
-          qualifiesExtendedTrend(
-            {
-              orBreakout: s.orBreakout,
-              supertrendAligned,
-              vwapAligned,
-              rFactor: s.row.rFactor,
-            },
-            {
-              minRFactor: EXTENDED_BYPASS_MIN_RFACTOR,
-              requireSupertrend: EXTENDED_BYPASS_REQUIRE_SUPERTREND,
-            }
-          )
-        ) {
-          s.extendedBypassed = true;
-          return true;
-        }
-      }
-      gated.extendedMover = (gated.extendedMover ?? 0) + 1;
-      return false;
-    })
     .slice(0, maxPicks + PICK_OVERSAMPLE);
   const factorBaselines = await loadFactorBaselines(shortlist.map((s) => s.row.symbol));
   const sessionFrac = Math.min(1, Math.max(0.02, (istNow().minuteOfDay - (9 * 60 + 15)) / 375));
@@ -897,9 +803,7 @@ export async function runTradeSuggest(
     const reasons = [
       ...(s.extended
         ? [
-            s.extendedBypassed
-              ? `⚠ extended ${(r.changePctOpen ?? 0) >= 0 ? '+' : ''}${(r.changePctOpen ?? 0).toFixed(1)}% from open but trend-aligned (breakout + Supertrend + VWAP) — extended-trend bypass admitted it, score still penalized`
-              : `⚠ already moved ${(r.changePctOpen ?? 0) >= 0 ? '+' : ''}${(r.changePctOpen ?? 0).toFixed(1)}% from open — late to chase, score penalized`,
+            `⚠ already moved ${(r.changePctOpen ?? 0) >= 0 ? '+' : ''}${(r.changePctOpen ?? 0).toFixed(1)}% from open — extension recorded as evidence; the TF selector's since-09:45 band decides chase risk`,
           ]
         : []),
       // Move freshness FIRST among the evidence: it is the one line that says
@@ -938,7 +842,7 @@ export async function runTradeSuggest(
       ...(s.chaosRatio != null
         ? [
             s.chaosRatio > CHAOTIC_OPEN_MAX_RATIO
-              ? `⚠ chaotic open: first 15 min ranged ${s.chaosRatio.toFixed(1)}× the stock's settled 5-min ATR (gate threshold ${CHAOTIC_OPEN_MAX_RATIO}×)`
+              ? `⚠ chaotic open: first 15 min ranged ${s.chaosRatio.toFixed(1)}× the stock's settled 5-min ATR (research marker ${CHAOTIC_OPEN_MAX_RATIO}×; evidence only)`
               : `calm open: first 15 min ranged ${s.chaosRatio.toFixed(1)}× the stock's settled 5-min ATR`,
           ]
         : []),
@@ -1096,8 +1000,8 @@ export async function runTradeSuggest(
  * Bridge between the LIVE data the engine already holds and the PURE selector
  * in lib/tf-live/selector.ts.
  *
- * Everything the selector needs that it cannot read off TF's board — Supertrend
- * alignment, opening-range breakout, the options premium pool, the move since
+ * Everything the selector needs that it cannot read off TF's board — opening-
+ * range breakout, the options premium pool, the move since
  * 09:45 — is assembled here from the same quote rows and candles the rest of
  * the scan uses, so a candidate's evidence is the evidence the operator sees.
  *
@@ -1157,10 +1061,11 @@ async function buildTfSelection(
     const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
     const bars = await getFyersCandles(runner.symbol, date, 'EQ').catch(() => [] as StoredFyersBar[]);
     const sc = deriveSessionContext(bars);
-    const st = supertrend(bars);
     const ltp = row?.ltp ?? null;
     context.set(runner.symbol, {
-      supertrendAligned: st == null ? null : side === 'CE' ? st.direction === 'up' : st.direction === 'down',
+      // Kept in the shared context shape for /live display compatibility. The
+      // Auto Trade / Commentary selector explicitly ignores Supertrend.
+      supertrendAligned: null,
       breakout:
         ltp == null || !sc.openRangeComplete
           ? null
