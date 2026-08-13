@@ -3,7 +3,6 @@ import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
 import { prisma } from '@/lib/db';
 import { isMarketHours } from '@/lib/dhan/market-feed';
 import { minuteOfDayIST } from '@/lib/ist';
-import type { FeedPicks, PriorityFeed, RankedFeedPick } from '@/lib/priority-refresh/types';
 import { CANDIDATE_SOURCES, SCAN_FULL_UNIVERSE, SCAN_OUTSIDE_WINDOW, WINDOW_END_MIN, WINDOW_START_MIN } from './config';
 
 const TAG = '[TradeSuggest]';
@@ -18,18 +17,6 @@ export interface CandidateSnapshot {
   oiSpurtSymbols: string[];
   /** Exact /live mover slices worth refreshing first through Fyers. */
   prioritySymbols: string[];
-  /**
-   * Per-feed ranked, eligibility-filtered picks (rank = position in body.picks).
-   * Additive to `prioritySymbols` (which stays the deduped union): the capped
-   * priority-refresh planner reads these ranks to build its round-robin plan.
-   * Nothing in the live path consumes this yet — it is shadow-planner input.
-   */
-  feedPicks: FeedPicks;
-}
-
-/** Empty per-feed record keyed by every candidate source. */
-function emptyFeedPicks(): FeedPicks {
-  return Object.fromEntries(CANDIDATE_SOURCES.map((s) => [s, [] as RankedFeedPick[]])) as FeedPicks;
 }
 
 /** Loopback base for server-side self-fetches inside the Railway container. */
@@ -68,7 +55,6 @@ export async function discoverCandidateSnapshot(): Promise<CandidateSnapshot> {
   const sectorBySymbol = new Map<string, string>();
   const oiSpurtSymbols = new Set<string>();
   const prioritySymbols = new Set<string>();
-  const feedPicks = emptyFeedPicks();
 
   // Sequential by design: NSE throttles bursts. Each route applies the exact
   // F&O/non-avoid/live-future filters and display caps used by /live.
@@ -81,21 +67,6 @@ export async function discoverCandidateSnapshot(): Promise<CandidateSnapshot> {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as SectorLeadersResponse;
       const picks = (body.picks ?? []).filter((p) => p.symbol);
-      // Ranked, eligibility-filtered slice for the priority planner (rank = the
-      // order NSE returned, already F&O/non-avoid/live-future gated by the route).
-      // `retPct` from this route is the feed's headline %: for nse-oi it is the
-      // OI-CHANGE %, for gainers/losers/active it is the PRICE move %. Keep them
-      // separate — only price direction may drive sector-direction agreement, so
-      // nse-oi contributes no price direction (it can still enter via round-robin).
-      const metric = (p: (typeof picks)[number]) => (Number.isFinite(p.retPct) ? p.retPct : null);
-      feedPicks[source as PriorityFeed] = picks.map((pick, index) => ({
-        symbol: pick.symbol,
-        sector: pick.sector ?? '',
-        source: source as PriorityFeed,
-        eligibleRank: index + 1,
-        feedMetricPct: metric(pick),
-        priceDirectionPct: source === 'nse-oi' ? null : metric(pick),
-      }));
       for (const pick of picks) {
         prioritySymbols.add(pick.symbol);
         if (!sectorBySymbol.has(pick.symbol)) sectorBySymbol.set(pick.symbol, pick.sector ?? '');
@@ -128,6 +99,5 @@ export async function discoverCandidateSnapshot(): Promise<CandidateSnapshot> {
     sectorEntries: [...sectorBySymbol],
     oiSpurtSymbols: [...oiSpurtSymbols],
     prioritySymbols: [...prioritySymbols],
-    feedPicks,
   };
 }

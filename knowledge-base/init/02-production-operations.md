@@ -20,50 +20,19 @@ Open:
 
 `https://charan-projectr.duckdns.org/config`
 
-Find the **Priority Refresh** category. The important current controls are:
+Find the **Candle Freshness** category. The important current control is:
 
 - **Block stale-candle Auto-Trade entries** — keep ON.
-- **Shadow: reduced priority refresh** — keep ON while gathering evidence.
-- **Shadow: active-sector promotion** — keep ON while gathering evidence.
 
-The effective production values were checked on 2026-07-21 and all three were ON.
 Runtime database overrides persist across deployments, so check `/config` again
 instead of assuming code defaults are effective.
 
-Shadow numeric settings include:
-
-| Setting | Default | Meaning |
-|---|---:|---|
-| Names considered per feed | 10 | Eligible ranks read from each of five feeds |
-| Max unique Tier 1 stocks | 40 | Proposed normal candidate cap |
-| Sector-reserved Tier 1 slots | 10 | Part of the 40 reserved for sector alignment |
-| Top sectors per side | 2 | Bullish sectors and bearish sectors considered |
-| Max sector snapshot age | 420 sec | Previous-cycle data freshness limit |
-
-Changing these values currently changes only shadow proposals, not the live wait.
-
-### Shadow measurements
-
-Open:
-
-`https://charan-projectr.duckdns.org/trade-commentary`
-
-Look for **Priority Refresh (shadow)**. The panel appears only after at least one
-eligible cycle has stored data for the current day.
-
-It shows:
-
-- full priority count;
-- Tier 0 count;
-- base Tier 1 count;
-- sector-promoted count;
-- proposed wait-group count;
-- suggestions outside the proposed cap;
-- active bullish and bearish sectors.
-
-The advanced read-only endpoint is:
-
-`GET /api/priority-refresh`
+> **Removed 2026-08-13.** The capped priority-refresh SHADOW (its `/config`
+> numeric settings, the `Priority Refresh (shadow)` panel on `/trade-commentary`
+> and `GET /api/priority-refresh`) was deleted along with its planner, sector
+> snapshots and cycle telemetry. The stale-candle entry gate documented below is
+> the only part of that work still running. Sections of this document describing
+> shadow panels or proposed-cap numbers are history.
 
 ### Entry safety and rejection reasons
 
@@ -77,7 +46,6 @@ Search for:
 ```text
 latest completed 5-min candle is stale
 candle freshness metadata failed
-priority-refresh shadow failed
 priority EQ refresh
 database is locked
 ```

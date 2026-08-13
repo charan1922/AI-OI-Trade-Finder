@@ -1246,11 +1246,6 @@ export async function runTradeSuggest(
         requiredBucketTs: freshness.requiredBucketTs,
         latestBucketTs: freshness.latestBucketTs,
         fresh: freshness.fresh,
-        priorityTier: null,
-        priorityReasons: [],
-        feedRanks: {},
-        sectorPromoted: false,
-        sectorDirection: null,
       },
     });
   }
@@ -1258,9 +1253,6 @@ export async function runTradeSuggest(
   if (skippedUnaffordable > 0) gated.unaffordableLot = skippedUnaffordable;
   base.gated = gated;
   base.suggestions = picks;
-  // Expose the per-sector aggregation (already computed above) so the poller's
-  // priority-refresh shadow can store a sector snapshot without any new call.
-  base.sectorAggregates = [...sectorAgg.values()];
 
   // TradeFinder session context: how fresh their board is, and who is climbing
   // it inside the 09:45–11:00 entry window. The race needs ≥2 captures in that
