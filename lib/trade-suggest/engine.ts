@@ -86,7 +86,18 @@ import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
 import { classifyMoveFreshness, isStaleMove, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
 import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
 import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
-import { getTfBoardsForDate, getTfRaceForWindow, getTfSectorBoard, raceAtMinute } from '@/lib/tf-live/race';
+// istMinutesNow is imported, NOT redefined here. It was duplicated in this file
+// while /api/tf/race used the exported copy — two implementations of the same
+// clock, one of which decides whether a board is fresh enough to TRADE on
+// (TF_BOARD_MAX_AGE_MIN) and the other whether the card may show a verdict.
+// If they ever drifted, the page would disagree with the engine about staleness.
+import {
+  getTfBoardsForDate,
+  getTfRaceForWindow,
+  getTfSectorBoard,
+  istMinutesNow,
+  raceAtMinute,
+} from '@/lib/tf-live/race';
 import {
   describeRejections,
   selectTfCandidates,
@@ -1246,11 +1257,6 @@ export async function runTradeSuggest(
         requiredBucketTs: freshness.requiredBucketTs,
         latestBucketTs: freshness.latestBucketTs,
         fresh: freshness.fresh,
-        priorityTier: null,
-        priorityReasons: [],
-        feedRanks: {},
-        sectorPromoted: false,
-        sectorDirection: null,
       },
     });
   }
@@ -1258,9 +1264,6 @@ export async function runTradeSuggest(
   if (skippedUnaffordable > 0) gated.unaffordableLot = skippedUnaffordable;
   base.gated = gated;
   base.suggestions = picks;
-  // Expose the per-sector aggregation (already computed above) so the poller's
-  // priority-refresh shadow can store a sector snapshot without any new call.
-  base.sectorAggregates = [...sectorAgg.values()];
 
   // TradeFinder session context: how fresh their board is, and who is climbing
   // it inside the 09:45–11:00 entry window. The race needs ≥2 captures in that
@@ -1420,18 +1423,4 @@ async function buildTfSelection(
       })),
     },
   };
-}
-
-/** Minutes past midnight IST, now. */
-function istMinutesNow(): number {
-  const parts = new Intl.DateTimeFormat('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date());
-  return (
-    Number(parts.find((p) => p.type === 'hour')?.value ?? 0) * 60 +
-    Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
-  );
 }

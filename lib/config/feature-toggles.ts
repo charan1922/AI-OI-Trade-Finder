@@ -13,16 +13,7 @@
  * use — no migration required.
  */
 import { prisma } from '@/lib/db';
-import {
-  BLOCK_STALE_AUTO_ENTRY,
-  PRIORITY_ACTIVE_SECTORS_SHADOW,
-  PRIORITY_MAX_UNIQUE,
-  PRIORITY_PER_FEED,
-  PRIORITY_REFRESH_SHADOW,
-  PRIORITY_SECTOR_MAX_AGE_SEC,
-  PRIORITY_SECTOR_RESERVED_SLOTS,
-  PRIORITY_TOP_SECTORS_PER_SIDE,
-} from '@/lib/priority-refresh/config';
+import { BLOCK_STALE_AUTO_ENTRY } from '@/lib/priority-refresh/config';
 import {
   EXCLUDE_EXTENDED,
   MAX_PICKS,
@@ -132,39 +123,17 @@ export const TOGGLE_DEFS: ToggleDef[] = [
       'Uses the "Since 9:45" number — how much a stock has moved since the entry window opened — to throw out stocks whose move is already BEHIND them. Two cases get dropped: "spent" (a big move on the day but almost nothing since 09:45 — the jump happened at the open and it has sat still for an hour) and "fading" (it is actively giving the move back since 09:45, so buying strength here means buying into the unwind). A stock still moving your way ("fresh") is untouched, and a stock with no 09:45 reading recorded is NEVER dropped — missing information is not evidence of staleness. OFF (default): nothing is filtered, but every pick still SHOWS its freshness reading, and both the commentary and the auto-trader are told to treat "spent" and "fading" as no-trade. Honest reason it ships OFF: the 09:45 number was only saved from 7 Aug 2026 onward, so there is no history yet to test the filter against. Turn ON once the nightly test has ~10 days and shows it drops more losers than winners.',
   },
   {
-    key: 'PRIORITY_REFRESH_SHADOW',
-    label: 'Shadow: reduced priority refresh',
-    category: 'Priority Refresh',
-    default: PRIORITY_REFRESH_SHADOW,
-    description:
-      'MEASUREMENT ONLY — never changes trading. Each 5-minute cycle the app also works out a SHORTER “refresh-first” list (your open positions and earlier picks, plus a fair top-40 spread evenly across NSE’s five movers feeds) and records it, along with how many of that cycle’s suggestions fell outside that shorter list. It does NOT reorder anything and does NOT change timing — the app still waits for the full ~50–80 name list in the same order as today. ON (default) to collect this evidence; OFF to stop the extra note-taking.',
-  },
-  {
-    key: 'PRIORITY_ACTIVE_SECTORS_SHADOW',
-    label: 'Shadow: active-sector promotion',
-    category: 'Priority Refresh',
-    default: PRIORITY_ACTIVE_SECTORS_SHADOW,
-    description:
-      'MEASUREMENT ONLY. Inside the shadow plan above, also try bumping up a few stocks from the day’s strongest sectors — but only names already on a movers feed, and only when the stock’s own move agrees with its sector’s direction. It just records what WOULD have been bumped up so we can judge whether it helps; it never touches the live list. ON (default) to gather the evidence.',
-  },
-  {
-    // Registered now that the stale-candle gate it controls is on `main` (PR #10
-    // merged). Exposing it is REQUIRED: the gate reads this key from SQLite every
-    // entry check, so a hidden stored `false` (e.g. from an earlier build) would
+    // Exposing this is REQUIRED: the gate reads this key from SQLite every entry
+    // check, so a hidden stored `false` (e.g. from an earlier build) would
     // silently disable the protection if it weren't visible/manageable here
     // (PR#11 re-review B1). SAFETY toggle → drift-reported like Trade Suggest.
     key: 'BLOCK_STALE_AUTO_ENTRY',
     label: 'Block stale-candle Auto-Trade entries',
-    category: 'Priority Refresh',
+    category: 'Candle Freshness',
     default: BLOCK_STALE_AUTO_ENTRY,
     description:
       'SAFETY — ON by default. Auto-Trade refuses a NEW entry unless the stock’s latest FINISHED 5-minute candle was refreshed after it closed this cycle. The scanner builds its stop and target from that candle, so entering on an old or half-formed one means acting on a stale picture. Exits, stop moves, and the 15:12 square-off are NEVER affected. Leave ON unless you are deliberately debugging.',
   },
-  // NOTE: the LIVE controls (USE_CAPPED_PRIORITY_REFRESH,
-  // PRIORITY_INCLUDE_ACTIVE_SECTORS) are still NOT registered here — a /config
-  // switch must never appear before the behaviour it controls exists (PR#11
-  // review). They ship in the capped-live / sector-live PRs with their real
-  // behaviour + the unsafe-combo guard. This PR is measurement-only.
   {
     key: 'AUTO_SHUTDOWN',
     label: 'Auto power-off (save cost)',
@@ -232,56 +201,6 @@ export const NUMBER_DEFS: NumberDef[] = [
     description:
       'Two jobs, one time (default 750 = 12:30). (1) The AI commentary stops suggesting new entries and switches to managing/exiting open positions. (2) It is ALSO a hard backstop on ORDERS: the auto-trade entry gate uses min(entry window close, this − 1 min, square-off − 1 min), so entries stop at whichever comes FIRST. The gate does not look at the trading mode, so this blocks PAPER entries exactly as it blocks live and approval ones. Widening “Auto-trade entries close” below past this time will NOT extend trading — raise this too. The /auto-trade page always shows the resulting effective close time. Unrelated to the stale-candle freshness gate.',
   },
-  {
-    key: 'PRIORITY_PER_FEED',
-    label: 'Priority: names considered per feed',
-    category: 'Priority Refresh',
-    default: PRIORITY_PER_FEED,
-    min: 5,
-    max: 24,
-    description:
-      'How many names from EACH of NSE’s five movers feeds (open-interest build-up, gainers, losers, most active by value, most active by volume) the shorter refresh list considers — the top 1..N. Higher casts a wider net but makes the wait longer. Limited to 5–24 so a stray click can’t set a broken 1-per-feed list. Only matters once the reduced refresh is turned on.',
-  },
-  {
-    key: 'PRIORITY_MAX_UNIQUE',
-    label: 'Priority: max unique Tier 1 stocks',
-    category: 'Priority Refresh',
-    default: PRIORITY_MAX_UNIQUE,
-    min: 20,
-    max: 80,
-    description:
-      'The hard limit on the shorter “Tier 1” candidate list (unique stocks). Your open positions and earlier picks are always handled ON TOP of this — they never eat into the limit. Kept between 20 and 80 so a casual change can’t shrink it to a handful.',
-  },
-  {
-    key: 'PRIORITY_SECTOR_RESERVED_SLOTS',
-    label: 'Priority: sector-reserved Tier 1 slots',
-    category: 'Priority Refresh',
-    default: PRIORITY_SECTOR_RESERVED_SLOTS,
-    min: 0,
-    max: 40,
-    description:
-      'Of the Tier 1 limit, how many spots are set aside for strong-sector stocks. Can’t be more than “max unique Tier 1”. Any reserved spot that finds no qualifying sector stock falls back to the normal top-of-feed list, so the list is always filled.',
-  },
-  {
-    key: 'PRIORITY_TOP_SECTORS_PER_SIDE',
-    label: 'Priority: top sectors per side',
-    category: 'Priority Refresh',
-    default: PRIORITY_TOP_SECTORS_PER_SIDE,
-    min: 0,
-    max: 6,
-    description:
-      'When promoting sector stocks, how many strong sectors to pick on each side — this many bullish AND this many bearish, so both call and put ideas are covered.',
-  },
-  {
-    key: 'PRIORITY_SECTOR_MAX_AGE_SEC',
-    label: 'Priority: max sector-snapshot age (sec)',
-    category: 'Priority Refresh',
-    default: PRIORITY_SECTOR_MAX_AGE_SEC,
-    min: 300,
-    max: 900,
-    description:
-      'Ignore the saved sector snapshot if it is older than this many seconds, and fall back to the plain top-of-feed list. The snapshot comes from the PREVIOUS 5-minute cycle, so this must comfortably exceed one cycle — default 420s (one cycle plus a little grace). Set too low, it would reject every fresh read and sector promotion would never run.',
-  },
 ];
 
 const byKey = new Map(TOGGLE_DEFS.map((d) => [d.key, d]));
@@ -348,11 +267,11 @@ export async function getToggle(key: string, fallback: boolean): Promise<boolean
  *  just as materially as a boolean toggle, so drift detection must cover them
  *  too (PR#2 review 2026-07-20). 'Entry & Exit Times' holds the scan-window
  *  open/close + the commentary entry cutoff. */
-const DRIFT_NUMBER_CATEGORIES = new Set(['Trade Suggest', 'Entry & Exit Times', 'Priority Refresh']);
+const DRIFT_NUMBER_CATEGORIES = new Set(['Trade Suggest', 'Entry & Exit Times']);
 /** Toggle categories whose off-default state is drift-reported + Telegram-alerted.
- *  'Priority Refresh' is included so the BLOCK_STALE_AUTO_ENTRY safety switch
+ *  'Candle Freshness' is included so the BLOCK_STALE_AUTO_ENTRY safety switch
  *  turned OFF is surfaced immediately + in the pre-open reminder (PR#11 re-review). */
-const DRIFT_TOGGLE_CATEGORIES = new Set(['Trade Suggest', 'Priority Refresh']);
+const DRIFT_TOGGLE_CATEGORIES = new Set(['Trade Suggest', 'Candle Freshness']);
 
 /** IST clock-style number setting (minutes-from-midnight) → render as HH:MM in
  *  the summary. Mirrors the /config page heuristic (key ends _MIN, ≥ 06:00). */
@@ -453,23 +372,6 @@ export async function unreachableToggleWarnings(): Promise<string[]> {
  *  alert — the moment-of-change reminder that a silent DB flip can't give
  *  (AT-review 2026-07-20; complements the daily pre-open reminder below). Moving
  *  BACK to the default is a return to safety, not a risk — no alert. */
-// The unsafe-combo TOGGLE guard (USE_CAPPED_PRIORITY_REFRESH vs
-// BLOCK_STALE_AUTO_ENTRY, §30) ships in the capped-live PR alongside those
-// toggles — neither is registered here (this PR is measurement-only), so there
-// is no combo to guard yet. The numeric cross-check below IS relevant now
-// because both PRIORITY_MAX_UNIQUE and PRIORITY_SECTOR_RESERVED_SLOTS exist here.
-
-/** PURE cross-check for the priority-refresh numeric pair (§30): the reserved
- *  sector slots are carved out of the Tier 1 cap, so they can never exceed it. */
-export function assertPriorityNumberCombo(key: string, value: number, other: { maxUnique: number; reserved: number }): void {
-  if (key === 'PRIORITY_SECTOR_RESERVED_SLOTS' && value > other.maxUnique) {
-    throw new Error(`Sector-reserved slots (${value}) cannot exceed max unique Tier 1 (${other.maxUnique})`);
-  }
-  if (key === 'PRIORITY_MAX_UNIQUE' && value < other.reserved) {
-    throw new Error(`Max unique Tier 1 (${value}) cannot be below sector-reserved slots (${other.reserved})`);
-  }
-}
-
 export async function setToggle(key: string, value: boolean): Promise<void> {
   const def = byKey.get(key);
   if (!def) throw new Error(`unknown toggle: ${key}`);
@@ -538,14 +440,6 @@ export async function setNumberSetting(key: string, value: number): Promise<void
   if (!def) throw new Error(`unknown numeric setting: ${key}`);
   if (!Number.isFinite(value) || Math.round(value) < def.min || Math.round(value) > def.max) {
     throw new Error(`${key} must be an integer between ${def.min} and ${def.max}`);
-  }
-  // Priority-refresh cross-check (§30): reserved sector slots ≤ Tier 1 cap.
-  if (key === 'PRIORITY_SECTOR_RESERVED_SLOTS' || key === 'PRIORITY_MAX_UNIQUE') {
-    const [maxUnique, reserved] = await Promise.all([
-      getNumberSetting('PRIORITY_MAX_UNIQUE', PRIORITY_MAX_UNIQUE),
-      getNumberSetting('PRIORITY_SECTOR_RESERVED_SLOTS', PRIORITY_SECTOR_RESERVED_SLOTS),
-    ]);
-    assertPriorityNumberCombo(key, Math.round(value), { maxUnique, reserved });
   }
   if (key === 'WINDOW_START_MIN' || key === 'WINDOW_END_MIN') {
     const next = Math.round(value);

@@ -4,7 +4,6 @@ import { Bot, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { RichText } from '@/components/rich-text';
 import { useRole } from '@/lib/auth/use-role';
-import { PriorityShadowPanel } from './_components/priority-shadow-panel';
 
 type ChipTone = 'good' | 'warn' | 'info';
 interface Chip {
@@ -403,8 +402,6 @@ export default function TradeCommentaryPage() {
         autonomous rows use the configured decision AI and may act only through deterministic trading gates. Each row
         shows the model that actually produced it. Not financial advice.
       </p>
-
-      <PriorityShadowPanel />
 
       {data?.configured === false && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">

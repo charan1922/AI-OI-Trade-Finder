@@ -98,10 +98,6 @@ jobs:
       # row identity, expiry-week rollover, no-next-month fail-closed behavior,
       # and stale/mixed master snapshot rejection (PR#21 review).
       - run: pnpm exec tsx scripts/verify-option-resolver-store.ts
-      # DB-free pure checks for the capped priority-refresh planner (round-robin
-      # fairness, Tier 0/1/2 tiering, the 40-unique cap, sector promotion inside
-      # the cap). Same reproducible `pnpm exec tsx` runner as above.
-      - run: pnpm exec tsx scripts/verify-priority-refresh.ts
       # DB-free pure checks for the candle-freshness rule + the auto-trade
       # stale-candle ENTRY gate (fresh→allow, stale/missing→reject, block OFF→
       # existing gates decide). Same reproducible `pnpm exec tsx` runner.
@@ -126,12 +122,6 @@ jobs:
       # cards match that context; global blockers suppress entry tools; MiMo
       # runtime/env model selection is allowlisted and migration-safe.
       - run: pnpm exec tsx scripts/verify-ai-decision-context.ts
-      # Priority-refresh STORE round-trip against an isolated throwaway SQLite DB
-      # (chdir to a temp dir first): proves the tables create, the Prisma
-      # transaction + SQL param counts work, timestamps round-trip, and the
-      # empty-batch / atomic-replace semantics hold — DB behaviour the pure checks
-      # and the container smoke test don't exercise (PR#11 re-review).
-      - run: pnpm exec tsx scripts/verify-priority-refresh-store.ts
       # DB-free checks for the CASH-TARGET math and both exit-executability
       # rules (REST + stream), plus reconnect backoff, token rotation and the
       # stream silence watchdog. v1.26.0 shipped this money math covered only by
