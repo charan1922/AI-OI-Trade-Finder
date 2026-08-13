@@ -27,10 +27,8 @@
  * The spread (illiquid), turnover, price-direction and Supertrend/VWAP hard
  * gates still apply to these candidates like any other.
  *
- * PURE (no imports) so it can be unit-tested and driven by the replay harness.
- * Opt-in via USE_MOMENTUM_BREAKOUT in config.ts — off until the replay shows,
- * across several recorded days, that it catches the ADANIGREEN class without
- * admitting fakeout junk.
+ * Historical replay predicate only. The live TF-only engine has no momentum
+ * bypass toggle or legacy accumulation/setup admission gates.
  */
 
 export interface MomentumBreakoutInput {

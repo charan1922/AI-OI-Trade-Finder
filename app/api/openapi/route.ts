@@ -555,7 +555,7 @@ const spec = {
         tags: ['Trade Suggest'],
         summary: 'Up to MAX_PICKS near-ATM option suggestions (the /trade-suggest skill endpoint)',
         description:
-          'Scans the full tradeable F&O universe (~166 names; SCAN_FULL_UNIVERSE toggle drops back to the ~48 movers-feed names) merged with the NSE movers feeds, gates on the TradeFinder fingerprint (OI evidence: futures OI ≥1.1× 20-day avg OR NSE combined fut+opt OI change ≥5%, plus the experimental USE_BREAKOUT_BYPASS path; spread ≤0.3%, R-Factor ≥4.38 on the 1–10 scale, turnover ≥1.2× avg, price/bias agreement), scores survivors (R-Factor, OI urgency, opening-range breakout, sector breadth) and returns the top MAX_PICKS (default 7, /config-tunable 1–10) with nearest listed ATM strike, live option premium (per-lot cost, −40% premium backstop, ₹5k/lot target) + spot-level entry/SL/1:2-target plan. Extended movers (≥3% from open) are hard-skipped while EXCLUDE_EXTENDED is on. Active 09:40–11:00 IST; force=1 bypasses the window (not market hours). Picks persist to trade_suggestions.',
+          'Uses the fresh TradeFinder Running Race as the only entry universe and fails closed when its board is missing, stale, or unranked. Qualified race runners then pass tradeability and timing gates (equity spread, opening-range structure, Supertrend, VWAP, extension, candle freshness, affordable listed option contract). TF rank/R-Factor order is preserved; App R-Factor and OI remain descriptive evidence and cannot admit another stock. Returns up to MAX_PICKS with live option premium and a spot entry/SL/target plan. Active 09:40–11:00 IST; force=1 bypasses the scan window, not market hours. Picks persist to trade_suggestions.',
         parameters: [
           {
             name: 'force',
@@ -712,7 +712,7 @@ const spec = {
         tags: ['Config'],
         summary: 'Runtime feature toggles + numeric settings (the /config page)',
         description:
-          'Every registered switch (USE_BREAKOUT_BYPASS, SCAN_FULL_UNIVERSE, EXCLUDE_EXTENDED) and numeric setting (MAX_PICKS, 1–10) with its default, effective value and last-changed time. Stored overrides live in the feature_toggles table; config.ts constants are the defaults/fallback.',
+          'Every registered runtime switch and numeric scanner setting with its default, effective value and last-changed time. The TF-only entry universe is a permanent fail-closed invariant and is intentionally not configurable. Stored overrides live in the feature_toggles table; config.ts constants are the defaults/fallback.',
         responses: {
           '200': ok('{ data: ToggleState[], numbers: NumberState[] }'),
           '500': errorResponse('DB error'),

@@ -21,6 +21,7 @@ import { hasMimo } from '@/lib/env';
 import { recordPromptVersion } from '@/lib/prompts/store';
 import { isTelegramConfigured, sendCommentaryToTelegram } from '@/lib/telegram';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
+import { tfSelectedSuggestions } from '@/lib/trade-suggest/tf-provenance';
 import { expireStaleApprovals } from './approval';
 import {
   reconcileOpenPositions,
@@ -211,7 +212,7 @@ export async function runAutoTradePass(
 
     // 4. AI pass — only when there is something to decide.
     const openTrades = await getOpenTrades();
-    const hasEntryCandidate = (scan?.suggestions?.length ?? 0) > 0;
+    const hasEntryCandidate = tfSelectedSuggestions(scan).length > 0;
     if (openTrades.length === 0 && !hasEntryCandidate) {
       return {
         ran: true,

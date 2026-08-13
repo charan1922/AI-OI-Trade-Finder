@@ -36,7 +36,7 @@ The span is **1–10** (`lib/r-factor/scale.ts`), widened from 1–8 on 2026-08-
 That is exactly what makes rescaling dangerous. Every calibrated cutoff was chosen as a position on the RAW scale and then written down on whichever span was current, so widening the span without moving the numbers silently loosens all of them: `MIN_RFACTOR = 3.6` is raw 0.375 on 1–8 but raw **0.289** on 1–10 — a materially laxer *trade gate* nobody chose. So cutoffs are now expressed as `rFactorAtRaw(0.375)`, and the next rescale needs no threshold edits.
 
 - `rFactorAtRaw()` is **exact, not rounded** — rounding 4.375 to 4.38 would put a gate at raw 0.3756. Callers that *display* round it themselves.
-- Gates currently at raw 0.375 → **4.375**: `MIN_RFACTOR`, `BREAKOUT_BYPASS_MIN_RFACTOR`, `EXTENDED_BYPASS_MIN_RFACTOR`. At raw 0.5 → **5.5**: `EFFICIENCY_MIN_RFACTOR`. Display bands sit at raw 0.75 / 0.50.
+- Gates currently at raw 0.375 → **4.375**: `MIN_RFACTOR`, `EXTENDED_BYPASS_MIN_RFACTOR`. At raw 0.5 → **5.5**: `EFFICIENCY_MIN_RFACTOR`. Display bands sit at raw 0.75 / 0.50.
 - Note the old `3.6` literal was actually raw 0.3714, so the gate is now ~0.4% **stricter** and exactly at its documented intent.
 - **Stored history is NOT rewritten.** `live_urgency_eod.rFactor` and `trade_suggestions.rFactor` hold the value as displayed at the time, on the then-current span, matching how the 1–5 → 1–8 change was handled. Charts therefore show a step at each changeover. Use `rawFromRFactor(v, oldMax)` to compare across it; do not "fix" history by rewriting an audit trail.
 
@@ -68,10 +68,11 @@ Everything trading-critical runs on the server with NO page open. `instrumentati
 
 ## TF Running Race is THE trade selector (2026-08-13) — App R-Factor decides nothing
 
-`USE_TF_SELECTOR` (default **on**) makes TradeFinder's Running Race the **only** candidate source for
-`/trade-suggest` and the auto-trader. App R-Factor still renders as a `/live` column; it no longer
-gates, ranks or directs anything. Flipping the flag off restores the previous engine wholesale — that
-is the rollback path.
+TradeFinder's Running Race is the permanent, fail-closed candidate source for `/trade-suggest`,
+`/trade-commentary`, and Auto-Trade entries. There is no runtime rollback toggle. App R-Factor still
+renders as `/live` evidence; it cannot admit, rank, or direct a trade. Current TF race symbols are
+also refreshed first, and commentary/order tools independently reject any suggestion without matching
+TF-selection provenance.
 
 - **The statistic that forced it:** pairing every graded suggestion with the TF board captured *at or
   before* it, **TF R-Factor < 1.0 → −0.317R over n=1603, t = −11.12**. 81% of what the old engine

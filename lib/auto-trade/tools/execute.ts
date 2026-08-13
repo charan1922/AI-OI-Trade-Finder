@@ -18,6 +18,7 @@ import { COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT } from '@/lib/ai-commentary/generat
 import { getTfRaceForWindow, type TfRaceResult } from '@/lib/tf-live/race';
 import { getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
 import type { SuggestResponse, TradeSuggestion } from '@/lib/trade-suggest/types';
+import { findTfSelectedSuggestion, tfSelectedSuggestions } from '@/lib/trade-suggest/tf-provenance';
 import { alerts } from '../alerts';
 import { getExecutionAdapter } from '../brokers';
 import {
@@ -78,8 +79,7 @@ interface ToolResult {
 }
 
 function findPick(rt: ToolRuntime, symbol: string): TradeSuggestion | null {
-  const sym = symbol.toUpperCase();
-  return rt.scan?.suggestions?.find((s) => s.symbol.toUpperCase() === sym) ?? null;
+  return findTfSelectedSuggestion(rt.scan, symbol);
 }
 
 /** Compact, grounded view of one pick (mirrors the commentary trim). */
@@ -157,7 +157,7 @@ export async function buildEntryConsideration(
   rt: ToolRuntime,
   accountState: AccountState
 ): Promise<EntryConsideration> {
-  const suggestions = rt.scan?.suggestions ?? [];
+  const suggestions = tfSelectedSuggestions(rt.scan);
   const [latch, exchangeSessionVerified, staleEntryProtectionEnabled] = await Promise.all([
     getRiskLatch(),
     isVerifiedTradingDay(rt.date),
@@ -341,7 +341,7 @@ export async function executeAutoTradeTool(
   try {
     if (name === 'get_scan_picks') {
       const result = buildScanContext(rt.scan);
-      const picks = rt.scan?.suggestions?.length ?? 0;
+      const picks = tfSelectedSuggestions(rt.scan).length;
       return {
         result,
         trace: {

@@ -407,14 +407,14 @@ export async function runFyersCycle(
     // ~166-symbol download (~3 min of sequential Fyers calls) even though the
     // scan only reads EQ candles; its prices/futures OI come from batched Dhan
     // and NSE snapshots. So: refresh EQ history for the priority names FIRST
-    // (open positions, today's earlier picks, the NSE movers/OI lists — the
-    // same ~50-80 names /live shows), fire the capture as soon as those candles
+    // (open positions, today's earlier picks, and current TF race runners),
+    // fire the capture as soon as those candles
     // land, and let every FUT-history/depth call plus the remaining universe
     // download while the scan/AI runs. The providers have separate account
     // limits, so this overlap is intentional; the shared Dhan gates still
     // serialize each Dhan endpoint process-wide. The full
-    // universe still downloads every cycle (replay benchmark + full-universe
-    // scans need it) — nothing is excluded, only reordered.
+    // universe still downloads every cycle for recording and replay — nothing
+    // is excluded from research storage, only from live entry selection.
     const captureEligible = !opts.dateOverride && attachOi && isAutonomousServer();
     let candidateSnapshot: CandidateSnapshot | null = null;
     if (captureEligible) {
@@ -425,10 +425,9 @@ export async function runFyersCycle(
         console.warn(`${TAG} candidate discovery failed: ${(err as Error).message}`);
       }
     }
-    // Freeze replay membership from the same pulse-cache moment as candidate
-    // discovery. Run off-path; Fyers downloads can proceed while SQLite stores
-    // the rank rows.
-    if (attachOi) void recordRankSnapshot(today, Date.now(), candidateSnapshot?.fullUniverse ?? null).catch(() => {});
+    // Rank telemetry remains off-path research data; it no longer controls the
+    // live candidate universe.
+    if (attachOi) void recordRankSnapshot(today, Date.now()).catch(() => {});
     const priorityInfo = captureEligible
       ? await getPrioritySymbols(today, candidateSnapshot)
       : { symbols: new Set<string>(), riskBearing: [] as string[], earlierSuggestions: [] as string[] };
@@ -639,10 +638,7 @@ export async function runFyersCycle(
  * candle shape without waiting for unrelated FUT history/depth calls:
  *   1. Open auto-trade positions (the guard's spot stops read their candles),
  *   2. today's earlier picks (position-management feed),
- *   3. the /live watchlist (NSE oi-spurts + FOSec gainers/losers + most-active
- *      by value/volume — the same shared-cache pulse feeds the page shows,
- *      fetched sequentially to respect NSE's burst limit; oiSpurts is already
- *      warm from the cycle's combined-OI fetch).
+ *   3. current, tradeable TF Running Race symbols.
  * Best-effort everywhere: any source failing just contributes nothing; an
  * empty set means the capture fires immediately on last-cycle candle context
  * rather than waiting for unrelated recorder work.

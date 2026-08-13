@@ -61,19 +61,6 @@ export const MIN_OPT_SHARE = 0.1;
 export const MIN_OPT_PREMIUM_CR = 5;
 
 /**
- * EXPERIMENTAL third OI-gate path — the price/base-breakout BYPASS.
- * Off by default. When on, a candidate with NO OI evidence (futures level < 1.1×
- * AND NSE combined < 5%) still clears the OI gate if it shows a confirmed
- * opening-range breakout in the trade direction, trend agreement, and R-Factor
- * ≥ BREAKOUT_BYPASS_MIN_RFACTOR (logic in breakout-bypass.ts). Rationale:
- * breakout winners can lead their OI (ADANIENSOL 2026-07-06, NAUKRI 2026-07-07
- * were confirmed breakouts with zero OI build that the gate blocked). Enable
- * only once the replay benchmark (scripts/replay-window.ts) shows it catches
- * those winners across several days without letting no-evidence junk through.
- */
-export const USE_BREAKOUT_BYPASS = false;
-
-/**
  * EXPERIMENTAL hard gate on the TF 3-check breakout verdict (lib/breakout).
  * Off by default. When on, a candidate must grade `confirmed` (or `strong`) in
  * the trade's direction — morning test held + ≥1 named level cleared — to be
@@ -88,37 +75,6 @@ export const USE_BREAKOUT_BYPASS = false;
  * (the full scan universe, not TF's curated book) shows the gate improves picks.
  */
 export const USE_TF_BREAKOUT_GATE = false;
-/** R-Factor floor for the bypass. Set to the base MIN_RFACTOR: the confirmed
- *  trend-aligned breakout is the real discriminator, not an inflated R-Factor.
- *  Evidence (replay, 2026-07-07, N=1): at 4.0 the bypass was inert (NAUKRI sat
- *  at 3.6–4.0 at its 10:00 entry); at 3.6 it caught NAUKRI (+2R) and still
- *  excluded the no-breakout junk EXIDEIND (ΣR +1.00 → +3.00). */
-export const BREAKOUT_BYPASS_MIN_RFACTOR = rFactorAtRaw(0.375); // = base MIN_RFACTOR
-export const BREAKOUT_BYPASS_REQUIRE_TREND = true;
-
-/**
- * EXPERIMENTAL fourth entry path — the pure MOMENTUM BREAKOUT (no OI, low R).
- * Off by default. The ADANIGREEN 2026-07-14 class: a short-covering breakout
- * (price↑ + OI↓) scores near-zero on EVERY accumulation factor BY DESIGN —
- * replayed tick-by-tick it sat at R 1.7–2.3, confidence 0%, futures OI
- * 0.97–0.99×, NSE combined ~+1%, setup "quiet", while holding a confirmed
- * 3-level breakout all window (TF rode it for +₹15,930; our engine blocked it
- * five ways). No reweighting can pass a name like that — the move needs its own
- * path. When on, a candidate with a confirmed opening-range breakout, BOTH
- * Supertrend AND VWAP agreeing (stricter than the OI-gate bypass — with
- * R-Factor/confidence/OI/setup evidence ALL absent, trend agreement is the only
- * junk filter left), and ≥ MOMENTUM_MIN_CHANGE_PCT move from open in the trade
- * direction clears the R-Factor, confidence, OI and quiet-setup gates. The
- * spread, turnover, price-direction and trend hard gates still apply.
- * Enable only after the replay benchmark proves it across SEVERAL recorded
- * days (needs the multi-day candle retention added 2026-07-15 — with today-only
- * candles the benchmark was stuck at N=1).
- */
-export const USE_MOMENTUM_BREAKOUT = false;
-/** Minimum move from open (%) for the momentum path — a breakout with no real
- *  move behind it is just a poke above the opening range. */
-export const MOMENTUM_MIN_CHANGE_PCT = 1.5;
-
 /**
  * EXPERIMENTAL chaotic-open gate (lib/trade-suggest/chaotic-open.ts): skip a
  * candidate whose opening 15-min range exceeded CHAOTIC_OPEN_MAX_RATIO × its
@@ -138,36 +94,6 @@ export const USE_CHAOTIC_OPEN_GATE = true;
  *  losing picks with zero winners lost. Margin over HYUNDAI is only 0.48 —
  *  don't raise further without new evidence. */
 export const CHAOTIC_OPEN_MAX_RATIO = 5;
-
-/**
- * EXPERIMENTAL rank-climb CATCH path (lib/signals/rank-climb.ts) on the
- * options-led OI gate. Today's rule (NSE combined ≥ MIN_NSE_OI_PCT) stays
- * untouched; ADDITIONALLY a name with NSE combined ≥ RANK_CLIMB_MIN_NSE_OI_PCT
- * qualifies IF it is actively CLIMBING the movers leaderboard (gainers/OI
- * boards, best of the two) by ≥ RANK_CLIMB_MIN_SPOTS over the trailing ~30 min.
- * The optShare / premValue legs still apply on both paths.
- *
- * WHY: ADANIENSOL 2026-07-16 (TF +₹10.1k, we found 0) failed ONLY the NSE-5%
- * leg (1–2%) while its options legs passed — and it was climbing gainers
- * #15→#7 and the OI board #50→#26. Among the relaxed-path fires that day,
- * winners were climbing 5/8 vs losers 1/7 — the trajectory, not the level,
- * separated them. A name with NO board history does NOT qualify via this path
- * (climbing is the admission evidence; unknowable ≠ climbing).
- *
- * Ships OFF (2026-07-17): the user goes to autonomous LIVE real-money trading
- * the same day this lands, and you never debut live with an unproven, MORE-
- * permissive gate on top of a first-time change. With this false the scanner is
- * byte-identical to the proven code. Turn it ON from /config (or flip this back
- * to true) once live has run clean for a few days — the replay-grid
- * `rank-climb catch` variants track its accruing verdict until then.
- */
-export const USE_RANK_CLIMB_GATE = false;
-/** Spots climbed (best of gainers/OI boards) over ~30 min to qualify. 1 = any
- *  real climb — the 16-Jul winner/loser split was climbing-vs-not, not size. */
-export const RANK_CLIMB_MIN_SPOTS = 1;
-/** NSE combined-OI floor for the catch path — low, but not zero: the build must
- *  at least be net-positive on the day (ADANIENSOL sat at 1–2%). */
-export const RANK_CLIMB_MIN_NSE_OI_PCT = 1;
 
 /** Bid-ask spread ceiling on the UNDERLYING EQUITY, as % of mid — a candidate
  *  wider than this is too costly to trade and never becomes a suggestion
@@ -400,32 +326,6 @@ export const EXTENDED_BYPASS_REQUIRE_SUPERTREND = true;
  */
 export const USE_MOVE_FRESHNESS_GATE = false;
 
-/** Candidate pool switch. When true, the scan quotes the FULL tradeable F&O
- *  universe (fno_stocks, non-index, non-'avoid' — ~166 names, the same list
- *  the Fyers recorder tracks) merged with the movers feeds below (still
- *  fetched for the OI-spurt-list marker). Widening the pool changes NO gate —
- *  it removes the blind spot where a name with real OI/turnover evidence was
- *  never scanned because it didn't crack a top-20/24 movers list, and it makes
- *  each scan record oi_intraday for the whole universe (exactly the universe
- *  the replay benchmark replays — scripts/replay-lib.ts loads "symbols in
- *  oi_intraday for the date"). One batched quote either way (the quote route
- *  accepts ≤200 symbols per request). Runtime-flippable from /config.
- *  Default OFF (2026-07-09, user call): scan only the ~80 movers-feed names —
- *  the same stocks the /nse/movers panels surface — flip ON for all ~166. */
-export const SCAN_FULL_UNIVERSE = false;
-
-/** Movers-feed candidate sources = exactly what the /nse/movers page surfaces
- *  (the user's primary hunting ground): OI spurts, F&O gainers/losers, most
- *  active by value and by volume. All F&O-gated server-side. The whole pool
- *  when SCAN_FULL_UNIVERSE is off; the OI-spurt marker source always. */
-export const CANDIDATE_SOURCES = [
-  'nse-oi',
-  'nse-gainers',
-  'nse-losers',
-  'nse-active-value',
-  'nse-active-volume',
-] as const;
-
 // ─── TF Running Race selector (2026-08-13) ───────────────────────────────────
 
 /**
@@ -440,10 +340,9 @@ export const CANDIDATE_SOURCES = [
  * them sat below TF R = 1.0 and lost. Tradeability gates (spread, lot cost vs
  * capital, chaotic open) still apply — those ask a different question.
  *
- * Flip to false to restore the previous engine wholesale; nothing else needs
- * changing, which is the intended rollback path.
+ * This is a permanent fail-closed invariant, not a runtime toggle. Missing or
+ * stale TF data means no new entry while open positions remain manageable.
  */
-export const USE_TF_SELECTOR = true;
 
 /**
  * How stale TradeFinder's board may be before the selector refuses to trade

@@ -1,21 +1,18 @@
-import type { SectorLeadersResponse } from '@/app/live/_lib/types';
 import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
 import { prisma } from '@/lib/db';
-import { isMarketHours } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { minuteOfDayIST } from '@/lib/ist';
-import { CANDIDATE_SOURCES, SCAN_FULL_UNIVERSE, SCAN_OUTSIDE_WINDOW, WINDOW_END_MIN, WINDOW_START_MIN } from './config';
+import { getTfBoardsForDate, istMinutesNow, raceAtMinute } from '@/lib/tf-live/race';
+import { SCAN_OUTSIDE_WINDOW, TF_RACE_MAX_RANK, WINDOW_END_MIN, WINDOW_START_MIN } from './config';
 
 const TAG = '[TradeSuggest]';
 
 /** Frozen candidate discovery for one poller cycle. */
 export interface CandidateSnapshot {
   discoveredAt: number;
-  fullUniverse: boolean;
-  /** All symbols the scan evaluates, including the optional full-universe tail. */
+  /** Current, tradeable TF Running Race symbols. No legacy mover fallback. */
   sectorEntries: [symbol: string, sector: string][];
-  /** Top OI-list membership used as scan evidence. */
-  oiSpurtSymbols: string[];
-  /** Exact /live mover slices worth refreshing first through Fyers. */
+  /** Exact TF race symbols worth refreshing first through Fyers. */
   prioritySymbols: string[];
 }
 
@@ -45,59 +42,50 @@ export async function isCandidateScanDue(): Promise<boolean> {
 }
 
 /**
- * Discover candidates once and freeze them across the Fyers priority download
- * and the subsequent scan. This prevents the 30s NSE cache from producing a
- * different candidate set after the roughly 80s priority batch.
+ * Discover the current TF Running Race once and freeze it across the Fyers
+ * priority download and subsequent scan. There is deliberately no NSE-mover or
+ * full-universe fallback: if TF is unavailable, candidate discovery is empty
+ * and the scanner's independent TF freshness check fails closed.
  */
 export async function discoverCandidateSnapshot(): Promise<CandidateSnapshot> {
-  const origin = internalOrigin();
-  const fullUniverse = await getToggle('SCAN_FULL_UNIVERSE', SCAN_FULL_UNIVERSE);
-  const sectorBySymbol = new Map<string, string>();
-  const oiSpurtSymbols = new Set<string>();
-  const prioritySymbols = new Set<string>();
-
-  // Sequential by design: NSE throttles bursts. Each route applies the exact
-  // F&O/non-avoid/live-future filters and display caps used by /live.
-  for (const source of CANDIDATE_SOURCES) {
-    try {
-      const res = await fetch(`${origin}/api/live/nse-watchlist?source=${source}`, {
-        cache: 'no-store',
-        headers: internalAuthHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as SectorLeadersResponse;
-      const picks = (body.picks ?? []).filter((p) => p.symbol);
-      for (const pick of picks) {
-        prioritySymbols.add(pick.symbol);
-        if (!sectorBySymbol.has(pick.symbol)) sectorBySymbol.set(pick.symbol, pick.sector ?? '');
-        if (source === 'nse-oi') oiSpurtSymbols.add(pick.symbol);
-      }
-    } catch (err) {
-      console.warn(`${TAG} watchlist source ${source} failed: ${(err as Error).message}`);
-    }
+  const discoveredAt = Date.now();
+  let raceSymbols: string[] = [];
+  try {
+    const boards = await getTfBoardsForDate(todayIST());
+    const race = raceAtMinute(boards, istMinutesNow(), TF_RACE_MAX_RANK);
+    if (race.available) raceSymbols = race.runners.map((runner) => runner.symbol);
+  } catch (err) {
+    console.warn(`${TAG} TF race discovery failed (no entry candidates this pass): ${(err as Error).message}`);
   }
 
-  // Full-universe mode still prioritizes the urgent mover slices. Its tail is
-  // scanned with fresh Dhan prices and the previous cycle's slow candle context
-  // while Fyers refreshes those names in the background.
-  if (fullUniverse) {
+  const sectorBySymbol = new Map<string, string>();
+  if (raceSymbols.length > 0) {
     try {
       const rows = await prisma.$queryRawUnsafe<{ symbol: string; sector: string | null }[]>(
-        `SELECT symbol, sector FROM fno_stocks WHERE isIndex = 0 AND tradeBand != 'avoid'`
+        `SELECT f.symbol, f.sector
+           FROM fno_stocks f
+          WHERE f.isIndex = 0
+            AND f.tradeBand != 'avoid'
+            AND EXISTS (
+              SELECT 1 FROM master_contracts m
+               WHERE m.underlying = f.symbol
+                 AND m.instrument = 'FUTSTK'
+                 AND m.segment = 'NSE_FNO'
+                 AND m.expiryDate >= date('now')
+            )`
       );
-      for (const row of rows) {
-        if (row.symbol && !sectorBySymbol.has(row.symbol)) sectorBySymbol.set(row.symbol, row.sector ?? '');
+      const sector = new Map(rows.map((row) => [row.symbol, row.sector ?? ''] as const));
+      for (const symbol of raceSymbols) {
+        if (sector.has(symbol)) sectorBySymbol.set(symbol, sector.get(symbol) ?? '');
       }
     } catch (err) {
-      console.warn(`${TAG} full-universe merge failed (movers-only pool this pass): ${(err as Error).message}`);
+      console.warn(`${TAG} TF F&O eligibility lookup failed (no entry candidates this pass): ${(err as Error).message}`);
     }
   }
 
   return {
-    discoveredAt: Date.now(),
-    fullUniverse,
+    discoveredAt,
     sectorEntries: [...sectorBySymbol],
-    oiSpurtSymbols: [...oiSpurtSymbols],
-    prioritySymbols: [...prioritySymbols],
+    prioritySymbols: [...sectorBySymbol.keys()],
   };
 }

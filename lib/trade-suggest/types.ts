@@ -361,9 +361,8 @@ export interface SuggestResponse {
   managedPositionSignals?: ManagedPositionSignal[];
   /** TradeFinder's independent board + entry-window race (evidence only). */
   tfContext?: TfScanContext;
-  /** What the TF Running Race selector did this pass — present only when
-   *  USE_TF_SELECTOR is on. Carries the REASON an empty board produced no
-   *  picks, so a quiet scan is explainable instead of mysterious. */
+  /** What the permanent TF Running Race selector did this pass. Carries the
+   *  reason an empty/stale board produced no picks. */
   tfSelection?: TfSelectionSummary;
   note?: string;
   error?: string;

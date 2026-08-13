@@ -47,7 +47,7 @@ const buildVariants = (BASE: Variant): Variant[] => [
     },
   },
   // Candidate feature under evaluation: the price/base-breakout bypass of the OI
-  // gate (breakout-bypass.ts, gated OFF in prod by USE_BREAKOUT_BYPASS). Tracks
+  // gate (breakout-bypass.ts, retired from production). Tracks
   // shipped + this path every recorded day. Accept only after several days show
   // ΣR and target/SL both improve vs shipped (2026-07-07, N=1: +3.00 vs +1.00,
   // caught the NAUKRI breakout the OI gate blocked, no junk added).
@@ -58,7 +58,7 @@ const buildVariants = (BASE: Variant): Variant[] => [
     breakoutMinRFactor: 3.6,
   },
   // Candidate feature: the pure MOMENTUM-BREAKOUT path (momentum-breakout.ts,
-  // gated OFF in prod by USE_MOMENTUM_BREAKOUT). Clears R/confidence/OI/quiet
+  // retired from production). Clears R/confidence/OI/quiet
   // on confirmed OR breakout + BOTH Supertrend & VWAP agreeing + move ≥1.5%.
   // Built for the short-covering class every accumulation factor rejects by
   // design (ADANIGREEN 2026-07-14: R 1.7–2.3, conf 0%, OI 0.97×, NSE ~+1%, TF
@@ -93,9 +93,7 @@ const buildVariants = (BASE: Variant): Variant[] => [
   //     showed this floods ~16 fires at 50% precision — worth tracking across
   //     days, NOT flipping on.
   { ...BASE, name: 'options-led-relaxed (nse>=1)', minNseOiPct: 1 },
-  // (c) rank-climb CATCH path — built 2026-07-17, gated OFF in prod by
-  //     USE_RANK_CLIMB_GATE (ships off: the live-trading debut lands the same
-  //     day, so SHIPPED = catch off = the proven gate). These variants force it
+  // (c) historical rank-climb CATCH path — retired from production. These variants force it
   //     ON to accrue the A/B: NSE ≥5% unchanged, plus 1–5% builds with
   //     qualifying options legs admit IF climbing the gainers/OI leaderboard ≥N
   //     spots/~30 min (winners climbing 5/8 vs losers 1/7 on 16-Jul; ADANIENSOL
