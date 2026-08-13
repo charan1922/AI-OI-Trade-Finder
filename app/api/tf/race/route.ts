@@ -86,10 +86,17 @@ export async function GET(req: Request) {
     // RATE as the signal and the climb demoted to context. `runners` /
     // `newEntrants` above are left untouched for any existing consumer.
     let board: TfBoardRow[] = [];
+    // The clock time the board was captured at. Surfaced because the card's
+    // "09:35-11:00 IST" badge is the ENTRY WINDOW, not the age of the data:
+    // post-market this serves the day's LAST board (14:56 on 2026-08-12), and
+    // showing it under a 09:35-11:00 heading reads as though it were the
+    // 11:00 board (operator, 2026-08-13). State the real time instead.
+    let boardMinuteIST: number | null = null;
     try {
       const boards = await getTfBoardsForDate(date);
       const asOfMinute = boards.length > 0 ? boards[boards.length - 1].minuteIST : 0;
       const full = boardAtMinute(boards, asOfMinute, TF_RACE_MAX_RANK);
+      boardMinuteIST = asOfMinute;
 
       // Verdict from the SAME rule the auto-trader uses, on point-in-time
       // recorded evidence. Reusing selectTfCandidates is deliberate: a card that
@@ -129,7 +136,7 @@ export async function GET(req: Request) {
       console.warn(`[TfRace] full board unavailable: ${(error as Error).message}`);
     }
 
-    return NextResponse.json({ success: true, ...result, screen, stale, date, board });
+    return NextResponse.json({ success: true, ...result, screen, stale, date, board, boardMinuteIST });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }

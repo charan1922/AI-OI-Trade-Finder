@@ -12,7 +12,7 @@
  * R-Factor. It never selects, sizes, or approves a trade; use it alongside
  * the existing scanner gates, not instead of them.
  */
-import { ArrowDown, ArrowUp, Info, Loader2, Sparkles, Target } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Info, Loader2, Sparkles, Target } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface TfRaceRunner {
@@ -55,6 +55,9 @@ interface TfRaceResponse {
   stale?: boolean;
   /** TF's top-N by R-Factor — NOT filtered to names that climbed. See the route. */
   board?: TfBoardRow[];
+  /** IST minute-of-day the board was actually captured at. The window badge is
+   *  the ENTRY WINDOW, not the data's age — these are different things. */
+  boardMinuteIST?: number | null;
   error?: string;
 }
 
@@ -251,6 +254,60 @@ function BoardRow({ r }: { r: TfBoardRow }) {
   );
 }
 
+/**
+ * An ACTIONABLE name — a name that cleared every selector gate.
+ *
+ * Deliberately larger and louder than a board row. There are usually 0–2 of
+ * these against ~20 board names, and the whole point of the card is that the
+ * operator can find them without reading the other eighteen.
+ *
+ * It states the CASE, not just the numbers: side, how fast money is arriving,
+ * and the two facts that let it through (breakout + a real options pool). Still
+ * participation evidence — the scanner owns the actual entry.
+ */
+function TakeRow({ r }: { r: TfBoardRow }) {
+  const bull = r.side === 'CE';
+  return (
+    <div
+      onClick={() =>
+        window.open(
+          `https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(r.symbol)}&interval=5`,
+          '_blank',
+          'noopener,noreferrer'
+        )
+      }
+      title={`${r.symbol} — clears every gate. TF R-Factor ${r.rFactor.toFixed(2)} (rank #${r.rankNow}), still building at +${(r.deltaR ?? 0).toFixed(2)} over 30 min, ${bull ? 'up' : 'down'} ${Math.abs(r.pctChange ?? 0).toFixed(2)}% today${r.premValueCr != null ? `, options pool ₹${Math.round(r.premValueCr)} Cr` : ''}. Open chart.`}
+      className="flex cursor-pointer items-center gap-2 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-2 py-1 hover:bg-emerald-500/20"
+    >
+      <span
+        className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${
+          bull
+            ? 'bg-emerald-600 text-white dark:bg-emerald-500'
+            : 'bg-red-600 text-white dark:bg-red-500'
+        }`}
+      >
+        {r.side}
+      </span>
+      <span className="text-[13px] font-bold text-foreground">{r.symbol}</span>
+      <span className={`text-[11px] font-semibold tabular-nums ${bull ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
+        {(r.pctChange ?? 0) >= 0 ? '+' : ''}
+        {(r.pctChange ?? 0).toFixed(2)}%
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[9px] text-muted-foreground">
+        <span title="TradeFinder's own R-Factor — cumulative big-money participation today.">
+          TF R <span className="font-semibold text-violet-600 dark:text-violet-400">{r.rFactor.toFixed(2)}</span>
+        </span>
+        <span
+          className="font-semibold text-emerald-600 dark:text-emerald-400"
+          title="Still accumulating: TF R-Factor gained over the trailing 30 minutes. This is the signal, not the level."
+        >
+          ↑{(r.deltaR ?? 0).toFixed(2)}/30m
+        </span>
+      </span>
+    </div>
+  );
+}
+
 export function TfRaceCard() {
   const [data, setData] = useState<TfRaceResponse | null>(null);
 
@@ -273,11 +330,31 @@ export function TfRaceCard() {
     };
   }, []);
 
+  const [showAll, setShowAll] = useState(false);
+
   const runners = data?.runners ?? [];
   const newEntrants = data?.newEntrants ?? [];
   // The full board is preferred when the route supplies it; the climb-filtered
   // runner list stays as the fallback so an older/failing route still renders.
   const board = data?.board ?? [];
+
+  // ── Three tiers by ACTIONABILITY, not by rank ────────────────────────────
+  //
+  // A flat top-20 list is a data dump: on a typical board 18 of 20 rows read
+  // "R-Factor stopped climbing", so the operator has to read past sixteen dead
+  // names to find the two that matter (operator, 2026-08-13). Rank order is the
+  // right way to RANK a board and the wrong way to PRESENT a decision.
+  //
+  //  TAKE     — clears every selector gate. This is the answer to "what now".
+  //  BUILDING — still accumulating (ΔR above the frozen floor) but failing one
+  //             gate. These are the names that can flip to TAKE within minutes,
+  //             so they earn a visible line rather than the collapsed tail.
+  //  STALLED  — R-Factor has stopped advancing. Not deleted (a stall can end,
+  //             and hiding TF's own #1 is the mistake this card just fixed) —
+  //             collapsed behind a count, with the names still one click away.
+  const take = board.filter((r) => r.tradeable);
+  const building = board.filter((r) => !r.tradeable && r.deltaR != null && r.deltaR > FROZEN_DELTA_R);
+  const stalled = board.filter((r) => !r.tradeable && !(r.deltaR != null && r.deltaR > FROZEN_DELTA_R));
 
   return (
     <section className="flex h-full flex-col rounded-lg border border-border bg-card">
@@ -285,7 +362,23 @@ export function TfRaceCard() {
         <Target className="h-3.5 w-3.5 text-violet-500" />
         {/* Display label only — lib/tf-live/race.ts and /api/tf/race are unchanged. */}
         <h2 className="text-[12px] font-semibold tracking-wide text-foreground uppercase">TF Climbers</h2>
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">09:35–11:00 IST</span>
+        <span
+          className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+          title="The window in which entries are allowed. It describes WHEN trades may be taken — not when this board was captured; that is the separate time badge."
+        >
+          entry 09:35–11:00
+        </span>
+        {/* The board's REAL capture time. Without it, a 14:56 board shown under
+            a "09:35-11:00" heading reads as if it were the 11:00 board. */}
+        {data?.boardMinuteIST != null ? (
+          <span
+            className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums"
+            title="The clock time of the TradeFinder capture this board comes from."
+          >
+            board {String(Math.floor(data.boardMinuteIST / 60)).padStart(2, '0')}:
+            {String(data.boardMinuteIST % 60).padStart(2, '0')}
+          </span>
+        ) : null}
         {/* Retained board — labelled with the session it belongs to, in the same
             amber the rest of /live uses for "this is not live". */}
         {data?.stale && data.date ? (
@@ -330,10 +423,59 @@ export function TfRaceCard() {
             is capturing successfully.
           </p>
         ) : board.length > 0 ? (
-          <div className="flex flex-col gap-1">
-            {board.map((r) => (
-              <BoardRow key={r.symbol} r={r} />
-            ))}
+          <div className="flex flex-col gap-2">
+            {/* ① TAKE — the answer to "what do I do". Never collapsed. */}
+            {take.length > 0 ? (
+              <div className="flex flex-col gap-1">
+                {take.map((r) => (
+                  <TakeRow key={r.symbol} r={r} />
+                ))}
+              </div>
+            ) : (
+              <p className="rounded border border-dashed border-border px-2 py-1.5 text-center text-[10px] text-muted-foreground">
+                Nothing clears every gate right now.
+                {building.length > 0 ? ' Closest candidates below.' : ' No name on TF’s board is still accumulating.'}
+              </p>
+            )}
+
+            {/* ② BUILDING — one gate away, so worth watching. */}
+            {building.length > 0 && (
+              <div>
+                <p className="mb-0.5 text-[9px] font-semibold tracking-wide text-muted-foreground uppercase">
+                  Building · one gate away ({building.length})
+                </p>
+                <div className="flex flex-col gap-1">
+                  {building.map((r) => (
+                    <BoardRow key={r.symbol} r={r} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ③ STALLED — collapsed. Present, but not competing for attention. */}
+            {stalled.length > 0 && (
+              <div>
+                <button
+                  onClick={() => setShowAll((v) => !v)}
+                  className="flex w-full items-center gap-1 text-left text-[9px] font-semibold tracking-wide text-muted-foreground uppercase hover:text-foreground"
+                  title="TradeFinder still ranks these highly, but their R-Factor has stopped advancing — the money is already in and none is arriving. Shown for completeness, not as candidates."
+                >
+                  {showAll ? <ChevronDown className="h-2.5 w-2.5" /> : <ChevronRight className="h-2.5 w-2.5" />}
+                  Stalled · R-Factor not advancing ({stalled.length})
+                </button>
+                {showAll ? (
+                  <div className="mt-1 flex flex-col gap-1">
+                    {stalled.map((r) => (
+                      <BoardRow key={r.symbol} r={r} />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="truncate text-[9px] text-muted-foreground/70">
+                    {stalled.map((r) => `${r.symbol} ${r.rFactor.toFixed(1)}`).join(' · ')}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         ) : runners.length === 0 && newEntrants.length === 0 ? (
           <p className="py-3 text-center text-[11px] text-muted-foreground">No one&apos;s climbed TF&apos;s board in this window yet.</p>
