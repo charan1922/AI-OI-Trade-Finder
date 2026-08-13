@@ -1,0 +1,1 @@
+3. The option-chain gate stays off until the measurement says otherwise. MAX_TRACKED went 12 → 20 to gather contradictions faster; re-run scripts/measure-option-evidence.ts in a couple of weeks.
