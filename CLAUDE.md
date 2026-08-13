@@ -87,17 +87,19 @@ TF-selection provenance.
   rank **#1 all day**, chopped, and lost. FORTIS 2026-08-12 climbed 1.76 → 4.66 in lockstep with
   price and paid +2R.
 - **TF R-Factor is DIRECTIONLESS.** CROMPTON topped TF's board on 2026-08-07 while trading −6.39%.
-  Direction comes from TF's own `param_2` % change and **must be confirmed by Supertrend**
-  (+0.075R → +0.227R). **VWAP was tested and rejected** — it diluted every variant it was added to
-  (Supertrend alone +0.227R vs Supertrend+VWAP +0.187R). Do not "restore" it.
+  Direction comes from TF's own `param_2` % change plus the direction-aware opening-range breakout.
+  By explicit operator rule (2026-08-14), **Supertrend is not inspected by Auto Trade or Trade
+  Commentary**. It may remain visible on `/live` as descriptive evidence only; it cannot admit, veto,
+  rank, manage, or exit a trade. VWAP is likewise not a selector gate.
 - **No fresh board = no entries.** Past `TF_BOARD_MAX_AGE_MIN` (10) the scanner returns zero picks
   and says why; there is deliberately **no fallback to the App engine** (that is the −0.199R engine).
   TF signs this account out roughly daily *and mid-session* — 263 consecutive failures over 3h20m on
   2026-08-10 — so this is the normal path, not the rare one. Open positions keep being managed.
-- **Missing evidence always rejects.** Null Supertrend, null breakout, null premium pool each drop the
-  name. `selectTfCandidates` never reads "could not check" as "passed".
-- Bench: `npx tsx scripts/verify-tf-selector.ts` (49 pure checks — no lookahead, degenerate-board
-  refusal, frozen-R rejection, tighten-only trailing). Proof harness: `scripts/replay-tf-selector.ts`.
+- **Missing required evidence always rejects.** Null breakout or null premium pool drops the name.
+  Supertrend is optional display evidence and is deliberately ignored by `selectTfCandidates`.
+- Bench: `pnpm exec tsx scripts/verify-tf-selector.ts` (56 pure checks — no lookahead,
+  degenerate-board refusal, frozen-R rejection, Supertrend ignored, tighten-only trailing). Proof
+  harness: `scripts/replay-tf-selector.ts`.
 
 ### Exit model: cut at 1R, let winners run (replaces the fixed 1:2 target)
 

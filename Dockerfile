@@ -111,6 +111,10 @@ COPY --from=builder /ms-playwright /ms-playwright
 # expensive above it stays cached.
 COPY --from=builder /app ./
 
+# CMD invokes this before every app boot. Fail the image build—not production
+# startup—if a future .dockerignore change drops the required migration again.
+RUN test -f /app/scripts/migrate-option-chain-table.ts
+
 # Guarantee the mount point exists even if the volume is ever detached; the real
 # persistent volume is mounted over this at start time.
 RUN mkdir -p /app/data
@@ -118,11 +122,10 @@ RUN mkdir -p /app/data
 EXPOSE 5001
 # Start sequence (the volume is mounted at runtime, so all of this sees it):
 #   1. One-time DB import hook — if project-r.db.import exists on the volume
-#      (uploaded via `railway volume files upload`), swap it into place BEFORE
-#      anything opens the DB. Corruption-safe (nothing holds the file yet), and
-#      harmless when the import file is absent. Clears stale WAL/SHM so the new
-#      DB opens clean. Left in permanently so future migrations are just:
-#      upload a fresh project-r.db.import, then redeploy.
+#      swap it into place BEFORE anything opens the DB. Corruption-safe (nothing
+#      holds the file yet), and harmless when the import file is absent. Clears
+#      stale WAL/SHM so the new DB opens clean. Left in permanently so future
+#      migrations can upload a fresh project-r.db.import and then redeploy.
 #   2. `prisma db push` — ONLY when the DB file doesn't exist yet (fresh-volume
 #      bootstrap). On an existing/migrated DB we skip it: the Prisma-modeled
 #      tables are already there, and db push would try to DROP the app's
@@ -130,7 +133,7 @@ EXPOSE 5001
 #      market_holidays, feature_toggles, …) to match the schema — destroying
 #      real data. The app creates those raw tables itself at runtime
 #      (CREATE TABLE IF NOT EXISTS).
-#   3. Boot Next on Railway's injected $PORT.
+#   3. Boot Next on the configured $PORT (5001 by default on AWS).
 #   2b. One-time R-Factor V2 retirement (2026-08-11): copy the option-chain
 #       evidence to its new table, drop the three rfactor_v2_* tables, and drop
 #       the rFactorV2* columns off live_urgency_eod. Idempotent — a no-op on

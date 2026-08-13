@@ -16,11 +16,10 @@
  * a fall.
  *
  * So a top rank is never a reason to buy, and a low rank is never a reason to
- * sell. Direction comes from our own signals (bias, breakout, VWAP/Supertrend,
- * OI direction); TradeFinder's rank only corroborates that something worth
- * trading is happening in the name at all. Every string this module produces is
- * worded to keep that distinction, because a rank presented as an endorsement
- * is exactly how a directionless number turns into a bad entry.
+ * sell. The trading path derives direction from TF's own percent change and a
+ * direction-aware opening-range breakout. Supertrend may be displayed on
+ * /live, but Auto Trade and Trade Commentary deliberately ignore it. Every
+ * string this module produces keeps participation separate from direction.
  *
  * HARD RULES this module keeps:
  * - It is scoped to ONE DATE. A capture from a previous session is never served
