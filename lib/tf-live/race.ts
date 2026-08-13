@@ -122,6 +122,20 @@ const EMPTY_RACE_AT: TfRaceAt = {
   runners: [],
 };
 
+/** Minutes past midnight IST, right now. */
+export function istMinutesNow(): number {
+  const parts = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date());
+  return (
+    Number(parts.find((p) => p.type === 'hour')?.value ?? 0) * 60 +
+    Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
+  );
+}
+
 function minutesIST(iso: string): number {
   const parts = new Intl.DateTimeFormat('en-IN', {
     timeZone: 'Asia/Kolkata',

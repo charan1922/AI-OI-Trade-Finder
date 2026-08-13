@@ -86,7 +86,18 @@ import { qualifiesExtendedTrend } from '@/lib/trade-suggest/extended-bypass';
 import { classifyMoveFreshness, isStaleMove, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
 import { qualifiesMomentumBreakout } from '@/lib/trade-suggest/momentum-breakout';
 import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
-import { getTfBoardsForDate, getTfRaceForWindow, getTfSectorBoard, raceAtMinute } from '@/lib/tf-live/race';
+// istMinutesNow is imported, NOT redefined here. It was duplicated in this file
+// while /api/tf/race used the exported copy — two implementations of the same
+// clock, one of which decides whether a board is fresh enough to TRADE on
+// (TF_BOARD_MAX_AGE_MIN) and the other whether the card may show a verdict.
+// If they ever drifted, the page would disagree with the engine about staleness.
+import {
+  getTfBoardsForDate,
+  getTfRaceForWindow,
+  getTfSectorBoard,
+  istMinutesNow,
+  raceAtMinute,
+} from '@/lib/tf-live/race';
 import {
   describeRejections,
   selectTfCandidates,
@@ -1412,18 +1423,4 @@ async function buildTfSelection(
       })),
     },
   };
-}
-
-/** Minutes past midnight IST, now. */
-function istMinutesNow(): number {
-  const parts = new Intl.DateTimeFormat('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date());
-  return (
-    Number(parts.find((p) => p.type === 'hour')?.value ?? 0) * 60 +
-    Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
-  );
 }

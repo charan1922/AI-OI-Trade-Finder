@@ -58,6 +58,16 @@ interface TfRaceResponse {
   /** IST minute-of-day the board was actually captured at. The window badge is
    *  the ENTRY WINDOW, not the data's age — these are different things. */
   boardMinuteIST?: number | null;
+  /** How old the board is, in minutes. Null when it is from another session. */
+  boardAgeMin?: number | null;
+  /** False when the board is one the SCANNER would refuse (another session, or
+   *  older than TF_BOARD_MAX_AGE_MIN). No green "would take it" row may render:
+   *  the claim is present tense and the evidence is not. */
+  verdictsLive?: boolean;
+  /** Why the verdict is withheld, in plain English. Shown in place of the picks. */
+  verdictNote?: string | null;
+  /** True on a weekday past 09:15 IST — today's session has opened. */
+  sessionOpenedToday?: boolean;
   error?: string;
 }
 
@@ -352,9 +362,16 @@ export function TfRaceCard() {
   //  STALLED  — R-Factor has stopped advancing. Not deleted (a stall can end,
   //             and hiding TF's own #1 is the mistake this card just fixed) —
   //             collapsed behind a count, with the names still one click away.
+  //
+  // When the route withholds the verdict (`verdictsLive === false`) NOTHING is
+  // green: `tradeable` already comes back false for every row, so TAKE is empty
+  // by construction and the note below says why. See the route — a board from
+  // another session, or one the scanner would refuse as stale, must never
+  // present a name as today's answer.
   const take = board.filter((r) => r.tradeable);
   const building = board.filter((r) => !r.tradeable && r.deltaR != null && r.deltaR > FROZEN_DELTA_R);
   const stalled = board.filter((r) => !r.tradeable && !(r.deltaR != null && r.deltaR > FROZEN_DELTA_R));
+  const verdictsLive = data?.verdictsLive !== false;
 
   return (
     <section className="flex h-full flex-col rounded-lg border border-border bg-card">
@@ -372,11 +389,20 @@ export function TfRaceCard() {
             a "09:35-11:00" heading reads as if it were the 11:00 board. */}
         {data?.boardMinuteIST != null ? (
           <span
-            className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums"
-            title="The clock time of the TradeFinder capture this board comes from."
+            className={`rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums ${
+              data.boardAgeMin != null && data.boardAgeMin > 10
+                ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400'
+                : 'bg-muted text-muted-foreground'
+            }`}
+            title={
+              data.boardAgeMin == null
+                ? 'The clock time of the TradeFinder capture this board comes from.'
+                : `The clock time of the TradeFinder capture this board comes from — ${data.boardAgeMin} min ago. Past 10 min the scanner refuses to act on it.`
+            }
           >
             board {String(Math.floor(data.boardMinuteIST / 60)).padStart(2, '0')}:
             {String(data.boardMinuteIST % 60).padStart(2, '0')}
+            {data.boardAgeMin != null && data.boardAgeMin > 10 ? ` · ${data.boardAgeMin}m old` : ''}
           </span>
         ) : null}
         {/* Retained board — labelled with the session it belongs to, in the same
@@ -384,9 +410,9 @@ export function TfRaceCard() {
         {data?.stale && data.date ? (
           <span
             className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400"
-            title="Today has no usable TradeFinder race yet, so this is the last session that did. It is a closing snapshot, not a live board."
+            title="The market is closed, so this is the last session that produced a usable race — a closing snapshot, not a live board, and not a set of calls for the next session. Once today's session opens this is replaced by today's board or by nothing at all."
           >
-            closing snapshot · {data.date}
+            {data.date} · not today
           </span>
         ) : null}
       </header>
@@ -414,18 +440,41 @@ export function TfRaceCard() {
         ) : !data.success ? (
           <p className="py-3 text-center text-[11px] text-red-600 dark:text-red-400">{data.error ?? 'unavailable'}</p>
         ) : !data.hasRace ? (
+          /* Deliberately NOT filled in with an earlier session's board once
+             today's session has opened — TF's R-Factor restarts every morning,
+             so yesterday's board is not a weaker answer, it is a wrong one. */
           <p className="py-3 text-center text-[11px] text-muted-foreground">
-            No TradeFinder race on record yet — today needs 2+ captures inside 09:35–11:00 IST, and no
-            earlier session has one either. Check{' '}
-            <a href="/tf" className="underline">
-              check /tf
-            </a>{' '}
-            is capturing successfully.
+            {data.sessionOpenedToday ? (
+              <>
+                <b className="text-foreground">Today&apos;s board isn&apos;t ready yet.</b> The race needs 2+ TradeFinder
+                captures after 09:35 IST. Yesterday&apos;s board is deliberately not shown — TF&apos;s R-Factor restarts
+                each morning, so it would say nothing about today. Check{' '}
+                <a href="/tf" className="underline">
+                  /tf
+                </a>{' '}
+                is capturing.
+              </>
+            ) : (
+              <>
+                No TradeFinder race on record — a session needs 2+ captures inside 09:35–11:00 IST, and no recent one
+                has that. Check{' '}
+                <a href="/tf" className="underline">
+                  /tf
+                </a>{' '}
+                is capturing successfully.
+              </>
+            )}
           </p>
         ) : board.length > 0 ? (
           <div className="flex flex-col gap-2">
             {/* ① TAKE — the answer to "what do I do". Never collapsed. */}
-            {take.length > 0 ? (
+            {!verdictsLive ? (
+              /* The board is real, the VERDICT is not available — say which, and
+                 never let the rows below read as picks. */
+              <p className="rounded border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[10px] leading-snug text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+                <b>No picks from this board.</b> {data.verdictNote}
+              </p>
+            ) : take.length > 0 ? (
               <div className="flex flex-col gap-1">
                 {take.map((r) => (
                   <TakeRow key={r.symbol} r={r} />
