@@ -4,7 +4,7 @@
  * (autoresearch-style mutate → evaluate → accept/reject), use
  * scripts/autoresearch.ts.
  *
- * Run:  npx tsx scripts/replay-window.ts [date=2026-07-03]
+ * Run:  pnpm exec tsx scripts/replay-window.ts [date=2026-07-03]
  */
 import { describeVariantDrift, evaluateDay, loadDay, loadLiveVariant, type Variant } from './replay-lib';
 
@@ -135,17 +135,6 @@ const buildVariants = (BASE: Variant): Variant[] => [
   // Candidate feature: drop candidates fighting their sector's turnover-weighted
   // move (the heatmap aggregation; flat sectors pass). Display-only in prod.
   { ...BASE, name: 'sector-align-gate', requireSectorAlign: true },
-  // Candidate feature under evaluation: the trend-aligned bypass of the extended
-  // ban (extended-bypass.ts, gated OFF in prod by USE_EXTENDED_TREND_BYPASS).
-  // Re-admits a genuine trend-day continuation (breakout + VWAP + Supertrend) that
-  // EXCLUDE_EXTENDED throws away — e.g. KALYANKJIL 2026-07-09 (+4.5%→+17.5%).
-  // Accept only after several days show ΣR improves vs shipped WITHOUT re-admitting
-  // the 0-for-5 chase losers (2026-07-03 must stay flat/better).
-  {
-    ...BASE,
-    name: 'extended-trend-bypass',
-    extendedTrendBypass: true,
-  },
 ];
 
 const day = loadDay(DATE);

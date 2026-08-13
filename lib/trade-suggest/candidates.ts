@@ -1,9 +1,9 @@
-import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
+import { getNumberSetting } from '@/lib/config/feature-toggles';
 import { prisma } from '@/lib/db';
 import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
 import { minuteOfDayIST } from '@/lib/ist';
 import { getTfBoardsForDate, istMinutesNow, raceAtMinute } from '@/lib/tf-live/race';
-import { SCAN_OUTSIDE_WINDOW, TF_RACE_MAX_RANK, WINDOW_END_MIN, WINDOW_START_MIN } from './config';
+import { TF_RACE_MAX_RANK, WINDOW_END_MIN, WINDOW_START_MIN } from './config';
 
 const TAG = '[TradeSuggest]';
 
@@ -29,16 +29,15 @@ export function internalAuthHeaders(): Record<string, string> {
 /** True when the autonomous pass will actually run the candidate scanner. */
 export async function isCandidateScanDue(): Promise<boolean> {
   if (!isMarketHours()) return false;
-  const [startMin, endMin, scanOutsideWindow] = await Promise.all([
+  const [startMin, endMin] = await Promise.all([
     getNumberSetting('WINDOW_START_MIN', WINDOW_START_MIN),
     getNumberSetting('WINDOW_END_MIN', WINDOW_END_MIN),
-    getToggle('SCAN_OUTSIDE_WINDOW', SCAN_OUTSIDE_WINDOW),
   ]);
   const minute = minuteOfDayIST();
   const validWindow = startMin < endMin;
   const effectiveStart = validWindow ? startMin : WINDOW_START_MIN;
   const effectiveEnd = validWindow ? endMin : WINDOW_END_MIN;
-  return scanOutsideWindow || (minute >= effectiveStart && minute <= effectiveEnd);
+  return minute >= effectiveStart && minute <= effectiveEnd;
 }
 
 /**

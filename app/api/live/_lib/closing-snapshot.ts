@@ -25,7 +25,7 @@ import { deriveBreakoutContext, evaluateBreakout, type BreakoutSignal } from '@/
 import { prisma } from '@/lib/db';
 import { todayIST } from '@/lib/dhan/market-feed';
 import { getFyersCandles, getNseOiLatestForSymbols, type NseOiLatest } from '@/lib/fyers/candle-store';
-import { computeRFactor } from '@/lib/r-factor';
+import { approximateTfRFactor, computeRFactor } from '@/lib/r-factor';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   changeSinceEntryWindow,
@@ -171,7 +171,7 @@ async function computeClosingRows(
       oiVelocity: urgency.ok ? urgency.oiVelocity : null,
       oiAccel: urgency.ok ? urgency.oiAccel : null,
       oiUrgency: urgency.ok ? urgency.urgencyScore : null,
-      rFactor: r?.rFactor ?? null,
+      rFactor: r ? approximateTfRFactor(r.factors) : null,
       rFactorBias: r?.bias ?? null,
       rFactorConfidence: r?.confidence ?? null,
       rFactorAfterEntry: r?.afterEntryWindow ?? null,

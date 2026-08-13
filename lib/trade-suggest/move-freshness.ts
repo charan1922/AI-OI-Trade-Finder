@@ -49,7 +49,6 @@ export interface MoveFreshness {
   freshShare: number | null;
   detail: string;
 }
-
 export interface MoveFreshnessConfig {
   /** |move since 09:45| below this counts as "gone nowhere". */
   flatPct: number;
@@ -160,8 +159,3 @@ export function classifyMoveFreshness(
     detail: `only ${since >= 0 ? '+' : ''}${since.toFixed(2)}% since 09:45 — drifting, not driving`,
   };
 }
-
-/** Profiles that mean the entry window's move is behind us, not ahead of us. */
-export const STALE_MOVE_PROFILES: readonly MoveProfile[] = ['spent', 'fading'];
-
-export const isStaleMove = (profile: MoveProfile): boolean => STALE_MOVE_PROFILES.includes(profile);

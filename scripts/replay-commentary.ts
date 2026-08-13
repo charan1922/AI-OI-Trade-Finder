@@ -16,8 +16,8 @@
  * data/replay-commentary/run-<date>-<label>.json for the temp /replay-commentary
  * page, and a summary line is appended to tracking/commentary-replay-log.md
  * (the experiment log). The scan reconstruction mirrors scripts/replay-lib.ts's
- * replayVariant loop with the PRODUCTION config (breakout bypass ON to match
- * the deployed server's toggles; extended ban ON; TF gate OFF).
+ * replayVariant loop. This is a historical pre-TF harness; current production
+ * selection is covered by scripts/replay-tf-selector.ts.
  *
  * Run from the project root:
  *   npx tsx scripts/replay-commentary.ts --date=2026-07-10 --label=iter1 \
@@ -46,7 +46,6 @@ const { deriveBreakoutContext, evaluateBreakout } = await import('../lib/breakou
 const { DEFAULT_BREAKOUT_BYPASS_CONFIG, qualifiesByBreakout } = await import(
   '../lib/trade-suggest/breakout-bypass'
 );
-const { qualifiesExtendedTrend } = await import('../lib/trade-suggest/extended-bypass');
 const { buildSpotPlan, computeCompositeScore } = await import('../lib/trade-suggest/scoring');
 const cfg = await import('../lib/trade-suggest/config');
 const { checkContract } = await import('../lib/ai-commentary/contract-checks');
@@ -287,33 +286,7 @@ function scanAtTick(tick: number): SuggestResponse {
     });
   }
   survivors.sort((a, b) => b.score - a.score);
-  // EXCLUDE_EXTENDED is ON on the deployed server — but so is
-  // USE_EXTENDED_TREND_BYPASS: a genuine trend-day continuation (still breaking
-  // out, VWAP + Supertrend aligned, R-Factor ≥ floor) is re-admitted with its
-  // score penalty intact. Exactly the engine's shortlist rule.
-  const eligible = survivors.filter((sv) => {
-    if (!sv.extended) return true;
-    const ltp = sv.row.ltp ?? 0;
-    const vw = sessionVwap(sv.bars);
-    const st = supertrend(sv.bars);
-    const ok = qualifiesExtendedTrend(
-      {
-        orBreakout: sv.orBreakout,
-        supertrendAligned:
-          st == null ? null : sv.direction === 'bullish' ? st.direction === 'up' : st.direction === 'down',
-        vwapAligned: vw == null ? null : sv.direction === 'bullish' ? ltp > vw : ltp < vw,
-        rFactor: sv.row.rFactor,
-      },
-      {
-        minRFactor: cfg.EXTENDED_BYPASS_MIN_RFACTOR,
-        requireSupertrend: cfg.EXTENDED_BYPASS_REQUIRE_SUPERTREND,
-      }
-    );
-    if (!ok) bump('extendedMover');
-    return ok;
-  });
-
-  const suggestions: TradeSuggestion[] = eligible.slice(0, cfg.MAX_PICKS).map((sv, i) => {
+  const suggestions: TradeSuggestion[] = survivors.slice(0, cfg.MAX_PICKS).map((sv, i) => {
     const side = sv.direction === 'bullish' ? 'CE' : 'PE';
     const plan = buildSpotPlan(side, sv.row.ltp ?? 0, sv.bars, sv.or, tickBucket);
     const vw = sessionVwap(sv.bars);

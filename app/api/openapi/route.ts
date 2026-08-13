@@ -555,7 +555,7 @@ const spec = {
         tags: ['Trade Suggest'],
         summary: 'Up to MAX_PICKS near-ATM option suggestions (the /trade-suggest skill endpoint)',
         description:
-          'Uses the fresh TradeFinder Running Race as the only entry universe and fails closed when its board is missing, stale, or unranked. Qualified race runners then pass tradeability and timing gates (equity spread, opening-range structure, Supertrend, VWAP, extension, candle freshness, affordable listed option contract). TF rank/R-Factor order is preserved; App R-Factor and OI remain descriptive evidence and cannot admit another stock. Returns up to MAX_PICKS with live option premium and a spot entry/SL/target plan. Active 09:40–11:00 IST; force=1 bypasses the scan window, not market hours. Picks persist to trade_suggestions.',
+          'Uses the fresh TradeFinder Running Race as the only entry universe and fails closed when its board is missing, stale, or unranked. Qualified race runners must show fresh TF accumulation, directional movement, opening-range breakout, a tradeable options-premium pool, and less than 2% movement since 09:45; execution then checks equity/option liquidity, candle freshness, capital, and an affordable listed contract. TF rank/R-Factor order is preserved; Supertrend, App R-Factor, App OI, VWAP, chaotic-open, and extension-from-open cannot admit or veto another stock. Returns up to MAX_PICKS with live option premium and a spot entry/SL/target plan. Active in the configured morning window (default 09:40–11:00 IST); force=1 bypasses the scan window for diagnostics, not market hours. Picks persist to trade_suggestions.',
         parameters: [
           {
             name: 'force',

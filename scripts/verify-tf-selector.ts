@@ -136,8 +136,6 @@ function main(): void {
   {
     const base = { rankNow: 1, rankAtBaseline: 5, climb: 4, rFactorNow: 3.0, rFactorAgo: 1.5, deltaR: 1.5, pctChange: 2.5 };
     const cases: [string, Partial<TfSymbolContext> | null, keyof ReturnType<typeof selectTfCandidates>['rejected']][] = [
-      ['unknown Supertrend', { supertrendAligned: null }, 'supertrendUnknown'],
-      ['Supertrend disagrees', { supertrendAligned: false }, 'supertrendDisagrees'],
       ['no breakout', { breakout: false }, 'noBreakout'],
       ['unknown breakout', { breakout: null }, 'noBreakout'],
       ['unknown premium pool', { premValueCr: null }, 'premiumUnknown'],
@@ -147,6 +145,13 @@ function main(): void {
     for (const [label, over, key] of cases) {
       const r = selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok(over ?? {})]]));
       check(`rejects: ${label}`, r.candidates.length === 0 && r.rejected[key] === 1, `n=${r.candidates.length}`);
+    }
+    for (const supertrendAligned of [null, false]) {
+      const r = selectTfCandidates(
+        [{ symbol: 'X', ...base }],
+        new Map([['X', ok({ supertrendAligned })]])
+      );
+      check(`Supertrend ${supertrendAligned === null ? 'unknown' : 'disagreement'} is ignored`, r.candidates.length === 1);
     }
     // No context row at all.
     const none = selectTfCandidates([{ symbol: 'X', ...base }], new Map());

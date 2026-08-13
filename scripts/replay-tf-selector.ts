@@ -1,7 +1,7 @@
 /**
  * PROOF HARNESS for the TF Running Race selector — "how much would we have made".
  *
- *   npx tsx scripts/replay-tf-selector.ts
+ *   pnpm exec tsx scripts/replay-tf-selector.ts
  *
  * Replays every session that has TradeFinder captures through the SAME pure
  * modules the live engine uses — `raceAtMinute`, `selectTfCandidates`,
@@ -11,7 +11,7 @@
  *
  * NO LOOKAHEAD. At each decision minute the board is filtered to captures at or
  * before that minute, the accumulation rate is measured against a board ≥30 min
- * earlier, Supertrend/opening-range use only bars strictly before the entry
+ * earlier, opening-range checks use only bars strictly before the entry
  * bucket, and the entry price is the entry bar's OPEN. A same-candle tie between
  * stop and target resolves to the STOP — never flatter than reality.
  *
@@ -38,7 +38,6 @@ import { selectTfCandidates, type TfSymbolContext } from '@/lib/tf-live/selector
 import { buildSpotPlan } from '@/lib/trade-suggest/scoring';
 import { trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
 import { deriveSessionContext } from '@/lib/signals/session-context';
-import { supertrend } from '@/lib/signals/indicators';
 import { MIN_RISK_PCT, TF_RACE_MAX_RANK, TRAIL_R } from '@/lib/trade-suggest/config';
 import { DEFAULT_SETTINGS } from '@/lib/auto-trade/config';
 
@@ -60,9 +59,7 @@ const istMin = (ms: number): number => {
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 const inr = (n: number) => `${n < 0 ? '-' : '+'}₹${Math.abs(Math.round(n)).toLocaleString('en-IN')}`;
 
-/** Carries `volume` because the shared indicator helpers require it — supertrend
- *  is called on these bars, so a volume-less shape would silently diverge from
- *  what the live engine computes. */
+/** Recorded OHLCV shape used by the shared plan and path evaluator. */
 interface Bar { bucketTs: number; open: number; high: number; low: number; close: number; volume: number }
 interface Trade {
   date: string; symbol: string; side: 'CE' | 'PE'; entryMin: number;
@@ -156,12 +153,11 @@ async function main(): Promise<void> {
         const entry = sb.find((b) => b.bucketTs === entryTs)!.open;
         const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
         const sc = deriveSessionContext(prior);
-        const st = prior.length >= 10 ? supertrend(prior) : null;
         const at945 = sb.find((b) => istMin(b.bucketTs * 1000) >= 9 * 60 + 45);
         const raw = at945 && at945.open > 0 ? ((entry - at945.open) / at945.open) * 100 : null;
         const prem = [...(oiBy.get(runner.symbol) ?? [])].reverse().find((r) => r.bucketTs <= entryTs)?.premValueCr ?? null;
         context.set(runner.symbol, {
-          supertrendAligned: st == null ? null : side === 'CE' ? st.direction === 'up' : st.direction === 'down',
+          supertrendAligned: null,
           breakout: !sc.openRangeComplete ? null
             : side === 'CE' ? sc.openRangeHigh != null && entry > sc.openRangeHigh
               : sc.openRangeLow != null && entry < sc.openRangeLow,

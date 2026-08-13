@@ -92,11 +92,10 @@ function trimEntryPick(s: TradeSuggestion): Record<string, unknown> {
     liquidityWarning: s.option?.premium?.liquidityWarning ?? null,
     factors: s.factors && {
       vwapAligned: s.factors.vwapAligned,
-      supertrendAligned: s.factors.supertrendAligned,
       combinedOiSlope30m: s.factors.combinedOiSlope30m,
       sectorAligned: s.factors.sectorAligned,
     },
-    reasons: s.reasons,
+    reasons: s.reasons.filter((reason) => !/supertrend/i.test(reason)),
     eligible: Boolean(s.option?.premium && s.plan.slSpot != null),
   };
 }
@@ -112,9 +111,12 @@ export function buildScanContext(
       mode: 'position-management-only',
       window: scan.window,
       tilt: scan.tilt,
-      signals: (scan.managedPositionSignals ?? []).filter((signal) =>
-        managed.has(signal.symbol.toUpperCase())
-      ),
+      signals: (scan.managedPositionSignals ?? [])
+        .filter((signal) => managed.has(signal.symbol.toUpperCase()))
+        .map(({ supertrendAligned, ...signal }) => {
+          void supertrendAligned;
+          return signal;
+        }),
     };
   }
   return {

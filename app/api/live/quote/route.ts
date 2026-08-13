@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import type { LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
 import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
-import { computeRFactor } from '@/lib/r-factor';
+import { approximateTfRFactor, computeRFactor } from '@/lib/r-factor';
 import { getNseOiLatestForSymbols } from '@/lib/fyers/candle-store';
 import { getNseOiRowMap, LIVE_PATH_NSE_WAIT_MS } from '@/lib/nse/combined-oi';
 import type { OiStock } from '@/lib/nse/pulse';
@@ -265,6 +265,9 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
     // TradeFinder breakout: FAST half — live LTP + live R-Factor against the
     // 5-min-cached morning-test + level ladder. Null until the symbol's
     // candles are recorded (never fabricated). Context warms below.
+    // Breakout keeps the engine's internal 1-10 strength threshold. The App
+    // R-Factor shown below is separately calibrated to TF's board and remains
+    // display-only, so it cannot alter this evidence grade or order decisions.
     const breakout = evaluateBreakout(getBreakoutContext(s), ltp, r?.rFactor ?? null, changePctOpen);
 
     return {
@@ -304,7 +307,7 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
       oiVelocity: null,
       oiAccel: null,
       oiUrgency: null,
-      rFactor: r?.rFactor ?? null,
+      rFactor: r ? approximateTfRFactor(r.factors) : null,
       rFactorBias: r?.bias ?? null,
       rFactorConfidence: r?.confidence ?? null,
       rFactorAfterEntry: r?.afterEntryWindow ?? null,

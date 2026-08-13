@@ -7,8 +7,10 @@
  * auto-refreshing every 3s with auto-scroll (pausable). Admin-only, read-only.
  */
 
-import { Pause, Play, Terminal } from 'lucide-react';
+import { ArrowDownToLine, Pause, Play, Terminal } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+
+import { Button } from '@/components/ui/button';
 
 interface LogsResponse {
   success: boolean;
@@ -48,6 +50,7 @@ export default function LogsPage() {
   const [date, setDate] = useState<string>('');
   const [count, setCount] = useState(300);
   const [paused, setPaused] = useState(false);
+  const [followTail, setFollowTail] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
   const boxRef = useRef<HTMLDivElement | null>(null);
@@ -95,10 +98,24 @@ export default function LogsPage() {
     };
   }, [load, date, count, paused]);
 
-  // Auto-scroll to the newest line (like a terminal) unless paused.
+  // Auto-scroll only while the reader is already following the tail. Scrolling
+  // up suspends follow mode; reaching the bottom again resumes it.
   useEffect(() => {
-    if (!paused && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
-  }, [lines, paused]);
+    if (!paused && followTail && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+  }, [lines, paused, followTail]);
+
+  const handleLogScroll = useCallback(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const distanceFromBottom = box.scrollHeight - box.scrollTop - box.clientHeight;
+    setFollowTail(distanceFromBottom <= 24);
+  }, []);
+
+  const jumpToLatest = useCallback(() => {
+    const box = boxRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
+    setFollowTail(true);
+  }, []);
 
   return (
     <div className="mx-auto max-w-6xl space-y-2 p-3">
@@ -112,7 +129,10 @@ export default function LogsPage() {
           {dates.length > 0 && (
             <select
               value={date}
-              onChange={(e) => setDate(e.target.value)}
+              onChange={(e) => {
+                setDate(e.target.value);
+                setFollowTail(true);
+              }}
               className="h-7 rounded-md border border-border bg-background px-2 text-xs tabular-nums"
             >
               {dates.map((d) => (
@@ -124,7 +144,10 @@ export default function LogsPage() {
           )}
           <select
             value={count}
-            onChange={(e) => setCount(Number(e.target.value))}
+            onChange={(e) => {
+              setCount(Number(e.target.value));
+              setFollowTail(true);
+            }}
             className="h-7 rounded-md border border-border bg-background px-2 text-xs tabular-nums"
           >
             {[200, 300, 500, 1000, 2000].map((n) => (
@@ -133,15 +156,23 @@ export default function LogsPage() {
               </option>
             ))}
           </select>
-          <button
+          {!followTail && (
+            <Button type="button" variant="outline" size="sm" onClick={jumpToLatest} className="h-7 text-xs">
+              <ArrowDownToLine data-icon="inline-start" />
+              Latest
+            </Button>
+          )}
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={() => setPaused((p) => !p)}
-            className="flex h-7 items-center gap-1 rounded-md border border-border px-2 text-xs hover:bg-accent"
+            className="h-7 text-xs"
             title={paused ? 'Resume live tail' : 'Pause (stops refresh + auto-scroll so you can read)'}
           >
-            {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+            {paused ? <Play data-icon="inline-start" /> : <Pause data-icon="inline-start" />}
             {paused ? 'Resume' : 'Pause'}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -153,6 +184,7 @@ export default function LogsPage() {
 
       <div
         ref={boxRef}
+        onScroll={handleLogScroll}
         className="h-[72vh] overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-950 p-3 font-mono text-[11.5px] leading-relaxed"
       >
         {lines.length === 0 ? (

@@ -39,10 +39,9 @@
  *
  * TF's R-Factor is DIRECTIONLESS — it says "big money is here", never "this is
  * going up". CROMPTON topped TF's own board on 2026-08-07 while trading −6.39%.
- * Direction therefore comes from TF's own % change and must be CONFIRMED by
- * Supertrend. Measured: adding Supertrend took +0.075R → +0.227R. VWAP was
- * tested and REJECTED — it diluted every variant it was added to
- * (Supertrend alone +0.227R vs Supertrend+VWAP +0.187R).
+ * Direction therefore comes from TF's own % change and the required opening-
+ * range breakout. Supertrend was removed from the Auto Trade / Commentary path
+ * by operator instruction; it may still render as descriptive UI evidence.
  *
  * ── PURITY ──────────────────────────────────────────────────────────────────
  *
@@ -57,8 +56,7 @@ import type { TfRunnerAt } from '@/lib/tf-live/race';
 
 /** Per-symbol evidence the selector needs but cannot derive from the TF board. */
 export interface TfSymbolContext {
-  /** True when Supertrend(10,3) points the same way as the proposed side.
-   *  Null = not yet computable (too few candles) → REJECTED, never assumed. */
+  /** Optional display evidence. The selector deliberately ignores Supertrend. */
   supertrendAligned: boolean | null;
   /** True when price has cleared the opening range in the trade's direction.
    *  Null = opening range not complete yet → REJECTED. */
@@ -82,8 +80,6 @@ export interface TfSelectorConfig {
   maxSinceEntryPct: number;
   /** Require an opening-range breakout in the trade's direction. */
   requireBreakout: boolean;
-  /** Require Supertrend agreement. */
-  requireSupertrend: boolean;
   /** Cap on returned candidates. */
   maxCandidates: number;
 }
@@ -111,8 +107,6 @@ export interface TfSelectorRejections {
   frozenR: number;
   unknownDeltaR: number;
   flatPrice: number;
-  supertrendDisagrees: number;
-  supertrendUnknown: number;
   noBreakout: number;
   thinPremium: number;
   premiumUnknown: number;
@@ -131,8 +125,6 @@ const emptyRejections = (): TfSelectorRejections => ({
   frozenR: 0,
   unknownDeltaR: 0,
   flatPrice: 0,
-  supertrendDisagrees: 0,
-  supertrendUnknown: 0,
   noBreakout: 0,
   thinPremium: 0,
   premiumUnknown: 0,
@@ -142,8 +134,8 @@ const emptyRejections = (): TfSelectorRejections => ({
 /**
  * Defaults measured over 2026-08-10..12. TREAT AS FITTED — roughly 100 variants
  * were tried on three sessions, so these thresholds are the least trustworthy
- * part of this module. The DIRECTION of each (higher R, still climbing, trend
- * agreeing, real premium pool) held in every cut; the exact numbers did not get
+ * part of this module. The DIRECTION of each (higher R, still climbing, real
+ * premium pool) held in every cut; the exact numbers did not get
  * a chance to. `minPremValueCr` sits at the top of the tested ₹6–20 Cr plateau
  * and should be the first constant re-checked as live sessions accumulate.
  */
@@ -153,15 +145,12 @@ export const DEFAULT_TF_SELECTOR_CONFIG: TfSelectorConfig = {
   minPremValueCr: 20,
   maxSinceEntryPct: 2,
   requireBreakout: true,
-  requireSupertrend: true,
   maxCandidates: 7,
 };
 
-/** Display-only /live configuration. It reports participation without making
- * Supertrend decide the board; the trade selector keeps the strict default. */
+/** /live uses the same selector thresholds as the money path. */
 export const LIVE_TF_SELECTOR_CONFIG: TfSelectorConfig = {
   ...DEFAULT_TF_SELECTOR_CONFIG,
-  requireSupertrend: false,
 };
 
 /**
@@ -171,8 +160,8 @@ export const LIVE_TF_SELECTOR_CONFIG: TfSelectorConfig = {
  * returns them); the output preserves that order, so the caller's "take the
  * best N" is TF's own ranking rather than a re-derived one.
  *
- * MISSING EVIDENCE IS ALWAYS A REJECTION. A null Supertrend, a null breakout, a
- * null premium pool — each drops the name. This module never treats "we could
+ * REQUIRED MISSING EVIDENCE IS A REJECTION. A null breakout or premium pool
+ * drops the name. Supertrend is explicitly not required or inspected. This module never treats "we could
  * not check" as "it passed", which is the same fail-closed rule the risk gates
  * keep.
  */
@@ -210,25 +199,13 @@ export function selectTfCandidates(
       continue;
     }
 
-    // Trade selection requires Supertrend; display-only consumers may opt out.
-    if (cfg.requireSupertrend) {
-      if (ctx.supertrendAligned == null) {
-        rejected.supertrendUnknown++;
-        continue;
-      }
-      if (!ctx.supertrendAligned) {
-        rejected.supertrendDisagrees++;
-        continue;
-      }
-    }
-
-    // ④ Breakout.
+    // ③ Breakout. Supertrend is intentionally ignored.
     if (cfg.requireBreakout && ctx.breakout !== true) {
       rejected.noBreakout++;
       continue;
     }
 
-    // ⑤ Tradeability: a real options premium pool to trade against.
+    // ④ Tradeability: a real options premium pool to trade against.
     if (ctx.premValueCr == null) {
       rejected.premiumUnknown++;
       continue;
@@ -238,7 +215,7 @@ export function selectTfCandidates(
       continue;
     }
 
-    // ⑥ Do not chase. FORTIS 2026-08-12 is the case: entries at −3.82% and
+    // ⑤ Do not chase. FORTIS 2026-08-12 is the case: entries at −3.82% and
     //    −4.02% hit target, entries at −4.78% and −5.34% stopped — same name,
     //    same day, same direction. A null reading is NOT a rejection here: it
     //    only means the 09:45 bar was unrecorded, and the other five gates have
@@ -263,7 +240,7 @@ export function selectTfCandidates(
       reasons: [
         `TF R-Factor ${runner.rFactorNow.toFixed(2)}, rank #${runner.rankNow} (up ${runner.climb} from #${runner.rankAtBaseline})`,
         `still accumulating: TF R +${runner.deltaR.toFixed(2)} over the last 30 min`,
-        `TF has it ${pct > 0 ? 'up' : 'down'} ${Math.abs(pct).toFixed(2)}%${cfg.requireSupertrend ? ' — Supertrend agrees' : ''}`,
+        `TF has it ${pct > 0 ? 'up' : 'down'} ${Math.abs(pct).toFixed(2)}%`,
         ctx.breakout === true ? 'cleared its opening range in that direction' : 'no opening-range breakout',
         `options premium pool ₹${Math.round(ctx.premValueCr)} Cr`,
         ctx.sinceEntryPct == null
@@ -286,8 +263,6 @@ export function describeRejections(r: TfSelectorRejections, considered: number):
     [r.frozenR, 'R-Factor stopped climbing'],
     [r.unknownDeltaR, 'no earlier board to measure the rate against'],
     [r.flatPrice, 'not moving enough to call a direction'],
-    [r.supertrendDisagrees, 'Supertrend disagrees with the move'],
-    [r.supertrendUnknown, 'too few candles for Supertrend'],
     [r.noBreakout, 'has not cleared its opening range'],
     [r.thinPremium, 'options premium pool too thin'],
     [r.premiumUnknown, 'no options premium reading'],
