@@ -2,6 +2,7 @@ import { clearCachedToken, getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/au
 import { fetchJsonWithTimeout, fetchWithTimeout, isAbortError } from '@/lib/dhan/fetch-timeout';
 import {
   noteQuote429,
+  noteQuoteFailure,
   noteQuoteOk,
   quoteCooldownRemainingMs,
   SHADOW_REQUEST_TIMEOUT_MS,
@@ -213,6 +214,7 @@ export async function dhanMarketFeed(
     return responsePayload as MarketFeedResponse;
     } catch (error) {
       const reason = isAbortError(error) ? 'timed out' : (error as Error).message;
+      noteQuoteFailure();
       console.warn(`[Dhan] marketfeed/${endpoint} request failed: ${reason}`);
       return {};
     }
@@ -529,6 +531,7 @@ export async function fetchDetailedOptionChainShadow(
     { optionChain: true },
   ).catch((error: unknown) => {
     if (isAbortError(error)) {
+      noteQuoteFailure();
       console.warn(`[Dhan] shadow optionchain timed out after ${SHADOW_REQUEST_TIMEOUT_MS}ms for secId=${underlyingSecId}`);
       return null;
     }

@@ -73,12 +73,17 @@ export interface QuoteGateOptions {
 /** How long low-priority work waits for a quiet gate before giving up. */
 export const LOW_PRIORITY_GIVE_UP_MS = 15_000;
 
+/** Pause measurement-only traffic after broker instability. Foreground quote
+ * and position-management calls remain eligible during this pause. */
+export const LOW_PRIORITY_FAILURE_PAUSE_MS = 30_000;
+export const LOW_PRIORITY_429_PAUSE_MS = 60_000;
+
 /**
  * Hard ceiling on a measurement-only request once dispatched. It shares the
  * execution slot with live quotes, so an unbounded shadow request would wedge
  * the pump and make a money-path quote wait behind it forever.
  */
-export const SHADOW_REQUEST_TIMEOUT_MS = 5_000;
+export const SHADOW_REQUEST_TIMEOUT_MS = 2_500;
 
 /**
  * How often the pump re-checks eligibility while neither lane's head is ready
@@ -102,6 +107,9 @@ interface QuoteGateState {
   plainQueue: QueueItem[];
   /** FIFO of admitted option-chain requests. */
   chainQueue: QueueItem[];
+  /** Measurement-only option-chain requests. Isolated so a shadow failure can
+   * pause research traffic without pausing foreground chain reads. */
+  lowPriorityChainQueue: QueueItem[];
   /** True while dispatchPump()'s loop is actively running, so concurrent
    *  enqueues don't start a second overlapping pump. */
   pumping: boolean;
@@ -114,6 +122,8 @@ interface QuoteGateState {
   lastOptionChainDispatchAt: number;
   /** Consecutive 429s; drives the exponential backoff, reset on any success. */
   consecutive429: number;
+  /** Measurement-only work is paused after broker failures. */
+  lowPriorityCooldownUntil: number;
   /** Interactive/live quote callers waiting or executing. Shadow option-chain
    * work yields while this is non-zero so it cannot build a backlog ahead of
    * money-path quote reads. */
@@ -124,11 +134,13 @@ const gateHost = globalThis as unknown as { __dhanQuoteGate?: QuoteGateState };
 gateHost.__dhanQuoteGate ??= {
   plainQueue: [],
   chainQueue: [],
+  lowPriorityChainQueue: [],
   pumping: false,
   lastDispatchAt: 0,
   cooldownUntil: 0,
   lastOptionChainDispatchAt: 0,
   consecutive429: 0,
+  lowPriorityCooldownUntil: 0,
   foregroundPending: 0,
 };
 const gate = gateHost.__dhanQuoteGate;
@@ -136,7 +148,9 @@ gate.foregroundPending ??= 0;
 gate.lastOptionChainDispatchAt ??= 0;
 gate.plainQueue ??= [];
 gate.chainQueue ??= [];
+gate.lowPriorityChainQueue ??= [];
 gate.pumping ??= false;
+gate.lowPriorityCooldownUntil ??= 0;
 
 /**
  * Earliest time a dispatch of this kind may go out, computed fresh from current
@@ -190,7 +204,18 @@ async function dispatchPump(): Promise<void> {
         await next();
         continue;
       }
-      if (gate.plainQueue.length === 0 && gate.chainQueue.length === 0) return;
+      if (
+        gate.lowPriorityChainQueue.length > 0 &&
+        gate.lowPriorityCooldownUntil <= now &&
+        dispatchTargetAt(true) <= now
+      ) {
+        const next = gate.lowPriorityChainQueue.shift()!;
+        stampDispatch(true);
+        await next();
+        continue;
+      }
+      if (gate.plainQueue.length === 0 && gate.chainQueue.length === 0 && gate.lowPriorityChainQueue.length === 0)
+        return;
       await sleep(PUMP_POLL_MS);
     }
   } finally {
@@ -234,11 +259,13 @@ export function shouldLowPriorityYield(args: {
    *  scoped to that endpoint, so other low-priority work is never held by it. */
   optionChain?: boolean;
   lastOptionChainDispatchAt?: number;
+  lowPriorityCooldownUntil?: number;
 }): boolean {
   return (
     args.foregroundPending > 0 ||
     args.nowMs - args.lastDispatchAt < QUOTE_MIN_INTERVAL_MS ||
     args.nowMs < args.cooldownUntil ||
+    args.nowMs < (args.lowPriorityCooldownUntil ?? 0) ||
     (args.optionChain === true &&
       args.nowMs - (args.lastOptionChainDispatchAt ?? 0) < OPTIONCHAIN_MIN_INTERVAL_MS)
   );
@@ -276,11 +303,7 @@ export function throughQuoteGate<T>(task: () => Promise<T>, opts: QuoteGateOptio
  */
 export async function throughQuoteGateLowPriority<T>(
   task: () => Promise<T>,
-  opts: QuoteGateOptions & {
-    /** Overridable only so tests can assert the real give-up result quickly
-     *  instead of merely observing that it is still waiting. */
-    giveUpMs?: number;
-  } = {}
+  opts: { optionChain: true; giveUpMs?: number } = { optionChain: true },
 ): Promise<T | null> {
   const optionChain = opts.optionChain === true;
   const giveUpAt = Date.now() + (opts.giveUpMs ?? LOW_PRIORITY_GIVE_UP_MS);
@@ -289,6 +312,7 @@ export async function throughQuoteGateLowPriority<T>(
       foregroundPending: gate.foregroundPending,
       lastDispatchAt: gate.lastDispatchAt,
       cooldownUntil: gate.cooldownUntil,
+      lowPriorityCooldownUntil: gate.lowPriorityCooldownUntil,
       optionChain,
       lastOptionChainDispatchAt: gate.lastOptionChainDispatchAt,
       nowMs: Date.now(),
@@ -301,7 +325,7 @@ export async function throughQuoteGateLowPriority<T>(
   // after this point still cannot be delayed by it: dispatchPump always prefers
   // an eligible plainQueue head over a chainQueue head, even one admitted first.
   const { promise, run } = admit(task);
-  (optionChain ? gate.chainQueue : gate.plainQueue).push(run);
+  gate.lowPriorityChainQueue.push(run);
   void dispatchPump();
   return promise;
 }
@@ -311,6 +335,19 @@ export function noteQuote429(): void {
   gate.consecutive429 = Math.min(gate.consecutive429 + 1, 8);
   const backoff = Math.min(QUOTE_BACKOFF_BASE_MS * 2 ** (gate.consecutive429 - 1), QUOTE_BACKOFF_MAX_MS);
   gate.cooldownUntil = Date.now() + backoff;
+  gate.lowPriorityCooldownUntil = Math.max(
+    gate.lowPriorityCooldownUntil,
+    Date.now() + LOW_PRIORITY_429_PAUSE_MS,
+  );
+}
+
+/** A timeout/transport failure should stop optional research traffic from
+ * competing with the next foreground quote attempt. */
+export function noteQuoteFailure(): void {
+  gate.lowPriorityCooldownUntil = Math.max(
+    gate.lowPriorityCooldownUntil,
+    Date.now() + LOW_PRIORITY_FAILURE_PAUSE_MS,
+  );
 }
 
 /** Any successful quote clears the escalation. */
@@ -327,11 +364,13 @@ export function quoteCooldownRemainingMs(): number {
 export function __resetQuoteGateForTest(overrides: Partial<QuoteGateState> = {}): void {
   gate.plainQueue = [];
   gate.chainQueue = [];
+  gate.lowPriorityChainQueue = [];
   gate.pumping = false;
   gate.lastDispatchAt = 0;
   gate.cooldownUntil = 0;
   gate.lastOptionChainDispatchAt = 0;
   gate.consecutive429 = 0;
+  gate.lowPriorityCooldownUntil = 0;
   gate.foregroundPending = 0;
   Object.assign(gate, overrides);
 }
