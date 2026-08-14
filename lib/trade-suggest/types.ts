@@ -343,6 +343,9 @@ export interface SuggestResponse {
   window: SuggestWindow;
   marketOpen: boolean;
   date: string;
+  /** True once the scanner passed its market/window guards and evaluated the
+   *  current TF universe. A valid TF-only scan may still have `scanned = 0`. */
+  scanExecuted: boolean;
   scanned: number;
   /** How many candidates each gate removed (for transparency). */
   gated: Record<string, number>;

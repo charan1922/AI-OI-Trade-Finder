@@ -101,6 +101,7 @@ function fmtMs(ms: number): string {
 function TimelineBlock({ t, standalone = false }: { t: CycleTimeline; standalone?: boolean }) {
   const steps = t.steps ?? [];
   const slowest = steps.reduce<CycleStep | null>((a, s) => (a == null || s.ms > a.ms ? s : a), null);
+  const scanStep = steps.find((step) => step.name === 'scan (trade-suggest)');
   const failed = steps.filter((s) => !s.ok).length;
   const total = t.totalMs ?? steps.reduce((a, s) => a + s.ms, 0);
   const maxMs = Math.max(1, ...steps.map((s) => s.ms));
@@ -121,6 +122,14 @@ function TimelineBlock({ t, standalone = false }: { t: CycleTimeline; standalone
         {failed > 0 && (
           <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
             {failed} step{failed === 1 ? '' : 's'} failed
+          </span>
+        )}
+        {standalone && scanStep?.detail && (
+          <span
+            className="max-w-full truncate rounded-full bg-muted/70 px-1.5 py-0.5 text-[9px] font-medium text-foreground/80 sm:max-w-md"
+            title={scanStep.detail}
+          >
+            {scanStep.detail}
           </span>
         )}
         {slowest && steps.length > 0 && (
@@ -339,6 +348,9 @@ export default function TradeCommentaryPage() {
   // day dividers when the date changes.
   const rows = data?.rows ?? [];
   const timelines = data?.timelines ?? [];
+  const latestScan = timelines[0]?.steps.find((step) => step.name === 'scan (trade-suggest)');
+  const waitingForFirstRead = !loading && rows.length === 0 && timelines.length > 0;
+  const warmingUp = latestScan?.detail?.includes('Outside the suggestion window') === true;
   const rowIds = new Set(rows.map((r) => r.id));
   // Pair each read with the cycle that produced it (timeline.commentaryId).
   const timelineByCommentary = new Map<number, CycleTimeline>();
@@ -409,6 +421,22 @@ export default function TradeCommentaryPage() {
         </div>
       )}
       {genError && <div className="rounded-md border border-muted bg-muted/40 p-2 text-xs text-muted-foreground">{genError}</div>}
+
+      {waitingForFirstRead && (
+        <div className="rounded-lg border border-amber-300/80 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          <div className="font-semibold">{warmingUp ? 'Market data warm-up' : 'Waiting for the first eligible scan'}</div>
+          <p className="mt-0.5 leading-relaxed">
+            {warmingUp
+              ? 'The cycles below are refreshing candles and risk controls before the configured Trade Suggest window opens. No AI opinion is fabricated before a real scan.'
+              : 'No commentary row has been stored yet. The latest cycle result is shown below; expand it to inspect every scanner and safety step.'}
+          </p>
+          {latestScan?.detail && (
+            <div className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-300">
+              Latest: {latestScan.detail}
+            </div>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

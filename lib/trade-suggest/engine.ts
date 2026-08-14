@@ -250,6 +250,7 @@ export async function runTradeSuggest(
     window,
     marketOpen: isMarketHours(),
     date,
+    scanExecuted: false,
     scanned: 0,
     gated: {},
     suggestions: [],
@@ -272,6 +273,11 @@ export async function runTradeSuggest(
     base.note = 'Market is closed — live quotes unavailable, no suggestions possible.';
     return base;
   }
+
+  // From here onward this is a real scan, even when TF correctly supplies an
+  // empty candidate universe. Zero TF names is itself an outcome worth
+  // narrating; `scanned` must not double as an execution flag.
+  base.scanExecuted = true;
 
   const maxPicks = await getNumberSetting('MAX_PICKS', MAX_PICKS);
   // Capital budget = the auto-trade page's editable maxCapitalRupees (one source

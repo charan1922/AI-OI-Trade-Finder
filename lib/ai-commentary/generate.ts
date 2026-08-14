@@ -291,7 +291,9 @@ function trimForPrompt(r: SuggestResponse): unknown {
   const optionEvidence = getCachedOptionEvidence(suggestions.map((suggestion) => suggestion.symbol));
   return {
     window: r.window,
+    scanExecuted: r.scanExecuted,
     scanned: r.scanned,
+    note: r.note ?? null,
     gated: r.gated,
     tilt: r.tilt,
     // TradeFinder's independent board + who is climbing it in the 09:45–11:00

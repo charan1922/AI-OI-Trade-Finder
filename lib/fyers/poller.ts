@@ -738,7 +738,8 @@ async function runAutonomousCapture(
       const result = await timeline.step(
         'scan (trade-suggest)',
         () => runTradeSuggest(origin, { candidateSnapshot: candidateSnapshot ?? undefined }),
-        (r) => `${r.scanned ?? 0} scanned · ${r.suggestions?.length ?? 0} pick(s)`
+        (r) =>
+          `${r.scanned ?? 0} scanned · ${r.suggestions?.length ?? 0} pick(s)${r.note ? ` · ${r.note}` : ''}`
       );
       const scanReadyMs = Date.now();
       timing.tickToScanMs = scanReadyMs - cycleStart;

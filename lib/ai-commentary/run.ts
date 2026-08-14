@@ -3,8 +3,9 @@
  * autonomous capture (in-process, no external cron) and by the manual
  * POST /api/trade-commentary route.
  *
- * Only narrates when a REAL scan happened (`scanned > 0`) — which the engine
- * decides per the fixed scanner window (or an explicit forced diagnostic run).
+ * Only narrates when a REAL scan happened — marked explicitly after the
+ * market/window guards. A completed TF-only scan with zero candidates is still
+ * narrated because "no TF setup, and why" is operationally important.
  */
 import { todayIST } from '@/lib/dhan/market-feed';
 import { hasMimo } from '@/lib/env';
@@ -16,6 +17,7 @@ import { getTradesByDate } from '@/lib/auto-trade/store';
 import type { SuggestResponse } from '@/lib/trade-suggest/types';
 import { tfSelectedSuggestions } from '@/lib/trade-suggest/tf-provenance';
 import { COMMENTARY_SYSTEM, generateCommentary } from './generate';
+import { commentaryEligibility } from './eligibility';
 import { buildPicks } from './picks';
 import { getCommentary, insertCommentary } from './store';
 
@@ -81,10 +83,11 @@ export async function runAndStoreCommentary(
   const tstep = <T>(name: string, fn: () => Promise<T>, detail?: (r: T) => string | undefined): Promise<T> =>
     timeline ? timeline.step(name, fn, detail) : fn();
   if (!hasMimo()) return { generated: false, reason: 'MiMo not configured' };
-  if ((result.scanned ?? 0) <= 0)
+  const eligibility = commentaryEligibility(result);
+  if (!eligibility.eligible)
     return {
       generated: false,
-      reason: 'no scan this pass (out of window per config)',
+      reason: eligibility.reason,
     };
 
   // Carry forward TODAY's earlier reads so this is the next turn of a running
