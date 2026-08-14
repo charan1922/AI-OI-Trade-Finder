@@ -6,6 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import OpenAI from 'openai';
+import { commentaryEligibility } from '../lib/ai-commentary/eligibility';
 import { buildOpenPositionPicks, buildPicks } from '../lib/ai-commentary/picks';
 import { executionStateFlag } from '../lib/ai-commentary/store';
 import { MIMO_DEFAULT_MODEL, resolveMimoModel } from '../lib/ai-commentary/client';
@@ -85,6 +86,7 @@ const suggestion = (
 const scan = {
   window: { active: true, nowIST: '10:20' },
   tilt: 'bearish',
+  scanExecuted: true,
   scanned: 40,
   gated: 2,
   suggestions: [suggestion('INFY', 2_750, 2_805), suggestion('TCS', 3_000, 3_050)],
@@ -129,6 +131,14 @@ const scan = {
     },
   ],
 } as unknown as SuggestResponse;
+
+check('commentary rejects a pre-window cycle that did not execute a scan', () => {
+  assert.equal(commentaryEligibility({ scanExecuted: false, note: 'Outside the suggestion window.' }).eligible, false);
+});
+
+check('commentary narrates a completed TF scan with zero candidates', () => {
+  assert.equal(commentaryEligibility({ scanExecuted: true, note: 'TF has no runners right now.' }).eligible, true);
+});
 
 const accountState = {
   mode: 'paper',

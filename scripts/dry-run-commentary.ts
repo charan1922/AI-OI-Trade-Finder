@@ -134,6 +134,7 @@ const base: SuggestResponse = {
   },
   marketOpen: true,
   date: '2026-07-13',
+  scanExecuted: true,
   scanned: 41,
   gated: { weakRFactor: 29, lowOiLevel: 6, illiquid: 2, quietSetup: 2 },
   tilt: { up: 21, down: 19, flat: 1, basis: 'since-open', lean: 'neutral' },

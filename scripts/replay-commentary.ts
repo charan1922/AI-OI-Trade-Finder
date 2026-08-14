@@ -393,6 +393,7 @@ function scanAtTick(tick: number): SuggestResponse {
     },
     marketOpen: true,
     date: DATE,
+    scanExecuted: true,
     scanned,
     gated,
     suggestions,

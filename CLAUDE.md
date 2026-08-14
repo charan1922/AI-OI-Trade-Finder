@@ -176,6 +176,11 @@ One active at a time (`broker` setting: `fyers` | `dhan`). Fyers uses the instal
 
 The auto-trade pass runs FIRST in the Fyers poller's autonomous capture. When its pass produces a read, it is stored into `trade_commentary` (`commentaryStored: true`) and the standalone MiMo commentary is **skipped**. MiMo commentary only runs as the fallback (mode off / kill switch / nothing to decide / AI failed). Never reintroduce a second parallel AI analysis of the same scan — explicit user rule.
 
+**A zero-name TF scan is still a real scan.** Commentary eligibility keys off
+`SuggestResponse.scanExecuted`, never `scanned > 0`: with a fail-closed TF
+universe, zero candidates is an important no-trade outcome that must be
+narrated and audited rather than disappearing from `/trade-commentary`.
+
 ### Prompts (battle-tested; versioned)
 
 - `lib/ai-commentary/generate.ts` exports `COMMENTARY_SYSTEM` (the battle-tested narrator — keep byte-identical unless re-benched with `scripts/dry-run-commentary.ts`) plus the shared blocks `COMMENTARY_OUTPUT_FORMAT` / `COMMENTARY_HARD_RULES`
