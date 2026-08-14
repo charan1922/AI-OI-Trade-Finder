@@ -81,7 +81,7 @@ async function main(): Promise<void> {
   }
   check('deterministic guard executes with the invalid AI env value', tradeId != null && guardCompleted);
 
-  const commentary = await runAndStoreCommentary({ scanned: 1 } as never);
+  const commentary = await runAndStoreCommentary({ scanExecuted: true, scanned: 1 } as never);
   check(
     'standalone commentary makes no AI call while the model is misconfigured',
     commentary.generated === false && commentary.reason?.includes('mimo-v2.5-pr0') === true,
