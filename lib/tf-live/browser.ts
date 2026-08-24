@@ -247,12 +247,35 @@ async function handleResponse(response: import('playwright').Response): Promise<
  *  there OUR OWN reload loop (not either page's own JS) keeps producing
  *  fresh attempts on both tabs every RELOAD_INTERVAL_MS until stopped or the
  *  browser crashes. */
+/** The box this runs on is a 2 vCPU / 2GB instance shared with the Next.js
+ *  app and the Fyers poller — there is no CPU/memory isolation between them.
+ *  Confirmed live 2026-08-24: with the default Chromium flags, CPU sat at a
+ *  sustained 65-83% through market hours (vs 1.5-1.8% pre-open) and the box
+ *  eventually stalled hard enough that even GET /api/health (zero async work)
+ *  took 12.6s — stopping this browser brought it back to 0.13s immediately.
+ *  These flags strip GPU/audio/extension/background-service overhead this
+ *  headless relay never uses and cap the renderer's V8 heap, without changing
+ *  what gets captured or how often (RELOAD_INTERVAL_MS, the two tabs, and the
+ *  capture window are untouched — those feed the live trade selector). */
 async function launch(cookieHeader: string): Promise<void> {
   logMemory('before launch');
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    args: [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-sync',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-first-run',
+      '--js-flags=--max-old-space-size=128',
+    ],
   });
   const s = state();
   s.browser = browser;
