@@ -161,10 +161,14 @@ interface BrowserState {
   /** Epoch ms until which a manual start should keep running even outside
    *  the capture window. Null when there's no active manual override. */
   manualUntilMs: number | null;
-  /** Drives the page reload loop (see RELOAD_INTERVAL_MS) — cleared in
+  /** Drives market-pulse's reload loop (see RELOAD_INTERVAL_MS) — cleared in
    *  closeBrowser() so a stale timer from a previous session can never fire
    *  against a browser that's already gone. */
   reloadTimer: NodeJS.Timeout | null;
+  /** Drives sector-scope's reload loop, offset by RELOAD_INTERVAL_MS/2 from
+   *  reloadTimer so the two tabs' reload-driven JS/render bursts never land
+   *  in the same instant — see the staggering note on launch(). */
+  reloadTimerB: NodeJS.Timeout | null;
 }
 
 const store = globalThis as unknown as { __tfBrowserState?: BrowserState };
@@ -176,7 +180,9 @@ store.__tfBrowserState ??= {
   watchdog: null,
   manualUntilMs: null,
   reloadTimer: null,
+  reloadTimerB: null,
 };
+store.__tfBrowserState.reloadTimerB ??= null;
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
 
 /** True while a browser process is currently up. Exported for the /tf status API. */
@@ -288,6 +294,10 @@ async function launch(cookieHeader: string): Promise<void> {
       clearInterval(s.reloadTimer);
       s.reloadTimer = null;
     }
+    if (s.reloadTimerB) {
+      clearInterval(s.reloadTimerB);
+      s.reloadTimerB = null;
+    }
   });
 
   const context = await browser.newContext({ userAgent: REALISTIC_UA });
@@ -307,24 +317,40 @@ async function launch(cookieHeader: string): Promise<void> {
   // successful all_sector/daily-index captures, then reported "not running").
   // The reload loop below retries both every RELOAD_INTERVAL_MS regardless,
   // so a failed first load here just means the first reload is the real one.
-  await Promise.all([
-    marketPulsePage.goto(MARKET_PULSE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined),
-    sectorScopePage.goto(SECTOR_SCOPE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined),
-  ]);
+  // SEQUENTIAL, not Promise.all: real historical CPU data (2026-08-24) showed
+  // this box's average CPU jumped from ~3% to 40-65% the day this browser
+  // shipped — two Chromium renderers doing navigation/JS work in the SAME
+  // instant is exactly the kind of concurrent spike that costs more than the
+  // same work spread out, on a 2 vCPU box with nothing else to give.
+  await marketPulsePage.goto(MARKET_PULSE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
+  await sectorScopePage.goto(SECTOR_SCOPE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
   // A few seconds for Chromium's own process to finish settling after both
   // page loads — reading memory immediately after goto() would under-count it.
   setTimeout(() => logMemory('~5s after page load (steady-state cost)'), 5_000);
 
   // WE drive every subsequent attempt on BOTH tabs — see RELOAD_INTERVAL_MS's
   // module note on why neither page's own polling loop can be trusted to
-  // keep going by itself.
+  // keep going by itself. STAGGERED across two timers (not one firing both):
+  // each tab still reloads every RELOAD_INTERVAL_MS, but sector-scope's timer
+  // starts half an interval after market-pulse's, so the two reload-driven
+  // JS/render bursts never land in the same instant — same capture cadence
+  // and freshness per tab, half the peak concurrent Chromium load.
   if (s.reloadTimer) clearInterval(s.reloadTimer);
+  if (s.reloadTimerB) clearInterval(s.reloadTimerB);
   s.reloadTimer = setInterval(() => {
     if (s.browser !== browser) return; // stale timer from a since-replaced browser
     void marketPulsePage.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
-    void sectorScopePage.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
   }, RELOAD_INTERVAL_MS);
   s.reloadTimer.unref?.();
+  const staggerTimeout = setTimeout(() => {
+    if (s.browser !== browser) return; // browser already closed/replaced before the offset elapsed
+    s.reloadTimerB = setInterval(() => {
+      if (s.browser !== browser) return;
+      void sectorScopePage.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
+    }, RELOAD_INTERVAL_MS);
+    s.reloadTimerB.unref?.();
+  }, RELOAD_INTERVAL_MS / 2);
+  staggerTimeout.unref?.();
 
   // Give our own reload loop a bounded number of rounds to prove the session
   // is real before declaring it broken — a slow first load is normal, total
@@ -346,6 +372,10 @@ async function closeBrowser(): Promise<void> {
   if (s.reloadTimer) {
     clearInterval(s.reloadTimer);
     s.reloadTimer = null;
+  }
+  if (s.reloadTimerB) {
+    clearInterval(s.reloadTimerB);
+    s.reloadTimerB = null;
   }
   const browser = s.browser;
   s.browser = null;
