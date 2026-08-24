@@ -45,7 +45,7 @@
  * dies mid-session. This is the cost the user explicitly accepted in exchange
  * for data that plain HTTP replay can never produce (2026-08-08).
  */
-import { freemem, totalmem } from 'node:os';
+import { freemem, setPriority, totalmem } from 'node:os';
 import { withinCaptureWindow } from '@/lib/tf-live/collector';
 import { TF_ENDPOINTS } from '@/lib/tf-live/endpoints';
 import { cookieHeaderToPlaywrightCookies } from '@/lib/tf-live/parse-curl';
@@ -103,6 +103,17 @@ const RELOAD_INTERVAL_MS = 90_000;
  *  2026-08-08). A manual start now stays up for this long regardless of the
  *  time of day, then reverts to normal window-based behaviour. */
 const MANUAL_TEST_DURATION_MS = 10 * 60_000;
+/** OS `nice` value applied to the Chromium process (range -20 highest to 19
+ *  lowest priority; no special privilege needed to RAISE this number for a
+ *  process we own). Real historical CPU data (2026-08-24) showed this box's
+ *  average CPU jumping from ~3% to 40-65% the day this browser shipped, with
+ *  Fyers/Dhan polling unchanged — so the browser IS the contention, not a
+ *  bystander. This doesn't reduce how much CPU Chromium burns overall; it
+ *  makes the OS scheduler favour the trading-critical Next.js process over
+ *  Chromium whenever both want the same core at the same instant, which is
+ *  exactly the "page loading slowly" symptom (Node request handling starved
+ *  mid-request), independent of the total CPU% CloudWatch reports. */
+const CHROMIUM_NICE_LEVEL = 10;
 
 const REALISTIC_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
@@ -154,6 +165,10 @@ function extractRows(tag: string, payload: unknown): unknown[] | undefined {
 
 interface BrowserState {
   browser: import('playwright').Browser | null;
+  /** The launchServer() handle, kept so closeBrowser() can terminate the
+   *  actual OS process — a Browser obtained via connect() only disconnects
+   *  on .close(), it doesn't kill the process it's connected to. */
+  browserServer: import('playwright').BrowserServer | null;
   starting: Promise<void> | null;
   consecutiveFailures: number;
   sawFirstSuccess: boolean;
@@ -174,6 +189,7 @@ interface BrowserState {
 const store = globalThis as unknown as { __tfBrowserState?: BrowserState };
 store.__tfBrowserState ??= {
   browser: null,
+  browserServer: null,
   starting: null,
   consecutiveFailures: 0,
   sawFirstSuccess: false,
@@ -183,6 +199,7 @@ store.__tfBrowserState ??= {
   reloadTimerB: null,
 };
 store.__tfBrowserState.reloadTimerB ??= null;
+store.__tfBrowserState.browserServer ??= null;
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
 
 /** True while a browser process is currently up. Exported for the /tf status API. */
@@ -266,7 +283,11 @@ async function handleResponse(response: import('playwright').Response): Promise<
 async function launch(cookieHeader: string): Promise<void> {
   logMemory('before launch');
   const { chromium } = await import('playwright');
-  const browser = await chromium.launch({
+  // launchServer(), not launch(): only launchServer() hands back the real OS
+  // process (browserServer.process()), which is what CHROMIUM_NICE_LEVEL needs
+  // to actually apply. connect() below gives back an ordinary Browser/Page API
+  // — everything past this point is identical to a plain launch().
+  const browserServer = await chromium.launchServer({
     headless: true,
     args: [
       '--no-sandbox',
@@ -283,13 +304,26 @@ async function launch(cookieHeader: string): Promise<void> {
       '--js-flags=--max-old-space-size=128',
     ],
   });
+  const chromiumPid = browserServer.process().pid;
+  if (chromiumPid != null) {
+    try {
+      setPriority(chromiumPid, CHROMIUM_NICE_LEVEL);
+    } catch (error) {
+      // Best-effort: a sandboxed environment that refuses setpriority() should
+      // never take the whole relay down over it.
+      console.warn(`[tf_browser] could not lower Chromium's OS priority: ${(error as Error).message}`);
+    }
+  }
+  const browser = await chromium.connect(browserServer.wsEndpoint());
   const s = state();
   s.browser = browser;
+  s.browserServer = browserServer;
   s.consecutiveFailures = 0;
   s.sawFirstSuccess = false;
 
   browser.on('disconnected', () => {
     if (s.browser === browser) s.browser = null;
+    if (s.browserServer === browserServer) s.browserServer = null;
     if (s.reloadTimer) {
       clearInterval(s.reloadTimer);
       s.reloadTimer = null;
@@ -378,11 +412,16 @@ async function closeBrowser(): Promise<void> {
     s.reloadTimerB = null;
   }
   const browser = s.browser;
+  const browserServer = s.browserServer;
   s.browser = null;
-  if (browser) {
-    await browser.close().catch(() => undefined);
-    logMemory('after close (should return near the "before launch" figure)');
-  }
+  s.browserServer = null;
+  if (browser) await browser.close().catch(() => undefined);
+  // browser.close() on a connect()-obtained Browser only ends OUR connection —
+  // it does not kill the process launchServer() started. browserServer.close()
+  // is what actually terminates it (Playwright: "makes sure the process is
+  // terminated"); without this every restart would leak an orphaned Chromium.
+  if (browserServer) await browserServer.close().catch(() => undefined);
+  if (browser || browserServer) logMemory('after close (should return near the "before launch" figure)');
 }
 
 /**
