@@ -127,7 +127,36 @@ Chromium, real cookie, real ingest traffic). Its code can be written and
 typechecked/linted now; it cannot be proven working until Oracle or the AWS
 `t3.micro` is provisioned.
 
-## 7. Out of scope
+## 7. Rejected: AWS Lambda (and why the host must have a STABLE IP)
+
+Serverless looks like the natural fit — TF's page fires one burst of requests per load
+and then goes silent (documented in `browser.ts`), so a browser that wakes, captures,
+and dies matches the workload better than one held open for 6.5 hours. Lambda's free
+tier is also genuinely permanent (400,000 GB-seconds/month, does not expire with the
+12-month term, verified 2026-08-24). It was still rejected, for a reason that
+generalizes to any future host choice:
+
+- **Lambda's outbound IP changes every invocation.** A stable egress IP needs VPC +
+  NAT Gateway at ~$33/month — *more* than the `t3.micro` it was meant to undercut, so
+  the cost argument inverts.
+- **Rotating IPs are a scraping signature aimed at the one feed everything depends
+  on.** All TF traffic currently originates from the box's single Elastic IP
+  (`3.108.33.64`). TradeFinder already signs this account out roughly daily; a few
+  hundred daily requests from a rotating pool of AWS datacenter IPs is materially more
+  likely to get the account flagged. TF selection is fail-closed — if TF blocks the
+  account, the scanner returns **zero picks** and trading stops entirely. Risking the
+  entire selector to save a few dollars a month is the wrong trade.
+- Cost headroom was also thinner than first estimated: `@sparticuz/chromium` wants
+  **2048MB**, putting a both-pages run at roughly **40-70%** of the monthly free
+  allowance depending on cadence — free, but not the comfortable margin an initial
+  guess suggested.
+
+**Therefore a requirement, not a preference: the worker host must have a single stable
+outbound IP.** Both candidate hosts (Oracle Always Free VM, AWS `t3.micro`) satisfy
+this natively. Do not re-propose a rotating-IP host without addressing account-ban
+risk first.
+
+## 8. Out of scope
 
 - No change to TF capture cadence, endpoint allowlist, or row-parsing logic anywhere.
 - No change to the TF Running Race selector, trade-suggest, or auto-trade — they
