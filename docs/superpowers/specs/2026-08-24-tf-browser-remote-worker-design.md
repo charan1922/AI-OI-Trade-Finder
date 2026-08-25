@@ -71,6 +71,14 @@ tables as today. No consumer of TF data changes.
     `{name, value, domain, path, secure, httpOnly, sameSite}[]` JSON.
   - `pages` — the list of TF URLs to open (today: `/market-pulse`, `/sector-scope`).
   - `reloadIntervalMs` — the capture cadence.
+  - `shouldRun` — whether the worker should have a browser open at all, computed
+    server-side as `withinCaptureWindow() || an active manual override`. This
+    keeps `/tf`'s existing Start/Stop buttons working against a remote process
+    (they move the override; the worker honours it on its next poll) and keeps
+    all window logic on the main app rather than duplicating the IST calendar
+    into the worker. Faithfully preserves the current quirk that Stop inside the
+    capture window only pauses until the next poll — the in-process watchdog
+    relaunched it after 60s for the same reason.
 
   Auth: header `X-TF-Worker-Secret` must equal env `TF_WORKER_SECRET`. Empty
   `cookies` if none configured yet (mirrors today's "nothing configured — nothing to
@@ -95,9 +103,26 @@ tables as today. No consumer of TF data changes.
 - `lib/tf-live/browser.ts`: `startTfBrowserWatchdog()` stops launching Chromium
   locally. `isTfBrowserRunning()` is redefined from "is there a local browser object"
   to "did the worker's heartbeat/ingest traffic arrive within the last 3 minutes"
-  (3× `WATCHDOG_INTERVAL_MS`, so one missed tick doesn't false-alarm but two does).
-  The Chromium-launch code in this file is NOT deleted — it becomes the basis for the
-  worker (see §4) and stays as documented history of what was tried and why.
+  (3× the worker's 60s poll, so one missed tick doesn't false-alarm but two does).
+- **The local Chromium-launch code is DELETED, not retained as documentation.**
+  First draft of this design kept it "as history"; that was wrong on two counts.
+  Mechanically, `launch()`/`handleResponse()` become unreachable and
+  `@typescript-eslint/no-unused-vars` (via `eslint-config-next/typescript`) fails
+  the build. More importantly, an unreachable second copy of the TF response
+  handling is precisely the drift risk §2 exists to avoid — `deploy/tf-worker/`
+  is the living copy, and git history plus this module's header comment carry the
+  reasoning. Retaining dead code that could be silently re-enabled on a box we
+  just proved cannot afford it is a hazard, not a record.
+- **The consecutive-failure alarm must survive the move.** `handleResponse()`'s
+  `CONSECUTIVE_FAILURE_LIMIT` logic (6 rejections in a row → raise
+  `recordTfBrowserOutcome(false, …)`) is the fix for the 2026-08-10 incident where
+  263 failures hid behind a green badge. It is stateful across requests, so it moves
+  into shared state driven by the ingest route — NOT dropped, and not replaced with
+  "alarm on every single failure", which would flap on one transient blip.
+  Alongside it, `endpointTagFor()` and `extractRows()` move out of `browser.ts`
+  into `lib/tf-live/ingest.ts`: they are TF schema/allowlist logic, they no longer
+  belong in a module about a browser this app no longer runs, and relocating them
+  finally puts the allowlist under CI test.
 - `/tf` page: no UI changes. The "running" badge now reflects remote-worker
   liveness instead of in-process state; everything else (session status, capture
   log, Clear history, Start/Stop) is unchanged in shape.
