@@ -43,8 +43,8 @@ operator pastes fresh "Copy as cURL" on /tf     (UNCHANGED — one paste point)
 main app encrypts + stores cookie                (UNCHANGED — saveTfBrowserCookies)
         │
         ▼ (worker polls on its own watchdog loop)
-GET /api/tf/cookie  ──── X-TF-Worker-Secret ────▶  main app
-        │  (Playwright-ready cookie JSON)
+GET /api/tf/worker-config ── X-TF-Worker-Secret ──▶  main app
+        │  (cookies + pages + cadence)
         ▼
 worker launches Chromium, injects cookie, opens both TF pages, listens for
 every response whose URL contains /api_be/
@@ -65,11 +65,25 @@ tables as today. No consumer of TF data changes.
 
 ## 3. New surface on the main app
 
-- **`GET /api/tf/cookie`** — returns the stored TF cookie, pre-formatted as
-  Playwright-ready `{name, value, domain, path, secure, httpOnly, sameSite}[]` JSON
-  (the worker needs zero TradeFinder-cookie-format knowledge). Auth: header
-  `X-TF-Worker-Secret` must equal env `TF_WORKER_SECRET`. 404/empty if no cookie is
-  configured yet (mirrors today's "nothing configured — nothing to do" no-op).
+- **`GET /api/tf/worker-config`** — returns everything the worker needs to do its job,
+  so the worker itself holds no TradeFinder knowledge at all:
+  - `cookies` — the stored TF session cookie, pre-formatted as Playwright-ready
+    `{name, value, domain, path, secure, httpOnly, sameSite}[]` JSON.
+  - `pages` — the list of TF URLs to open (today: `/market-pulse`, `/sector-scope`).
+  - `reloadIntervalMs` — the capture cadence.
+
+  Auth: header `X-TF-Worker-Secret` must equal env `TF_WORKER_SECRET`. Empty
+  `cookies` if none configured yet (mirrors today's "nothing configured — nothing to
+  do" no-op). The worker re-reads this each cycle, so config changes take effect
+  without redeploying it.
+
+  **Why `pages` is served rather than hardcoded in the worker (operator requirement,
+  2026-08-24: "I may need more APIs to call"):** capturing an additional TF feed
+  should never require touching the worker. Two cases, both main-app-only changes:
+  a new endpoint fired by an *already-open* page needs only a `TF_ENDPOINTS` allowlist
+  entry (+ a parser if rows are wanted); a feed that lives on a *different TF page*
+  needs only that URL added to this `pages` list. Either way the worker is unchanged
+  and un-redeployed — it just opens what it's told and forwards what it sees.
 - **`POST /api/tf/ingest`** — body `{ pathname: string, status: number, ok: boolean,
   body: unknown }` for any `/api_be/` response the worker saw, OR `{ heartbeat: true
   }` on the worker's own watchdog cadence (reuses `recordTfBrowserOutcome(true)` as
@@ -94,7 +108,7 @@ A small standalone Node process — no Next.js, no Prisma, no DB access at all. 
 the existing `launch()` / reload / `handleResponse()` skeleton from `browser.ts`
 almost as-is (proven code, not a rewrite), with two substitutions:
 
-- Cookie: fetched from `GET {MAIN_APP_URL}/api/tf/cookie` instead of
+- Cookie + page list: fetched from `GET {MAIN_APP_URL}/api/tf/worker-config` instead of
   `getTfBrowserCookies()` (a local DB read).
 - `handleResponse()`'s tail: instead of writing to Prisma, `POST` to
   `{MAIN_APP_URL}/api/tf/ingest`.
@@ -112,12 +126,12 @@ this box.
   local Chromium** (operator decision, 2026-08-24). Downstream is already safe — TF board
   staleness (`TF_BOARD_MAX_AGE_MIN`) already refuses stale-board entries; the only new
   thing needed is the `/tf` badge going unhealthy so a human notices.
-- `/api/tf/cookie` is the more sensitive surface (leaks the live session cookie) —
+- `/api/tf/worker-config` is the more sensitive surface (leaks the live session cookie) —
   HTTPS-only (already enforced site-wide via Caddy), never logged.
 
 ## 6. What's buildable/testable now vs. needs the worker host
 
-**Now, no host needed:** `/api/tf/cookie`, `/api/tf/ingest`, the `proxy.ts`
+**Now, no host needed:** `/api/tf/worker-config`, `/api/tf/ingest`, the `proxy.ts`
 allowlist entries, `browser.ts`'s local-launch removal, `/tf`'s liveness-source
 change. All curl/CI-testable against the already-deployed app, same as the three
 prior fixes this session.
@@ -156,7 +170,26 @@ outbound IP.** Both candidate hosts (Oracle Always Free VM, AWS `t3.micro`) sati
 this natively. Do not re-propose a rotating-IP host without addressing account-ban
 risk first.
 
-## 8. Out of scope
+## 8. Rejected: shortening the capture window
+
+A cheaper mitigation was offered and **declined** (operator, 2026-08-24): trimming
+`CAPTURE_START_MIN`/`CAPTURE_END_MIN` in `lib/tf-live/collector.ts` from 09:22–15:30
+to 09:22–13:22 (~35% less browser load) or 09:22–11:30 (~65%, since entries close at
+11:00 anyway). It is a one-line change needing no new infrastructure.
+
+Investigated cost, for the record — nothing money-critical depended on afternoon TF
+data: entries (09:45–11:00), the 09:35 race baseline, exits/position management (which
+never read TF), and the EOD closing snapshot (which derives R-Factor from Fyers
+candles via `approximateTfRFactor`, not a late TF capture) are all unaffected. The
+losses were `/sector-scope` and `/live`'s TF column going stale after the cutoff,
+afternoon commentary losing fresh TF context, and afternoon R-Factor accumulation
+history.
+
+Declined because the operator wants the full-day board intact and prefers fixing the
+cause rather than reducing the data. Keep the 6h window; do not trim it as a
+performance measure.
+
+## 9. Out of scope
 
 - No change to TF capture cadence, endpoint allowlist, or row-parsing logic anywhere.
 - No change to the TF Running Race selector, trade-suggest, or auto-trade — they
