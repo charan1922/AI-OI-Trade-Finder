@@ -214,10 +214,15 @@ export function runEntryQualityChecks(check: CheckFn): void {
       'all_sector': 'https://tradefinder.in/api_be/data/order/all_sector',
       'daily-index': 'https://tradefinder.in/api_be/data/order/daily-index',
       'market_pulse': 'https://tradefinder.in/api_be/data/market_pulse',
+      // TradeFinder's own session/entitlement probe, added 2026-08-26 at the
+      // operator's request. Their page fires it on every load, so allowlisting
+      // it is what makes it periodic — we never fetch it ourselves.
+      'check_signal': 'https://tradefinder.in/api_be/admin/users/check_signal',
     };
     check(
-      'tf endpoints: exactly the three feeds this app actually uses are captured',
-      TF_ENDPOINTS.length === 3 && Object.keys(expected).every((e) => (TF_ENDPOINTS as readonly string[]).includes(e)),
+      'tf endpoints: exactly the four feeds this app captures, and no more',
+      TF_ENDPOINTS.length === Object.keys(expected).length &&
+        Object.keys(expected).every((e) => (TF_ENDPOINTS as readonly string[]).includes(e)),
       TF_ENDPOINTS.join(', ')
     );
     check(
@@ -236,7 +241,7 @@ export function runEntryQualityChecks(check: CheckFn): void {
       TF_PARSED_ENDPOINTS.length === 2 &&
         TF_PARSED_ENDPOINTS.includes('all_sector') &&
         TF_PARSED_ENDPOINTS.includes('daily-index'),
-      'market_pulse is captured RAW until a real payload is inspected'
+      'market_pulse and check_signal are captured RAW until a real payload is inspected'
     );
   }
 }
