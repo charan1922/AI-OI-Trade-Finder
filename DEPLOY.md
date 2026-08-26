@@ -280,6 +280,7 @@ Add these to Railway → Variables (or `.env.local` for local dev):
 | `TELEGRAM_CHAT_ID`         | Yes      | Your numeric chat id (send `/start` to @userinfobot)                                                                                                                                                                                                                       |
 | `TELEGRAM_VIEWER_CHAT_IDS` | No       | Extra read-only recipients for the trade-commentary broadcasts, comma-separated numeric chat ids (each person must `/start` the bot once so Telegram allows it to message them). They receive commentary only — commands and approval prompts stay with `TELEGRAM_CHAT_ID` |
 | `TELEGRAM_WEBHOOK_SECRET`  | Yes      | Arbitrary secret string — Telegram sends it back in the `X-Telegram-Bot-Api-Secret-Token` header for webhook verification                                                                                                                                                  |
+| `TF_WORKER_SECRET`         | Yes      | Shared secret for the remote TF browser worker — sent as `X-TF-Worker-Secret` on `/api/tf/worker-config` and `/api/tf/ingest`. **Unset in production rejects every worker request**, because the config response carries the live TradeFinder session cookie. Must match the worker host's own env (see `deploy/tf-worker/README.md`) |
 
 > **`AUTO_TRADE_ALERT_WEBHOOK`** (the legacy one-way webhook) is still
 > supported as a fallback. If the three `TELEGRAM_*` vars are set, alerts

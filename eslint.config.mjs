@@ -25,6 +25,12 @@ const eslintConfig = defineConfig([
     // require() and have no bundler/tsconfig — linting them with the Next+TS
     // rules is a category error.
     "deploy/box/**",
+    // The remote TF browser worker (deploy/tf-worker/**) is NOT app source
+    // either: it is a standalone plain-Node script run by `node` on a SEPARATE
+    // host, against that host's own node_modules. Same category as
+    // deploy/box/** above — no bundler, no tsconfig, not in the app's module
+    // graph. See deploy/tf-worker/README.md.
+    "deploy/tf-worker/**",
   ]),
 ]);
 

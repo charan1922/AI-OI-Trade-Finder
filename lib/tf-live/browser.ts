@@ -47,9 +47,10 @@
  */
 import { freemem, setPriority, totalmem } from 'node:os';
 import { withinCaptureWindow } from '@/lib/tf-live/collector';
-import { TF_ENDPOINTS } from '@/lib/tf-live/endpoints';
+// endpointTagFor/extractRows/CONSECUTIVE_FAILURE_LIMIT moved to ingest.ts —
+// they are TradeFinder schema logic, and they now also serve POST /api/tf/ingest.
+import { CONSECUTIVE_FAILURE_LIMIT, endpointTagFor, extractRows } from '@/lib/tf-live/ingest';
 import { cookieHeaderToPlaywrightCookies } from '@/lib/tf-live/parse-curl';
-import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
 import { getTfBrowserCookies, recordTfBrowserOutcome, recordTfLiveCapture, recordTfLiveRows } from '@/lib/tf-live/store';
 
 /** TWO separate TradeFinder pages, each firing a different subset of the
@@ -62,20 +63,9 @@ import { getTfBrowserCookies, recordTfBrowserOutcome, recordTfLiveCapture, recor
  *  context, so they share the one injected cookie jar. */
 const MARKET_PULSE_URL = 'https://tradefinder.in/market-pulse';
 const SECTOR_SCOPE_URL = 'https://tradefinder.in/sector-scope';
-/** ONLY these get stored — see lib/tf-live/endpoints.ts's module note for
- *  why the list is exactly these three and no more. Everything else the page
- *  fires (admin/users/check_signal, feature_flag/feature_read,
- *  rfactor_filter/rfactor_data, servertime, TF's own sector_scope) is real
- *  traffic nobody in this app reads, so it's dropped in handleResponse()
- *  before recordTfLiveCapture is ever called. */
-const ALLOWED_TAGS = new Set<string>(TF_ENDPOINTS);
 /** Passed to addCookies as `url`, not `domain` — see parse-curl.ts's module
  *  note on why `__Secure-`/`__Host-` cookies reject an explicit Domain. */
 const SITE_URL = 'https://tradefinder.in/';
-
-/** After this many consecutive TradeFinder responses with NO success at all,
- *  the session is treated as broken rather than "still warming up". */
-const CONSECUTIVE_FAILURE_LIMIT = 6;
 /** If a launch never produces even one success within this long, give up and
  *  let the watchdog retry on the next check rather than run forever blind.
  *  Must stay comfortably above RELOAD_INTERVAL_MS — real evidence (2026-08-08)
@@ -130,39 +120,6 @@ function logMemory(label: string): void {
   console.log(`[tf_browser] ${label} — free ${freeMb}MB / ${totalMb}MB total (${Math.round((freeMb / totalMb) * 100)}% free)`);
 }
 
-/** Map a TradeFinder request path to the endpoint tag the rest of the app
- *  already reads from tf_live_captures. Keeps the SAME tags the old
- *  fetch-based collector used ('all_sector', 'daily-index', 'market_pulse')
- *  so race.ts / snapshot.ts / the EOD page need no changes. Returns null for
- *  anything NOT in ALLOWED_TAGS — the caller drops those before they're ever
- *  recorded (lib/tf-live/endpoints.ts owns the allowlist and the reasoning). */
-function endpointTagFor(pathname: string): string | null {
-  let tag: string;
-  if (pathname.endsWith('/data/order/all_sector')) tag = 'all_sector';
-  else if (pathname.endsWith('/data/order/daily-index')) tag = 'daily-index';
-  else {
-    const marker = '/api_be/';
-    const at = pathname.indexOf(marker);
-    tag = at >= 0 ? pathname.slice(at + marker.length) : pathname;
-  }
-  return ALLOWED_TAGS.has(tag) ? tag : null;
-}
-
-/** Best-effort parse into tf_live_rows for the two feeds with a confirmed
- *  schema. `market_pulse` is still fully captured via payloadJson — see
- *  endpoints.ts's module note on why it has no parser yet. */
-function extractRows(tag: string, payload: unknown): unknown[] | undefined {
-  if (tag === 'all_sector') {
-    const rows = parseAllSector(payload);
-    return rows.length > 0 ? rows : undefined;
-  }
-  if (tag === 'daily-index') {
-    const rows = parseDailyIndex(payload);
-    return rows.length > 0 ? rows.map((r) => ({ symbol: r.name, value: r.value })) : undefined;
-  }
-  return undefined;
-}
-
 interface BrowserState {
   browser: import('playwright').Browser | null;
   /** The launchServer() handle, kept so closeBrowser() can terminate the
@@ -184,6 +141,9 @@ interface BrowserState {
    *  reloadTimer so the two tabs' reload-driven JS/render bursts never land
    *  in the same instant — see the staggering note on launch(). */
   reloadTimerB: NodeJS.Timeout | null;
+  /** When the REMOTE worker last reached us (config poll, ingest, heartbeat).
+   *  Null until it checks in for the first time. */
+  lastWorkerSeenAtMs: number | null;
 }
 
 const store = globalThis as unknown as { __tfBrowserState?: BrowserState };
@@ -197,10 +157,55 @@ store.__tfBrowserState ??= {
   manualUntilMs: null,
   reloadTimer: null,
   reloadTimerB: null,
+  lastWorkerSeenAtMs: null,
 };
 store.__tfBrowserState.reloadTimerB ??= null;
 store.__tfBrowserState.browserServer ??= null;
+store.__tfBrowserState.lastWorkerSeenAtMs ??= null;
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
+
+/** Every worker request — config poll, ingest, heartbeat — refreshes this. It
+ *  is the ONLY liveness signal now that no local browser object exists.
+ *  In-memory on purpose: a restart clears it and the worker re-checks in within
+ *  one poll, so persisting it would only preserve a stale claim. */
+export function noteWorkerSeen(): void {
+  state().lastWorkerSeenAtMs = Date.now();
+}
+
+/**
+ * Whether the REMOTE worker should have a browser open right now — the same
+ * rule the in-process watchdog applied to itself: inside the capture window, or
+ * an active manual override from /tf's "Start now".
+ *
+ * Computed here rather than in the worker so the IST trading calendar is not
+ * duplicated onto another host. Note the faithfully-preserved quirk: pressing
+ * Stop inside the capture window only pauses until the next poll, because
+ * `withinCaptureWindow()` is true again by then — exactly how the in-process
+ * version behaved (its 60s watchdog relaunched it). Stop remains an off-hours
+ * testing control, not a market-hours kill switch. Not changed here.
+ */
+export function shouldWorkerRun(): boolean {
+  const s = state();
+  const manualActive = s.manualUntilMs != null && Date.now() < s.manualUntilMs;
+  return manualActive || withinCaptureWindow();
+}
+
+/** One rejection observed by the ingest route. Returns the running counters so
+ *  the caller can ask failureAlarmMessage() whether this crosses into an alarm.
+ *  Stateful across requests on purpose — a single transient blip must not raise
+ *  it (see failureAlarmMessage's note on the 2026-08-10 incident). */
+export function noteCaptureFailure(): { consecutiveFailures: number; sawFirstSuccess: boolean } {
+  const s = state();
+  s.consecutiveFailures += 1;
+  return { consecutiveFailures: s.consecutiveFailures, sawFirstSuccess: s.sawFirstSuccess };
+}
+
+/** One good capture — clears the streak. */
+export function noteCaptureSuccess(): void {
+  const s = state();
+  s.consecutiveFailures = 0;
+  s.sawFirstSuccess = true;
+}
 
 /** True while a browser process is currently up. Exported for the /tf status API. */
 export function isTfBrowserRunning(): boolean {

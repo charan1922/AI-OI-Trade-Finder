@@ -85,6 +85,19 @@ jobs:
       # Chromium's OS libs with another's binary and only fail on the box, mid
       # session. Cheap to check, expensive to discover.
       - run: pnpm exec tsx scripts/verify-playwright-pin.ts
+      # DB-free checks for the remote TF worker's wire contract: the shared
+      # secret fails CLOSED when unset in production (that endpoint serves the
+      # live TradeFinder session cookie), worker liveness distrusts future
+      # timestamps, and malformed ingest bodies are rejected before reaching the
+      # store layer.
+      - run: pnpm exec tsx scripts/verify-tf-worker-protocol.ts
+      # DB-free checks for what a captured TradeFinder response MEANS: the
+      # endpoint allowlist (untracked feeds never reach the DB), the fact that
+      # TF answers HTTP 200 with a TOKEN_ERROR body, and the consecutive-failure
+      # alarm that must fire even after an earlier success (the 2026-08-10
+      # incident: 263 failures behind a green badge). This bench's first run
+      # caught market_pulse having never been captured at all (2026-08-26).
+      - run: pnpm exec tsx scripts/verify-tf-ingest.ts
       - run: pnpm lint
       # DB-free pure checks: quant-shadow math (re-anchor, observed-baseline
       # MFE/MAE, entry-candle exclusion, chgOpen bucketing, sector-rate rank) AND
