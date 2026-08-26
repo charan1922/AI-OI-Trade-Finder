@@ -47,6 +47,7 @@ export function endpointTagFor(pathname: string): string | null {
   if (pathname.endsWith('/data/order/all_sector')) tag = 'all_sector';
   else if (pathname.endsWith('/data/order/daily-index')) tag = 'daily-index';
   else if (pathname.endsWith('/data/market_pulse')) tag = 'market_pulse';
+  else if (pathname.endsWith('/admin/users/check_signal')) tag = 'check_signal';
   else {
     const marker = '/api_be/';
     const at = pathname.indexOf(marker);

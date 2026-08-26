@@ -40,6 +40,13 @@ function main(): void {
     }),
     TF_ENDPOINTS.map((e) => `${e}→${endpointTagFor(new URL(TF_ENDPOINT_URL[e]).pathname)}`).join(', '),
   );
+  // Added 2026-08-26 (operator request): TradeFinder's own session/entitlement
+  // probe, fired by their page on every load — so allowlisting it is what makes
+  // it periodic; we never fetch it ourselves.
+  check(
+    'check_signal maps from its admin path',
+    endpointTagFor('/api_be/admin/users/check_signal') === 'check_signal',
+  );
   // Real traffic the page fires that nobody in this app reads.
   check('servertime is not tracked', endpointTagFor('/api_be/servertime') === null);
   check('feature_flag is not tracked', endpointTagFor('/api_be/feature_flag/feature_read') === null);
