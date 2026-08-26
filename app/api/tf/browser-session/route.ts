@@ -69,11 +69,15 @@ export async function POST(req: Request) {
 
     if (body.action === 'start') {
       await forceStartTfBrowser();
-      return NextResponse.json({ success: true, running: isTfBrowserRunning() });
+      // isTfBrowserRunning() now describes the REMOTE worker, which cannot have
+      // reacted inside this request — it picks the override up on its next poll.
+      // `pending` says what was asked for so the UI isn't reading a stale
+      // liveness value as if it were the result of the click.
+      return NextResponse.json({ success: true, running: isTfBrowserRunning(), pending: 'start-requested' });
     }
     if (body.action === 'stop') {
       await stopTfBrowser();
-      return NextResponse.json({ success: true, running: isTfBrowserRunning() });
+      return NextResponse.json({ success: true, running: isTfBrowserRunning(), pending: 'stop-requested' });
     }
 
     if (typeof body.curl !== 'string') {
@@ -85,13 +89,14 @@ export async function POST(req: Request) {
     }
     assertTfLiveSessionKeyConfigured();
     await saveTfBrowserCookies(parsed.cookieHeader);
-    // A browser already running is holding the OLD cookies in its context —
-    // it must be restarted to pick up what was just pasted, not left alone
-    // until it happens to die on its own. Also gives instant feedback instead
-    // of waiting up to a minute for the watchdog's next tick.
+    // The remote worker re-reads cookies from /api/tf/worker-config on every
+    // poll, so a fresh paste takes effect within one cadence with no restart to
+    // orchestrate from here. Clearing then re-opening the manual override just
+    // guarantees the worker is allowed to run right now — including off-hours —
+    // so the operator gets feedback without waiting for the capture window.
     await stopTfBrowser();
     await forceStartTfBrowser();
-    return NextResponse.json({ success: true, running: isTfBrowserRunning() });
+    return NextResponse.json({ success: true, running: isTfBrowserRunning(), pending: 'cookies-saved' });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 400 });
   }
