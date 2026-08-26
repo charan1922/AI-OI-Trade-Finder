@@ -124,6 +124,14 @@ export const proxy = auth(async (req) => {
   // X-Telegram-Bot-Api-Secret-Token header (verified in the route handler).
   if (pathname === '/api/telegram/webhook') return forwardUnauthenticated(req);
 
+  // Remote TF browser worker — a machine with no browser session calls these;
+  // auth is the X-TF-Worker-Secret header (verified in the route handlers, and
+  // fails closed when TF_WORKER_SECRET is unset in production, because the
+  // config response carries the live TradeFinder session cookie).
+  if (pathname === '/api/tf/worker-config' || pathname === '/api/tf/ingest') {
+    return forwardUnauthenticated(req);
+  }
+
   const adminPassword = process.env.APP_PASSWORD;
   // No password configured: in PRODUCTION this is a fatal misconfiguration —
   // instrumentation.ts refuses to boot, and this 503 is the belt-and-braces
