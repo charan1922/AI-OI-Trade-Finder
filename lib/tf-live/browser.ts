@@ -45,7 +45,7 @@
  * dies mid-session. This is the cost the user explicitly accepted in exchange
  * for data that plain HTTP replay can never produce (2026-08-08).
  */
-import { freemem, setPriority, totalmem } from 'node:os';
+import { freemem, totalmem } from 'node:os';
 import { withinCaptureWindow } from '@/lib/tf-live/collector';
 // endpointTagFor/extractRows/CONSECUTIVE_FAILURE_LIMIT moved to ingest.ts —
 // they are TradeFinder schema logic, and they now also serve POST /api/tf/ingest.
@@ -93,18 +93,6 @@ const RELOAD_INTERVAL_MS = 90_000;
  *  2026-08-08). A manual start now stays up for this long regardless of the
  *  time of day, then reverts to normal window-based behaviour. */
 const MANUAL_TEST_DURATION_MS = 10 * 60_000;
-/** OS `nice` value applied to the Chromium process (range -20 highest to 19
- *  lowest priority; no special privilege needed to RAISE this number for a
- *  process we own). Real historical CPU data (2026-08-24) showed this box's
- *  average CPU jumping from ~3% to 40-65% the day this browser shipped, with
- *  Fyers/Dhan polling unchanged — so the browser IS the contention, not a
- *  bystander. This doesn't reduce how much CPU Chromium burns overall; it
- *  makes the OS scheduler favour the trading-critical Next.js process over
- *  Chromium whenever both want the same core at the same instant, which is
- *  exactly the "page loading slowly" symptom (Node request handling starved
- *  mid-request), independent of the total CPU% CloudWatch reports. */
-const CHROMIUM_NICE_LEVEL = 10;
-
 const REALISTIC_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
 
@@ -122,10 +110,6 @@ function logMemory(label: string): void {
 
 interface BrowserState {
   browser: import('playwright').Browser | null;
-  /** The launchServer() handle, kept so closeBrowser() can terminate the
-   *  actual OS process — a Browser obtained via connect() only disconnects
-   *  on .close(), it doesn't kill the process it's connected to. */
-  browserServer: import('playwright').BrowserServer | null;
   starting: Promise<void> | null;
   consecutiveFailures: number;
   sawFirstSuccess: boolean;
@@ -133,14 +117,12 @@ interface BrowserState {
   /** Epoch ms until which a manual start should keep running even outside
    *  the capture window. Null when there's no active manual override. */
   manualUntilMs: number | null;
-  /** Drives market-pulse's reload loop (see RELOAD_INTERVAL_MS) — cleared in
+  /** Drives the reload loop for BOTH tabs (see RELOAD_INTERVAL_MS) — cleared in
    *  closeBrowser() so a stale timer from a previous session can never fire
-   *  against a browser that's already gone. */
+   *  against a browser that's already gone. Deliberately ONE timer: the
+   *  split-timer variant is what shipped the day the two tabs diverged
+   *  (2026-08-27). */
   reloadTimer: NodeJS.Timeout | null;
-  /** Drives sector-scope's reload loop, offset by RELOAD_INTERVAL_MS/2 from
-   *  reloadTimer so the two tabs' reload-driven JS/render bursts never land
-   *  in the same instant — see the staggering note on launch(). */
-  reloadTimerB: NodeJS.Timeout | null;
   /** When the REMOTE worker last reached us (config poll, ingest, heartbeat).
    *  Null until it checks in for the first time. */
   lastWorkerSeenAtMs: number | null;
@@ -149,18 +131,14 @@ interface BrowserState {
 const store = globalThis as unknown as { __tfBrowserState?: BrowserState };
 store.__tfBrowserState ??= {
   browser: null,
-  browserServer: null,
   starting: null,
   consecutiveFailures: 0,
   sawFirstSuccess: false,
   watchdog: null,
   manualUntilMs: null,
   reloadTimer: null,
-  reloadTimerB: null,
   lastWorkerSeenAtMs: null,
 };
-store.__tfBrowserState.reloadTimerB ??= null;
-store.__tfBrowserState.browserServer ??= null;
 store.__tfBrowserState.lastWorkerSeenAtMs ??= null;
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
 
@@ -275,67 +253,73 @@ async function handleResponse(response: import('playwright').Response): Promise<
  *  there OUR OWN reload loop (not either page's own JS) keeps producing
  *  fresh attempts on both tabs every RELOAD_INTERVAL_MS until stopped or the
  *  browser crashes. */
-/** The box this runs on is a 2 vCPU / 2GB instance shared with the Next.js
- *  app and the Fyers poller — there is no CPU/memory isolation between them.
- *  Confirmed live 2026-08-24: with the default Chromium flags, CPU sat at a
- *  sustained 65-83% through market hours (vs 1.5-1.8% pre-open) and the box
- *  eventually stalled hard enough that even GET /api/health (zero async work)
- *  took 12.6s — stopping this browser brought it back to 0.13s immediately.
- *  These flags strip GPU/audio/extension/background-service overhead this
- *  headless relay never uses and cap the renderer's V8 heap, without changing
- *  what gets captured or how often (RELOAD_INTERVAL_MS, the two tabs, and the
- *  capture window are untouched — those feed the live trade selector). */
+/**
+ * REVERTED TO THE PLAIN LAUNCH, 2026-08-27 — do not re-add resource tuning here
+ * without a staleness alarm in place first.
+ *
+ * Three "optimizations" shipped on 2026-08-24 to cut this browser's CPU cost:
+ * Chromium resource flags including `--js-flags=--max-old-space-size=128`
+ * (v1.55.5), splitting the two tabs onto staggered reload timers (v1.55.6), and
+ * launchServer()+connect() so the OS process could be `nice`d (v1.55.7). They
+ * were measured afterwards and delivered **no CPU improvement at all** — the box
+ * still sat at 61-78% — so they carried pure risk for no benefit.
+ *
+ * On 2026-08-27 that risk landed. The heavy /sector-scope tab (210 symbols plus
+ * the treemap) stopped capturing at 09:38 after roughly a dozen reloads, while
+ * the lighter /market-pulse tab kept going: `all_sector` 21 captures and
+ * `daily-index` 24, against `market_pulse` 227 and `check_signal` 89 — all in
+ * ONE browser session that never restarted (logs show a single launch at 09:20
+ * and no relaunch). `all_sector` is what feeds the TF Running Race, so the
+ * board went 149 minutes stale, the scanner refused everything over 10 minutes,
+ * and the operator got zero picks for the day. A renderer killed by the 128MB
+ * heap cap fits every detail, and nothing was logged because reload failures
+ * were swallowed whole (fixed below).
+ *
+ * The lesson is not "tune more carefully" — it is that this browser's cost is
+ * not fixable in place. That is what deploy/tf-worker/ exists for.
+ */
+/**
+ * Reload one tab and SAY SO IF IT FAILS.
+ *
+ * Every reload used to end in `.catch(() => undefined)`. That is why the
+ * 2026-08-27 outage was invisible for two and a half hours: the /sector-scope
+ * renderer died, every subsequent reload rejected, and the log stayed
+ * completely silent while /tf showed a green "browser running" badge — the
+ * exact shape of the 2026-08-10 incident this module already carries a warning
+ * about, in a place the warning did not reach.
+ *
+ * A dead tab is now one grep away. This deliberately does NOT try to recover
+ * (relaunching a page mid-session is how the two tabs got tangled in the first
+ * place) — it makes the failure legible and lets the next reload retry.
+ */
+async function reloadOrComplain(page: import('playwright').Page, label: string): Promise<void> {
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
+  } catch (error) {
+    // A closed/crashed page reports "Target closed" or "Target crashed" here.
+    // Both mean this tab is finished and only a relaunch brings it back, so
+    // this line is the difference between a noticed outage and a lost day.
+    console.warn(`[tf_browser] ${label} reload FAILED: ${(error as Error).message}`);
+  }
+}
+
 async function launch(cookieHeader: string): Promise<void> {
   logMemory('before launch');
   const { chromium } = await import('playwright');
-  // launchServer(), not launch(): only launchServer() hands back the real OS
-  // process (browserServer.process()), which is what CHROMIUM_NICE_LEVEL needs
-  // to actually apply. connect() below gives back an ordinary Browser/Page API
-  // — everything past this point is identical to a plain launch().
-  const browserServer = await chromium.launchServer({
+  const browser = await chromium.launch({
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-      '--disable-sync',
-      '--metrics-recording-only',
-      '--mute-audio',
-      '--no-first-run',
-      '--js-flags=--max-old-space-size=128',
-    ],
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
   });
-  const chromiumPid = browserServer.process().pid;
-  if (chromiumPid != null) {
-    try {
-      setPriority(chromiumPid, CHROMIUM_NICE_LEVEL);
-    } catch (error) {
-      // Best-effort: a sandboxed environment that refuses setpriority() should
-      // never take the whole relay down over it.
-      console.warn(`[tf_browser] could not lower Chromium's OS priority: ${(error as Error).message}`);
-    }
-  }
-  const browser = await chromium.connect(browserServer.wsEndpoint());
   const s = state();
   s.browser = browser;
-  s.browserServer = browserServer;
   s.consecutiveFailures = 0;
   s.sawFirstSuccess = false;
 
   browser.on('disconnected', () => {
     if (s.browser === browser) s.browser = null;
-    if (s.browserServer === browserServer) s.browserServer = null;
     if (s.reloadTimer) {
       clearInterval(s.reloadTimer);
       s.reloadTimer = null;
-    }
-    if (s.reloadTimerB) {
-      clearInterval(s.reloadTimerB);
-      s.reloadTimerB = null;
     }
   });
 
@@ -356,40 +340,30 @@ async function launch(cookieHeader: string): Promise<void> {
   // successful all_sector/daily-index captures, then reported "not running").
   // The reload loop below retries both every RELOAD_INTERVAL_MS regardless,
   // so a failed first load here just means the first reload is the real one.
-  // SEQUENTIAL, not Promise.all: real historical CPU data (2026-08-24) showed
-  // this box's average CPU jumped from ~3% to 40-65% the day this browser
-  // shipped — two Chromium renderers doing navigation/JS work in the SAME
-  // instant is exactly the kind of concurrent spike that costs more than the
-  // same work spread out, on a 2 vCPU box with nothing else to give.
-  await marketPulsePage.goto(MARKET_PULSE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
-  await sectorScopePage.goto(SECTOR_SCOPE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
+  await Promise.all([
+    marketPulsePage.goto(MARKET_PULSE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined),
+    sectorScopePage.goto(SECTOR_SCOPE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined),
+  ]);
   // A few seconds for Chromium's own process to finish settling after both
   // page loads — reading memory immediately after goto() would under-count it.
   setTimeout(() => logMemory('~5s after page load (steady-state cost)'), 5_000);
 
   // WE drive every subsequent attempt on BOTH tabs — see RELOAD_INTERVAL_MS's
   // module note on why neither page's own polling loop can be trusted to
-  // keep going by itself. STAGGERED across two timers (not one firing both):
-  // each tab still reloads every RELOAD_INTERVAL_MS, but sector-scope's timer
-  // starts half an interval after market-pulse's, so the two reload-driven
-  // JS/render bursts never land in the same instant — same capture cadence
-  // and freshness per tab, half the peak concurrent Chromium load.
+  // keep going by itself.
+  //
+  // ONE timer firing BOTH pages, restored 2026-08-27. The split-timer version
+  // is what shipped the day /sector-scope silently stopped reloading; whether
+  // the split or the heap cap actually killed it, one timer means the two tabs
+  // cannot diverge — either both reload or neither does, and "neither" is
+  // loud (see the reload-failure logging below).
   if (s.reloadTimer) clearInterval(s.reloadTimer);
-  if (s.reloadTimerB) clearInterval(s.reloadTimerB);
   s.reloadTimer = setInterval(() => {
     if (s.browser !== browser) return; // stale timer from a since-replaced browser
-    void marketPulsePage.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
+    void reloadOrComplain(marketPulsePage, 'market-pulse');
+    void reloadOrComplain(sectorScopePage, 'sector-scope');
   }, RELOAD_INTERVAL_MS);
   s.reloadTimer.unref?.();
-  const staggerTimeout = setTimeout(() => {
-    if (s.browser !== browser) return; // browser already closed/replaced before the offset elapsed
-    s.reloadTimerB = setInterval(() => {
-      if (s.browser !== browser) return;
-      void sectorScopePage.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
-    }, RELOAD_INTERVAL_MS);
-    s.reloadTimerB.unref?.();
-  }, RELOAD_INTERVAL_MS / 2);
-  staggerTimeout.unref?.();
 
   // Give our own reload loop a bounded number of rounds to prove the session
   // is real before declaring it broken — a slow first load is normal, total
@@ -412,21 +386,12 @@ async function closeBrowser(): Promise<void> {
     clearInterval(s.reloadTimer);
     s.reloadTimer = null;
   }
-  if (s.reloadTimerB) {
-    clearInterval(s.reloadTimerB);
-    s.reloadTimerB = null;
-  }
   const browser = s.browser;
-  const browserServer = s.browserServer;
   s.browser = null;
-  s.browserServer = null;
-  if (browser) await browser.close().catch(() => undefined);
-  // browser.close() on a connect()-obtained Browser only ends OUR connection —
-  // it does not kill the process launchServer() started. browserServer.close()
-  // is what actually terminates it (Playwright: "makes sure the process is
-  // terminated"); without this every restart would leak an orphaned Chromium.
-  if (browserServer) await browserServer.close().catch(() => undefined);
-  if (browser || browserServer) logMemory('after close (should return near the "before launch" figure)');
+  if (browser) {
+    await browser.close().catch(() => undefined);
+    logMemory('after close (should return near the "before launch" figure)');
+  }
 }
 
 /**
