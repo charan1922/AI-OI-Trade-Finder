@@ -21,7 +21,6 @@ import { ensureMorningContext, getMorningContext } from '../_lib/morning-candles
 import { cachedQuoteResponse } from '../_lib/quote-response-cache';
 import { buildLiveRFactorInput, MIN_SESSION_FRACTION, sessionFractionElapsed } from '../_lib/rfactor-inputs';
 import { loadRFactorBaselines } from '../_lib/rfactor-baselines';
-import { scheduleOptionEvidenceShadow } from '@/lib/option-chain';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -383,38 +382,27 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
     console.warn('[live/quote] intraday OI capture failed:', (e as Error).message);
   }
 
-  // Keep the Dhan option-chain evidence flowing. This is the ONLY thing left of
-  // the retired R-Factor V2 shadow (removed 2026-08-11): the score, its
-  // snapshots and its /live column are gone, but the chain read survives because
-  // /live and the commentary narration consume it. It gates nothing — see
-  // scripts/measure-option-evidence.ts for the measurement that says why.
+  // OPTION-CHAIN EVIDENCE COLLECTION IS RETIRED (operator decision, 2026-09-15).
   //
-  // Nothing here may block the response. The scanner calls this route with
-  // `fresh: true` (it must never read a stale cache), so every millisecond spent
-  // here lands on the path that produces real trade decisions.
-  // scheduleOptionEvidenceShadow never awaits network I/O — it enqueues and
-  // returns, and a background worker does the Dhan calls on the low-priority
-  // gate lane.
-  try {
-    // Priority = the app's own R-Factor, i.e. participation. This used to rank
-    // by V2's comparableActivity; with V2 gone, R-Factor is the activity measure
-    // the page itself ranks by, so enrichment follows the same names the
-    // operator is actually looking at. Symbols with no R-Factor sort last rather
-    // than being dropped, so a thin board still enriches something.
-    //
-    // Offers up to MAX_TRACKED candidates (20), not the old 6: the shadow queue
-    // keeps the strongest MAX_TRACKED, and the binding constraint on ever
-    // answering "does the chain predict anything" is how many names get a
-    // snapshot at all.
-    scheduleOptionEvidenceShadow(
-      [...rows]
-        .sort((a, b) => (b.rFactor ?? -1) - (a.rFactor ?? -1))
-        .slice(0, 20)
-        .map((row) => ({ symbol: row.symbol, priority: row.rFactor ?? 0 })),
-    );
-  } catch (error) {
-    console.warn(`[OptionChain] shadow scheduling failed: ${(error as Error).message}`);
-  }
+  // The shadow used to be scheduled here, and it was the ONLY thing that called
+  // Dhan's /v2/optionchain. It gated nothing: measured over 91 pairs across 13
+  // sessions it agreed with the scanner 89% of the time, and vetoing the
+  // contradictions would have earned +0.017R per trade off n=6 — a fraction of
+  // its own error bar (scripts/measure-option-evidence.ts).
+  //
+  // What it DID cost was the money path. /v2/optionchain is a Quote-API call, so
+  // every snapshot drew on the same 1-req/sec per-account budget the live quotes
+  // need, through the same process-wide gate. On 2026-09-15 the logs showed the
+  // result plainly: "shadow optionchain timed out after 2500ms" firing every
+  // minute or two, "marketfeed/quote HTTP 429 — cooling off" alongside it, and
+  // the position guard reporting "no usable quote for held contract(s)" against
+  // a REAL open position. Research traffic must never compete with pricing an
+  // open trade.
+  //
+  // The collected history is deliberately NOT deleted — Dhan's /v2/optionchain
+  // is live-only with no historical endpoint, so those rows cannot be recreated
+  // and the measurement script can still read them. lib/option-chain/ and its
+  // retention sweep stay; nothing schedules new reads.
 
   return {
     success: true,

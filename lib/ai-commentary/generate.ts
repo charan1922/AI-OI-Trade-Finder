@@ -288,6 +288,13 @@ function trimForPrompt(r: SuggestResponse): unknown {
   // exactly the texture the operator reads by hand in Dhan and wants narrated.
   // Do not promote it to a filter without re-running that study.
   const suggestions = tfSelectedSuggestions(r);
+  // ALWAYS EMPTY SINCE 2026-09-15 — collection was retired (operator decision);
+  // see the note in app/api/live/quote/route.ts for the measurement and the
+  // money-path contention that ended it. The read is kept rather than deleted
+  // because `optionChain: null` is a path the narrator has always taken (only
+  // the top 20 names were ever snapshotted, so most picks had no evidence),
+  // and because re-enabling is a single call in that route. Nothing downstream
+  // needs to change if it ever comes back.
   const optionEvidence = getCachedOptionEvidence(suggestions.map((suggestion) => suggestion.symbol));
   return {
     window: r.window,
