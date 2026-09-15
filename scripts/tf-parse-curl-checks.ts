@@ -86,6 +86,35 @@ export function runTfParseCurlChecks(check: CheckFn): void {
     !hasSessionCookie('__Secure-next-auth.session-token-old=xyz')
   );
 
+  // ── TradeFinder's CURRENT auth (2026-09) ──────────────────────────────────
+  // A REAL paste on 2026-09-15 carried no __Secure-next-auth.session-token at
+  // all — TF now ships a JWT as tradefinder_token AND lt. The old check rejected
+  // that valid paste, locking the operator out of restoring capture. Any one of
+  // the three names must be enough.
+  check(
+    'parse-curl: tradefinder_token alone is accepted (current TF auth)',
+    hasSessionCookie('_ga=GA1.1.x; tradefinder_token=eyJhbGciOiJIUzI1NiJ9.p.s; servertime=1')
+  );
+  check('parse-curl: lt alone is accepted (current TF auth)', hasSessionCookie('_ga=GA1.1.x; lt=eyJhbGciOiJIUzI1NiJ9.p.s'));
+  check(
+    'parse-curl: the legacy NextAuth cookie still works on its own',
+    hasSessionCookie(`_ga=GA1.1.x; ${SESSION_COOKIE_NAME}=xyz`)
+  );
+  // `lt` is only two characters, so a naive substring test would match plenty of
+  // unrelated cookie names. The boundary anchor is what stops that.
+  check('parse-curl: `lt` does not match inside a longer cookie name', !hasSessionCookie('alt=1; salt=2; result=3'));
+  check('parse-curl: `lt` does not match a suffix like servertime_lt', !hasSessionCookie('servertime_lt=1'));
+  check(
+    'parse-curl: a cookie string with only analytics/csrf is still rejected',
+    !hasSessionCookie('_ga=GA1.1.x; __Host-next-auth.csrf-token=abc; tradefinder_push_prompt=denied')
+  );
+  // The real thing, trimmed: this exact shape was refused in production.
+  const realWorld =
+    '_ga=GA1.1.1323846545.1780340323; __Secure-next-auth.callback-url=https%3A%2F%2Ftradefinder.in%2F; ' +
+    '__Host-next-auth.csrf-token=9381430c%7Ce7d2e6c4; servertime=1789454765045.5; ' +
+    'tradefinder_token=eyJhbGciOiJIUzI1NiJ9.payload.sig; lt=eyJhbGciOiJIUzI1NiJ9.payload.sig';
+  check('parse-curl: the real 2026-09-15 cookie string is ACCEPTED', hasSessionCookie(realWorld));
+
   // ── cookie-header → Playwright cookie objects ─────────────────────────────
   const SITE_URL = 'https://tradefinder.in/';
   const cookies = cookieHeaderToPlaywrightCookies('a=1; b=2; malformed; c=3', SITE_URL);
