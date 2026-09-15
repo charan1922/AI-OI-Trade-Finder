@@ -30,9 +30,34 @@
  * PURE (no imports, no I/O) — driven identically by CI and the API route.
  */
 
-/** The one cookie that actually keeps the session alive; everything else in
- *  the header (analytics ids, device fingerprint, csrf token) rides along but
- *  is not load-bearing for staying logged in. */
+/**
+ * The cookies that actually keep the session alive; everything else in the
+ * header (analytics ids, device fingerprint, csrf token) rides along but is not
+ * load-bearing for staying logged in.
+ *
+ * ANY ONE OF THESE IS ENOUGH — TradeFinder changed how it authenticates and
+ * requiring the old name locked the operator out of their own tool.
+ *
+ * Until 2026-09 the NextAuth session cookie was the whole story. A real paste on
+ * 2026-09-15 carried NO `__Secure-next-auth.session-token` at all; TradeFinder
+ * now authenticates its `/api_be/` calls with a JWT it ships as BOTH
+ * `tradefinder_token` and `lt`, and echoes as an `authorization: Bearer` header.
+ * The old check rejected that perfectly valid paste with "missing
+ * __Secure-next-auth.session-token", so the operator could not restore capture
+ * no matter how correct their copy was.
+ *
+ * The legacy name is retained rather than replaced: an account still on the old
+ * flow must keep working, and this is a gate on the operator's own credentials —
+ * it should fail only when there is genuinely nothing to log in with.
+ *
+ * Decoding that JWT also answered a long-standing question. Its `exp - iat` is
+ * exactly **6 hours**, which is why capture "dies daily": the token is short
+ * lived by design, not being evicted. (Its separate `expires_at` is the
+ * subscription, running to 2027.)
+ */
+export const SESSION_COOKIE_NAMES = ['tradefinder_token', 'lt', '__Secure-next-auth.session-token'] as const;
+
+/** Kept for the error text and for tests that pin the legacy name. */
 export const SESSION_COOKIE_NAME = '__Secure-next-auth.session-token';
 
 export interface ParsedCurlCookies {
@@ -81,7 +106,7 @@ export function extractCookieHeaderFromCurl(raw: string): ParsedCurlCookies | Pa
   if (!cookieHeader) return { error: 'The cookie value in that curl is empty.' };
   if (!hasSessionCookie(cookieHeader)) {
     return {
-      error: `The cookie string is missing ${SESSION_COOKIE_NAME} — that's the one that keeps you logged in on TradeFinder. Make sure the request you copied was made while signed in.`,
+      error: `That cookie string carries none of TradeFinder's login cookies (${SESSION_COOKIE_NAMES.join(', ')}) — those are what keep you signed in. Make sure the request you copied was made while signed in to tradefinder.in.`,
     };
   }
 
@@ -89,9 +114,14 @@ export function extractCookieHeaderFromCurl(raw: string): ParsedCurlCookies | Pa
   return { cookieHeader, url: urlMatch ? urlMatch[1] : null };
 }
 
-/** True when the cookie string carries TradeFinder's own login session. */
+/** True when the cookie string carries ANY of TradeFinder's login cookies — see
+ *  SESSION_COOKIE_NAMES for why one is enough and why the list has three names.
+ *  Still anchored to a cookie boundary so `lt` cannot match inside a longer
+ *  name like `alt=` or `servertime_lt=`. */
 export function hasSessionCookie(cookieHeader: string): boolean {
-  return new RegExp(`(?:^|;\\s*)${SESSION_COOKIE_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=`).test(cookieHeader);
+  return SESSION_COOKIE_NAMES.some((name) =>
+    new RegExp(`(?:^|;\\s*)${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=`).test(cookieHeader),
+  );
 }
 
 export interface PlaywrightCookie {
