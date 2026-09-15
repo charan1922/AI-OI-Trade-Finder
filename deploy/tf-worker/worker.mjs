@@ -36,13 +36,43 @@ const REALISTIC_UA =
 const state = { browser: null, context: null, pages: new Map(), reloadTimer: null, reloadIntervalMs: 90_000 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function callMain(path, init = {}) {
-  const response = await fetch(`${MAIN_APP_URL}${path}`, {
-    ...init,
-    headers: { 'X-TF-Worker-Secret': SECRET, ...(init.headers ?? {}) },
-  });
-  if (!response.ok) throw new Error(`${path} → HTTP ${response.status}`);
-  return response.json();
+/**
+ * One HTTP call to the main app, RETRIED — a dropped connection must not cost a
+ * capture.
+ *
+ * Why this exists (2026-09-15): every ingest POST was failing with HTTP 502, and
+ * Caddy's own log gave the reason as `"msg":"EOF"` — the upstream closing the
+ * connection rather than refusing the request. The same bodies replayed by hand
+ * with curl succeeded every time, including a 267KB one, so the payload was
+ * never the problem. Node's fetch keeps connections alive and reuses them; when
+ * the far end has already closed an idle one you get exactly this. The main app
+ * logs the same class of failure against its OWN self-calls
+ * ("commentary failed: terminated"), so it is the hop, not this worker.
+ *
+ * `Connection: close` cannot be set from fetch (it is a forbidden header), so
+ * the fix is to retry on a fresh connection. Capture data is worth a retry;
+ * losing a TradeFinder response to a socket that died between requests is not
+ * acceptable when the next one is 90s away.
+ */
+async function callMain(path, init = {}, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(`${MAIN_APP_URL}${path}`, {
+        ...init,
+        headers: { 'X-TF-Worker-Secret': SECRET, ...(init.headers ?? {}) },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      lastError = error;
+      // Linear backoff: a reused-socket failure clears immediately, a genuinely
+      // busy app deserves a breath. Never so long that we collide with the next
+      // reload tick.
+      if (attempt < attempts) await sleep(attempt * 1500);
+    }
+  }
+  throw new Error(`${path} → ${lastError?.message ?? 'failed'} after ${attempts} attempts`);
 }
 
 function postJson(path, payload) {
@@ -66,10 +96,15 @@ async function forward(response) {
     // logged out" signal — report it as a failure rather than drop it.
     ok = false;
   }
+  const pathname = new URL(url).pathname;
   try {
-    await postJson('/api/tf/ingest', { pathname: new URL(url).pathname, status: response.status(), ok, body });
+    const res = await postJson('/api/tf/ingest', { pathname, status: response.status(), ok, body });
+    // Log only what the app actually DID with it. Silence was how the 2026-08-27
+    // outage hid for 2.5 hours: "working" and "silently dead" looked identical
+    // from here, so a stored capture is worth one line.
+    if (res?.stored) console.log(`[tf_worker] stored ${res.endpoint ?? pathname} (${res.outcome})`);
   } catch (error) {
-    console.warn(`[tf_worker] ingest failed: ${error.message}`);
+    console.warn(`[tf_worker] ingest FAILED for ${pathname}: ${error.message}`);
   }
 }
 
