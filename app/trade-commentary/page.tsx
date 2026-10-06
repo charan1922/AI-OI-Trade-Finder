@@ -377,7 +377,7 @@ export default function TradeCommentaryPage() {
           className="rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary"
           title="Model used when standalone narration runs. Autonomous decision rows may use the configured decision AI instead."
         >
-          ⚡ Standalone · Xiaomi MiMo · {data?.model ?? 'mimo-v2.5-pro'}
+          ⚡ Standalone · Xiaomi MiMo · {data?.model ?? 'mimo-v2.6-pro'}
         </span>
         <span className="rounded-full border px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
           Decision AI · {data?.decisionProvider === 'mimo' ? 'MiMo' : 'Azure'}

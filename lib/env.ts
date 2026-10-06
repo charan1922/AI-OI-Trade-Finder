@@ -1,10 +1,17 @@
 import { z } from 'zod';
 
-const mimoModelEnvSchema = z.enum(['mimo-v2.5', 'mimo-v2.5-pro']);
+const mimoModelEnvSchema = z
+  .enum(['mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.5-pro', 'mimo-v2.5'])
+  .transform((value) => {
+    if (value === 'mimo-v2.5-pro') return 'mimo-v2.6-pro' as const;
+    if (value === 'mimo-v2.5') return 'mimo-v2.6-flash' as const;
+    return value;
+  });
 const rawMimoModel = process.env.MIMO_MODEL?.trim();
+const legacyMimoModels = new Set(['mimo-v2.5', 'mimo-v2.5-pro']);
 export const MIMO_MODEL_ENV_ERROR =
-  rawMimoModel && !mimoModelEnvSchema.safeParse(rawMimoModel).success
-    ? `MIMO_MODEL "${rawMimoModel}" is invalid; allowed values: mimo-v2.5, mimo-v2.5-pro`
+  rawMimoModel && !legacyMimoModels.has(rawMimoModel) && !mimoModelEnvSchema.safeParse(rawMimoModel).success
+    ? `MIMO_MODEL "${rawMimoModel}" is invalid; allowed values: mimo-v2.6-pro, mimo-v2.6-flash`
     : null;
 
 const envSchema = z.object({
@@ -60,7 +67,7 @@ const envSchema = z.object({
   // Enum-validated, but a typo must not abort module loading: deterministic
   // reconciliation/guarding cannot depend on an AI model identifier. The raw
   // validation error above remains available for settings + critical alerts.
-  MIMO_MODEL: mimoModelEnvSchema.optional().catch(undefined), // default 'mimo-v2.5-pro'
+  MIMO_MODEL: mimoModelEnvSchema.optional().catch(undefined), // default 'mimo-v2.6-pro'
   // Second key for auto-trade LIVE mode (lib/auto-trade/): the /auto-trade page
   // can select mode 'live', but real autonomous orders stay blocked until this
   // is ALSO 'true' — a deliberate two-key safety on real money.

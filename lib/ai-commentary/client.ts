@@ -3,7 +3,7 @@
  * SDK pointed at MiMo's base URL (no new dependency). Powers the
  * /trade-commentary narration of the deterministic scan picks.
  *
- * mimo-v2.5-pro is a REASONING model: its thinking goes to
+ * mimo-v2.6-pro is a reasoning model: its thinking goes to
  * `message.reasoning_content` and the user-facing answer to `message.content`.
  * Callers must budget enough max_tokens for reasoning + answer and read
  * `content` (never assume the first tokens are the answer).
@@ -12,8 +12,13 @@ import OpenAI from 'openai';
 import { env, hasMimo } from '@/lib/env';
 import type { MimoModel } from '@/lib/auto-trade/types';
 
-export const MIMO_MODELS = ['mimo-v2.5', 'mimo-v2.5-pro'] as const satisfies readonly MimoModel[];
-export const MIMO_DEFAULT_MODEL: MimoModel = 'mimo-v2.5-pro';
+export const MIMO_MODELS = ['mimo-v2.6-pro', 'mimo-v2.6-flash'] as const satisfies readonly MimoModel[];
+export const MIMO_DEFAULT_MODEL: MimoModel = 'mimo-v2.6-pro';
+
+const LEGACY_MIMO_MODEL_MAP: Readonly<Record<string, MimoModel>> = {
+  'mimo-v2.5-pro': 'mimo-v2.6-pro',
+  'mimo-v2.5': 'mimo-v2.6-flash',
+};
 
 export function isAllowedMimoModel(value: string | null | undefined): value is MimoModel {
   return MIMO_MODELS.includes(value as MimoModel);
@@ -25,7 +30,8 @@ export function resolveMimoModel(
   runtimeModel?: string | null,
   environmentModel?: string | null
 ): MimoModel {
-  const selected = runtimeModel?.trim() || environmentModel?.trim() || MIMO_DEFAULT_MODEL;
+  const configured = runtimeModel?.trim() || environmentModel?.trim() || MIMO_DEFAULT_MODEL;
+  const selected = LEGACY_MIMO_MODEL_MAP[configured] ?? configured;
   if (!isAllowedMimoModel(selected)) {
     throw new Error(`Unsupported MiMo model "${selected}". Allowed: ${MIMO_MODELS.join(', ')}`);
   }

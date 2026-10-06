@@ -16,7 +16,7 @@ interface Settings {
   mode: 'off' | 'paper' | 'approval' | 'live';
   broker: 'fyers' | 'dhan';
   aiProvider: 'azure' | 'mimo';
-  mimoModel: 'mimo-v2.5' | 'mimo-v2.5-pro';
+  mimoModel: 'mimo-v2.6-pro' | 'mimo-v2.6-flash';
   killSwitch: boolean;
   maxTradesPerDay: number;
   maxOpenLots: number;
@@ -660,8 +660,8 @@ export default function AutoTradePage() {
             value={s.mimoModel}
             busy={busy}
             options={[
-              { value: 'mimo-v2.5-pro', label: '2.5 Pro · quality' },
-              { value: 'mimo-v2.5', label: '2.5 · lower cost' },
+              { value: 'mimo-v2.6-pro', label: '2.6 Pro · latest flagship' },
+              { value: 'mimo-v2.6-flash', label: '2.6 Flash · lower cost' },
             ]}
             onSelect={(v) => void setSetting('mimoModel', v)}
           />

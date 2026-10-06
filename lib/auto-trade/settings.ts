@@ -15,7 +15,7 @@
 import { prisma } from '@/lib/db';
 import { env, MIMO_MODEL_ENV_ERROR } from '@/lib/env';
 import { isTelegramConfigured } from '@/lib/telegram';
-import { MIMO_DEFAULT_MODEL, MIMO_MODELS } from '@/lib/ai-commentary/client';
+import { MIMO_DEFAULT_MODEL, resolveMimoModel } from '@/lib/ai-commentary/client';
 import { DEFAULT_SETTINGS } from './config';
 import type { AiProvider, AutoTradeSettings, BrokerId, ProfitTargetMode, TradeMode } from './types';
 
@@ -93,11 +93,11 @@ export const SETTING_DEFS: SettingDef[] = [
   },
   {
     key: 'mimoModel',
-    parse: (raw) => oneOf(raw, MIMO_MODELS, 'mimoModel'),
+    parse: (raw) => resolveMimoModel(raw, null),
     serialize: String,
     label: 'MiMo model',
     description:
-      'mimo-v2.5-pro = quality-first default · mimo-v2.5 = lower-cost tier. Applies to auto-trade decisions and standalone trade commentary from the next pass. Until this is saved once, a valid existing MIMO_MODEL environment choice is preserved.',
+      'mimo-v2.6-pro is the quality-first default; mimo-v2.6-flash is the lower-cost tier. Both apply to auto-trade decisions and standalone trade commentary from the next pass.',
   },
   {
     key: 'killSwitch',

@@ -144,7 +144,7 @@ const accountState = {
   mode: 'paper',
   broker: 'paper',
   aiProvider: 'mimo',
-  mimoModel: 'mimo-v2.5-pro',
+  mimoModel: 'mimo-v2.6-pro',
   killSwitch: false,
   liveEnvEnabled: false,
   marketOpen: true,
@@ -344,10 +344,11 @@ check('lot, capital, daily-loss, latch, session and stale blockers close the ent
 
 check('MiMo model resolution preserves env migration and validates every source', () => {
   assert.equal(resolveMimoModel(null, null), MIMO_DEFAULT_MODEL);
-  assert.equal(resolveMimoModel(null, 'mimo-v2.5'), 'mimo-v2.5');
-  assert.equal(resolveMimoModel('mimo-v2.5-pro', 'mimo-v2.5'), 'mimo-v2.5-pro');
-  assert.throws(() => resolveMimoModel('mimo-v2.5-typo', null), /Unsupported MiMo model/);
-  assert.throws(() => resolveMimoModel(null, 'mimo-v2.5-typo'), /Unsupported MiMo model/);
+  assert.equal(resolveMimoModel(null, 'mimo-v2.6-pro'), 'mimo-v2.6-pro');
+  assert.equal(resolveMimoModel('mimo-v2.6-flash', null), 'mimo-v2.6-flash');
+  assert.equal(resolveMimoModel('mimo-v2.5-pro', null), 'mimo-v2.6-pro');
+  assert.equal(resolveMimoModel('mimo-v2.5', null), 'mimo-v2.6-flash');
+  assert.throws(() => resolveMimoModel(null, 'mimo-v2.6-typo'), /Unsupported MiMo model/);
 });
 
 check('viewer trade-suggest response hides held-position membership without mutating the internal scan', () => {
@@ -496,8 +497,8 @@ function completion(model: string, message: Record<string, unknown>): Record<str
   };
 }
 
-await checkAsync('both MiMo tiers serialize thinking=disabled through a two-tool HTTP exchange', async () => {
-  for (const model of ['mimo-v2.5', 'mimo-v2.5-pro']) {
+await checkAsync('both MiMo 2.6 tiers serialize thinking=disabled through a two-tool HTTP exchange', async () => {
+  for (const model of ['mimo-v2.6-pro', 'mimo-v2.6-flash']) {
     const payloads: Record<string, unknown>[] = [];
     const client = mimoHttpClient((_payload, call) => {
       if (call === 1) {
@@ -548,7 +549,7 @@ await checkAsync('both MiMo tiers serialize thinking=disabled through a two-tool
 });
 
 await checkAsync('MiMo forced-final HTTP request also disables thinking', async () => {
-  const model = 'mimo-v2.5-pro';
+  const model = 'mimo-v2.6-pro';
   const payloads: Record<string, unknown>[] = [];
   const client = mimoHttpClient((payload, call) => {
     if (!Object.hasOwn(payload, 'tools')) {

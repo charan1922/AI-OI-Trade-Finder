@@ -14,7 +14,7 @@ const originalMimoBaseUrl = process.env.MIMO_BASE_URL;
 const tmp = mkdtempSync(join(tmpdir(), 'auto-settings-safety-'));
 mkdirSync(join(tmp, 'data'), { recursive: true });
 process.chdir(tmp);
-process.env.MIMO_MODEL = 'mimo-v2.5-pr0';
+process.env.MIMO_MODEL = 'mimo-v2.6-pr0';
 process.env.MIMO_API_KEY = 'settings-safety-fixture';
 process.env.MIMO_BASE_URL = 'https://settings-safety.invalid/v1';
 
@@ -42,11 +42,11 @@ async function main(): Promise<void> {
   );
   const settings = await getAutoTradeSettings();
   check('fixture has no stored MiMo model', Number(storedModelRows[0]?.n ?? -1) === 0);
-  check('invalid env still returns the quality-first model fallback', settings.mimoModel === 'mimo-v2.5-pro');
+  check('invalid env still returns the latest model fallback', settings.mimoModel === 'mimo-v2.6-pro');
   check('square-off risk setting remains available', Number.isFinite(settings.squareOffMin));
   check(
     'active MiMo provider reports the deployment typo',
-    activeAiConfigurationIssue(settings)?.includes('mimo-v2.5-pr0') === true,
+    activeAiConfigurationIssue(settings)?.includes('mimo-v2.6-pr0') === true,
     activeAiConfigurationIssue(settings) ?? 'missing error'
   );
 
@@ -84,14 +84,14 @@ async function main(): Promise<void> {
   const commentary = await runAndStoreCommentary({ scanExecuted: true, scanned: 1 } as never);
   check(
     'standalone commentary makes no AI call while the model is misconfigured',
-    commentary.generated === false && commentary.reason?.includes('mimo-v2.5-pr0') === true,
+    commentary.generated === false && commentary.reason?.includes('mimo-v2.6-pr0') === true,
     commentary.reason ?? 'missing reason'
   );
 
-  const recovered = await setAutoTradeSetting('mimoModel', 'mimo-v2.5');
+  const recovered = await setAutoTradeSetting('mimoModel', 'mimo-v2.6-pro');
   check(
     'a valid stored model recovers without redeploying',
-    recovered.mimoModel === 'mimo-v2.5' && activeAiConfigurationIssue(recovered) == null
+    recovered.mimoModel === 'mimo-v2.6-pro' && activeAiConfigurationIssue(recovered) == null
   );
   await prisma.$disconnect();
 }
