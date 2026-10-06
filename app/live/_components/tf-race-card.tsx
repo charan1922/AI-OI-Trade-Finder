@@ -2,9 +2,8 @@
 
 /**
  * TF Running Race — who TradeFinder's own R-Factor ranks as climbing fastest
- * inside the 09:35–11:00 IST entry window, mirroring ClimbersSection's
- * pattern but sourced from TradeFinder captures (lib/tf-live/race.ts) instead
- * of NSE's live pulse feeds.
+ * inside the 09:35–11:00 IST entry window, sourced from TradeFinder captures
+ * in lib/tf-live/race.ts.
  *
  * Deliberately framed as PARTICIPATION evidence, not a buy trigger — this
  * codebase's own hard rule (R-Factor ratchets up all day; it says WHERE the

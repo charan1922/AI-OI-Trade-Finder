@@ -3,7 +3,6 @@
 import { Flame, Gauge, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { CategorySection } from './_components/category-section';
-import { ClimbersSection } from './_components/climbers-section';
 import { HowToRead } from './_components/how-to-read';
 // NiftyMarketContext hidden for now, in favor of TfRaceCard (operator request,
 // 2026-08-06) — not deleted, just not rendered; restore by swapping the card below.
@@ -91,16 +90,7 @@ export default function LiveUrgencyPage() {
         </div>
       </div>
 
-      {/* Equal halves (operator, 2026-08-13) — the two climber boards are peers,
-          so neither gets more room than the other. minmax(0,1fr) rather than a
-          bare 1fr: a grid track's default min-content floor would let either
-          card's widest row push the column past 50% and overflow the page. */}
-      <div className="grid items-start gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <TfRaceCard />
-
-        {/* Rank-momentum across the NSE feeds, above the static tables */}
-        <ClimbersSection refreshSignal={refreshNonce} />
-      </div>
+      <TfRaceCard />
 
       {/* Category sections — each loads independently, like the /nse/movers panels */}
       <CategorySection
