@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
 import sectorMap from '@/lib/data/fno_sectors.json';
 import { prisma } from '@/lib/db';
-import { dhanMarketFeed, isMarketHours, type MarketFeedQuote } from '@/lib/dhan/market-feed';
 import { aggregateSectors, type SectorTile } from '@/lib/sector/aggregate';
 import { loadSectorMap } from '@/lib/sector/sector-map';
-import { SECTORAL_INDICES, verifiedSectoralIndices } from '@/lib/sector/sectoral-indices';
+import { SECTORAL_INDICES } from '@/lib/sector/sectoral-indices';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -17,8 +16,7 @@ export const runtime = 'nodejs';
  * Tickertape publish. For each of our 11 sectors it reports:
  *   - reconstructedPct : our turnover-weighted mean of constituent EOD % changes
  *                        (latest synced bhavcopy session vs the one before it)
- *   - officialPct      : the NIFTY <SECTOR> index change from Dhan (IDX_I), when
- *                        that index's security id has been VERIFIED
+ *   - officialPct      : reserved for the visible page's direct NSE overlay
  *   - deltaPct         : reconstructed − official (expected to be small; a large
  *                        delta flags a composition/methodology problem)
  *
@@ -35,12 +33,12 @@ export const runtime = 'nodejs';
 export async function GET() {
   try {
     // Reconstruction uses the DB-backed map (what the heatmap renders); the raw
-    // JSON file is kept separately below to flag JSON↔DB drift in the composition
+    // JSON file is kept separately below to flag JSON/DB drift in the composition
     // check — comparing DB-vs-DB would be a no-op.
     const sectors = await loadSectorMap();
     const jsonSectors = sectorMap as Record<string, string>;
 
-    // ── Our side: EOD reconstruction from the last two bhavcopy sessions ──────
+    // Our side: EOD reconstruction from the last two bhavcopy sessions.
     const dateRows = await prisma.$queryRawUnsafe<{ date: string }[]>(
       `SELECT DISTINCT date FROM bhavcopy_days ORDER BY date DESC LIMIT 2`,
     );
@@ -71,28 +69,11 @@ export async function GET() {
       });
     const reconstructed = new Map(aggregateSectors(tiles).map((a) => [a.sector, a]));
 
-    // ── Official side: NSE sectoral index change via Dhan IDX_I (verified ids) ─
+    // Broker APIs are deliberately excluded from Heatmap. The visible page gets
+    // official index values directly from /api/nse/heatmap.
     const official = new Map<string, number>();
-    const verified = verifiedSectoralIndices();
-    let officialError: string | null = null;
-    if (verified.length > 0) {
-      try {
-        const ids = verified.map((v) => v.dhanSecId as number);
-        const quotes = await dhanMarketFeed('quote', { IDX_I: ids });
-        const seg: Record<string, MarketFeedQuote> = quotes.IDX_I ?? {};
-        for (const v of verified) {
-          const q = seg[String(v.dhanSecId)];
-          if (!q) continue;
-          const ltp = q.last_price ?? 0;
-          const prevClose = q.net_change != null ? ltp - q.net_change : (q.ohlc?.close ?? 0);
-          if (prevClose > 0) official.set(v.sectorKey, ((ltp - prevClose) / prevClose) * 100);
-        }
-      } catch (e) {
-        officialError = (e as Error).message;
-      }
-    }
 
-    // ── Per-sector comparison ─────────────────────────────────────────────────
+    // Per-sector comparison.
     const comparison = SECTORAL_INDICES.map((idx) => {
       const recon = reconstructed.get(idx.sectorKey);
       const off = official.get(idx.sectorKey);
@@ -108,7 +89,7 @@ export async function GET() {
         stocks: recon?.stocks ?? 0,
         advanceRatio: recon?.advanceRatio ?? null,
         note: !idx.verified
-          ? idx.dhanSecId == null && idx.cap.note?.includes('no official')
+          ? idx.cap.note?.includes('no official')
             ? 'no official NSE index for this sector'
             : 'official index id unverified — run scripts/verify-sectoral-ids.mjs'
           : officialPct == null
@@ -117,7 +98,7 @@ export async function GET() {
       };
     });
 
-    // ── Composition check: our sector map vs the fno_stocks DB classification ──
+    // Composition check: our sector map vs the fno_stocks DB classification.
     let composition: {
       checked: number;
       mismatches: number;
@@ -144,18 +125,15 @@ export async function GET() {
       composition = { checked: 0, mismatches: 0, examples: [], note: 'fno_stocks table unavailable' };
     }
 
-    const verifiedCount = verified.length;
     return NextResponse.json({
       success: true,
       sessionDate: latest,
       baseDate: prev,
-      basis: isMarketHours()
-        ? 'official = live index (today vs prev close); ours = last EOD session — bases differ while market is open'
-        : 'both EOD: last session vs prior session',
+      basis: 'NSE bhavcopy EOD: last session vs prior session',
       methodologyNote:
         'Official NSE sectoral indices are free-float-cap-weighted (33%/62% caps; FIN SERVICES 25%); our reconstruction is turnover-weighted — a small delta is expected and normal. A large delta points to a composition or data gap.',
-      verifiedSectoralIndices: verifiedCount,
-      officialError,
+      verifiedSectoralIndices: 0,
+      officialError: null,
       sectors: comparison,
       composition,
     });

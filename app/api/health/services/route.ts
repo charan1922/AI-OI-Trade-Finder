@@ -1,6 +1,5 @@
 /**
- * GET /api/health/services — at-a-glance health of the three data providers
- * (Dhan, Fyers, NSE) for the top-nav indicator.
+ * GET /api/health/services — at-a-glance health of Fyers and NSE.
  *
  * PASSIVE ONLY: reads in-memory token/poller/cache state — it makes NO external
  * API calls, so the nav can poll it freely (including post-market) without
@@ -9,8 +8,7 @@
  * and how fresh the NSE cache is.
  */
 import { NextResponse } from 'next/server';
-import { getDhanTokenStatus, hasDhanAuth } from '@/lib/dhan/auth';
-import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { isMarketHours } from '@/lib/market-data';
 import { getFyersPollerStatus } from '@/lib/fyers/poller';
 import { getPulseCacheStatus } from '@/lib/nse/pulse-cache';
 import { adminOnly } from '@/lib/auth/server';
@@ -28,47 +26,7 @@ export function GET(req: Request): Response {
   if (denied) return denied;
   const marketOpen = isMarketHours();
   const now = Date.now();
-  // The poller runs the pre-open token warm-up; its lastWarmup surfaces a failed
-  // pre-open Dhan mint as a warn dot BEFORE the open (needed by both providers).
   const p = getFyersPollerStatus();
-  const warm = p.lastWarmup;
-  const warmDhanFailedToday = warm != null && warm.date === todayIST() && warm.dhan.startsWith('error');
-
-  // ── Dhan: config + token validity (Dhan is only called during market hours) ──
-  const dhanToken = getDhanTokenStatus();
-  const dhanValid = dhanToken.cached && dhanToken.expiresAt != null && dhanToken.expiresAt > now;
-  let dhan: { status: Status; detail: string; tokenExpiresAt: number | null };
-  if (!hasDhanAuth()) {
-    dhan = {
-      status: 'down',
-      detail: 'Not configured (DHAN_CLIENT_ID + PIN + TOTP_SECRET)',
-      tokenExpiresAt: null,
-    };
-  } else if (dhanValid) {
-    dhan = {
-      status: 'ok',
-      detail: 'Token valid',
-      tokenExpiresAt: dhanToken.expiresAt,
-    };
-  } else if (warmDhanFailedToday) {
-    dhan = {
-      status: 'warn',
-      detail: `Pre-open warm-up failed: ${warm!.dhan.replace(/^error:\s*/, '').slice(0, 80)}`,
-      tokenExpiresAt: dhanToken.expiresAt,
-    };
-  } else if (!marketOpen) {
-    dhan = {
-      status: 'idle',
-      detail: 'Idle — token warms pre-open (~08:40 IST) or on the next market-hours call',
-      tokenExpiresAt: dhanToken.expiresAt,
-    };
-  } else {
-    dhan = {
-      status: 'warn',
-      detail: 'Configured, token not fetched yet (regenerates on next call)',
-      tokenExpiresAt: dhanToken.expiresAt,
-    };
-  }
 
   // ── Fyers: the poller actually calls Fyers every cycle, so its last cycle is the real signal ──
   const lc = p.lastCycle;
@@ -170,7 +128,7 @@ export function GET(req: Request): Response {
     ok: true,
     ts: new Date(now).toISOString(),
     marketOpen,
-    services: { dhan, fyers, nse },
+    services: { fyers, nse },
     operations: {
       guard: getGuardLoopStatus(),
       capture: {

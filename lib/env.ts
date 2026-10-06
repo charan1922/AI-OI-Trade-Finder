@@ -29,6 +29,7 @@ const envSchema = z.object({
   FYERS_TOTP_SECRET: z.string().optional(), // base32 TOTP secret from Fyers 2FA setup
   FYERS_PIN: z.string().optional(), // 4-digit login PIN
   FYERS_REDIRECT_URI: z.string().optional(), // must exactly match the app's configured redirect
+  FYERS_API_PLAN: z.enum(['standard', 'prime']).optional(), // defaults to conservative Standard quotas
   // Password gate + RBAC (proxy.ts, policy in lib/auth/rbac.ts). APP_PASSWORD
   // enables HTTP Basic Auth over the whole app and grants the admin role;
   // leave unset for password-free local dev. APP_READONLY_PASSWORD (optional,

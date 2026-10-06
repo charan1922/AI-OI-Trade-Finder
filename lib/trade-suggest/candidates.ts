@@ -1,6 +1,6 @@
 import { getNumberSetting } from '@/lib/config/feature-toggles';
 import { prisma } from '@/lib/db';
-import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/market-data';
 import { minuteOfDayIST } from '@/lib/ist';
 import { getTfBoardsForDate, istMinutesNow, raceAtMinute } from '@/lib/tf-live/race';
 import { TF_RACE_MAX_RANK, WINDOW_END_MIN, WINDOW_START_MIN } from './config';

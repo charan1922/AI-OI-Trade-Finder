@@ -6,7 +6,7 @@
  * then places on the real broker. Pending proposals expire after the TTL.
  */
 
-import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/market-data';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
 import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';
 import { getEqBucketStatus } from '@/lib/fyers/candle-store';

@@ -23,7 +23,7 @@
 import type { LiveUrgencyRow } from '@/app/live/_lib/types';
 import { deriveBreakoutContext, evaluateBreakout, type BreakoutSignal } from '@/lib/breakout';
 import { prisma } from '@/lib/db';
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { getFyersCandles, getNseOiLatestForSymbols, type NseOiLatest } from '@/lib/fyers/candle-store';
 import { approximateTfRFactor, computeRFactor } from '@/lib/r-factor';
 import { deriveSessionContext } from '@/lib/signals/session-context';

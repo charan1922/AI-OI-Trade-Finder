@@ -22,8 +22,7 @@
  */
 
 import { nowIST } from '@/lib/auto-trade/config';
-import { getDhanAccessToken, hasDhanAuth } from '@/lib/dhan/auth';
-import { EOD_PUBLISH_HOUR_IST, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { EOD_PUBLISH_HOUR_IST, isMarketHours, todayIST } from '@/lib/market-data';
 import { prisma } from '@/lib/db';
 import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 import { markToday, wasMarkedToday } from '@/lib/runtime/daily-marker';
@@ -39,6 +38,7 @@ import { pruneQuoteSnapshots } from '@/lib/auto-trade/store';
 import { pruneOptionChainSnapshots } from '@/lib/option-chain/store';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import { reviewUngradedBacklog } from '@/lib/trade-suggest/review';
+import { fyersDataLimits } from '@/lib/market-data/provider';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
@@ -433,11 +433,19 @@ export async function runFyersCycle(
       : { symbols: new Set<string>(), riskBearing: [] as string[], earlierSuggestions: [] as string[] };
     const priority = priorityInfo.symbols;
 
-    const ordered =
-      priority.size > 0
-        ? [...universe.filter((s) => priority.has(s)), ...universe.filter((s) => !priority.has(s))]
-        : universe;
-    const priorityCount = ordered.length - universe.filter((s) => !priority.has(s)).length;
+    const priorityOrdered = universe.filter((symbol) => priority.has(symbol));
+    const tail = universe.filter((symbol) => !priority.has(symbol));
+    const limits = fyersDataLimits();
+    // Standard has a 5,000-request daily Data API allowance. Three calls per
+    // symbol across ~75 market cycles would exhaust it before lunch if the full
+    // universe ran every tick. Keep current candidates first and rotate the
+    // remaining universe; Prime retains full-universe five-minute coverage.
+    const maxSymbolsThisCycle = limits.perDay >= 500_000 ? universe.length : 16;
+    const tailSlots = Math.max(0, maxSymbolsThisCycle - Math.min(priorityOrdered.length, maxSymbolsThisCycle));
+    const tailStart = tail.length === 0 ? 0 : (state.cycles * Math.max(1, tailSlots)) % tail.length;
+    const rotatingTail = [...tail.slice(tailStart), ...tail.slice(0, tailStart)].slice(0, tailSlots);
+    const ordered = [...priorityOrdered.slice(0, maxSymbolsThisCycle), ...rotatingTail];
+    const priorityCount = Math.min(priorityOrdered.length, maxSymbolsThisCycle);
     summary.prioritySymbols = priorityCount;
     let captureFired = false;
 
@@ -1025,15 +1033,7 @@ async function warmPreOpenTokens(state: PollerState, force = false): Promise<voi
         fyers = `error: ${(err as Error).message.slice(0, 160)}`;
       }
     }
-    let dhan = 'no-credentials';
-    if (hasDhanAuth()) {
-      try {
-        await getDhanAccessToken();
-        dhan = 'ok';
-      } catch (err) {
-        dhan = `error: ${(err as Error).message.slice(0, 160)}`;
-      }
-    }
+    const dhan = 'disabled';
     state.lastWarmup = { date: todayIST(), at: Date.now(), fyers, dhan };
     console.log(`${TAG} pre-open token warm-up: fyers=${fyers} dhan=${dhan}`);
   } finally {

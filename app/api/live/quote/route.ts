@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
-import { bestBidAsk, depthImbalance, dhanMarketFeed, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/market-data';
 import { approximateTfRFactor, computeRFactor } from '@/lib/r-factor';
 import { getNseOiLatestForSymbols } from '@/lib/fyers/candle-store';
 import { getNseOiRowMap, LIVE_PATH_NSE_WAIT_MS } from '@/lib/nse/combined-oi';
@@ -134,54 +134,35 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
   // this simulator ships pre-loaded contracts with an older syncDate and has
   // no Master Contracts sync page. Equity IDs are stable, so a slightly stale
   // master still resolves them — and spread/imbalance come from equity depth.
-  const eqRows = await prisma.masterContract.findMany({
-    where: { symbol: { in: allowed }, segment: 'NSE_EQ' },
-    select: { symbol: true, securityId: true },
-  });
-  const eqMap = new Map(eqRows.map((r) => [r.symbol, r.securityId]));
-
-  const futRows = await prisma.masterContract.findMany({
-    where: {
-      underlying: { in: allowed },
-      instrument: 'FUTSTK',
-      segment: 'NSE_FNO',
-      expiryDate: { gte: new Date() },
-    },
-    orderBy: { expiryDate: 'asc' },
-    select: { underlying: true, securityId: true },
-  });
-  const futMap = new Map<string, { securityId: string }>();
-  for (const r of futRows) {
-    if (r.underlying && !futMap.has(r.underlying)) futMap.set(r.underlying, { securityId: r.securityId });
-  }
-
-  // One quote request covers the whole watchlist (equity for depth, futures for OI).
-  const eqIds: number[] = [];
-  const futIds: number[] = [];
-  for (const s of allowed) {
-    const eq = eqMap.get(s);
-    if (eq) eqIds.push(Number(eq));
-    const fut = futMap.get(s);
-    if (fut) futIds.push(Number(fut.securityId));
-  }
-  const securities: Record<string, number[]> = {};
-  if (eqIds.length) securities.NSE_EQ = eqIds;
-  if (futIds.length) securities.NSE_FNO = futIds;
-
-  const quotes = await dhanMarketFeed('quote', securities);
+  const today = todayIST();
+  const placeholders = allowed.map(() => '?').join(',');
+  const snapshots = await prisma.$queryRawUnsafe<{
+    symbol: string; instrument: 'EQ' | 'FUT'; bucketTs: number; open: number; high: number; low: number;
+    close: number; volume: number; oi: number; atp: number | null; dayVolume: number | null;
+    buyQty: number | null; sellQty: number | null; futLtp: number | null;
+  }[]>(
+    `SELECT c.symbol, c.instrument, c.bucketTs, c.open, c.high, c.low, c.close, c.volume,
+            c.oi, c.atp, c.dayVolume, c.buyQty, c.sellQty, c.futLtp
+       FROM fyers_candles c
+       JOIN (SELECT symbol, instrument, MAX(bucketTs) AS bucketTs
+               FROM fyers_candles WHERE date = ? AND symbol IN (${placeholders})
+              GROUP BY symbol, instrument) latest
+         ON latest.symbol = c.symbol AND latest.instrument = c.instrument AND latest.bucketTs = c.bucketTs
+      WHERE c.date = ?`,
+    today, ...allowed, today,
+  );
+  const eqMap = new Map(snapshots.filter((row) => row.instrument === 'EQ').map((row) => [row.symbol, row]));
+  const futMap = new Map(snapshots.filter((row) => row.instrument === 'FUT').map((row) => [row.symbol, row]));
   // Canonical market-data observation time: capture it immediately after the
   // Dhan snapshot returns, before baseline/SQLite/context work adds latency.
   const quoteObservedAtMs = Date.now();
   const quoteObservedAt = new Date(quoteObservedAtMs);
-  const eqSeg = quotes.NSE_EQ ?? {};
-  const futSeg = quotes.NSE_FNO ?? {};
 
   // Per-symbol bhavcopy baselines (20d OI/turnover averages, prev-day OI,
   // prior-day high/low/close) — the fixed EOD anchors the live R-Factor scores
   // against. One query for the whole watchlist.
   const baselines = await loadRFactorBaselines(allowed);
 
-  const today = todayIST();
   const now = quoteObservedAt;
   // NSE's combined (fut+opt) OI % per symbol — recorded per 5-min FUT bar by the
   // Fyers poller from the oi-spurts feed. DB-only, one batched query; names not
@@ -203,15 +184,10 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
   // R-Factor turnover factor uses, surfaced as its own column).
   const sessionFrac = sessionFractionElapsed(now);
   const rows: LiveUrgencyRow[] = allowed.map((s) => {
-    const eqId = eqMap.get(s);
-    const futId = futMap.get(s)?.securityId;
-    const eqQ = eqId ? eqSeg[String(eqId)] : undefined;
-    const futQ = futId ? futSeg[String(futId)] : undefined;
-
-    const ba = bestBidAsk(eqQ);
-    const imbalance = depthImbalance(eqQ);
-    const ltp = eqQ?.last_price ?? null;
-    const open = eqQ?.ohlc?.open ?? 0;
+    const eqQ = eqMap.get(s);
+    const futQ = futMap.get(s);
+    const ltp = eqQ?.close ?? null;
+    const open = eqQ?.open ?? 0;
     const changePctOpen = ltp != null && open > 0 ? ((ltp - open) / open) * 100 : null;
 
     const base = baselines.get(s);
@@ -220,12 +196,12 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
       ltp != null && previousClose != null && previousClose > 0
         ? ((ltp - previousClose) / previousClose) * 100
         : changePctOpen;
-    const futOi = futQ?.oi ?? null;
+    const futOi = futQ && futQ.oi > 0 ? futQ.oi : null;
     const avg = base?.futOi20dAvg ?? 0;
     const oiLevel = futOi != null && futOi > 0 && avg > 0 ? futOi / avg : null;
     const turnover =
-      futQ?.average_price != null && futQ?.volume != null && futQ.average_price > 0
-        ? futQ.average_price * futQ.volume
+      futQ?.atp != null && futQ?.dayVolume != null && futQ.atp > 0
+        ? futQ.atp * futQ.dayVolume
         : null;
     // Turnover pace: cumulative turnover ÷ (20d full-day avg × session fraction).
     // Decays through the day if the flow dies — unlike raw cumulative turnover.
@@ -248,12 +224,12 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
         symbol: s,
         ltp,
         changePctOpen,
-        bid: ba?.bid ?? null,
-        ask: ba?.ask ?? null,
+        bid: null,
+        ask: null,
         futOi,
         turnover,
-        dayHigh: eqQ?.ohlc?.high ?? null,
-        dayLow: eqQ?.ohlc?.low ?? null,
+        dayHigh: eqQ?.high ?? null,
+        dayLow: eqQ?.low ?? null,
       },
       base,
       getMorningContext(s),
@@ -275,16 +251,19 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
       previousClose,
       changePctPrevClose,
       changePctOpen,
-      bid: ba?.bid ?? null,
-      ask: ba?.ask ?? null,
-      spreadPct: ba?.spreadPct ?? null,
-      imbalance,
+      bid: null,
+      ask: null,
+      spreadPct: null,
+      imbalance:
+        futQ && (futQ.buyQty ?? 0) + (futQ.sellQty ?? 0) > 0
+          ? (futQ.buyQty ?? 0) / ((futQ.buyQty ?? 0) + (futQ.sellQty ?? 0))
+          : null,
       futOi,
       oiLevel,
       turnover,
-      dayHigh: eqQ?.ohlc?.high ?? null,
-      dayLow: eqQ?.ohlc?.low ?? null,
-      hasDepth: ba != null,
+      dayHigh: eqQ?.high ?? null,
+      dayLow: eqQ?.low ?? null,
+      hasDepth: false,
       sinceEntryPct: null, // filled from the recorded intraday series below
       turnoverLvl,
       nseOiPct: oiFeed?.nseOiPct ?? null,

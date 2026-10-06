@@ -39,7 +39,7 @@ import {
 import { latestSpotRead } from './quotes';
 import { computeReanchor } from './quant/reanchor';
 import type { AutoTrade, AutoTradeSettings, TradeMode } from './types';
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { getFyersCandles, fyersBucketFor } from '@/lib/fyers/candle-store';
 
 const TAG = '[AutoTradeExec]';

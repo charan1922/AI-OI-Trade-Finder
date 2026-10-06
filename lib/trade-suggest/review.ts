@@ -15,7 +15,7 @@
  * longer be graded (their candles are pruned).
  */
 
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { getFyersCandles, getRetainedCandleDates } from '@/lib/fyers/candle-store';
 import { gradeSpotPath } from '@/lib/trade-suggest/grade';
 import { simulateAllPresets } from '@/lib/trade-suggest/profit-protect';

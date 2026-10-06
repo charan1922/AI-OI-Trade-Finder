@@ -8,7 +8,7 @@
  */
 
 import type { LiveQuoteResponse, LiveUrgencyRow, SectorLeadersResponse, WatchlistSource } from '@/app/live/_lib/types';
-import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/market-data';
 import { getFyersCandles } from '@/lib/fyers/candle-store';
 import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';

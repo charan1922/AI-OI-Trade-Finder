@@ -642,10 +642,7 @@ export default function AutoTradePage() {
             label="Broker"
             value={s.broker}
             busy={busy}
-            options={[
-              { value: 'fyers', label: 'Fyers' },
-              { value: 'dhan', label: 'Dhan' },
-            ]}
+            options={[{ value: 'fyers', label: 'Fyers' }]}
             onSelect={(v) => void setSetting('broker', v)}
           />
           <SelectorRow

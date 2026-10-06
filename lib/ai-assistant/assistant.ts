@@ -9,7 +9,7 @@
  */
 
 import type OpenAI from 'openai';
-import { isMarketHours } from '@/lib/dhan/market-feed';
+import { isMarketHours } from '@/lib/market-data';
 import { WINDOW_END_MIN, WINDOW_START_MIN } from '@/lib/trade-suggest/config';
 import { getAzureClient, getChatDeployment } from './azure-client';
 import { buildSystemPrompt, type SessionInfo } from './system-prompt';

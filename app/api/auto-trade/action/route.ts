@@ -7,7 +7,7 @@ import { clearRiskLatch } from '@/lib/auto-trade/risk/latch';
 import { getTrade, insertDecision } from '@/lib/auto-trade/store';
 import { adminOnly } from '@/lib/auth/server';
 import { prisma } from '@/lib/db';
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { runTradeSuggest } from '@/lib/trade-suggest/engine';
 
 export const dynamic = 'force-dynamic';

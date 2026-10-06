@@ -13,7 +13,7 @@
  * external API calls are involved.
  */
 
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { getFyersCandles } from '@/lib/fyers/candle-store';
 import { deriveBreakoutContext, type BreakoutContext, type LevelInputs } from '@/lib/breakout';
 import { deriveSessionContext } from '@/lib/signals/session-context';

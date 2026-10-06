@@ -13,7 +13,7 @@
  * poller's 5-min cycle since the underlying data only changes that often.
  */
 
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { getFyersCandles } from '@/lib/fyers/candle-store';
 import { addToUniverse } from '@/lib/fyers/symbols';
 import { deriveSessionContext, type SessionContext } from '@/lib/signals/session-context';

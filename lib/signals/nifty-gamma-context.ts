@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db';
-import { fetchOptionChainGreeks, fetchOptionExpiries, isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { fetchOptionChainGreeks, fetchOptionExpiries, isMarketHours, todayIST } from '@/lib/market-data';
 import { computeGex, type GexResult } from '@/lib/signals/gex';
 
 export interface NiftyGammaContext {

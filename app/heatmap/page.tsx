@@ -295,7 +295,7 @@ export default function HeatmapPage() {
     return { arr, maxAbs };
   }, [data, sectorHeadline]);
 
-  // ── Single source of truth for "what state are we in?" ──────────────────
+  // Single source of truth for the displayed data state.
   // The badge, the age line, and the footer all read from these so the UI can
   // never say two contradictory things at once.
   const ageMs = data?.asOf ? nowTs - new Date(data.asOf).getTime() : null;
@@ -303,8 +303,7 @@ export default function HeatmapPage() {
   const isLiveStale = data?.source === 'live' && data.stale === true;
   const isEodClosed = data?.source === 'eod' && !data.marketOpen;
   const isEodNoLive = data?.source === 'eod' && data.marketOpen; // open, but no live snapshot yet
-  // TODAY's completed session, built from the Fyers 5-min candles the poller
-  // records — shown right after the 15:30 close, before the evening bhavcopy.
+  // Legacy response compatibility; the current endpoint always serves NSE EOD.
   const isSessionClosed = data?.source === 'session';
 
   // Selected stock-tile metric. Sector headlines are independent (always NSE/proxy
@@ -318,11 +317,11 @@ export default function HeatmapPage() {
       <div className="flex flex-wrap items-center gap-2">
         <Grid3x3 className="h-5 w-5 text-primary" />
         <h1 className="text-lg font-bold text-foreground">F&O Heatmap</h1>
-        {/* LIVE · fresh — green pulse, real-time Dhan feed */}
+        {/* Legacy live response compatibility; current Heatmap is NSE EOD only. */}
         {isLiveFresh && (
           <span
             className="flex items-center gap-1.5 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"
-            title="100% live Dhan feed — % change is Dhan's own net change vs the previous official close; size is today's traded value so far."
+            title="Live exchange snapshot — today versus previous close."
           >
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" /> LIVE · today vs prev close
           </span>
@@ -563,8 +562,7 @@ export default function HeatmapPage() {
       {data && (
         <p className="text-[11px] text-muted-foreground">
           {data.tiles?.length ?? 0} F&O stocks across {data.sectors?.length ?? 0} sectors
-          {isLiveFresh &&
-            ' — fully live from Dhan (price, % change, and turnover are all today’s real-time figures; nothing comes from stored data).'}
+          {isLiveFresh && ' — live exchange snapshot.'}
           {isLiveStale &&
             ` — last good live snapshot${ageMs != null ? ` (${fmtAgo(ageMs)})` : ''}; the latest quote call failed, so this is held while we retry every 15s. Still today’s real figures — just not the newest tick.`}
           {isEodClosed &&
@@ -574,7 +572,7 @@ export default function HeatmapPage() {
           {isEodNoLive &&
             ` — yesterday’s NSE bhavcopy (${data.sessionDate}) shown as a placeholder: the live feed couldn’t be reached yet. Retrying every 15s; live colors appear once a quote succeeds.`}{' '}
           {nseActive
-            ? `Sector headlines use the official NSE sector indices${nseStale ? ' (cached)' : ''} — they match the NSE Heatmap. Sectors marked “~” have no NSE index and use a turnover-weighted proxy.`
+            ? `Sector headlines use the official NSE sector indices${nseStale ? ' (cached)' : ''} — they match the NSE Heatmap. Sectors marked "~" have no NSE index and use a turnover-weighted proxy.`
             : 'Sector headlines use a turnover-weighted proxy (live NSE index feed unavailable).'}{' '}
           Stocks without a sector mapping are skipped, never guessed.
         </p>

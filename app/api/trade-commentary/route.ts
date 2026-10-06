@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { hasMimo } from '@/lib/env';
-import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/market-data';
 import { getMimoModel } from '@/lib/ai-commentary/client';
 import { runAndStoreCommentary } from '@/lib/ai-commentary/run';
 import { getCommentary, getLatestCommentaryDate } from '@/lib/ai-commentary/store';

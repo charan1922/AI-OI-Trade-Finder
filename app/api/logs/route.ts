@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { NextResponse } from 'next/server';
 import { adminOnly } from '@/lib/auth/server';
 import { logFilePath } from '@/lib/ops/file-log';
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

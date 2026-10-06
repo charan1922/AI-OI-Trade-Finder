@@ -17,6 +17,12 @@ import {
   resolveSymbol,
 } from '@/lib/historify/master-contracts';
 import { checkpoint, execute } from './backtest-store';
+import {
+  downloadEquity5min,
+  downloadFutures5min,
+  downloadOption5min,
+} from './fyers-data-downloader';
+export { downloadEquity5min, downloadFutures5min, downloadOption5min } from './fyers-data-downloader';
 
 /**
  * Convert Unix timestamp to IST date string (YYYY-MM-DD).
@@ -31,7 +37,7 @@ function unixToISTDate(unix: number): string {
  * Download equity 5-min OHLCV for a stock.
  * Uses /v2/charts/intraday endpoint.
  */
-export async function downloadEquity5min(
+export async function downloadEquity5minFromDhan(
   symbol: string,
   fromDate: string,
   toDate: string,
@@ -92,7 +98,7 @@ export async function downloadEquity5min(
 /**
  * Download futures 5-min OHLCV + OI for a stock.
  */
-export async function downloadFutures5min(
+export async function downloadFutures5minFromDhan(
   symbol: string,
   fromDate: string,
   toDate: string,
@@ -164,7 +170,7 @@ export async function downloadFutures5min(
  * which serves EXPIRED-contract data keyed by the underlying + ATM-relative strike.
  * `opts.spotPrice` (the spot at trade time) sharpens the ATM-relative mapping.
  */
-export async function downloadOption5min(
+export async function downloadOption5minFromDhan(
   symbol: string,
   optionType: 'CE' | 'PE',
   strike: number,

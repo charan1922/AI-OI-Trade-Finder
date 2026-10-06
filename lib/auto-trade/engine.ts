@@ -13,7 +13,7 @@
  * are gate-blocked, so the AI pass is skipped entirely to save tokens.
  */
 
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { hasAzureConfig } from '@/lib/ai-assistant/azure-client';
 import { buildOpenPositionPicks, buildPicks } from '@/lib/ai-commentary/picks';
 import { getCommentary, insertCommentary } from '@/lib/ai-commentary/store';

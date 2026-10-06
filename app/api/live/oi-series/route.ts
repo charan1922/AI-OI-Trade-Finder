@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { computeOiUrgency, getIntradaySeries } from '@/lib/signals/oi-intraday';
 
 export const dynamic = 'force-dynamic';

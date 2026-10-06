@@ -1,4 +1,4 @@
-import { fetchDetailedOptionChainShadow, todayIST } from '@/lib/dhan/market-feed';
+import { fetchDetailedOptionChainShadow, todayIST } from '@/lib/market-data';
 import { prisma } from '@/lib/db';
 import { deriveOptionActivityEvidence } from './evidence';
 import { loadSameTimeOptionBaseline, recordOptionEvidence } from './store';

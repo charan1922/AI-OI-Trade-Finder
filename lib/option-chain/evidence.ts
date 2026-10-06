@@ -1,4 +1,4 @@
-import type { DetailedOptionChain, DetailedOptionSide } from '@/lib/dhan/market-feed';
+import type { DetailedOptionChain, DetailedOptionSide } from '@/lib/fyers/option-chain';
 import { computeGex, type OptionChainStrike } from '@/lib/signals/gex';
 import type {
   OptionActivityEvidence,

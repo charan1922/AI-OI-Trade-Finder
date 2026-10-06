@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
 import { adminOnly } from '@/lib/auth/server';
 import { istMinuteLabel, isEntryWindow, nowISTClock } from '@/lib/auto-trade/config';

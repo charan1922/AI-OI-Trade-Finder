@@ -5,7 +5,6 @@ import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import {
   Activity,
-  Banknote,
   Bot,
   BookOpen,
   CalendarClock,
@@ -71,7 +70,6 @@ const NAV_GROUPS: NavGroup[] = [
       { title: 'Heatmap', href: '/heatmap', icon: Grid3x3 },
       { title: 'Sector Scope', href: '/sector-scope', icon: ScanSearch },
       { title: 'Fyers Live', href: '/fyers', icon: Radio },
-      { title: 'Dhan', href: '/dhan', icon: Banknote },
       { title: 'TradeFinder', href: '/tf', icon: KeyRound },
     ],
   },

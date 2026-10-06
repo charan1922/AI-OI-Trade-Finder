@@ -42,6 +42,8 @@ const g = globalThis as unknown as {
   __fyersToken?: string | null;
   __fyersExpiry?: number;
   __fyersPromise?: Promise<string> | null;
+  __fyersLoginNotBefore?: number;
+  __fyersLastLoginError?: string;
 };
 
 function getToken(): string | null {
@@ -50,10 +52,13 @@ function getToken(): string | null {
 function getExpiry(): number {
   return g.__fyersExpiry ?? 0;
 }
-function setToken(token: string, expiresAt: number): void {
+async function setToken(token: string, expiresAt: number): Promise<void> {
+  await fs.mkdir(path.dirname(TOKEN_CACHE_FILE), { recursive: true });
+  const temporary = `${TOKEN_CACHE_FILE}.${process.pid}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify({ token, expiresAt }), { encoding: 'utf8', mode: 0o600 });
+  await fs.rename(temporary, TOKEN_CACHE_FILE);
   g.__fyersToken = token;
   g.__fyersExpiry = expiresAt;
-  fs.writeFile(TOKEN_CACHE_FILE, JSON.stringify({ token, expiresAt })).catch(() => {});
 }
 
 async function loadFromDisk(): Promise<void> {
@@ -222,6 +227,10 @@ export async function getFyersAccessToken(): Promise<string> {
 
   // Prevent concurrent login chains (would burn OTP sessions)
   if (g.__fyersPromise) return g.__fyersPromise;
+  if ((g.__fyersLoginNotBefore ?? 0) > Date.now()) {
+    const seconds = Math.ceil((g.__fyersLoginNotBefore! - Date.now()) / 1000);
+    throw new FyersAuthError(`${TAG} Login cooldown active for ${seconds}s after: ${g.__fyersLastLoginError ?? 'login failure'}`);
+  }
 
   g.__fyersPromise = (async () => {
     try {
@@ -237,8 +246,16 @@ export async function getFyersAccessToken(): Promise<string> {
       }
 
       const { token, expiresAt } = await performTotpLogin();
-      setToken(token, expiresAt);
+      await setToken(token, expiresAt);
+      g.__fyersLoginNotBefore = 0;
+      g.__fyersLastLoginError = undefined;
       return token;
+    } catch (error) {
+      // Prevent a bad credential, upstream outage, or rejected TOTP from turning
+      // concurrent app traffic into a token-generation loop.
+      g.__fyersLoginNotBefore = Date.now() + 2 * 60_000;
+      g.__fyersLastLoginError = (error as Error).message.slice(0, 200);
+      throw error;
     } finally {
       g.__fyersPromise = null;
     }

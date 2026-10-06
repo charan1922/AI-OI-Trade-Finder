@@ -29,7 +29,7 @@
  * rationale as lib/fyers/poller.ts).
  */
 
-import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/market-data';
 import { tryAcquireRuntimeLease } from '@/lib/runtime/lease';
 import { FAST_GUARD_TICK_MS } from './config';
 import { isAutoTradePassRunning } from './engine';

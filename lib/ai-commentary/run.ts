@@ -7,7 +7,7 @@
  * market/window guards. A completed TF-only scan with zero candidates is still
  * narrated because "no TF setup, and why" is operationally important.
  */
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { hasMimo } from '@/lib/env';
 import type { CycleTimelineRecorder } from '@/lib/ops/cycle-timeline';
 import { recordPromptVersion } from '@/lib/prompts/store';

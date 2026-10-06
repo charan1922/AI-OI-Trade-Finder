@@ -6,6 +6,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { fetchFyersMaster } from '@/lib/fyers/master';
 import fnoUniverse from '@/lib/data/fno_stocks_list.json';
 import { prisma } from '@/lib/db';
 import {
@@ -61,7 +62,7 @@ export type FuturesRangeEntry = SecurityEntry & {
 let syncedForDate: string | null = null;
 const FNO_SYMBOLS = new Set<string>(fnoUniverse.stocks);
 
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 
 export interface MasterContractQueryClient {
   $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>;
@@ -85,6 +86,11 @@ export interface MasterContractFreshness {
   state: 'fresh' | 'missing' | 'stale' | 'incomplete';
   acceptable: boolean;
   reason: string | null;
+}
+
+function hasActiveProviderSource(sourceHash: string): boolean {
+  const value = sourceHash.trim();
+  return value.startsWith('fyers:') || value.startsWith('fixture-');
 }
 
 /** Verify that the table is one complete daily snapshot for the requested trade
@@ -178,10 +184,12 @@ export async function getMasterContractFreshness(
     stableRows < MIN_STABLE_ROWS ||
     optStkRows < MIN_OPTSTK_ROWS ||
     manifest.completedAt.trim() === '' ||
-    manifest.sourceHash.trim() === ''
+    !hasActiveProviderSource(manifest.sourceHash)
   ) {
     state = 'incomplete';
-    reason = `master contracts ${expectedSyncDate} completed manifest failed sanity floors (total ${rowCount}, stable ${stableRows}, OPTSTK ${optStkRows})`;
+    reason = !hasActiveProviderSource(manifest.sourceHash)
+      ? `master contracts ${expectedSyncDate} snapshot is not from the active Fyers provider`
+      : `master contracts ${expectedSyncDate} completed manifest failed sanity floors (total ${rowCount}, stable ${stableRows}, OPTSTK ${optStkRows})`;
   } else {
     state = 'fresh';
     reason = null;
@@ -228,10 +236,8 @@ export class MasterContractsNotSyncedError extends Error {
 /**
  * Download CSV from Dhan, parse, and bulk-insert into SQLite.
  */
-async function syncFromDhan(today: string): Promise<void> {
+async function loadDhanMaster(today: string) {
   console.log(`[MasterContracts] Syncing from Dhan CSV for ${today}...`);
-  const startMs = Date.now();
-
   const resp = await fetch(MASTER_CSV_URL);
   if (!resp.ok) throw new Error(`Failed to fetch master CSV: ${resp.status}`);
 
@@ -344,6 +350,17 @@ async function syncFromDhan(today: string): Promise<void> {
     });
   }
 
+  return { entries, text };
+}
+
+/** Retained Dhan importer for explicit rollback; normal sync uses Fyers. */
+export async function syncFromDhan(today: string): Promise<void> {
+  const { entries, text } = await loadDhanMaster(today);
+  await persistMaster(today, entries, text, 'dhan');
+}
+
+async function persistMaster(today: string, entries: Awaited<ReturnType<typeof loadDhanMaster>>['entries'], text: string, provider: 'fyers' | 'dhan') {
+  const startMs = Date.now();
   // The database identity is (securityId, segment). Collapse byte-for-byte
   // duplicate CSV rows before insertion, but reject conflicting duplicates:
   // INSERT OR IGNORE used to hide those collisions and could silently drop a
@@ -445,7 +462,7 @@ async function syncFromDhan(today: string): Promise<void> {
   if (!seriesCoverage.ok) abort(seriesCoverage.reason ?? 'option series coverage shrank');
 
   console.log(`[MasterContracts] Parsed ${entries.length} entries, inserting into DB...`);
-  const sourceHash = createHash('sha256').update(text).digest('hex');
+  const sourceHash = provider + ':' + createHash('sha256').update(text).digest('hex');
 
   // DELETE + re-insert inside ONE transaction: a crash mid-sync used to leave
   // an empty table until a human noticed. Now the old rows survive any failure.
@@ -543,7 +560,8 @@ export async function forceSync(): Promise<{ count: number; elapsed: string }> {
   }, 30_000);
   renewal.unref?.();
   try {
-    await syncFromDhan(today);
+    const { entries, text } = await fetchFyersMaster(today);
+    await persistMaster(today, entries, text, 'fyers');
     const freshness = await getMasterContractFreshness(today);
     if (!freshness.acceptable) {
       throw new Error(`master-contracts sync committed without a valid manifest: ${freshness.reason ?? 'unknown'}`);
@@ -564,7 +582,7 @@ export interface MasterContractCatchUpResult {
 
 /** One-shot catch-up used at boot and before live capture. Dependency injection
  * keeps the stale->sync->verify safety sequence executable in CI without
- * downloading Dhan's large production CSV. The production sync is forceSync(),
+ * downloading the production master files. The production sync is forceSync(),
  * which owns the cross-process lease above. */
 export async function repairMasterContractsForDate(
   expectedSyncDate: string,

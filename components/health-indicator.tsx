@@ -25,7 +25,6 @@ interface HealthResp {
   ts: string;
   marketOpen: boolean;
   services: {
-    dhan: ServiceBase & { tokenExpiresAt: number | null };
     fyers: ServiceBase & { tokenExpiresAt: number | null; lastCycle: LastCycle | null };
     nse: ServiceBase & { lastSuccessAt: number };
   };
@@ -105,17 +104,11 @@ export function HealthIndicator() {
   }, [open]);
 
   const svc = data?.services;
-  const statuses: Status[] = svc ? [svc.dhan.status, svc.fyers.status, svc.nse.status] : ['idle', 'idle', 'idle'];
+  const statuses: Status[] = svc ? [svc.fyers.status, svc.nse.status] : ['idle', 'idle'];
   const worst = statuses.reduce<Status>((w, s) => (RANK[s] > RANK[w] ? s : w), 'ok');
 
   const rows: { key: string; name: string; s?: ServiceBase; extra?: React.ReactNode }[] = svc
     ? [
-        {
-          key: 'dhan',
-          name: 'Dhan',
-          s: svc.dhan,
-          extra: svc.dhan.tokenExpiresAt ? <>token → {fmtClock(svc.dhan.tokenExpiresAt)}</> : null,
-        },
         {
           key: 'fyers',
           name: 'Fyers',
@@ -145,7 +138,7 @@ export function HealthIndicator() {
         className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
         <span className="flex items-center gap-1">
-          {(['D', 'F', 'N'] as const).map((letter, i) => (
+          {(['F', 'N'] as const).map((letter, i) => (
             <span key={letter} className="flex items-center gap-0.5">
               <span className={`inline-block h-1.5 w-1.5 rounded-full ${DOT[statuses[i]]} ${worst === 'down' ? 'animate-pulse' : ''}`} />
               <span className="text-[10px]">{letter}</span>

@@ -19,7 +19,7 @@
  * different price sources.
  */
 
-import { bestBidAsk, dhanMarketFeed } from '@/lib/dhan/market-feed';
+import { bestBidAsk, marketFeed } from '@/lib/market-data';
 import {
   OPTION_WARN_SPREAD_PCT,
   MAX_RISK_PER_LOT_RUPEES,
@@ -99,7 +99,7 @@ export async function attachPremiums(options: OptionPlan[], policy?: PremiumPoli
   const unpriced: string[] = [];
   let midPriced = 0;
   try {
-    const q = await dhanMarketFeed('quote', { NSE_FNO: ids });
+    const q = await marketFeed('quote', { NSE_FNO: ids });
     const seg = q.NSE_FNO ?? {};
     for (const o of options) {
       const oq = seg[String(o.optSecurityId)];

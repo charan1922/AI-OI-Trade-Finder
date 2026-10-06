@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { todayIST } from '@/lib/dhan/market-feed';
+import { todayIST } from '@/lib/market-data';
 import { getFyersCandles, type StoredFyersBar } from '@/lib/fyers/candle-store';
 import { addToUniverse } from '@/lib/fyers/symbols';
 import { deriveSessionContext } from '@/lib/signals/session-context';

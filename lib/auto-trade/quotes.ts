@@ -13,7 +13,7 @@
  * keeps a real price to protect the position with.
  */
 
-import { bestBidAsk, dhanMarketFeed } from '@/lib/dhan/market-feed';
+import { bestBidAsk, marketFeed } from '@/lib/market-data';
 import { topOfBookSizes } from './backstops';
 import { prisma } from '@/lib/db';
 import { resolveOptionPrice } from '@/lib/trade-suggest/premiums';
@@ -56,7 +56,7 @@ export async function fetchOptionQuotesWithHealth(optSecurityIds: readonly strin
   const out: QuoteBatchResult = { quotes: new Map(), sourceOk: true, error: null, missingIds: [] };
   if (ids.length === 0) return out;
   try {
-    const q = await dhanMarketFeed('quote', { NSE_FNO: ids });
+    const q = await marketFeed('quote', { NSE_FNO: ids });
     const unpriced: string[] = [];
     for (const id of ids) {
       const oq = q.NSE_FNO?.[String(id)];

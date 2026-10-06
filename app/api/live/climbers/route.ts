@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
-import { isMarketHours, todayIST } from '@/lib/dhan/market-feed';
+import { isMarketHours, todayIST } from '@/lib/market-data';
 import { getLatestRankDate, getRaceSinceOpen, RANK_FEEDS, type RankFeed } from '@/lib/signals/rank-tracker';
 
 export const dynamic = 'force-dynamic';

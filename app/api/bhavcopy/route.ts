@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { tradedStrikeKeys } from '@/lib/backtest/data-downloader';
-import { EOD_PUBLISH_HOUR_IST } from '@/lib/dhan/market-feed';
+import { EOD_PUBLISH_HOUR_IST } from '@/lib/market-data';
 import { getBhavcopyStatus, syncBhavcopy } from '@/lib/historify/bhavcopy-service';
 
 export const dynamic = 'force-dynamic';

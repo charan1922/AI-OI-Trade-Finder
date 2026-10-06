@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { prisma } from '@/lib/db';
 import { adminOnly } from '@/lib/auth/server';
-import { isTradingDay, todayIST } from '@/lib/dhan/market-feed';
+import { isTradingDay, todayIST } from '@/lib/market-data';
 import { screenDaily, type ScreenResult } from '@/lib/signals/daily-screen';
 import { boardAtMinute, getTfBoardsForDate, getTfRaceForWindow, istMinutesNow } from '@/lib/tf-live/race';
 import { buildRecordedTfContext } from '@/lib/tf-live/context';

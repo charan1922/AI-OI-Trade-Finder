@@ -20,7 +20,7 @@ import { DEFAULT_SETTINGS } from './config';
 import type { AiProvider, AutoTradeSettings, BrokerId, ProfitTargetMode, TradeMode } from './types';
 
 const MODES: TradeMode[] = ['off', 'paper', 'approval', 'live'];
-const BROKERS: BrokerId[] = ['fyers', 'dhan'];
+const BROKERS: BrokerId[] = ['fyers'];
 const PROVIDERS: AiProvider[] = ['azure', 'mimo'];
 const PROFIT_TARGET_MODES: ProfitTargetMode[] = ['per_trade', 'per_lot'];
 
@@ -82,7 +82,7 @@ export const SETTING_DEFS: SettingDef[] = [
     parse: (raw) => oneOf(raw, BROKERS, 'broker'),
     serialize: String,
     label: 'Active broker',
-    description: 'Which account real orders go to. One active at a time; both stay wired.',
+    description: 'New real orders execute through Fyers.',
   },
   {
     key: 'aiProvider',

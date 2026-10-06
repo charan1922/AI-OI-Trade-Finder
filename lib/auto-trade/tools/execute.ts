@@ -7,7 +7,7 @@
  * once per engine pass — the model can only ever act on THIS cycle's picks.
  */
 
-import { isMarketHours } from '@/lib/dhan/market-feed';
+import { isMarketHours } from '@/lib/market-data';
 import { rankSectorsByActivity } from '@/lib/trade-suggest/sector-rank';
 import { isAutoTradeLiveEnabled } from '@/lib/env';
 import { getNumberSetting, getToggle } from '@/lib/config/feature-toggles';

@@ -16,6 +16,7 @@
 import { fyersModel } from 'fyers-api-v3';
 import path from 'node:path';
 import { FyersAuthError, clearFyersToken, fyersAppId, getFyersAccessToken } from '@/lib/fyers/auth';
+import { fyersDataLimits } from '@/lib/market-data/provider';
 
 const TAG = '[FyersClient]';
 const MIN_INTERVAL_MS = 350; // configured ceiling ≈2.8 dispatches/sec (≈171/min)
@@ -31,6 +32,9 @@ interface FyersGateState {
   lastDispatchAt: number;
   cooldownUntil: number;
   consecutive429: number;
+  dispatched?: number[];
+  day?: string;
+  dayCount?: number;
 }
 
 const gateHost = globalThis as unknown as {
@@ -45,21 +49,62 @@ gateHost.__fyersGate ??= {
 };
 const gate = gateHost.__fyersGate;
 
-function throughFyersGate<T>(task: () => Promise<T>): Promise<T> {
+function throughFyersGate<T>(task: () => Promise<T>, deadline = Date.now() + 60_000): Promise<T> {
   // Serialize DISPATCH times, not whole HTTP response times. Callers may use a
   // small bounded worker pool without increasing the configured request rate;
   // slow responses no longer create avoidable head-of-line blocking.
   const dispatch = gate.tail.then(async (): Promise<void> => {
-    const target = Math.max(gate.lastDispatchAt + MIN_INTERVAL_MS, gate.cooldownUntil);
+    const limits = fyersDataLimits();
+    const day = new Date(Date.now() + 19_800_000).toISOString().slice(0, 10);
+    if (gate.day !== day) { gate.day = day; gate.dayCount = 0; }
+    if ((gate.dayCount ?? 0) >= limits.perDay) throw new Error('Fyers daily data request budget exhausted');
+    gate.dispatched = (gate.dispatched ?? []).filter((at) => at > Date.now() - 60_000);
+    const minuteAt = gate.dispatched.length >= limits.perMinute ? gate.dispatched[0] + 60_001 : 0;
+    const target = Math.max(gate.lastDispatchAt + Math.max(MIN_INTERVAL_MS, 1000 / limits.perSecond), gate.cooldownUntil, minuteAt);
+    if (Math.max(Date.now(), target) > deadline) throw new Error('Fyers data capacity unavailable within request deadline; check FYERS_API_PLAN and reduce polling');
     const wait = target - Date.now();
     if (wait > 0) await sleep(wait);
     gate.lastDispatchAt = Date.now();
+    gate.dispatched.push(gate.lastDispatchAt);
+    gate.dayCount = (gate.dayCount ?? 0) + 1;
   });
   gate.tail = dispatch.then(
     () => undefined,
     () => undefined
   );
   return dispatch.then(task);
+}
+
+/** Strict REST boundary for migrated data paths. Never returns success-shaped empty data on an API error. */
+export async function requestFyersData(
+  endpoint: string,
+  params: Record<string, string | number>,
+  deadline = Date.now() + 8_000,
+): Promise<Record<string, unknown>> {
+  if (!['history', 'quotes', 'depth', 'options-chain-v3', 'history/fno/expired/expiry-dates',
+    'history/fno/expired/underlying-symbols', 'history/fno/expired/historical-data'].includes(endpoint)) {
+    throw new Error(`Unsupported Fyers data endpoint: ${endpoint}`);
+  }
+  const token = await getFyersAccessToken();
+  const query = new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]));
+  const response = await throughFyersGate(() => fetch(`https://api-t1.fyers.in/data/${endpoint}?${query}`, {
+    headers: { Authorization: `${fyersAppId()}:${token}` },
+    signal: AbortSignal.timeout(Math.max(1, Math.min(8_000, deadline - Date.now()))),
+    cache: 'no-store',
+  }), deadline);
+  if (response.status === 429) { noteFyers429(); throw new Error('Fyers data rate limit; cooling down'); }
+  if (response.status === 401 || response.status === 403) {
+    clearFyersToken();
+    throw new FyersAuthError(`Fyers data access HTTP ${response.status}; check token and API entitlement`);
+  }
+  if (!response.ok) throw new Error(`Fyers ${endpoint} HTTP ${response.status}`);
+  const result = await response.json() as Record<string, unknown>;
+  if (result.s !== 'ok') {
+    const failure = classifyFailure(result);
+    throw new Error(`Fyers ${endpoint}: ${failure.message}`);
+  }
+  noteFyersOk();
+  return result;
 }
 
 function noteFyers429(): void {
