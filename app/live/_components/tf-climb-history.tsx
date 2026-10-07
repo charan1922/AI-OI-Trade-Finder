@@ -52,6 +52,7 @@ export function TfClimbHistory() {
 
   const intervals = data?.climbHistory ?? [];
   const allSector = data?.captureStatus?.all_sector;
+  const rFactorData = data?.captureStatus?.rfactor_data;
   const marketPulse = data?.captureStatus?.market_pulse;
 
   return (
@@ -100,9 +101,10 @@ export function TfClimbHistory() {
         ) : (
           <div className="space-y-1 py-3 text-center text-[10px] text-muted-foreground">
             <p>No climbed-stock interval is available yet.</p>
-            {allSector?.successCount === 0 || (!allSector && (marketPulse?.successCount ?? 0) > 0) ? (
+            {(allSector?.successCount ?? 0) + (rFactorData?.successCount ?? 0) === 0 &&
+            (marketPulse?.successCount ?? 0) > 0 ? (
               <p className="rounded border border-amber-300/50 bg-amber-50 px-2 py-1 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
-                Market Pulse is capturing, but the TradeFinder all-sector R-Factor feed has no successful capture today.
+                Market Pulse is capturing, but no TradeFinder R-Factor board response has been captured today.
               </p>
             ) : null}
           </div>

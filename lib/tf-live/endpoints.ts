@@ -58,12 +58,13 @@
  *      against the real payloads now accumulating — not speculatively.
  */
 
-export const TF_ENDPOINTS = ['all_sector', 'daily-index', 'market_pulse', 'check_signal'] as const;
+export const TF_ENDPOINTS = ['all_sector', 'rfactor_data', 'daily-index', 'market_pulse', 'check_signal'] as const;
 
 export type TfEndpoint = (typeof TF_ENDPOINTS)[number];
 
 export const TF_ENDPOINT_URL: Record<TfEndpoint, string> = {
   'all_sector': 'https://tradefinder.in/api_be/data/order/all_sector',
+  'rfactor_data': 'https://tradefinder.in/api_be/rfactor_filter/rfactor_data',
   'daily-index': 'https://tradefinder.in/api_be/data/order/daily-index',
   'market_pulse': 'https://tradefinder.in/api_be/data/market_pulse',
   'check_signal': 'https://tradefinder.in/api_be/admin/users/check_signal',
@@ -71,4 +72,4 @@ export const TF_ENDPOINT_URL: Record<TfEndpoint, string> = {
 
 /** Endpoints whose payload shape has been confirmed and has a parser. The rest
  *  are captured raw — see the module note above. */
-export const TF_PARSED_ENDPOINTS: readonly TfEndpoint[] = ['all_sector', 'daily-index'];
+export const TF_PARSED_ENDPOINTS: readonly TfEndpoint[] = ['all_sector', 'rfactor_data', 'daily-index'];

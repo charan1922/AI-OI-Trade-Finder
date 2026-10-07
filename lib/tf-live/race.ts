@@ -12,7 +12,11 @@
  * this says so rather than inventing a rank from a single data point.
  */
 import { prisma } from '@/lib/db';
-import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
+import { parseAllSector, parseDailyIndex, parseRFactorData } from '@/lib/tf-live/parse';
+
+function parseBoardCapture(endpoint: string, payload: unknown) {
+  return endpoint === 'rfactor_data' ? parseRFactorData(payload) : parseAllSector(payload);
+}
 
 /**
  * 09:35 IST, moved back from 09:45 (operator, 2026-08-11) so accumulation that
@@ -171,21 +175,21 @@ function minutesIST(iso: string): number {
 export async function getTfBoardsForDate(date: string): Promise<TfBoardAt[]> {
   const captures = (await prisma.$queryRawUnsafe(
     `
-    SELECT capturedAt, payloadJson
+    SELECT endpoint, capturedAt, payloadJson
     FROM tf_live_captures
-    WHERE endpoint = 'all_sector' AND status = 'success'
+    WHERE endpoint IN ('all_sector', 'rfactor_data') AND status = 'success'
       AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
     ORDER BY capturedAt ASC
   `,
     date
-  )) as { capturedAt: string; payloadJson: string | null }[];
+  )) as { endpoint: string; capturedAt: string; payloadJson: string | null }[];
 
   const boards: TfBoardAt[] = [];
   for (const capture of captures) {
     if (!capture.payloadJson) continue;
     let scored: { symbol: string; rFactor: number; pctChange: number | null }[] = [];
     try {
-      scored = parseAllSector(JSON.parse(capture.payloadJson))
+      scored = parseBoardCapture(capture.endpoint, JSON.parse(capture.payloadJson))
         .filter((r): r is typeof r & { rFactor: number } => r.rFactor != null && Number.isFinite(r.rFactor))
         .map((r) => ({ symbol: r.symbol.toUpperCase(), rFactor: r.rFactor, pctChange: r.pctChange }))
         .sort((a, b) => b.rFactor - a.rFactor);
@@ -366,14 +370,14 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
 
   const captures = (await prisma.$queryRawUnsafe(
     `
-    SELECT id, capturedAt, payloadJson
+    SELECT id, endpoint, capturedAt, payloadJson
     FROM tf_live_captures
-    WHERE endpoint = 'all_sector' AND status = 'success'
+    WHERE endpoint IN ('all_sector', 'rfactor_data') AND status = 'success'
       AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
     ORDER BY capturedAt ASC
   `,
     date
-  )) as { id: number; capturedAt: string; payloadJson: string | null }[];
+  )) as { id: number; endpoint: string; capturedAt: string; payloadJson: string | null }[];
 
   const rawWindow = captures.filter((c) => {
     const min = minutesIST(c.capturedAt);
@@ -387,7 +391,7 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     let scored: { symbol: string; rFactor: number }[] = [];
     if (capture.payloadJson) {
       try {
-        scored = parseAllSector(JSON.parse(capture.payloadJson))
+        scored = parseBoardCapture(capture.endpoint, JSON.parse(capture.payloadJson))
           .filter((r): r is typeof r & { rFactor: number } => r.rFactor != null)
           .map((r) => ({ symbol: r.symbol, rFactor: r.rFactor }))
           .sort((a, b) => b.rFactor - a.rFactor);

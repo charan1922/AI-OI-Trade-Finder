@@ -20,6 +20,10 @@ function check(name: string, condition: boolean, detail = ''): void {
 function main(): void {
   // ── The allowlist IS the security boundary for what gets stored. ──
   check('all_sector maps from its real path', endpointTagFor('/api_be/data/order/all_sector') === 'all_sector');
+  check(
+    'rfactor_data maps from the current Market Pulse path',
+    endpointTagFor('/api_be/rfactor_filter/rfactor_data') === 'rfactor_data'
+  );
   check('daily-index maps from its real path', endpointTagFor('/api_be/data/order/daily-index') === 'daily-index');
   // market_pulse sits under /api_be/data/, one segment shallower than the other
   // two (/api_be/data/order/) — TradeFinder's inconsistency, which must be
@@ -50,7 +54,6 @@ function main(): void {
   // Real traffic the page fires that nobody in this app reads.
   check('servertime is not tracked', endpointTagFor('/api_be/servertime') === null);
   check('feature_flag is not tracked', endpointTagFor('/api_be/feature_flag/feature_read') === null);
-  check('rfactor_data is not tracked', endpointTagFor('/api_be/rfactor_filter/rfactor_data') === null);
   // TF's OWN sector_scope endpoint is unrelated to this app's /sector-scope page.
   check("TF's own sector_scope is not tracked", endpointTagFor('/api_be/data/order/sector_scope') === null);
   check('a non-api_be path is not tracked', endpointTagFor('/market-pulse') === null);
@@ -109,6 +112,14 @@ function main(): void {
 
   // ── Row extraction stays delegated to the confirmed parsers. ──
   check('an unparsed feed yields no rows', extractRows('market_pulse', { status: 'SUCCESS' }) === undefined);
+  const currentRFactorRows = extractRows('rfactor_data', {
+    status: 'SUCCESS',
+    payload: { data: { rows: [{ symbol: 'INFY', rFactor: 2.75, ltp: 1500, pctChange: 1.2 }] } },
+  }) as { symbol?: string; rFactor?: number }[] | undefined;
+  check(
+    'current rfactor_data shape yields symbol R-Factor rows',
+    currentRFactorRows?.[0]?.symbol === 'INFY' && currentRFactorRows[0].rFactor === 2.75
+  );
   check('a garbage all_sector payload yields no rows', extractRows('all_sector', { nope: true }) === undefined);
   check('an unknown tag yields no rows', extractRows('not_a_feed', {}) === undefined);
 }

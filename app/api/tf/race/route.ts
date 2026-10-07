@@ -72,7 +72,7 @@ export async function GET(req: Request) {
       const rows = (await prisma.$queryRawUnsafe(
         `SELECT DISTINCT date(datetime(capturedAt,'+5 hours','+30 minutes')) d
          FROM tf_live_captures
-         WHERE endpoint = 'all_sector' AND status = 'success'
+         WHERE endpoint IN ('all_sector', 'rfactor_data') AND status = 'success'
            AND date(datetime(capturedAt,'+5 hours','+30 minutes')) < ?
          ORDER BY d DESC LIMIT 5`,
         today

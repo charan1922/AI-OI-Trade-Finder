@@ -37,7 +37,7 @@
  * rank today's trades on a two-hour-old picture.
  */
 import { prisma } from '@/lib/db';
-import { parseAllSector } from '@/lib/tf-live/parse';
+import { parseAllSector, parseRFactorData } from '@/lib/tf-live/parse';
 
 export interface TfSymbolSnapshot {
   rFactor: number;
@@ -94,19 +94,19 @@ export async function getTfSnapshot(date: string, asOfMs: number = Date.now()): 
     };
   }
 
-  let rows: { capturedAt: string; payloadJson: string | null }[] = [];
+  let rows: { endpoint: string; capturedAt: string; payloadJson: string | null }[] = [];
   try {
     rows = (await prisma.$queryRawUnsafe(
       `
-      SELECT capturedAt, payloadJson
+      SELECT endpoint, capturedAt, payloadJson
       FROM tf_live_captures
-      WHERE endpoint = 'all_sector' AND status = 'success'
+      WHERE endpoint IN ('all_sector', 'rfactor_data') AND status = 'success'
         AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
       ORDER BY capturedAt DESC
       LIMIT 1
     `,
       date
-    )) as { capturedAt: string; payloadJson: string | null }[];
+    )) as { endpoint: string; capturedAt: string; payloadJson: string | null }[];
   } catch {
     // The table may not exist yet on a box that has never run the collector.
     // Missing TF data must never break a scan.
@@ -123,7 +123,7 @@ export async function getTfSnapshot(date: string, asOfMs: number = Date.now()): 
     return EMPTY(date);
   }
 
-  const scored = parseAllSector(parsed)
+  const scored = (row.endpoint === 'rfactor_data' ? parseRFactorData(parsed) : parseAllSector(parsed))
     .filter((r): r is typeof r & { rFactor: number } => r.rFactor != null && Number.isFinite(r.rFactor))
     .sort((a, b) => b.rFactor - a.rFactor);
   if (scored.length === 0) return EMPTY(date);

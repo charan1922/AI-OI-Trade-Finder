@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { prisma } from '@/lib/db';
 import { tfFetch } from '@/lib/tf-live/client';
 import type { TfEndpoint } from '@/lib/tf-live/endpoints';
-import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
+import { parseAllSector, parseDailyIndex, parseRFactorData } from '@/lib/tf-live/parse';
 
 const SESSION_KEY_ENV = 'TF_LIVE_SESSION_KEY';
 const DAILY_INDEX_URL = 'https://tradefinder.in/api_be/data/order/daily-index';
@@ -495,12 +495,12 @@ export async function getLatestTfRFactorBySymbol(): Promise<{
 }> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(`
-    SELECT capturedAt, payloadJson
+    SELECT endpoint, capturedAt, payloadJson
     FROM tf_live_captures
-    WHERE endpoint = 'all_sector' AND status = 'success'
+    WHERE endpoint IN ('all_sector', 'rfactor_data') AND status = 'success'
     ORDER BY capturedAt DESC
     LIMIT 1
-  `)) as { capturedAt: string; payloadJson: string | null }[];
+  `)) as { endpoint: string; capturedAt: string; payloadJson: string | null }[];
   const row = rows[0];
   const bySymbol = new Map<string, TfSymbolQuote>();
   if (!row?.payloadJson) return { capturedAt: null, bySymbol };
@@ -511,7 +511,8 @@ export async function getLatestTfRFactorBySymbol(): Promise<{
   } catch {
     return { capturedAt: null, bySymbol };
   }
-  for (const r of parseAllSector(parsed)) {
+  const parsedRows = row.endpoint === 'rfactor_data' ? parseRFactorData(parsed) : parseAllSector(parsed);
+  for (const r of parsedRows) {
     bySymbol.set(r.symbol, { ltp: r.ltp, rFactor: r.rFactor, pctChange: r.pctChange, previousClose: r.previousClose });
   }
   return { capturedAt: row.capturedAt, bySymbol };

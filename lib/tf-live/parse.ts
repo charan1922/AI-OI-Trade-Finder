@@ -77,6 +77,48 @@ export function parseAllSector(payload: unknown): TfStockRow[] {
   return [...bySymbol.values()];
 }
 
+/** Parse TradeFinder's current Market Pulse R-Factor response. The endpoint
+ * has appeared both as a nested basket map and as nested/flat symbol records,
+ * so traversal is shape-tolerant while field interpretation stays explicit. */
+export function parseRFactorData(payload: unknown): TfStockRow[] {
+  const legacy = parseAllSector(payload);
+  if (legacy.length > 0) return legacy;
+
+  const root =
+    (payload as { payload?: { data?: unknown } } | null)?.payload?.data ??
+    (payload as { data?: unknown } | null)?.data;
+  if (root == null) return [];
+
+  const bySymbol = new Map<string, TfStockRow>();
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 6 || value == null || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    const row = value as Record<string, unknown>;
+    const rawSymbol = row.Symbol ?? row.symbol ?? row.trading_symbol ?? row.tradingSymbol;
+    const explicitR = row.r_factor ?? row.rFactor ?? row.rfactor ?? row.RFactor;
+    const positionalR = rawSymbol != null ? row.param_3 : null;
+    const rFactor = num(explicitR ?? positionalR);
+    if (typeof rawSymbol === 'string' && rawSymbol.trim() !== '' && rFactor != null) {
+      const symbol = rawSymbol.trim().toUpperCase();
+      bySymbol.set(symbol, {
+        symbol,
+        baskets: [],
+        ltp: num(row.ltp ?? row.LTP ?? row.param_0),
+        previousClose: num(row.previousClose ?? row.prev_close ?? row.param_1),
+        pctChange: num(row.pctChange ?? row.change_percent ?? row.param_2),
+        rFactor,
+      });
+      return;
+    }
+    for (const child of Object.values(row)) visit(child, depth + 1);
+  };
+  visit(root, 0);
+  return [...bySymbol.values()];
+}
+
 /** `daily-index` is already a flat array: [{ Symbol, param_3 }, ...]. */
 export function parseDailyIndex(payload: unknown): { name: string; value: number | null }[] {
   const data = (payload as { payload?: { data?: unknown } } | null)?.payload?.data;

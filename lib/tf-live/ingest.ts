@@ -10,7 +10,7 @@
  * one that already swapped param_2/param_3 once).
  */
 import { TF_ENDPOINTS } from '@/lib/tf-live/endpoints';
-import { parseAllSector, parseDailyIndex } from '@/lib/tf-live/parse';
+import { parseAllSector, parseDailyIndex, parseRFactorData } from '@/lib/tf-live/parse';
 
 /** ONLY these get stored — see lib/tf-live/endpoints.ts's module note for why
  *  the list is exactly these three. Everything else the page fires
@@ -45,6 +45,7 @@ const ALLOWED_TAGS = new Set<string>(TF_ENDPOINTS);
 export function endpointTagFor(pathname: string): string | null {
   let tag: string;
   if (pathname.endsWith('/data/order/all_sector')) tag = 'all_sector';
+  else if (pathname.endsWith('/rfactor_filter/rfactor_data')) tag = 'rfactor_data';
   else if (pathname.endsWith('/data/order/daily-index')) tag = 'daily-index';
   else if (pathname.endsWith('/data/market_pulse')) tag = 'market_pulse';
   else if (pathname.endsWith('/admin/users/check_signal')) tag = 'check_signal';
@@ -62,6 +63,10 @@ export function endpointTagFor(pathname: string): string | null {
 export function extractRows(tag: string, payload: unknown): unknown[] | undefined {
   if (tag === 'all_sector') {
     const rows = parseAllSector(payload);
+    return rows.length > 0 ? rows : undefined;
+  }
+  if (tag === 'rfactor_data') {
+    const rows = parseRFactorData(payload);
     return rows.length > 0 ? rows : undefined;
   }
   if (tag === 'daily-index') {
