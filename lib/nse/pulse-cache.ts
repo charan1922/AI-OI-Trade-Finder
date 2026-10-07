@@ -18,7 +18,7 @@
  *
  * That cost used to land inside POST /api/live/quote, which awaited the
  * oi-spurts feed for its display columns. The /live client aborts a quote after
- * 8s (FETCH_TIMEOUT_MS in app/live/_lib/quote-scheduler.ts), so every poll was
+ * 8s (FETCH_TIMEOUT_MS in app/live/_lib/live-quote.ts), so every poll was
  * cancelled mid-flight while the server kept burning a Dhan quote-gate slot —
  * the page showed a wall of `(canceled)` requests with nothing actually broken
  * on the Dhan side. Three guards, all here so every caller gets them:

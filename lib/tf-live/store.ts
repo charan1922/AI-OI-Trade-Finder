@@ -230,6 +230,24 @@ export async function getTfCaptureCountsForDate(
   return rows.map((r) => ({ endpoint: r.endpoint, success: Number(r.success ?? 0), error: Number(r.error ?? 0) }));
 }
 
+/** Every successful capture time on one IST date for the given feeds, oldest
+ *  first — the /tf time picker's stops. */
+export async function getTfCaptureTimesForDate(endpoints: readonly TfEndpoint[], date: string): Promise<string[]> {
+  if (endpoints.length === 0) return [];
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(
+    `
+    SELECT capturedAt FROM tf_live_captures
+     WHERE endpoint IN (${endpoints.map(() => '?').join(', ')}) AND status = 'success'
+       AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
+     ORDER BY capturedAt ASC
+  `,
+    ...endpoints,
+    date
+  )) as { capturedAt: string }[];
+  return rows.map((r) => r.capturedAt);
+}
+
 /** Every IST calendar date with at least one SUCCESSFUL capture for the given
  *  endpoint, most recent first — the EOD page's date picker. */
 export async function getTfLiveCaptureDates(endpoint: TfEndpoint): Promise<string[]> {
@@ -252,7 +270,9 @@ export async function getTfLiveCaptureDates(endpoint: TfEndpoint): Promise<strin
  *  when it was actually captured. */
 export async function getTfLiveCaptureForDate(
   endpoint: TfEndpoint,
-  date: string
+  date: string,
+  /** ISO time: return the last capture AT OR BEFORE it (the /tf time picker). */
+  atOrBefore?: string
 ): Promise<{ capturedAt: string; payload: unknown } | null> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(
@@ -261,11 +281,14 @@ export async function getTfLiveCaptureForDate(
     FROM tf_live_captures
     WHERE endpoint = ? AND status = 'success'
       AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
+      AND capturedAt <= ?
     ORDER BY capturedAt DESC
     LIMIT 1
   `,
     endpoint,
-    date
+    date,
+    // ISO strings compare in time order; '9999' = no upper bound.
+    atOrBefore ?? '9999'
   )) as { capturedAt: string; payloadJson: string | null }[];
   const row = rows[0];
   if (!row || !row.payloadJson) return null;

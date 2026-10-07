@@ -269,7 +269,7 @@ export function breakoutRank(r: LiveUrgencyRow): number {
  */
 function BreakoutCell({ r }: { r: LiveUrgencyRow }) {
   const b = r.breakout;
-  if (b == null) return <span className="text-muted-foreground/50">\u2014</span>;
+  if (b == null) return <span className="text-muted-foreground/50">{'\u2014'}</span>;
   if (b.grade === 'none')
     return (
       <span className="text-muted-foreground/50" title={b.detail}>

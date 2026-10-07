@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { adminOnly } from '@/lib/auth/server';
 import { todayIST } from '@/lib/ist';
 import { forceStartTfBrowser, isTfBrowserRunning, restartTfBrowser, stopTfBrowser } from '@/lib/tf-live/browser';
+import { TF_ENDPOINTS } from '@/lib/tf-live/endpoints';
 import { parseMarketPulse, parseSectorScope } from '@/lib/tf-live/parse';
 import { extractCookieHeaderFromCurl } from '@/lib/tf-live/parse-curl';
 import {
@@ -11,6 +12,7 @@ import {
   getLatestTfLiveCaptures,
   getTfBrowserSessionStatus,
   getTfCaptureCountsForDate,
+  getTfCaptureTimesForDate,
   getTfLiveCaptureForDate,
   saveTfBrowserCookies,
 } from '@/lib/tf-live/store';
@@ -25,32 +27,46 @@ export async function GET(req: Request) {
   const denied = adminOnly(req);
   if (denied) return denied;
   try {
-    return NextResponse.json(await statusBody(new URL(req.url).searchParams.get('data') === '1'));
+    const params = new URL(req.url).searchParams;
+    const at = params.get('at');
+    if (at != null && Number.isNaN(Date.parse(at))) {
+      return NextResponse.json({ success: false, error: 'at must be an ISO time' }, { status: 400 });
+    }
+    return NextResponse.json(await statusBody(params.get('data') === '1', at ?? undefined));
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
 }
 
-async function statusBody(withData: boolean) {
+async function statusBody(withData: boolean, at?: string) {
   const [session, captures, counts, today] = await Promise.all([
     getTfBrowserSessionStatus(),
     getLatestTfLiveCaptures(),
     getTfCaptureCountsForDate(todayIST()),
-    withData ? getTodaysData() : Promise.resolve(undefined),
+    withData ? getTodaysData(at) : Promise.resolve(undefined),
   ]);
   return { success: true, session, running: isTfBrowserRunning(), captures, counts, today };
 }
 
-/** `?data=1`: the latest successful capture of each feed TODAY (IST), parsed —
- *  what /tf shows as its data tables. Older days live on /tf/history. */
-async function getTodaysData() {
+/** `?data=1`: today's (IST) data, parsed — what /tf shows as its data tables.
+ *  `&at=<ISO>` picks the last capture of each feed at or before that time, so
+ *  the operator can step through the day; without it, the latest. `times` are
+ *  the picker's stops: one per capture minute (both feeds fire on the same page
+ *  load ~0.1s apart, so each minute keeps its LAST capture, which covers both).
+ *  Older days live on /tf/history. */
+async function getTodaysData(at?: string) {
   const date = todayIST();
-  const [sector, pulse] = await Promise.all([
-    getTfLiveCaptureForDate('sector_scope', date),
-    getTfLiveCaptureForDate('market_pulse', date),
+  const [sector, pulse, allTimes] = await Promise.all([
+    getTfLiveCaptureForDate('sector_scope', date, at),
+    getTfLiveCaptureForDate('market_pulse', date, at),
+    getTfCaptureTimesForDate(TF_ENDPOINTS, date),
   ]);
+  const byMinute = new Map<string, string>();
+  for (const t of allTimes) byMinute.set(t.slice(0, 16), t); // ascending, so the last per minute wins
   return {
     date,
+    at: at ?? null,
+    times: [...byMinute.values()],
     sectorScope: sector ? { capturedAt: sector.capturedAt, rows: parseSectorScope(sector.payload) } : null,
     marketPulse: pulse ? { capturedAt: pulse.capturedAt, lists: parseMarketPulse(pulse.payload) } : null,
   };

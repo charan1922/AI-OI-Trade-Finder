@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { scheduleQuote } from '../_lib/quote-scheduler';
+import { fetchLiveQuote } from '../_lib/live-quote';
 import type {
   LiveQuoteResponse,
   LiveUrgencyRow,
@@ -16,12 +16,10 @@ const LIST_POLL_MS = 60_000;
 // Stagger each section's FIRST list fetch so four sections don't hit NSE's pulse
 // feeds in the same instant on mount (mirrors the /nse/movers stagger).
 const LIST_STAGGER_MS = 400;
-// Live depth/urgency QUOTES are the fast signal. Per section; the server-side
-// Quote-API gate (lib/dhan/market-feed.ts) serializes ALL callers to a safe margin
-// under Dhan's 1 req/sec, and the in-flight guard below keeps at most one
-// outstanding request per section. 7s × 4 sections ≈ 0.57 req/sec keeps total
-// demand under the gate's ~0.67/sec capacity (with headroom for the heatmap), so
-// quotes drain steadily instead of perpetually queueing.
+// Live urgency rows, per section, each on its own timer with no shared queue
+// (see _lib/live-quote.ts). The in-flight guard below keeps at most one
+// outstanding request per section. Must stay above the server's 6.5s shared
+// response-cache TTL (app/api/live/_lib/quote-response-cache.ts).
 const QUOTE_POLL_MS = 7_000;
 
 export interface CategoryUrgency {
@@ -45,8 +43,9 @@ export interface CategoryUrgency {
 
 /**
  * One Live Urgency category, loaded independently: its F&O-gated mover list (from
- * /api/live/nse-watchlist) on a slow staggered timer, and live depth quotes for
- * those names (via the rate-limited quote scheduler) on a fast timer. This mirrors
+ * /api/live/nse-watchlist) on a slow staggered timer, and live rows for those
+ * names (its own /api/live/quote call, no queue shared with other sections) on a
+ * fast timer. This mirrors
  * how /nse/movers runs each panel on its own feed.
  */
 export function useCategoryUrgency(source: WatchlistSource, staggerIndex: number): CategoryUrgency {
@@ -112,11 +111,11 @@ export function useCategoryUrgency(source: WatchlistSource, staggerIndex: number
       setRows([]);
       return;
     }
-    if (inFlight.current) return; // one outstanding quote per section bounds the scheduler queue
+    if (inFlight.current) return; // at most one outstanding request per section
     inFlight.current = true;
     setQuoteLoading(true);
     try {
-      const d: LiveQuoteResponse = await scheduleQuote(symbolsKey.split(','), fresh);
+      const d: LiveQuoteResponse = await fetchLiveQuote(symbolsKey.split(','), fresh);
       if (d.success) {
         setMarketOpen(d.marketOpen);
         setSnapshot(d.snapshot === true);

@@ -8,6 +8,7 @@ import {
 import { TF_BOARD_ENDPOINTS } from '@/lib/tf-live/endpoints';
 import {
   isPriceList,
+  isRFactorParam3,
   parseAllSector,
   parseMarketPulse,
   parseSectorScope,
@@ -192,6 +193,24 @@ function main(): void {
     ] }),
   );
   check('market_pulse: an empty list is never labelled', !isPriceList({ name: 'x', rows: [] }));
+  // param_3 is R-Factor ONLY where it equals the sector_scope R-Factor of the
+  // same capture for every overlapping symbol: intraday_boost matched 80 of 80
+  // on 2026-10-08, top_gainers only 12 of 25 (so it is something else there).
+  const rBySymbol = new Map([['INDIANB', 4.27], ['UNIONBANK', 3.99], ['PNB', 3.82], ['CANBK', 3.64], ['ASTRAL', 3.38]]);
+  const boost = {
+    name: 'intraday_boost',
+    rows: [...rBySymbol].map(([symbol, r]) => ({ symbol, params: [1, 1, 0, r] as (number | string | null)[] })),
+  };
+  check('market_pulse: param_3 equal to the board R-Factor on every row IS R-Factor', isRFactorParam3(boost, rBySymbol));
+  check(
+    'market_pulse: one row off un-labels it',
+    !isRFactorParam3({ ...boost, rows: [...boost.rows.slice(1), { symbol: 'INDIANB', params: [1, 1, 0, 2.26] }] }, rBySymbol),
+  );
+  check(
+    'market_pulse: too little overlap with the board proves nothing',
+    !isRFactorParam3({ ...boost, rows: boost.rows.slice(0, 2) }, rBySymbol),
+  );
+  check('market_pulse: no board, no label', !isRFactorParam3(boost, new Map()));
   check('market_pulse: an unrelated payload yields no lists', parseMarketPulse({ payload: { data: null } }).length === 0);
 }
 

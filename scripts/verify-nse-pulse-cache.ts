@@ -4,7 +4,7 @@
  *
  * Why this needs a bench: POST /api/live/quote awaits the oi-spurts feed for its
  * display columns, and the /live client abandons the request after 8s
- * (FETCH_TIMEOUT_MS in app/live/_lib/quote-scheduler.ts). An NSE miss from a
+ * (FETCH_TIMEOUT_MS in app/live/_lib/live-quote.ts). An NSE miss from a
  * datacentre IP can run for tens of seconds — cookie warm-up (2 × 6s) + API
  * timeout (9s) + one 401/403 retry — so without these guards the page shows a
  * wall of `(canceled)` quote requests with nothing actually wrong on the Dhan

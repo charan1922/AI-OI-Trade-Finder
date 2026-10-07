@@ -281,7 +281,7 @@ export default function SectorScopePage() {
       //     grid is already up as an even mesh and re-proportions when turnover
       //     lands.
       //  2. More seriously, it takes the SAME gate /live's quote polling needs.
-      //     app/live/_lib/quote-scheduler.ts aborts any quote that exceeds
+      //     app/live/_lib/live-quote.ts aborts any quote that exceeds
       //     FETCH_TIMEOUT_MS (8s), which the browser reports as "(canceled)" —
       //     observed live on 2026-08-10. A cosmetic tile size must never
       //     out-queue the trading page's quotes.

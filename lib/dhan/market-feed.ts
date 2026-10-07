@@ -45,7 +45,7 @@ export type MarketFeedResponse = Record<string, Record<string, MarketFeedQuote>>
  * slot — so an unbounded request does not just fail slowly, it stops all Dhan
  * quote traffic for as long as the socket stays open (Node's fetch never times
  * out on its own). The /live client abandons a quote after 8s
- * (FETCH_TIMEOUT_MS in app/live/_lib/quote-scheduler.ts) and the gate spaces
+ * (FETCH_TIMEOUT_MS in app/live/_lib/live-quote.ts) and the gate spaces
  * dispatches 1.5s apart, so 5s is comfortably above a healthy response
  * (~200–500ms) while keeping a stall to a single missed poll.
  */

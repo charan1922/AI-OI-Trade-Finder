@@ -16,7 +16,12 @@ import { AlertTriangle, KeyRound, Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRole } from '@/lib/auth/use-role';
 import { TF_ENDPOINTS } from '@/lib/tf-live/endpoints';
-import { isPriceList, type TfPulseList as PulseList, type TfStockRow as StockRow } from '@/lib/tf-live/parse';
+import {
+  isPriceList,
+  isRFactorParam3,
+  type TfPulseList as PulseList,
+  type TfStockRow as StockRow,
+} from '@/lib/tf-live/parse';
 
 const POLL_MS = 15_000;
 /** A board older than this is shown amber — it is not live any more. */
@@ -32,6 +37,12 @@ const fmtDateTime = (iso: string | null | undefined) =>
         minute: '2-digit',
         second: '2-digit',
       })
+    : '—';
+
+/** HH:MM in IST — the time picker's label. */
+const fmtClock = (iso: string | undefined) =>
+  iso
+    ? new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false })
     : '—';
 
 const fmtNum = (v: number | string | null | undefined) =>
@@ -69,6 +80,10 @@ interface TfStatus {
   counts: { endpoint: string; success: number; error: number }[];
   today?: {
     date: string;
+    /** The picked time (ISO), or null for the latest capture. */
+    at: string | null;
+    /** Every capture minute today (ISO, oldest first) — the time picker's stops. */
+    times: string[];
     sectorScope: { capturedAt: string; rows: StockRow[] } | null;
     marketPulse: { capturedAt: string; lists: PulseList[] } | null;
   };
@@ -85,6 +100,9 @@ export default function TfPage() {
   const [browserNotice, setBrowserNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [tab, setTab] = useState('sector_scope');
+  // Picked capture time (ISO) for "Today's data"; null = Live (the latest).
+  const [at, setAt] = useState<string | null>(null);
+  const atRef = useRef<string | null>(null);
 
   /**
    * Never fail silently. This used to be `if (j.success) setData(j)` wrapped in
@@ -98,7 +116,8 @@ export default function TfPage() {
    */
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/tf/browser-session?data=1', { cache: 'no-store' });
+      const atParam = atRef.current ? `&at=${encodeURIComponent(atRef.current)}` : '';
+      const res = await fetch(`/api/tf/browser-session?data=1${atParam}`, { cache: 'no-store' });
       if (res.status === 401 || res.status === 403) {
         setStatusError('Your app login expired — reload the page and sign in again to see the TradeFinder status.');
         return;
@@ -133,6 +152,19 @@ export default function TfPage() {
       clearTimeout(timer);
     };
   }, []);
+
+  // A new pick loads at once — debounced so dragging the slider sends one
+  // request when it settles, not one per step. The 15s poll keeps the pick.
+  const firstAt = useRef(true);
+  useEffect(() => {
+    atRef.current = at;
+    if (firstAt.current) {
+      firstAt.current = false;
+      return;
+    }
+    const t = setTimeout(() => void refreshRef.current(), 200);
+    return () => clearTimeout(t);
+  }, [at]);
 
   const clearHistory = useCallback(async () => {
     if (!confirm('Clear all captured history? This only wipes the capture log — your saved browser cookie session is untouched.')) return;
@@ -224,15 +256,26 @@ export default function TfPage() {
     () => [...(data?.today?.sectorScope?.rows ?? [])].sort((x, y) => (y.rFactor ?? -1) - (x.rFactor ?? -1)),
     [data]
   );
-  const pulseLists = data?.today?.marketPulse?.lists ?? [];
+  // intraday_boost is the 2nd tab (operator request, 2026-10-08); the other
+  // lists keep TradeFinder's own order after it.
+  const pulseLists = useMemo(() => {
+    const lists = data?.today?.marketPulse?.lists ?? [];
+    return [...lists.filter((l) => l.name === 'intraday_boost'), ...lists.filter((l) => l.name !== 'intraday_boost')];
+  }, [data]);
   const activePulse = pulseLists.find((l) => l.name === tab) ?? null;
+  // The board's R-Factor per symbol — what proves a pulse list's param_3 is R-Factor.
+  const rBySymbol = useMemo(() => new Map(sectorRows.map((r) => [r.symbol, r.rFactor])), [sectorRows]);
   const activeAt = tab === 'sector_scope' ? data?.today?.sectorScope?.capturedAt : data?.today?.marketPulse?.capturedAt;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), POLL_MS);
     return () => clearInterval(t);
   }, []);
-  const ageMin = activeAt ? (now - Date.parse(activeAt)) / 60_000 : null;
+  // Staleness only means something when watching Live, not a picked past time.
+  const ageMin = activeAt && at == null ? (now - Date.parse(activeAt)) / 60_000 : null;
+  const times = data?.today?.times ?? [];
+  const pickIndex = at == null ? times.length - 1 : Math.max(0, times.findLastIndex((t) => t <= at));
+  const pickTime = (i: number) => setAt(i >= times.length - 1 ? null : times[Math.max(0, i)]);
 
   return (
     <div className="mx-auto max-w-5xl space-y-3 p-3">
@@ -434,6 +477,50 @@ export default function TfPage() {
               </span>
             )}
           </div>
+          {times.length > 1 && (
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+              <button
+                type="button"
+                onClick={() => pickTime(pickIndex - 1)}
+                disabled={pickIndex <= 0}
+                aria-label="Previous capture"
+                className="rounded-md border border-border px-2 py-0.5 hover:bg-muted disabled:opacity-40"
+              >
+                ◀
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={times.length - 1}
+                value={pickIndex}
+                onChange={(e) => pickTime(Number(e.target.value))}
+                aria-label="Capture time"
+                className="min-w-40 flex-1 accent-primary"
+              />
+              <button
+                type="button"
+                onClick={() => pickTime(pickIndex + 1)}
+                disabled={at == null}
+                aria-label="Next capture"
+                className="rounded-md border border-border px-2 py-0.5 hover:bg-muted disabled:opacity-40"
+              >
+                ▶
+              </button>
+              <span className="w-16 text-center font-mono tabular-nums">{fmtClock(times[pickIndex])}</span>
+              <button
+                type="button"
+                onClick={() => setAt(null)}
+                className={`rounded-md border px-2 py-0.5 ${
+                  at == null ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted'
+                }`}
+              >
+                Live
+              </button>
+              <span className="text-muted-foreground">
+                {times.length} captures today · {fmtClock(times[0])}–{fmtClock(times[times.length - 1])}
+              </span>
+            </div>
+          )}
           {!data.today?.sectorScope && pulseLists.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">
               Nothing captured today yet. Earlier days are on{' '}
@@ -471,10 +558,10 @@ export default function TfPage() {
                         <tr className="border-b border-border">
                           <th className="py-1 pr-3 text-left font-medium">Symbol</th>
                           <th className="py-1 pr-3 text-left font-medium">Sectors</th>
+                          <th className="py-1 pr-3 text-right font-medium">R-Factor</th>
                           <th className="py-1 pr-3 text-right font-medium">LTP</th>
                           <th className="py-1 pr-3 text-right font-medium">Prev close</th>
-                          <th className="py-1 pr-3 text-right font-medium">Change</th>
-                          <th className="py-1 text-right font-medium">R-Factor</th>
+                          <th className="py-1 text-right font-medium">Change</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -482,19 +569,19 @@ export default function TfPage() {
                           <tr key={r.symbol} className="border-b border-border/60">
                             <td className="py-1 pr-3 font-mono font-medium">{r.symbol}</td>
                             <td className="py-1 pr-3 text-muted-foreground">{r.baskets.join(', ')}</td>
+                            <td className="py-1 pr-3 text-right font-semibold tabular-nums">{fmtNum(r.rFactor)}</td>
                             <td className="py-1 pr-3 text-right tabular-nums">{fmtNum(r.ltp)}</td>
                             <td className="py-1 pr-3 text-right tabular-nums">{fmtNum(r.previousClose)}</td>
-                            <td className={`py-1 pr-3 text-right tabular-nums ${pctTone(r.pctChange)}`}>
+                            <td className={`py-1 text-right tabular-nums ${pctTone(r.pctChange)}`}>
                               {fmtPct(r.pctChange)}
                             </td>
-                            <td className="py-1 text-right font-semibold tabular-nums">{fmtNum(r.rFactor)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   )
                 ) : activePulse ? (
-                  <PulseTable list={activePulse} />
+                  <PulseTable list={activePulse} rBySymbol={rBySymbol} />
                 ) : (
                   <p className="text-[11px] text-muted-foreground">That list is not in today&apos;s capture.</p>
                 )}
@@ -513,25 +600,30 @@ export default function TfPage() {
   );
 }
 
-/** One market_pulse list, in TradeFinder's own order. Columns are labelled only
- *  where isPriceList() proved their meaning; param_3 is never labelled — its
- *  meaning differs by list and has not been confirmed. */
-function PulseTable({ list }: { list: PulseList }) {
+/** One market_pulse list, in TradeFinder's own order. Columns are named only
+ *  where measured on this capture: isPriceList() for LTP / prev close / change,
+ *  isRFactorParam3() for R-Factor — shown 3rd, like the sector scope table.
+ *  Anything unproven keeps its raw param_N name. */
+function PulseTable({ list, rBySymbol }: { list: PulseList; rBySymbol: ReadonlyMap<string, number | null> }) {
   const priced = isPriceList(list);
-  const heads = priced ? ['LTP', 'Prev close', 'Change', 'param_3'] : ['param_0', 'param_1', 'param_2', 'param_3'];
+  const rFactor = isRFactorParam3(list, rBySymbol);
+  const names = priced ? ['LTP', 'Prev close', 'Change', 'param_3'] : ['param_0', 'param_1', 'param_2', 'param_3'];
+  if (rFactor) names[3] = 'R-Factor';
+  // Column order: R-Factor first when proven, then the rest in TradeFinder's order.
+  const order = rFactor ? [3, 0, 1, 2] : [0, 1, 2, 3];
   return (
     <table className="w-full text-[11px]">
       <thead className="sticky top-0 bg-card text-muted-foreground">
         <tr className="border-b border-border">
           <th className="py-1 pr-3 text-left font-medium">#</th>
           <th className="py-1 pr-3 text-left font-medium">Symbol</th>
-          {heads.map((h) => (
+          {order.map((j) => (
             <th
-              key={h}
+              key={j}
               className="py-1 pr-3 text-right font-medium"
-              title={h.startsWith('param_') ? 'TradeFinder field — meaning not confirmed yet' : undefined}
+              title={names[j].startsWith('param_') ? 'TradeFinder field — meaning not confirmed yet' : undefined}
             >
-              {h}
+              {names[j]}
             </th>
           ))}
         </tr>
@@ -541,17 +633,24 @@ function PulseTable({ list }: { list: PulseList }) {
           <tr key={`${r.symbol}-${i}`} className="border-b border-border/60">
             <td className="py-1 pr-3 tabular-nums text-muted-foreground">{i + 1}</td>
             <td className="py-1 pr-3 font-mono font-medium">{r.symbol}</td>
-            {r.params.map((v, j) =>
-              priced && j === 2 && typeof v === 'number' ? (
-                <td key={j} className={`py-1 pr-3 text-right tabular-nums ${pctTone(v)}`}>
-                  {fmtPct(v)}
-                </td>
-              ) : (
-                <td key={j} className="py-1 pr-3 text-right tabular-nums">
+            {order.map((j) => {
+              const v = r.params[j];
+              if (priced && j === 2 && typeof v === 'number') {
+                return (
+                  <td key={j} className={`py-1 pr-3 text-right tabular-nums ${pctTone(v)}`}>
+                    {fmtPct(v)}
+                  </td>
+                );
+              }
+              return (
+                <td
+                  key={j}
+                  className={`py-1 pr-3 text-right tabular-nums ${rFactor && j === 3 ? 'font-semibold' : ''}`}
+                >
                   {fmtNum(v)}
                 </td>
-              )
-            )}
+              );
+            })}
           </tr>
         ))}
       </tbody>

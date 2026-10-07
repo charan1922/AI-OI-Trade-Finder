@@ -49,6 +49,10 @@ Readers switched: Running Race and the TF selector (`race.ts`, `/api/tf/race`), 
 - `sector_scope` → `parseSectorScope()`: one row per symbol with its sectors, LTP, prev close, %, R-Factor (the confirmed `all_sector` meanings — ASHOKLEY (149.4 − 153.7) / 153.7 = −2.80% = `param_2`).
 - `market_pulse` → `parseMarketPulse()`: its lists (top_gainers, top_losers, intraday_boost, high_powered_stocks, top_level_stocks, low_level_stocks, breakout_beacon), params passed through raw. `isPriceList()` labels `param_0..2` as LTP / prev close / % only when every row of that capture satisfies (p0 − p1) / p1 × 100 ≈ p2. That holds on every row of six lists and fails for `breakout_beacon` (p2 is `BULL`/`BEAR`). **`param_3` stays unlabelled**: it matched `intraday_boost`'s R-Factor for only 10 of 20 `top_gainers` and 5 of 15 `top_losers`, so its meaning is not confirmed.
 
+**Step through the day** (operator request, 2026-10-08): captures land all session, so "Today's data" has a time picker — a slider over every capture minute today, ◀ ▶, and **Live** (the latest; default). `&at=<ISO>` returns the last capture of each feed at or before that time; `times` holds one stop per minute (both feeds fire on the same page load ~0.1s apart, so a minute's last capture covers both). The "N min old" warning shows only on Live.
+
+**Tab and column order** (operator request, 2026-10-08): sector scope, then intraday boost, then the other lists in TradeFinder's order. R-Factor is the 3rd column wherever it is known: sector scope (Symbol, Sectors, R-Factor, …) and any market_pulse list whose `param_3` passes `isRFactorParam3()` — it must equal the sector_scope R-Factor of the same capture on every overlapping row (≥ 5). That held for intraday_boost (80 of 80) and not for top_gainers (12 of 25) or top_losers (8 of 25).
+
 ## Open
 
-- `param_3` in market_pulse lists, and all of `breakout_beacon`'s params, have no confirmed meaning yet.
+- `param_3` in market_pulse lists other than intraday_boost, and all of `breakout_beacon`'s params, have no confirmed meaning yet.

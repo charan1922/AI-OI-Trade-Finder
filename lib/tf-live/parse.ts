@@ -183,6 +183,28 @@ export function isPriceList(list: TfPulseList): boolean {
   });
 }
 
+/** Fewest board symbols a list must share before its param_3 can be called R-Factor. */
+const MIN_R_OVERLAP = 5;
+
+/**
+ * Whether a market_pulse list's `param_3` is TradeFinder's R-Factor — MEASURED,
+ * never assumed: every row whose symbol is on the sector_scope board of the
+ * same capture must carry that exact R-Factor, over at least MIN_R_OVERLAP rows.
+ * On 2026-10-08 (captures 0.1s apart) intraday_boost matched 80 of 80; top_gainers
+ * 12 of 25 and top_losers 8 of 25, so their param_3 is something else.
+ */
+export function isRFactorParam3(list: TfPulseList, rBySymbol: ReadonlyMap<string, number | null>): boolean {
+  let overlap = 0;
+  for (const { symbol, params } of list.rows) {
+    const r = rBySymbol.get(symbol);
+    if (r == null) continue;
+    const p3 = params[3];
+    if (typeof p3 !== 'number' || Math.abs(p3 - r) >= 0.005) return false;
+    overlap += 1;
+  }
+  return overlap >= MIN_R_OVERLAP;
+}
+
 /** `daily-index` is already a flat array: [{ Symbol, param_3 }, ...]. */
 export function parseDailyIndex(payload: unknown): { name: string; value: number | null }[] {
   const data = (payload as { payload?: { data?: unknown } } | null)?.payload?.data;

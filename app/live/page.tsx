@@ -11,9 +11,8 @@ import { TfClimbHistory } from './_components/tf-climb-history';
 import { TfRaceCard } from './_components/tf-race-card';
 
 // Live depth split by category, mirroring the /nse/movers panels. Each section
-// loads independently — its own F&O-gated mover list + its own live-quote poll —
-// and the shared quote scheduler keeps total Dhan quote traffic within the 1
-// req/sec limit. A stock can appear in more than one category, exactly as on
+// loads independently — its own F&O-gated mover list + its own live-quote poll,
+// with no queue shared between sections, so one slow table never delays another. A stock can appear in more than one category, exactly as on
 // /nse/movers (the sections are intentionally NOT de-duplicated against each other).
 
 // NSE pulse feeds the sections read through (same shared 30s server cache the
@@ -144,10 +143,10 @@ export default function LiveUrgencyPage() {
       />
 
       <p className="text-[10px] text-muted-foreground">
-        Live depth from Dhan, mover lists from NSE&apos;s public feeds — the same lists as{' '}
+        Live rows from the Fyers poller&apos;s recorded bars, mover lists from NSE&apos;s public feeds — the same lists as{' '}
         <span className="font-mono">/nse/movers</span>, gated to F&amp;O names with a live future (no
-        &lsquo;avoid&rsquo; lot-size band). Each section refreshes its list every 60s and re-polls live quotes every
-        ~5s; quote requests are rate-limited to stay within Dhan&apos;s 1 req/sec.
+        &lsquo;avoid&rsquo; lot-size band). Each section refreshes its list every 60s and its rows every 7s, on its own —
+        one slow section never delays another.
       </p>
     </div>
   );
