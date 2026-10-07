@@ -1,14 +1,17 @@
 import { NextResponse } from 'next/server';
 
 import { adminOnly } from '@/lib/auth/server';
+import { todayIST } from '@/lib/ist';
 import { forceStartTfBrowser, isTfBrowserRunning, restartTfBrowser, stopTfBrowser } from '@/lib/tf-live/browser';
+import { parseMarketPulse, parseSectorScope } from '@/lib/tf-live/parse';
 import { extractCookieHeaderFromCurl } from '@/lib/tf-live/parse-curl';
 import {
   assertTfLiveSessionKeyConfigured,
   clearTfLiveCaptureHistory,
   getLatestTfLiveCaptures,
   getTfBrowserSessionStatus,
-  getTfLiveCaptureHistory,
+  getTfCaptureCountsForDate,
+  getTfLiveCaptureForDate,
   saveTfBrowserCookies,
 } from '@/lib/tf-live/store';
 
@@ -16,38 +19,51 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /** ONE endpoint for everything /tf shows: the browser cookie session status,
- *  whether it's running, and the capture log — folded together 2026-08-08 so
- *  the page doesn't need two separate polls for what's really one screen.
- *  Never returns the stored cookie value. */
+ *  whether it's running, the last capture and today's counts per feed, and with
+ *  `?data=1` today's data itself. Never returns the stored cookie value. */
 export async function GET(req: Request) {
   const denied = adminOnly(req);
   if (denied) return denied;
   try {
-    const [session, captures, history] = await Promise.all([
-      getTfBrowserSessionStatus(),
-      getLatestTfLiveCaptures(),
-      getTfLiveCaptureHistory(),
-    ]);
-    return NextResponse.json({ success: true, session, running: isTfBrowserRunning(), captures, history });
+    return NextResponse.json(await statusBody(new URL(req.url).searchParams.get('data') === '1'));
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
 }
 
-/** Clear the "Last capture per endpoint" / "Capture history by date" tables —
- *  the "Clear history" button on /tf. Leaves the browser cookie jar
+async function statusBody(withData: boolean) {
+  const [session, captures, counts, today] = await Promise.all([
+    getTfBrowserSessionStatus(),
+    getLatestTfLiveCaptures(),
+    getTfCaptureCountsForDate(todayIST()),
+    withData ? getTodaysData() : Promise.resolve(undefined),
+  ]);
+  return { success: true, session, running: isTfBrowserRunning(), captures, counts, today };
+}
+
+/** `?data=1`: the latest successful capture of each feed TODAY (IST), parsed —
+ *  what /tf shows as its data tables. Older days live on /tf/history. */
+async function getTodaysData() {
+  const date = todayIST();
+  const [sector, pulse] = await Promise.all([
+    getTfLiveCaptureForDate('sector_scope', date),
+    getTfLiveCaptureForDate('market_pulse', date),
+  ]);
+  return {
+    date,
+    sectorScope: sector ? { capturedAt: sector.capturedAt, rows: parseSectorScope(sector.payload) } : null,
+    marketPulse: pulse ? { capturedAt: pulse.capturedAt, lists: parseMarketPulse(pulse.payload) } : null,
+  };
+}
+
+/** Clear the capture log — the "Clear history" button on /tf. Leaves the browser cookie jar
  *  untouched; only the capture log is wiped. */
 export async function DELETE(req: Request) {
   const denied = adminOnly(req);
   if (denied) return denied;
   try {
     await clearTfLiveCaptureHistory();
-    const [session, captures, history] = await Promise.all([
-      getTfBrowserSessionStatus(),
-      getLatestTfLiveCaptures(),
-      getTfLiveCaptureHistory(),
-    ]);
-    return NextResponse.json({ success: true, session, running: isTfBrowserRunning(), captures, history });
+    return NextResponse.json(await statusBody(true));
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
@@ -56,9 +72,9 @@ export async function DELETE(req: Request) {
 /**
  * Accept a pasted "Copy as cURL" of any tradefinder.in request, pull the
  * Cookie header out of it (see lib/tf-live/parse-curl.ts), and store it —
- * encrypted, same scheme as lt/at. Never validated with a network call here
- * the way lt/at is: proving a cookie jar works means actually launching
- * Chromium, which the watchdog does within a minute anyway. `action:'start'`
+ * encrypted at rest. Never validated with a network call here: proving a
+ * cookie jar works means the worker actually opening TradeFinder with it,
+ * which it does on its next poll. `action:'start'`
  * or `action:'stop'` control the browser directly for manual testing.
  */
 export async function POST(req: Request) {

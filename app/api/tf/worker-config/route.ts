@@ -22,13 +22,13 @@ import { verifyWorkerSecret, WORKER_SECRET_HEADER } from '@/lib/tf-live/worker-p
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-/** The TradeFinder pages the worker opens. Each fires a different subset of the
- *  feeds endpoints.ts allowlists: /market-pulse fires `market_pulse`;
- *  /sector-scope fires `all_sector` AND `daily-index`.
+/** The TradeFinder pages the worker opens. /marketPulse fires BOTH captured
+ *  feeds (`market_pulse` and `sector_scope`, verified on the worker box), so it
+ *  is the only page — one Chromium tab on a 1GB host.
  *
  *  Adding a feed that lives on another TradeFinder page means adding its URL
  *  here — and nothing else. The worker re-reads this every poll. */
-const TF_PAGES = ['https://tradefinder.in/market-pulse', 'https://tradefinder.in/sector-scope'];
+const TF_PAGES = ['https://tradefinder.in/marketPulse'];
 /** Passed to addCookies as `url` — see parse-curl.ts on why `__Secure-`/
  *  `__Host-` prefixed cookies reject an explicit Domain. */
 const SITE_URL = 'https://tradefinder.in/';

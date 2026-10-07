@@ -1,26 +1,26 @@
 'use client';
 
 /**
- * /tf — TradeFinder auth panel, sibling of /dhan and /fyers.
+ * /tf — TradeFinder capture panel, sibling of /dhan and /fyers.
  *
- * TradeFinder mints its own `accessToken` fresh, per request, from its own
- * frontend JS — a copied value cannot be replayed (confirmed 2026-08-08). So
- * this page runs a real headless browser on the server, logged in with
- * cookies from the operator's own TradeFinder session (see
- * lib/tf-live/browser.ts and parse-curl.ts for the full story), and simply
- * records whatever TradeFinder's own pages fetch on their own polling loop.
+ * A headless browser on the worker host (deploy/tf-worker) opens TradeFinder
+ * logged in with the cookies pasted here and stores what TradeFinder's own page
+ * fetches: `market_pulse` and `sector_scope` (lib/tf-live/endpoints.ts). This
+ * page shows the session, the last capture per feed and TODAY's data; earlier
+ * days are on /tf/history.
  *
- * ONE endpoint (/api/tf/browser-session) backs this whole page — folded
- * together 2026-08-08 so there's a single source of truth for session status,
- * whether the browser is running, and the capture log, instead of two
- * separate polls that could drift out of sync with each other.
+ * ONE endpoint (/api/tf/browser-session?data=1) backs the whole page.
  */
 
 import { AlertTriangle, KeyRound, Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRole } from '@/lib/auth/use-role';
+import { TF_ENDPOINTS } from '@/lib/tf-live/endpoints';
+import { isPriceList, type TfPulseList as PulseList, type TfStockRow as StockRow } from '@/lib/tf-live/parse';
 
 const POLL_MS = 15_000;
+/** A board older than this is shown amber — it is not live any more. */
+const STALE_MIN = 10;
 
 const fmtDateTime = (iso: string | null | undefined) =>
   iso
@@ -34,14 +34,15 @@ const fmtDateTime = (iso: string | null | undefined) =>
       })
     : '—';
 
-const fmtDate = (isoDate: string) =>
-  new Date(`${isoDate}T00:00:00Z`).toLocaleDateString('en-IN', {
-    timeZone: 'UTC',
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    weekday: 'short',
-  });
+const fmtNum = (v: number | string | null | undefined) =>
+  v == null ? '—' : typeof v === 'number' ? v.toLocaleString('en-IN') : v;
+
+const fmtPct = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`);
+
+const pctTone = (v: number | null) =>
+  v == null ? '' : v >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400';
+
+const listTitle = (name: string) => name.replace(/_/g, ' ');
 
 function Badge({
   tone,
@@ -64,15 +65,13 @@ interface TfStatus {
   session: { configured: boolean; updatedAt: string | null; verifiedAt: string | null; lastError: string | null };
   running: boolean;
   captures: { endpoint: string; capturedAt: string; status: string; error: string | null }[];
-  history: {
-    captureDate: string;
-    endpoint: string;
-    total: number;
-    success: number;
-    error: number;
-    lastCapturedAt: string;
-    lastSuccessAt: string | null;
-  }[];
+  /** Today's (IST) successes and errors per feed. */
+  counts: { endpoint: string; success: number; error: number }[];
+  today?: {
+    date: string;
+    sectorScope: { capturedAt: string; rows: StockRow[] } | null;
+    marketPulse: { capturedAt: string; lists: PulseList[] } | null;
+  };
   error?: string;
 }
 
@@ -85,6 +84,7 @@ export default function TfPage() {
   const [browserBusy, setBrowserBusy] = useState(false);
   const [browserNotice, setBrowserNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [tab, setTab] = useState('sector_scope');
 
   /**
    * Never fail silently. This used to be `if (j.success) setData(j)` wrapped in
@@ -98,7 +98,7 @@ export default function TfPage() {
    */
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/tf/browser-session', { cache: 'no-store' });
+      const res = await fetch('/api/tf/browser-session?data=1', { cache: 'no-store' });
       if (res.status === 401 || res.status === 403) {
         setStatusError('Your app login expired — reload the page and sign in again to see the TradeFinder status.');
         return;
@@ -208,18 +208,31 @@ export default function TfPage() {
     [refresh]
   );
 
-  const historyByDate = useMemo(() => {
-    const grouped = new Map<string, { total: number; success: number; error: number; lastCapturedAt: string }>();
-    for (const row of data?.history ?? []) {
-      const existing = grouped.get(row.captureDate) ?? { total: 0, success: 0, error: 0, lastCapturedAt: row.lastCapturedAt };
-      existing.total += row.total;
-      existing.success += row.success;
-      existing.error += row.error;
-      if (row.lastCapturedAt > existing.lastCapturedAt) existing.lastCapturedAt = row.lastCapturedAt;
-      grouped.set(row.captureDate, existing);
-    }
-    return [...grouped.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
-  }, [data]);
+  // One row per captured feed, ALWAYS — a feed that has never landed shows as
+  // such instead of vanishing. The log still holds rows for retired feeds.
+  const feeds = useMemo(
+    () =>
+      TF_ENDPOINTS.map((endpoint) => ({
+        endpoint,
+        last: data?.captures.find((c) => c.endpoint === endpoint) ?? null,
+        today: data?.counts?.find((c) => c.endpoint === endpoint) ?? { success: 0, error: 0 },
+      })),
+    [data]
+  );
+  const hasLog = feeds.some((f) => f.last != null);
+  const sectorRows = useMemo(
+    () => [...(data?.today?.sectorScope?.rows ?? [])].sort((x, y) => (y.rFactor ?? -1) - (x.rFactor ?? -1)),
+    [data]
+  );
+  const pulseLists = data?.today?.marketPulse?.lists ?? [];
+  const activePulse = pulseLists.find((l) => l.name === tab) ?? null;
+  const activeAt = tab === 'sector_scope' ? data?.today?.sectorScope?.capturedAt : data?.today?.marketPulse?.capturedAt;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), POLL_MS);
+    return () => clearInterval(t);
+  }, []);
+  const ageMin = activeAt ? (now - Date.parse(activeAt)) / 60_000 : null;
 
   return (
     <div className="mx-auto max-w-5xl space-y-3 p-3">
@@ -297,18 +310,12 @@ export default function TfPage() {
         <section className="space-y-2 rounded-lg border border-emerald-300/60 bg-card p-3 dark:border-emerald-500/30">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Browser session (recommended)
+              Browser session
             </h2>
-            {data?.session.lastError && <Badge tone="warn">{data.session.lastError.slice(0, 70)}</Badge>}
           </div>
           <p className="text-[11px] leading-snug text-muted-foreground">
-            TradeFinder&apos;s access token is minted fresh by their own page for every single request and cannot be
-            copied and reused (confirmed 2026-08-08) — so a real headless browser runs on the server instead, logged
-            in with cookies from your own session. On a signed-in tab, open DevTools Network tab, right-click any
-            request to <span className="font-mono">tradefinder.in</span>, choose <strong>Copy → Copy as cURL</strong>,
-            and paste the whole thing below. This keeps working for as long as your TradeFinder login stays signed
-            in — if your account logs you out daily (confirmed for at least one account, 2026-08-08), plan on
-            re-pasting once a day too. Still far better than the old method, which died within seconds.
+            On a signed-in <span className="font-mono">tradefinder.in</span> tab: DevTools → Network → right-click any
+            request → <strong>Copy → Copy as cURL</strong>, then paste it below.
           </p>
           <textarea
             value={pastedCurl}
@@ -359,7 +366,7 @@ export default function TfPage() {
             <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Last capture per endpoint
             </h2>
-            {!readOnly && (data.captures.length > 0 || historyByDate.length > 0) && (
+            {!readOnly && hasLog && (
               <button
                 type="button"
                 disabled={busy}
@@ -371,67 +378,128 @@ export default function TfPage() {
               </button>
             )}
           </div>
-          {data.captures.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">No captures yet.</p>
-          ) : (
-            <table className="w-full text-[11px]">
-              <thead className="text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="py-1 pr-3 text-left font-medium">Endpoint</th>
-                  <th className="py-1 pr-3 text-left font-medium">When (IST)</th>
-                  <th className="py-1 pr-3 text-left font-medium">Status</th>
-                  <th className="py-1 text-left font-medium">Error</th>
+          <table className="w-full text-[11px]">
+            <thead className="text-muted-foreground">
+              <tr className="border-b border-border">
+                <th className="py-1 pr-3 text-left font-medium">Endpoint</th>
+                <th className="py-1 pr-3 text-right font-medium">Success today</th>
+                <th className="py-1 pr-3 text-right font-medium">Errors today</th>
+                <th className="py-1 pr-3 text-left font-medium">Last capture (IST)</th>
+                <th className="py-1 pr-3 text-left font-medium">Status</th>
+                <th className="py-1 text-left font-medium">Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {feeds.map((f) => (
+                <tr key={f.endpoint} className="border-b border-border/60">
+                  <td className="py-1 pr-3 font-medium">{f.endpoint}</td>
+                  <td className="py-1 pr-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+                    {f.today.success}
+                  </td>
+                  <td
+                    className={`py-1 pr-3 text-right tabular-nums ${f.today.error > 0 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'}`}
+                  >
+                    {f.today.error}
+                  </td>
+                  <td className="py-1 pr-3 tabular-nums">{f.last ? fmtDateTime(f.last.capturedAt) : 'never'}</td>
+                  <td
+                    className={`py-1 pr-3 ${
+                      !f.last
+                        ? 'text-muted-foreground'
+                        : f.last.status === 'success'
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-red-600 dark:text-red-400'
+                    }`}
+                  >
+                    {f.last?.status ?? '—'}
+                  </td>
+                  <td className="py-1 text-muted-foreground">{f.last?.error ?? '—'}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {data.captures.map((c) => (
-                  <tr key={c.endpoint} className="border-b border-border/60">
-                    <td className="py-1 pr-3 font-medium">{c.endpoint}</td>
-                    <td className="py-1 pr-3 tabular-nums">{fmtDateTime(c.capturedAt)}</td>
-                    <td className={`py-1 pr-3 ${c.status === 'success' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                      {c.status}
-                    </td>
-                    <td className="py-1 text-muted-foreground">{c.error ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+              ))}
+            </tbody>
+          </table>
         </section>
       )}
 
       {data && (
         <section className="space-y-2 rounded-lg border border-border bg-card p-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Capture history by date
-          </h2>
-          {historyByDate.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">No captures recorded yet — history fills in as the collector runs.</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Today&apos;s data</h2>
+            {activeAt && (
+              <span
+                className={`text-[11px] ${ageMin != null && ageMin > STALE_MIN ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}
+              >
+                captured {fmtDateTime(activeAt)} IST
+                {ageMin != null && ageMin > STALE_MIN && ` · ${Math.round(ageMin)} min old`}
+              </span>
+            )}
+          </div>
+          {!data.today?.sectorScope && pulseLists.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">
+              Nothing captured today yet. Earlier days are on{' '}
+              <a href="/tf/history" className="underline hover:text-foreground">
+                EOD history
+              </a>
+              .
+            </p>
           ) : (
-            <table className="w-full text-[11px]">
-              <thead className="text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="py-1 pr-3 text-left font-medium">Date (IST)</th>
-                  <th className="py-1 pr-3 text-right font-medium">Attempts</th>
-                  <th className="py-1 pr-3 text-right font-medium">Success</th>
-                  <th className="py-1 pr-3 text-right font-medium">Failed</th>
-                  <th className="py-1 text-left font-medium">Last capture</th>
-                </tr>
-              </thead>
-              <tbody>
-                {historyByDate.map(([date, stats]) => (
-                  <tr key={date} className="border-b border-border/60">
-                    <td className="py-1 pr-3 font-medium">{fmtDate(date)}</td>
-                    <td className="py-1 pr-3 text-right tabular-nums">{stats.total}</td>
-                    <td className="py-1 pr-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{stats.success}</td>
-                    <td className={`py-1 pr-3 text-right tabular-nums ${stats.error > 0 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'}`}>
-                      {stats.error}
-                    </td>
-                    <td className="py-1 tabular-nums text-muted-foreground">{fmtDateTime(stats.lastCapturedAt)}</td>
-                  </tr>
+            <>
+              <div className="flex flex-wrap gap-1">
+                {[
+                  { key: 'sector_scope', label: 'sector scope', n: sectorRows.length },
+                  ...pulseLists.map((l) => ({ key: l.name, label: listTitle(l.name), n: l.rows.length })),
+                ].map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setTab(t.key)}
+                    className={`rounded-md border px-2 py-1 text-[11px] ${
+                      tab === t.key ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted'
+                    }`}
+                  >
+                    {t.label} <span className="opacity-70">{t.n}</span>
+                  </button>
                 ))}
-              </tbody>
-            </table>
+              </div>
+              <div className="max-h-[28rem] overflow-auto">
+                {tab === 'sector_scope' ? (
+                  sectorRows.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground">No sector scope capture today yet.</p>
+                  ) : (
+                    <table className="w-full text-[11px]">
+                      <thead className="sticky top-0 bg-card text-muted-foreground">
+                        <tr className="border-b border-border">
+                          <th className="py-1 pr-3 text-left font-medium">Symbol</th>
+                          <th className="py-1 pr-3 text-left font-medium">Sectors</th>
+                          <th className="py-1 pr-3 text-right font-medium">LTP</th>
+                          <th className="py-1 pr-3 text-right font-medium">Prev close</th>
+                          <th className="py-1 pr-3 text-right font-medium">Change</th>
+                          <th className="py-1 text-right font-medium">R-Factor</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sectorRows.map((r) => (
+                          <tr key={r.symbol} className="border-b border-border/60">
+                            <td className="py-1 pr-3 font-mono font-medium">{r.symbol}</td>
+                            <td className="py-1 pr-3 text-muted-foreground">{r.baskets.join(', ')}</td>
+                            <td className="py-1 pr-3 text-right tabular-nums">{fmtNum(r.ltp)}</td>
+                            <td className="py-1 pr-3 text-right tabular-nums">{fmtNum(r.previousClose)}</td>
+                            <td className={`py-1 pr-3 text-right tabular-nums ${pctTone(r.pctChange)}`}>
+                              {fmtPct(r.pctChange)}
+                            </td>
+                            <td className="py-1 text-right font-semibold tabular-nums">{fmtNum(r.rFactor)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )
+                ) : activePulse ? (
+                  <PulseTable list={activePulse} />
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">That list is not in today&apos;s capture.</p>
+                )}
+              </div>
+            </>
           )}
         </section>
       )}
@@ -442,5 +510,51 @@ export default function TfPage() {
         </div>
       )}
     </div>
+  );
+}
+
+/** One market_pulse list, in TradeFinder's own order. Columns are labelled only
+ *  where isPriceList() proved their meaning; param_3 is never labelled — its
+ *  meaning differs by list and has not been confirmed. */
+function PulseTable({ list }: { list: PulseList }) {
+  const priced = isPriceList(list);
+  const heads = priced ? ['LTP', 'Prev close', 'Change', 'param_3'] : ['param_0', 'param_1', 'param_2', 'param_3'];
+  return (
+    <table className="w-full text-[11px]">
+      <thead className="sticky top-0 bg-card text-muted-foreground">
+        <tr className="border-b border-border">
+          <th className="py-1 pr-3 text-left font-medium">#</th>
+          <th className="py-1 pr-3 text-left font-medium">Symbol</th>
+          {heads.map((h) => (
+            <th
+              key={h}
+              className="py-1 pr-3 text-right font-medium"
+              title={h.startsWith('param_') ? 'TradeFinder field — meaning not confirmed yet' : undefined}
+            >
+              {h}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {list.rows.map((r, i) => (
+          <tr key={`${r.symbol}-${i}`} className="border-b border-border/60">
+            <td className="py-1 pr-3 tabular-nums text-muted-foreground">{i + 1}</td>
+            <td className="py-1 pr-3 font-mono font-medium">{r.symbol}</td>
+            {r.params.map((v, j) =>
+              priced && j === 2 && typeof v === 'number' ? (
+                <td key={j} className={`py-1 pr-3 text-right tabular-nums ${pctTone(v)}`}>
+                  {fmtPct(v)}
+                </td>
+              ) : (
+                <td key={j} className="py-1 pr-3 text-right tabular-nums">
+                  {fmtNum(v)}
+                </td>
+              )
+            )}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

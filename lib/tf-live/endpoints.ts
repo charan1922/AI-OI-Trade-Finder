@@ -2,74 +2,62 @@
  * The TradeFinder feeds we capture — the single source of truth for which
  * endpoints exist and what URL each one lives at.
  *
- * LEAF MODULE ON PURPOSE: no imports at all, so the collector, the store and
- * the DB-free CI checks can all read it. A typo in one of these URLs would
- * fail silently forever (a 404 recorded as "capture error" every 5 minutes),
- * which is exactly the kind of thing worth pinning in a test.
+ * LEAF MODULE ON PURPOSE: no imports at all, so the ingest route, the store and
+ * the DB-free CI checks can all read it.
  *
- * SCOPED DELIBERATELY — narrowed 2026-08-08 to what the app actually uses:
- * `all_sector` + `daily-index` feed /sector-scope's data, `market_pulse` is
- * banked raw, and `check_signal` is TradeFinder's own session/entitlement probe
- * (added 2026-08-26, operator request). Everything else the relay sees on the
- * page (feature_flag/feature_read, rfactor_filter/rfactor_data, servertime,
- * TF's OWN sector_scope endpoint — unrelated to this app's /sector-scope page
- * despite the name) is real traffic nobody reads, so it is dropped before it
- * ever reaches the database. This list IS the allowlist.
+ * EXACTLY TWO FEEDS (operator request 2026-10-08): `market_pulse` and
+ * `sector_scope`. This list IS the allowlist — every other /api_be/ response the
+ * relay sees is dropped before it reaches the database. Both are fired by the
+ * single https://tradefinder.in/marketPulse page (verified on the worker box),
+ * so that is the only page the worker opens.
  *
- * `check_signal` needs no polling of its own: TradeFinder's page fires it on
- * every load, and the relay reloads on its own schedule, so allowlisting it is
- * what makes it periodic. Nothing here is ever fetched by us directly — that
- * is the lt/at replay approach which is proven impossible (see client.ts).
+ * Both are captured RAW: `recordTfLiveCapture` stores the full `payloadJson`
+ * on every capture, so a parser can be written later and back-applied to
+ * everything stored. Guessing a schema is how param_2/param_3 got swapped once.
  *
- * Note the inconsistent paths — `all_sector` and `daily-index` sit under
- * `/api_be/data/order/`, `market_pulse` directly under `/api_be/data/`, and
- * `check_signal` under `/api_be/admin/users/`. That is TradeFinder's layout,
- * not a mistake here — and it is exactly why each one needs its own explicit
- * match (see the standing consequences below).
+ * The retired feeds (`all_sector`, `daily-index`, `rfactor_data`,
+ * `check_signal`) are no longer captured, but their tags stay in `TfEndpoint`
+ * because old rows remain in tf_live_captures and the history readers query them.
+ * Re-capturing one means adding it to TF_ENDPOINTS, TF_ENDPOINT_URL AND its own
+ * `endsWith` case in `endpointTagFor()` (lib/tf-live/ingest.ts) — the generic
+ * fallback matches none of TradeFinder's real paths, so an entry without one is
+ * silently dead (market_pulse was dropped on every response for 18 days this
+ * way). `scripts/verify-tf-ingest.ts` asserts every entry round-trips.
  *
- * PARSED vs RAW: `all_sector` and `daily-index` have parsers whose shape was
- * confirmed against a real payload (lib/tf-live/parse.ts). `market_pulse` has
- * NO parser yet — it is captured in full (`recordTfLiveCapture` stores the raw
- * `payloadJson` on every capture), so its data banks from each successful tick
- * and a parser can be written later and back-applied to everything stored.
- * Guessing a schema is how param_2/param_3 got swapped once; never again.
- *
- * WHY THERE WAS NOTHING TO INSPECT UNTIL 2026-08-26. This note used to say the
- * parser was missing "because no successful capture has been inspected", which
- * was true but badly misleading about the cause: `market_pulse` was not merely
- * un-inspected, it was never STORED. Its path is `/api_be/data/market_pulse`,
- * one segment shallower than the other two (`/api_be/data/order/…`), and
- * `endpointTagFor()` in lib/tf-live/ingest.ts had no `endsWith` case for it, so
- * the generic fallback produced `'data/market_pulse'` — not in this list — and
- * every single response was dropped from the moment the browser relay replaced
- * the fetch collector (2026-08-08). Production held 1,667 `all_sector` and
- * 1,825 `daily-index` captures against ZERO `market_pulse`. Fixed 2026-08-26
- * (first successful capture the same day, 12:15 IST).
- *
- * TWO STANDING CONSEQUENCES:
- *   1. ADDING AN ENDPOINT HERE IS NOT ENOUGH — it also needs its own `endsWith`
- *      case in `endpointTagFor()`. The generic fallback matches none of
- *      TradeFinder's real paths, so an entry without one is silently dead.
- *      `scripts/verify-tf-ingest.ts` now asserts every entry in this list
- *      round-trips from its real URL, so that mistake fails in CI.
- *   2. `market_pulse` has no CONSUMER either — nothing in this app reads it
- *      today (the `get_market_pulse` AI-assistant tool is unrelated: it reads
- *      NSE data, not TradeFinder). Write the parser when something needs it,
- *      against the real payloads now accumulating — not speculatively.
+ * Note this is TradeFinder's OWN sector_scope, unrelated to this app's
+ * /sector-scope page (which reads the now-retired all_sector feed).
  */
 
-export const TF_ENDPOINTS = ['all_sector', 'rfactor_data', 'daily-index', 'market_pulse', 'check_signal'] as const;
+export const TF_ENDPOINTS = ['market_pulse', 'sector_scope'] as const;
 
-export type TfEndpoint = (typeof TF_ENDPOINTS)[number];
+/** What we CAPTURE today. */
+export type TfCapturedEndpoint = (typeof TF_ENDPOINTS)[number];
 
-export const TF_ENDPOINT_URL: Record<TfEndpoint, string> = {
-  'all_sector': 'https://tradefinder.in/api_be/data/order/all_sector',
-  'rfactor_data': 'https://tradefinder.in/api_be/rfactor_filter/rfactor_data',
-  'daily-index': 'https://tradefinder.in/api_be/data/order/daily-index',
+/** Every tag that may exist in stored history. The retired feeds stay READABLE
+ *  (old rows are still in tf_live_captures and the history/EOD pages query
+ *  them) but are no longer captured — narrowed to two feeds 2026-10-08 at the
+ *  operator's request. */
+export type TfEndpoint = TfCapturedEndpoint | 'all_sector' | 'rfactor_data' | 'daily-index' | 'check_signal';
+
+export const TF_ENDPOINT_URL: Record<TfCapturedEndpoint, string> = {
   'market_pulse': 'https://tradefinder.in/api_be/data/market_pulse',
-  'check_signal': 'https://tradefinder.in/api_be/admin/users/check_signal',
+  'sector_scope': 'https://tradefinder.in/api_be/data/sector_scope',
 };
 
-/** Endpoints whose payload shape has been confirmed and has a parser. The rest
- *  are captured raw — see the module note above. */
-export const TF_PARSED_ENDPOINTS: readonly TfEndpoint[] = ['all_sector', 'rfactor_data', 'daily-index'];
+/**
+ * Every stored feed that holds TradeFinder's per-stock R-Factor BOARD, newest
+ * source first. `sector_scope` (captured since 2026-10-08) carries the same
+ * basket → symbol → param_N board the retired feeds did, so the Running Race,
+ * the TF snapshot and the /live TF column read all three: today's data comes
+ * from sector_scope, older days from whatever was captured then. Parse with
+ * `parseTfBoard()` — each feed nests the board differently.
+ */
+export const TF_BOARD_ENDPOINTS = ['sector_scope', 'rfactor_data', 'all_sector'] as const;
+
+/** Every stored feed that holds TradeFinder's per-SECTOR values (param_3):
+ *  sector_scope embeds the old `daily-index` list. Parse with `parseTfIndices()`. */
+export const TF_INDEX_ENDPOINTS = ['sector_scope', 'daily-index'] as const;
+
+/** SQL `IN (…)` lists for the two sets above — fixed literals, never user input. */
+export const TF_BOARD_ENDPOINTS_SQL = TF_BOARD_ENDPOINTS.map((e) => `'${e}'`).join(', ');
+export const TF_INDEX_ENDPOINTS_SQL = TF_INDEX_ENDPOINTS.map((e) => `'${e}'`).join(', ');

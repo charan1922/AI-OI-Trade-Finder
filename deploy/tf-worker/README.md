@@ -66,9 +66,9 @@ WantedBy=multi-user.target
 ## Verifying it works
 
 - `/tf` on the main app shows *browser running* within ~1 minute of start.
-- `/tf`'s capture log shows fresh `all_sector` / `daily-index` / `market_pulse`
-  rows.
-- The worker log prints `[tf_worker] launching Chromium for 2 page(s)`.
+- `/tf`'s capture log shows fresh `market_pulse` / `sector_scope`
+  rows (the only two feeds captured since 2026-10-08).
+- The worker log prints `[tf_worker] launching Chromium for 1 page(s)`.
 - If `/tf` says *running, not capturing*, the worker is alive but TradeFinder is
   rejecting it — paste a fresh cURL on `/tf`. That distinction is the whole
   point of the badge (see the 2026-08-10 incident in `lib/tf-live/ingest.ts`).

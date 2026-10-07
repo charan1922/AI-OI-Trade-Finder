@@ -40,6 +40,7 @@ import { trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import { MIN_RISK_PCT, TF_RACE_MAX_RANK, TRAIL_R } from '@/lib/trade-suggest/config';
 import { DEFAULT_SETTINGS } from '@/lib/auto-trade/config';
+import { TF_BOARD_ENDPOINTS_SQL } from '../lib/tf-live/endpoints';
 
 const q = (sql: string, ...p: unknown[]) =>
   prisma.$queryRawUnsafe(sql, ...p) as Promise<Record<string, unknown>[]>;
@@ -96,7 +97,7 @@ function walk(side: 'CE' | 'PE', entry: number, initialStop: number, bars: Bar[]
 async function main(): Promise<void> {
   const dates = (await q(
     `SELECT DISTINCT date(datetime(capturedAt,'+5 hours','+30 minutes')) d
-     FROM tf_live_captures WHERE endpoint='all_sector' AND status='success' ORDER BY d`
+     FROM tf_live_captures WHERE endpoint IN (${TF_BOARD_ENDPOINTS_SQL}) AND status='success' ORDER BY d`
   )).map((r) => String(r.d));
 
   console.log('\n' + '═'.repeat(92));

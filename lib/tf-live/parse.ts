@@ -49,7 +49,22 @@ export const basketLabel = (key: string): string => key.replace(/_r_factor$/, ''
  * "no rows" rather than silently wrong numbers.
  */
 export function parseAllSector(payload: unknown): TfStockRow[] {
-  const data = (payload as { payload?: { data?: unknown } } | null)?.payload?.data;
+  return flattenBaskets((payload as { payload?: { data?: unknown } } | null)?.payload?.data);
+}
+
+/**
+ * TradeFinder's `sector_scope` feed (captured since 2026-10-08) carries the SAME
+ * basket → symbol → param_N board as `all_sector`, one level deeper:
+ * `payload.data.all_sector.<basket>.<symbol>`. Same param meanings — checked
+ * against a real capture: ASHOKLEY 149.4 / 153.7 → (149.4−153.7)/153.7 = −2.80%
+ * = param_2, and CANBK param_3 3.64 equals its R-Factor on the same day's board.
+ */
+export function parseSectorScope(payload: unknown): TfStockRow[] {
+  const data = (payload as { payload?: { data?: { all_sector?: unknown } } } | null)?.payload?.data;
+  return flattenBaskets(data?.all_sector);
+}
+
+function flattenBaskets(data: unknown): TfStockRow[] {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
 
   const bySymbol = new Map<string, TfStockRow>();
@@ -119,6 +134,55 @@ export function parseRFactorData(payload: unknown): TfStockRow[] {
   return [...bySymbol.values()];
 }
 
+export interface TfPulseList {
+  /** TradeFinder's own list name, e.g. 'top_gainers', 'breakout_beacon'. */
+  name: string;
+  rows: { symbol: string; params: (number | string | null)[] }[];
+}
+
+/**
+ * TradeFinder's `market_pulse` feed: `payload.data` is a map of named lists
+ * (top_gainers, intraday_boost, breakout_beacon, …), each an array of
+ * `{ Symbol, param_0..param_3 }`. The params are passed through RAW — their
+ * meaning differs by list and is only partly confirmed (see app/tf/page.tsx for
+ * which columns are labelled and why). Never interpret them here.
+ */
+export function parseMarketPulse(payload: unknown): TfPulseList[] {
+  const data = (payload as { payload?: { data?: unknown } } | null)?.payload?.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+  const lists: TfPulseList[] = [];
+  for (const [name, list] of Object.entries(data as Record<string, unknown>)) {
+    if (!Array.isArray(list)) continue;
+    const rows = list
+      .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object' && typeof r.Symbol === 'string')
+      .map((r) => ({
+        symbol: r.Symbol as string,
+        params: [r.param_0, r.param_1, r.param_2, r.param_3].map((v) =>
+          typeof v === 'number' || typeof v === 'string' ? v : null
+        ),
+      }));
+    lists.push({ name, rows });
+  }
+  return lists;
+}
+
+/**
+ * Whether a market_pulse list's first three params are LTP, prev close and %
+ * change — MEASURED on the capture itself, never assumed: every row must
+ * satisfy (p0 − p1) / p1 × 100 ≈ p2. On the 2026-10-07 capture this held for
+ * every row of six lists (top_gainers, top_losers, intraday_boost,
+ * high_powered_stocks, top_level_stocks, low_level_stocks) and failed for
+ * breakout_beacon, whose params are something else (p2 is 'BULL'/'BEAR').
+ * param_3 is never labelled: it differs by list and is not confirmed.
+ */
+export function isPriceList(list: TfPulseList): boolean {
+  if (list.rows.length === 0) return false;
+  return list.rows.every(({ params: [p0, p1, p2] }) => {
+    if (typeof p0 !== 'number' || typeof p1 !== 'number' || typeof p2 !== 'number' || p1 === 0) return false;
+    return Math.abs(((p0 - p1) / p1) * 100 - p2) < 0.02;
+  });
+}
+
 /** `daily-index` is already a flat array: [{ Symbol, param_3 }, ...]. */
 export function parseDailyIndex(payload: unknown): { name: string; value: number | null }[] {
   const data = (payload as { payload?: { data?: unknown } } | null)?.payload?.data;
@@ -126,4 +190,24 @@ export function parseDailyIndex(payload: unknown): { name: string; value: number
   return data
     .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
     .map((r) => ({ name: String(r.Symbol ?? r.symbol ?? '—'), value: num(r.param_3) }));
+}
+
+/** The per-stock board from ANY stored board feed (see TF_BOARD_ENDPOINTS):
+ *  each nests it differently, and reading one with another's parser yields
+ *  rows full of nulls rather than an error. */
+export function parseTfBoard(endpoint: string, payload: unknown): TfStockRow[] {
+  if (endpoint === 'sector_scope') return parseSectorScope(payload);
+  if (endpoint === 'rfactor_data') return parseRFactorData(payload);
+  return parseAllSector(payload);
+}
+
+/** Per-sector values from ANY stored index feed (see TF_INDEX_ENDPOINTS).
+ *  sector_scope embeds the old `daily-index` array at `payload.data['daily-index']`
+ *  — the same `{ Symbol, param_3 }` rows (checked on the 2026-10-08 capture). */
+export function parseTfIndices(endpoint: string, payload: unknown): { name: string; value: number | null }[] {
+  if (endpoint === 'sector_scope') {
+    const data = (payload as { payload?: { data?: Record<string, unknown> } } | null)?.payload?.data;
+    return parseDailyIndex({ payload: { data: data?.['daily-index'] } });
+  }
+  return parseDailyIndex(payload);
 }

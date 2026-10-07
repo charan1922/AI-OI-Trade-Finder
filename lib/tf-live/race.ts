@@ -12,11 +12,8 @@
  * this says so rather than inventing a rank from a single data point.
  */
 import { prisma } from '@/lib/db';
-import { parseAllSector, parseDailyIndex, parseRFactorData } from '@/lib/tf-live/parse';
-
-function parseBoardCapture(endpoint: string, payload: unknown) {
-  return endpoint === 'rfactor_data' ? parseRFactorData(payload) : parseAllSector(payload);
-}
+import { TF_BOARD_ENDPOINTS_SQL, TF_INDEX_ENDPOINTS_SQL } from '@/lib/tf-live/endpoints';
+import { parseTfBoard as parseBoardCapture, parseTfIndices } from '@/lib/tf-live/parse';
 
 /**
  * 09:35 IST, moved back from 09:45 (operator, 2026-08-11) so accumulation that
@@ -164,7 +161,7 @@ function minutesIST(iso: string): number {
 
 
 /**
- * Every successful `all_sector` capture for `date`, parsed and ranked, oldest
+ * Every successful board capture (TF_BOARD_ENDPOINTS) for `date`, parsed and ranked, oldest
  * first. One board per CLOCK MINUTE — the collector can write several captures
  * inside one minute and they carry identical values, which would otherwise let
  * a "30 minutes ago" lookup land 30 *captures* back instead.
@@ -177,7 +174,7 @@ export async function getTfBoardsForDate(date: string): Promise<TfBoardAt[]> {
     `
     SELECT endpoint, capturedAt, payloadJson
     FROM tf_live_captures
-    WHERE endpoint IN ('all_sector', 'rfactor_data') AND status = 'success'
+    WHERE endpoint IN (${TF_BOARD_ENDPOINTS_SQL}) AND status = 'success'
       AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
     ORDER BY capturedAt ASC
   `,
@@ -351,8 +348,8 @@ export function boardAtMinute(
 }
 
 /**
- * Ranks every symbol by TF's own R-Factor at each successful `all_sector`
- * capture inside today's 09:45–11:00 IST window, then reports who climbed
+ * Ranks every symbol by TF's own R-Factor at each successful board
+ * capture (TF_BOARD_ENDPOINTS) inside today's 09:45–11:00 IST window, then reports who climbed
  * from the FIRST capture in that window to the LATEST. `maxRank` keeps the
  * race to names actually near the front (mirrors rank-tracker's `maxRank=20`).
  */
@@ -372,7 +369,7 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     `
     SELECT id, endpoint, capturedAt, payloadJson
     FROM tf_live_captures
-    WHERE endpoint IN ('all_sector', 'rfactor_data') AND status = 'success'
+    WHERE endpoint IN (${TF_BOARD_ENDPOINTS_SQL}) AND status = 'success'
       AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
     ORDER BY capturedAt ASC
   `,
@@ -503,7 +500,8 @@ export interface TfSectorRow {
 
 /**
  * TF's sector board for `date`, strongest first, from the latest successful
- * `daily-index` capture.
+ * sector-values capture (TF_INDEX_ENDPOINTS — sector_scope embeds the old
+ * `daily-index` list).
  *
  * EVIDENCE ONLY, and deliberately so. It is attached to the scan context so the
  * operator and the AI can SEE which sectors TradeFinder rates strongest, but
@@ -522,15 +520,15 @@ export interface TfSectorRow {
 export async function getTfSectorBoard(date: string): Promise<{ capturedAt: string | null; rows: TfSectorRow[] }> {
   try {
     const rows = (await prisma.$queryRawUnsafe(
-      `SELECT capturedAt, payloadJson FROM tf_live_captures
-       WHERE endpoint = 'daily-index' AND status = 'success'
+      `SELECT endpoint, capturedAt, payloadJson FROM tf_live_captures
+       WHERE endpoint IN (${TF_INDEX_ENDPOINTS_SQL}) AND status = 'success'
          AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
        ORDER BY capturedAt DESC LIMIT 1`,
       date
-    )) as { capturedAt: string; payloadJson: string | null }[];
+    )) as { endpoint: string; capturedAt: string; payloadJson: string | null }[];
     const row = rows[0];
     if (!row?.payloadJson) return { capturedAt: null, rows: [] };
-    const parsed = parseDailyIndex(JSON.parse(row.payloadJson))
+    const parsed = parseTfIndices(row.endpoint, JSON.parse(row.payloadJson))
       .filter((r) => r.value != null)
       .map((r) => ({ name: r.name, rFactor: r.value }))
       .sort((a, b) => (b.rFactor ?? 0) - (a.rFactor ?? 0));

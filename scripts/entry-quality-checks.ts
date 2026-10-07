@@ -19,7 +19,7 @@ import {
   detectConsolidationBreakout,
 } from '../lib/trade-suggest/consolidation-breakout';
 import { classifyMoveFreshness } from '../lib/trade-suggest/move-freshness';
-import { TF_ENDPOINT_URL, TF_ENDPOINTS, TF_PARSED_ENDPOINTS } from '../lib/tf-live/endpoints';
+import { TF_ENDPOINT_URL, TF_ENDPOINTS } from '../lib/tf-live/endpoints';
 import type { IndicatorBar } from '../lib/signals/indicators';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
@@ -211,23 +211,20 @@ export function runEntryQualityChecks(check: CheckFn): void {
   // error every 5 minutes forever and nothing else looks wrong. Pin them.
   {
     const expected: Record<string, string> = {
-      'all_sector': 'https://tradefinder.in/api_be/data/order/all_sector',
-      'daily-index': 'https://tradefinder.in/api_be/data/order/daily-index',
       'market_pulse': 'https://tradefinder.in/api_be/data/market_pulse',
-      // TradeFinder's own session/entitlement probe, added 2026-08-26 at the
-      // operator's request. Their page fires it on every load, so allowlisting
-      // it is what makes it periodic — we never fetch it ourselves.
-      'check_signal': 'https://tradefinder.in/api_be/admin/users/check_signal',
+      'sector_scope': 'https://tradefinder.in/api_be/data/sector_scope',
     };
     check(
-      'tf endpoints: exactly the four feeds this app captures, and no more',
+      'tf endpoints: exactly the two feeds this app captures, and no more',
       TF_ENDPOINTS.length === Object.keys(expected).length &&
         Object.keys(expected).every((e) => (TF_ENDPOINTS as readonly string[]).includes(e)),
       TF_ENDPOINTS.join(', ')
     );
     check(
-      'tf endpoints: sector_scope (TF\'s own, unrelated to our /sector-scope page) is NOT captured',
-      !(TF_ENDPOINTS as readonly string[]).includes('sector_scope')
+      'tf endpoints: retired feeds (all_sector, daily-index, rfactor_data, check_signal) are NOT captured',
+      !['all_sector', 'daily-index', 'rfactor_data', 'check_signal'].some((e) =>
+        (TF_ENDPOINTS as readonly string[]).includes(e)
+      )
     );
     for (const [endpoint, url] of Object.entries(expected)) {
       check(`tf endpoints: ${endpoint} URL is exact`, TF_ENDPOINT_URL[endpoint as keyof typeof TF_ENDPOINT_URL] === url);
@@ -235,13 +232,6 @@ export function runEntryQualityChecks(check: CheckFn): void {
     check(
       'tf endpoints: every endpoint has a URL (no undefined fetch target)',
       TF_ENDPOINTS.every((e) => typeof TF_ENDPOINT_URL[e] === 'string' && TF_ENDPOINT_URL[e].startsWith('https://'))
-    );
-    check(
-      'tf endpoints: only the two confirmed-schema feeds are marked parsed',
-      TF_PARSED_ENDPOINTS.length === 2 &&
-        TF_PARSED_ENDPOINTS.includes('all_sector') &&
-        TF_PARSED_ENDPOINTS.includes('daily-index'),
-      'market_pulse and check_signal are captured RAW until a real payload is inspected'
     );
   }
 }

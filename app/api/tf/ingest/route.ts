@@ -2,9 +2,9 @@
  * Ingest point for the REMOTE TradeFinder browser worker.
  *
  * The worker forwards EVERY response whose URL contains /api_be/ and judges none
- * of them — this handler applies the same allowlist, the same success/rejection
- * rule and the same parsers the in-process relay used, so TradeFinder's schema
- * lives in exactly one place (lib/tf-live/ingest.ts). A payload for a feed
+ * of them — this handler applies the allowlist and the success/rejection rule,
+ * so TradeFinder's schema lives in the main app only (lib/tf-live/ingest.ts,
+ * lib/tf-live/parse.ts). A payload for a feed
  * nobody reads is answered 200 and dropped, matching the old behaviour where
  * such traffic never reached the database.
  *
@@ -14,8 +14,8 @@
 import { NextResponse } from 'next/server';
 
 import { noteCaptureFailure, noteCaptureSuccess, noteWorkerSeen } from '@/lib/tf-live/browser';
-import { classifyTfResponse, endpointTagFor, extractRows, failureAlarmMessage } from '@/lib/tf-live/ingest';
-import { recordTfBrowserOutcome, recordTfLiveCapture, recordTfLiveRows } from '@/lib/tf-live/store';
+import { classifyTfResponse, endpointTagFor, failureAlarmMessage } from '@/lib/tf-live/ingest';
+import { recordTfBrowserOutcome, recordTfLiveCapture } from '@/lib/tf-live/store';
 import { parseIngestPayload, verifyWorkerSecret, WORKER_SECRET_HEADER } from '@/lib/tf-live/worker-protocol';
 
 export const dynamic = 'force-dynamic';
@@ -64,13 +64,8 @@ export async function POST(req: Request): Promise<Response> {
       return NextResponse.json({ success: true, stored: true, outcome: 'error', alarmed: alarm != null });
     }
 
-    const captureId = await recordTfLiveCapture({
-      endpoint: tag,
-      status: 'success',
-      payloadJson: JSON.stringify(body),
-    });
-    const rows = extractRows(tag, body);
-    if (captureId && rows) await recordTfLiveRows(captureId, rows);
+    // Stored raw; readers parse with lib/tf-live/parse.ts when they need rows.
+    await recordTfLiveCapture({ endpoint: tag, status: 'success', payloadJson: JSON.stringify(body) });
     noteCaptureSuccess();
     await recordTfBrowserOutcome(true);
     return NextResponse.json({ success: true, stored: true, outcome: 'success', endpoint: tag });

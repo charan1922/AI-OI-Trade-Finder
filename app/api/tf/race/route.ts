@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { adminOnly } from '@/lib/auth/server';
 import { isTradingDay, todayIST } from '@/lib/market-data';
 import { screenDaily, type ScreenResult } from '@/lib/signals/daily-screen';
+import { TF_BOARD_ENDPOINTS_SQL } from '@/lib/tf-live/endpoints';
 import { boardAtMinute, getTfBoardsForDate, getTfRaceForWindow, istMinutesNow } from '@/lib/tf-live/race';
 import { buildRecordedTfContext } from '@/lib/tf-live/context';
 import { LIVE_TF_SELECTOR_CONFIG, selectTfCandidates } from '@/lib/tf-live/selector';
@@ -72,7 +73,7 @@ export async function GET(req: Request) {
       const rows = (await prisma.$queryRawUnsafe(
         `SELECT DISTINCT date(datetime(capturedAt,'+5 hours','+30 minutes')) d
          FROM tf_live_captures
-         WHERE endpoint IN ('all_sector', 'rfactor_data') AND status = 'success'
+         WHERE endpoint IN (${TF_BOARD_ENDPOINTS_SQL}) AND status = 'success'
            AND date(datetime(capturedAt,'+5 hours','+30 minutes')) < ?
          ORDER BY d DESC LIMIT 5`,
         today

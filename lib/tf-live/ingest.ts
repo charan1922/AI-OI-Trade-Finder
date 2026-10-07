@@ -10,70 +10,35 @@
  * one that already swapped param_2/param_3 once).
  */
 import { TF_ENDPOINTS } from '@/lib/tf-live/endpoints';
-import { parseAllSector, parseDailyIndex, parseRFactorData } from '@/lib/tf-live/parse';
 
-/** ONLY these get stored — see lib/tf-live/endpoints.ts's module note for why
- *  the list is exactly these three. Everything else the page fires
- *  (admin/users/check_signal, feature_flag/feature_read,
- *  rfactor_filter/rfactor_data, servertime, TradeFinder's OWN sector_scope) is
- *  real traffic nobody in this app reads, and is dropped before it can reach
- *  the database. */
+/** ONLY these get stored — exactly `market_pulse` and `sector_scope` (operator
+ *  request 2026-10-08, see lib/tf-live/endpoints.ts). Everything else the page
+ *  fires (all_sector, daily-index, rfactor_data, check_signal, servertime,
+ *  feature flags…) is real traffic that is dropped before it can reach the
+ *  database. */
 const ALLOWED_TAGS = new Set<string>(TF_ENDPOINTS);
 
 /**
- * Map a TradeFinder request path to the endpoint tag the rest of the app reads
- * from tf_live_captures. Keeps the SAME tags the original fetch-based collector
- * used ('all_sector', 'daily-index', 'market_pulse') so race.ts / snapshot.ts /
- * the EOD page need no changes. Returns null for anything not in ALLOWED_TAGS.
+ * Map a TradeFinder request path to the endpoint tag stored in
+ * tf_live_captures, or null for anything not in ALLOWED_TAGS.
  *
  * EVERY tracked feed needs its own `endsWith` case — the generic fallback below
- * only produces a bare tag for a path shaped `/api_be/<tag>`, and not one of
- * TradeFinder's three is actually shaped that way.
- *
- * THE BUG THAT PROVED IT (found 2026-08-26 by scripts/verify-tf-ingest.ts, the
- * first test this function ever had): `market_pulse` lives at
- * `/api_be/data/market_pulse` — one segment shallower than the other two, which
- * sit under `/api_be/data/order/`. It had no `endsWith` case, so the fallback
- * computed `'data/market_pulse'`, which is not in ALLOWED_TAGS, so every single
- * response was dropped. Confirmed against production: `all_sector` had 1,667
- * stored captures and `daily-index` 1,825, while `market_pulse` was absent from
- * the history entirely — zero, ever, since the browser relay replaced the
- * fetch-based collector on 2026-08-08. That silence is also why endpoints.ts
- * still records "no parser exists because no successful capture has been
- * inspected": there were none to inspect.
+ * only produces a bare tag for a path shaped `/api_be/<tag>`, and none of
+ * TradeFinder's real paths is. Without one a feed is silently dropped: that is
+ * how `market_pulse` lost every response from 2026-08-08 to 2026-08-26.
+ * scripts/verify-tf-ingest.ts round-trips every TF_ENDPOINTS entry to catch it.
  */
 export function endpointTagFor(pathname: string): string | null {
   let tag: string;
-  if (pathname.endsWith('/data/order/all_sector')) tag = 'all_sector';
-  else if (pathname.endsWith('/rfactor_filter/rfactor_data')) tag = 'rfactor_data';
-  else if (pathname.endsWith('/data/order/daily-index')) tag = 'daily-index';
-  else if (pathname.endsWith('/data/market_pulse')) tag = 'market_pulse';
-  else if (pathname.endsWith('/admin/users/check_signal')) tag = 'check_signal';
+  if (pathname.endsWith('/data/market_pulse')) tag = 'market_pulse';
+  // `/data/sector_scope` only — TF's older `/data/order/sector_scope` must stay untracked.
+  else if (pathname.endsWith('/data/sector_scope') && !pathname.endsWith('/data/order/sector_scope')) tag = 'sector_scope';
   else {
     const marker = '/api_be/';
     const at = pathname.indexOf(marker);
     tag = at >= 0 ? pathname.slice(at + marker.length) : pathname;
   }
   return ALLOWED_TAGS.has(tag) ? tag : null;
-}
-
-/** Best-effort parse into tf_live_rows for the two feeds with a confirmed
- *  schema. `market_pulse` is still fully captured via payloadJson — see
- *  endpoints.ts's module note on why it has no parser yet. */
-export function extractRows(tag: string, payload: unknown): unknown[] | undefined {
-  if (tag === 'all_sector') {
-    const rows = parseAllSector(payload);
-    return rows.length > 0 ? rows : undefined;
-  }
-  if (tag === 'rfactor_data') {
-    const rows = parseRFactorData(payload);
-    return rows.length > 0 ? rows : undefined;
-  }
-  if (tag === 'daily-index') {
-    const rows = parseDailyIndex(payload);
-    return rows.length > 0 ? rows.map((r) => ({ symbol: r.name, value: r.value })) : undefined;
-  }
-  return undefined;
 }
 
 export type TfResponseVerdict = { outcome: 'success' } | { outcome: 'rejected'; detail: string };

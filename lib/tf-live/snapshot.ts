@@ -37,7 +37,8 @@
  * rank today's trades on a two-hour-old picture.
  */
 import { prisma } from '@/lib/db';
-import { parseAllSector, parseRFactorData } from '@/lib/tf-live/parse';
+import { TF_BOARD_ENDPOINTS_SQL } from '@/lib/tf-live/endpoints';
+import { parseTfBoard } from '@/lib/tf-live/parse';
 
 export interface TfSymbolSnapshot {
   rFactor: number;
@@ -79,7 +80,7 @@ const cacheStore = globalThis as unknown as { __tfSnapshotCache?: Map<string, Ca
 cacheStore.__tfSnapshotCache ??= new Map();
 
 /**
- * The latest successful `all_sector` capture for `date`, flattened and ranked
+ * The latest successful board capture (TF_BOARD_ENDPOINTS) for `date`, flattened and ranked
  * by TradeFinder's R-Factor (rank 1 = highest).
  */
 export async function getTfSnapshot(date: string, asOfMs: number = Date.now()): Promise<TfSnapshot> {
@@ -100,7 +101,7 @@ export async function getTfSnapshot(date: string, asOfMs: number = Date.now()): 
       `
       SELECT endpoint, capturedAt, payloadJson
       FROM tf_live_captures
-      WHERE endpoint IN ('all_sector', 'rfactor_data') AND status = 'success'
+      WHERE endpoint IN (${TF_BOARD_ENDPOINTS_SQL}) AND status = 'success'
         AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
       ORDER BY capturedAt DESC
       LIMIT 1
@@ -123,7 +124,7 @@ export async function getTfSnapshot(date: string, asOfMs: number = Date.now()): 
     return EMPTY(date);
   }
 
-  const scored = (row.endpoint === 'rfactor_data' ? parseRFactorData(parsed) : parseAllSector(parsed))
+  const scored = parseTfBoard(row.endpoint, parsed)
     .filter((r): r is typeof r & { rFactor: number } => r.rFactor != null && Number.isFinite(r.rFactor))
     .sort((a, b) => b.rFactor - a.rFactor);
   if (scored.length === 0) return EMPTY(date);

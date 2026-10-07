@@ -4,7 +4,8 @@
  * TradeFinder's OWN JavaScript make its OWN requests, and records what comes
  * back.
  *
- * WHY THIS EXISTS — read lib/tf-live/client.ts's history first. Short version:
+ * WHY THIS EXISTS (the old fetch client, lib/tf-live/client.ts, is in git
+ * history — removed 2026-10-08 as unreachable). Short version:
  * every attempt to capture and REPLAY TradeFinder's `accessToken` (the
  * sessionStorage `at` value) failed, including one captured live from a real,
  * currently-succeeding browser request and replayed under a second later. The
@@ -61,8 +62,31 @@
  *
  * Design: docs/superpowers/specs/2026-08-24-tf-browser-remote-worker-design.md
  */
-import { withinCaptureWindow } from '@/lib/tf-live/collector';
 import { isWorkerAlive, WORKER_LIVENESS_MS } from '@/lib/tf-live/worker-protocol';
+
+/**
+ * Capture window, IST. Starts at 09:22 — NOT 09:15 — at the user's explicit
+ * request (2026-08-07): TradeFinder's numbers in the first few minutes reflect
+ * the pre-open auction unwinding rather than real session participation.
+ * Ends with the session at 15:30.
+ */
+export const CAPTURE_START_MIN = 9 * 60 + 22; // 09:22 IST
+export const CAPTURE_END_MIN = 15 * 60 + 30; // 15:30 IST
+
+/** True inside the capture window on a weekday. `now` is injectable for tests. */
+export function withinCaptureWindow(now = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  const day = parts.find((part) => part.type === 'weekday')?.value;
+  const minutes = value('hour') * 60 + value('minute');
+  return day !== 'Sat' && day !== 'Sun' && minutes >= CAPTURE_START_MIN && minutes <= CAPTURE_END_MIN;
+}
 
 /** A manual "Start now" (or a fresh cookie save) outside market hours used to
  *  get killed by the very next watchdog tick, at most 60s later, which made it

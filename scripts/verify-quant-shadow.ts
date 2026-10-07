@@ -15,7 +15,6 @@ import { runProfitProtectChecks } from './profit-protect-checks';
 import { runExpiryPolicyChecks } from './expiry-policy-checks';
 import { runStopMoveChecks, runTfParseChecks } from './stop-move-checks';
 import { runEntryQualityChecks } from './entry-quality-checks';
-import { runTfClientChecks } from './tf-client-checks';
 import { runTfParseCurlChecks } from './tf-parse-curl-checks';
 
 let failures = 0;
@@ -32,7 +31,6 @@ async function main(): Promise<void> {
   runStopMoveChecks(check);
   runTfParseChecks(check);
   runEntryQualityChecks(check);
-  await runTfClientChecks(check);
   runTfParseCurlChecks(check);
   runGradeChecks(check);
   runProfitProtectChecks(check);

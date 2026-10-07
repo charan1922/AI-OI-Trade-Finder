@@ -142,11 +142,11 @@ export default function TfHistoryPage() {
         <>
           <div className="rounded-lg border border-border bg-card">
             <div className="flex items-center justify-between border-b border-border px-2.5 py-1">
-              <h2 className="text-[11px] font-semibold uppercase tracking-wide">Indices (daily-index)</h2>
+              <h2 className="text-[11px] font-semibold uppercase tracking-wide">Sector values</h2>
               <span className="text-[10px] text-muted-foreground">captured {fmtDateTime(data.dailyIndex?.capturedAt)}</span>
             </div>
             {indexRows.length === 0 ? (
-              <p className="px-3 py-4 text-center text-[11px] text-muted-foreground">No daily-index capture that day.</p>
+              <p className="px-3 py-4 text-center text-[11px] text-muted-foreground">No sector-values capture that day.</p>
             ) : (
               <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 p-2 sm:grid-cols-3">
                 {indexRows.map((r) => (
@@ -163,11 +163,11 @@ export default function TfHistoryPage() {
 
           <div className="rounded-lg border border-border bg-card">
             <div className="flex items-center justify-between border-b border-border px-2.5 py-1">
-              <h2 className="text-[11px] font-semibold uppercase tracking-wide">Stocks (all_sector), sorted by R-Factor</h2>
+              <h2 className="text-[11px] font-semibold uppercase tracking-wide">Stocks, sorted by R-Factor</h2>
               <span className="text-[10px] text-muted-foreground">captured {fmtDateTime(data.allSector?.capturedAt)}</span>
             </div>
             {stockRows.length === 0 ? (
-              <p className="px-3 py-4 text-center text-[11px] text-muted-foreground">No all_sector capture that day.</p>
+              <p className="px-3 py-4 text-center text-[11px] text-muted-foreground">No stock board captured that day.</p>
             ) : (
               <div className="max-h-[60vh] overflow-auto">
                 <table className="w-full text-[11px]">

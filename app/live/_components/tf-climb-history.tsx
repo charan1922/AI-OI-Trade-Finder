@@ -2,6 +2,7 @@
 
 import { Clock3, Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { TF_BOARD_ENDPOINTS } from '@/lib/tf-live/endpoints';
 
 interface ClimbInterval {
   symbol: string;
@@ -51,8 +52,8 @@ export function TfClimbHistory() {
   }, []);
 
   const intervals = data?.climbHistory ?? [];
-  const allSector = data?.captureStatus?.all_sector;
-  const rFactorData = data?.captureStatus?.rfactor_data;
+  // Board captures today, whichever feed carried them (TF_BOARD_ENDPOINTS).
+  const boardCaptures = TF_BOARD_ENDPOINTS.reduce((n, e) => n + (data?.captureStatus?.[e]?.successCount ?? 0), 0);
   const marketPulse = data?.captureStatus?.market_pulse;
 
   return (
@@ -101,7 +102,7 @@ export function TfClimbHistory() {
         ) : (
           <div className="space-y-1 py-3 text-center text-[10px] text-muted-foreground">
             <p>No climbed-stock interval is available yet.</p>
-            {(allSector?.successCount ?? 0) + (rFactorData?.successCount ?? 0) === 0 &&
+            {boardCaptures === 0 &&
             (marketPulse?.successCount ?? 0) > 0 ? (
               <p className="rounded border border-amber-300/50 bg-amber-50 px-2 py-1 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
                 Market Pulse is capturing, but no TradeFinder R-Factor board response has been captured today.
