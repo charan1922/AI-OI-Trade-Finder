@@ -33,7 +33,14 @@ const POLL_MS = 60_000;
 const REALISTIC_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
 
-const state = { browser: null, context: null, pages: new Map(), reloadTimer: null, reloadIntervalMs: 90_000 };
+const state = {
+  browser: null,
+  context: null,
+  pages: new Map(),
+  reloadTimer: null,
+  reloadIntervalMs: 90_000,
+  configSignature: null,
+};
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -136,6 +143,7 @@ async function openBrowser(config) {
   // silent, so our own reload IS the capture tick. Staggered across pages so
   // two renderers never navigate in the same instant.
   state.reloadIntervalMs = config.reloadIntervalMs;
+  state.configSignature = browserConfigSignature(config);
   state.reloadTimer = setInterval(() => {
     const urls = [...state.pages.keys()];
     const spacing = state.reloadIntervalMs / Math.max(urls.length, 1);
@@ -157,10 +165,19 @@ async function closeBrowser() {
   state.browser = null;
   state.context = null;
   state.pages.clear();
+  state.configSignature = null;
   if (browser) {
     console.log('[tf_worker] closing Chromium');
     await browser.close().catch(() => undefined);
   }
+}
+
+function browserConfigSignature(config) {
+  return JSON.stringify({
+    pages: config.pages,
+    cookies: config.cookies,
+    reloadIntervalMs: config.reloadIntervalMs,
+  });
 }
 
 async function tick() {
@@ -183,8 +200,13 @@ async function tick() {
     return;
   }
 
-  if (!state.browser) {
+  const nextSignature = browserConfigSignature(config);
+  if (!state.browser || state.configSignature !== nextSignature) {
     try {
+      if (state.browser) {
+        console.log('[tf_worker] browser config changed; reopening pages and refreshing cookies');
+        await closeBrowser();
+      }
       await openBrowser(config);
     } catch (error) {
       console.error(`[tf_worker] launch failed: ${error.message}`);

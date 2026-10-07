@@ -39,9 +39,9 @@ node worker.mjs
 ```
 
 Keep it running under systemd with `Restart=always` so a crash recovers without
-a human. The worker is stateless — it re-reads cookie, page list and cadence
-from the main app every 60s, so a fresh "Copy as cURL" paste on `/tf` takes
-effect within one poll and needs no worker restart.
+a human. The worker is stateless: it re-reads cookies, page list and cadence
+from the main app every 60s. A changed value closes and reopens Chromium, so a
+fresh "Copy as cURL" paste or an added capture page takes effect within one poll.
 
 ### systemd unit
 

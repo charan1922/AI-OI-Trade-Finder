@@ -70,6 +70,7 @@ import { isWorkerAlive, WORKER_LIVENESS_MS } from '@/lib/tf-live/worker-protocol
  *  (user request, 2026-08-08). A manual start therefore stays in force for this
  *  long regardless of the time of day, then reverts to window-based behaviour. */
 const MANUAL_TEST_DURATION_MS = 10 * 60_000;
+const REMOTE_RESTART_PAUSE_MS = 75_000;
 
 interface BrowserState {
   /** Consecutive TradeFinder rejections, fed by the ingest route. Drives the
@@ -81,6 +82,9 @@ interface BrowserState {
   /** Epoch ms until which a manual start keeps the worker running even outside
    *  the capture window. Null when there's no active manual override. */
   manualUntilMs: number | null;
+  /** Brief forced-off window used to make the remote worker reopen Chromium
+   *  with the latest cookies and configured page list. */
+  restartUntilMs: number | null;
   /** When the REMOTE worker last reached us (config poll, ingest, heartbeat).
    *  Null until it checks in for the first time. */
   lastWorkerSeenAtMs: number | null;
@@ -95,9 +99,11 @@ store.__tfBrowserState ??= {
   consecutiveFailures: 0,
   sawFirstSuccess: false,
   manualUntilMs: null,
+  restartUntilMs: null,
   lastWorkerSeenAtMs: null,
 };
 store.__tfBrowserState.lastWorkerSeenAtMs ??= null;
+store.__tfBrowserState.restartUntilMs ??= null;
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
 
 /** Every worker request — config poll, ingest, heartbeat — refreshes this. It
@@ -122,6 +128,7 @@ export function noteWorkerSeen(): void {
  */
 export function shouldWorkerRun(): boolean {
   const s = state();
+  if (s.restartUntilMs != null && Date.now() < s.restartUntilMs) return false;
   const manualActive = s.manualUntilMs != null && Date.now() < s.manualUntilMs;
   return manualActive || withinCaptureWindow();
 }
@@ -182,4 +189,10 @@ export async function forceStartTfBrowser(): Promise<void> {
  *  session; that is exactly how the in-process version behaved. */
 export async function stopTfBrowser(): Promise<void> {
   state().manualUntilMs = null;
+}
+
+/** Force the remote worker through one closed-browser poll, then let its normal
+ * schedule reopen every configured page with the latest stored cookies. */
+export async function restartTfBrowser(): Promise<void> {
+  state().restartUntilMs = Date.now() + REMOTE_RESTART_PAUSE_MS;
 }

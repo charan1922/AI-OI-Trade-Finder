@@ -4,6 +4,7 @@ import { Flame, Gauge, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react';
 import { CategorySection } from './_components/category-section';
 import { HowToRead } from './_components/how-to-read';
+import { TfClimbHistory } from './_components/tf-climb-history';
 // NiftyMarketContext hidden for now, in favor of TfRaceCard (operator request,
 // 2026-08-06) — not deleted, just not rendered; restore by swapping the card below.
 // import { NiftyMarketContext } from './_components/nifty-market-context';
@@ -90,7 +91,10 @@ export default function LiveUrgencyPage() {
         </div>
       </div>
 
-      <TfRaceCard />
+      <div className="grid items-start gap-2 xl:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]">
+        <TfRaceCard />
+        <TfClimbHistory />
+      </div>
 
       {/* Category sections — each loads independently, like the /nse/movers panels */}
       <CategorySection

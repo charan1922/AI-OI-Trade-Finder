@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { adminOnly } from '@/lib/auth/server';
-import { forceStartTfBrowser, isTfBrowserRunning, stopTfBrowser } from '@/lib/tf-live/browser';
+import { forceStartTfBrowser, isTfBrowserRunning, restartTfBrowser, stopTfBrowser } from '@/lib/tf-live/browser';
 import { extractCookieHeaderFromCurl } from '@/lib/tf-live/parse-curl';
 import {
   assertTfLiveSessionKeyConfigured,
@@ -79,9 +79,16 @@ export async function POST(req: Request) {
       await stopTfBrowser();
       return NextResponse.json({ success: true, running: isTfBrowserRunning(), pending: 'stop-requested' });
     }
+    if (body.action === 'restart') {
+      await restartTfBrowser();
+      return NextResponse.json({ success: true, running: isTfBrowserRunning(), pending: 'restart-requested' });
+    }
 
     if (typeof body.curl !== 'string') {
-      return NextResponse.json({ success: false, error: 'body must be { curl: string } or { action: "start"|"stop" }' }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: 'body must be { curl: string } or { action: "start"|"stop"|"restart" }' },
+        { status: 400 }
+      );
     }
     const parsed = extractCookieHeaderFromCurl(body.curl);
     if ('error' in parsed) {

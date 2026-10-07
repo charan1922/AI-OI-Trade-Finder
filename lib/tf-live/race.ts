@@ -45,6 +45,14 @@ export interface TfRaceRunner {
   track: (number | null)[];
 }
 
+export interface TfClimbInterval {
+  symbol: string;
+  enteredAt: number;
+  exitedAt: number | null;
+  entryRank: number;
+  exitRank: number | null;
+}
+
 export interface TfRaceResult {
   date: string;
   /** True once at least 2 usable captures exist inside 09:35–11:00 IST today. */
@@ -60,6 +68,8 @@ export interface TfRaceResult {
   baselineDelayed: boolean;
   runners: TfRaceRunner[];
   newEntrants: TfRaceRunner[];
+  /** Every interval in which a name qualified as climbing into the top slice. */
+  climbHistory: TfClimbInterval[];
 }
 
 /**
@@ -351,6 +361,7 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     baselineDelayed: false,
     runners: [],
     newEntrants: [],
+    climbHistory: [],
   };
 
   const captures = (await prisma.$queryRawUnsafe(
@@ -413,11 +424,36 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
   const lastIdx = rankBoards.length - 1;
   const runners: TfRaceRunner[] = [];
   const newEntrants: TfRaceRunner[] = [];
+  const climbHistory: TfClimbInterval[] = [];
   for (const symbol of allSymbols) {
-    const rankNow = rankBoards[lastIdx].get(symbol);
-    if (rankNow == null || rankNow > maxRank) continue;
     const track = rankBoards.map((board) => board.get(symbol) ?? null);
     const rankAtWindowStart = track[0];
+    let active: TfClimbInterval | null = null;
+    for (let i = 1; i < rankBoards.length; i++) {
+      const currentRank = rankBoards[i].get(symbol) ?? null;
+      const qualifies =
+        currentRank != null &&
+        currentRank <= maxRank &&
+        (rankAtWindowStart == null || rankAtWindowStart - currentRank > 0);
+      if (qualifies && active == null) {
+        active = {
+          symbol,
+          enteredAt: new Date(inWindow[i].capturedAt).getTime(),
+          exitedAt: null,
+          entryRank: currentRank,
+          exitRank: null,
+        };
+      } else if (!qualifies && active != null) {
+        active.exitedAt = new Date(inWindow[i].capturedAt).getTime();
+        active.exitRank = currentRank;
+        climbHistory.push(active);
+        active = null;
+      }
+    }
+    if (active != null) climbHistory.push(active);
+
+    const rankNow = rankBoards[lastIdx].get(symbol);
+    if (rankNow == null || rankNow > maxRank) continue;
     const rFactorNow = rFactorNowBySymbol.get(symbol) ?? null;
     if (rankAtWindowStart == null) {
       newEntrants.push({ symbol, rankNow, rankAtWindowStart: null, deltaSinceWindowStart: null, rFactorNow, isNew: true, track });
@@ -441,6 +477,7 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     a.rankNow - b.rankNow;
   runners.sort(byRFactor);
   newEntrants.sort(byRFactor);
+  climbHistory.sort((a, b) => Number(b.exitedAt == null) - Number(a.exitedAt == null) || b.enteredAt - a.enteredAt);
 
   return {
     date,
@@ -450,6 +487,7 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     baselineDelayed: firstUsable > 0,
     runners: runners.slice(0, limit),
     newEntrants: newEntrants.slice(0, limit),
+    climbHistory,
   };
 }
 

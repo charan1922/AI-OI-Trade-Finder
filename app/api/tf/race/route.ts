@@ -51,6 +51,21 @@ export async function GET(req: Request) {
     const sessionOpenedToday = isTradingDay();
     let date = today;
     let result = await getTfRaceForWindow(date);
+    const captureRows = (await prisma.$queryRawUnsafe(
+      `SELECT endpoint,
+              SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) successCount,
+              MAX(CASE WHEN status = 'success' THEN capturedAt END) lastSuccessAt
+         FROM tf_live_captures
+        WHERE date(datetime(capturedAt,'+5 hours','+30 minutes')) = ?
+        GROUP BY endpoint`,
+      today
+    )) as { endpoint: string; successCount: number | bigint; lastSuccessAt: string | null }[];
+    const captureStatus = Object.fromEntries(
+      captureRows.map((row) => [
+        row.endpoint,
+        { successCount: Number(row.successCount ?? 0), lastSuccessAt: row.lastSuccessAt },
+      ])
+    );
 
     if (!result.hasRace && !sessionOpenedToday) {
       // Most recent session with successful captures, today excluded (already tried).
@@ -214,6 +229,7 @@ export async function GET(req: Request) {
       verdictsLive,
       verdictNote,
       sessionOpenedToday,
+      captureStatus,
     });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
