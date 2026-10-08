@@ -6,6 +6,7 @@ import { isTradingDay, todayIST } from '@/lib/market-data';
 import { ENTRY_END_MIN, ENTRY_START_MIN } from '@/lib/auto-trade/config';
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
 import {
+  climberIntervals,
   climbingSince,
   droppedClimbers,
   firstNeed,
@@ -13,6 +14,7 @@ import {
   pickSector,
   rPath,
   rTrend,
+  type ClimberInterval,
   type DroppedClimber,
   type GateStrip,
 } from '@/lib/tf-live/board-view';
@@ -73,6 +75,31 @@ export async function GET(req: Request) {
   const denied = adminOnly(req);
   if (denied) return denied;
   try {
+    const url = new URL(req.url);
+    // Climbed Stocks day history: which dates have captures, and one day's climbers.
+    if (url.searchParams.get('dates') === 'true') {
+      const rows = (await prisma.$queryRawUnsafe(
+        `SELECT DISTINCT date(datetime(capturedAt,'+5 hours','+30 minutes')) AS d FROM tf_live_captures
+          WHERE endpoint IN (${TF_RACE_ENDPOINTS_SQL}) AND status = 'success'
+          ORDER BY d DESC LIMIT 60`
+      )) as { d: string }[];
+      return NextResponse.json({ success: true, dates: rows.map((r) => r.d) });
+    }
+    const historyDate = url.searchParams.get('date');
+    if (historyDate != null) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(historyDate)) {
+        return NextResponse.json({ success: false, error: 'date must be YYYY-MM-DD' }, { status: 400 });
+      }
+      const boards = await getTfBoardsForDate(historyDate);
+      const lastBoardMinute = boards.at(-1)?.minuteIST ?? null;
+      return NextResponse.json({
+        success: true,
+        date: historyDate,
+        lastBoardMinute,
+        climbers: lastBoardMinute == null ? [] : dayClimbers(boards, lastBoardMinute),
+      });
+    }
+
     const today = todayIST();
     const nowMin = istMinutesNow();
     const latest = (await prisma.$queryRawUnsafe(
@@ -89,6 +116,17 @@ export async function GET(req: Request) {
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
+}
+
+/** Every name that entered TF Climbers on a day, with when it entered and left —
+ *  the same "in" test as the cockpit's WATCH/TAKE tiers, over the whole session. */
+function dayClimbers(boards: Awaited<ReturnType<typeof getTfBoardsForDate>>, asOfMin: number): ClimberInterval[] {
+  return climberIntervals(boards, {
+    fromMin: RACE_WINDOW_START_MIN,
+    asOfMin,
+    topN: TF_RACE_MAX_RANK,
+    minDeltaR: LIVE_TF_SELECTOR_CONFIG.minDeltaR,
+  });
 }
 
 async function buildBody(today: string, nowMin: number) {
@@ -136,6 +174,7 @@ async function buildBody(today: string, nowMin: number) {
   // `newEntrants` above are left untouched for any existing consumer.
   let board: TfBoardRow[] = [];
   let dropped: DroppedClimber[] = [];
+  let climbers: ClimberInterval[] = [];
   // The clock time the board was captured at. Surfaced because the card's
   // "09:35-11:00 IST" badge is the ENTRY WINDOW, not the age of the data:
   // post-market this serves the day's LAST board (14:56 on 2026-08-12), and
@@ -255,6 +294,7 @@ async function buildBody(today: string, nowMin: number) {
       };
     });
     // Climbers that left the top 20 stay visible (operator, 2026-10-08).
+    climbers = dayClimbers(boards, asOfMinute);
     dropped = droppedClimbers(boards, {
       asOfMin: asOfMinute,
       fromMin: RACE_WINDOW_START_MIN,
@@ -279,6 +319,7 @@ async function buildBody(today: string, nowMin: number) {
     verdictNote,
     sessionOpenedToday,
     dropped,
+    climbers,
     // The ENTRY window (auto-trade config) — not the race's 09:35 measuring start.
     windowStartMin: ENTRY_START_MIN,
     windowEndMin: ENTRY_END_MIN,

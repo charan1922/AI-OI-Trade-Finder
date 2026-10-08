@@ -219,6 +219,7 @@ function Details({ r }: { r: TfBoardRow }) {
         <dt className="inline text-muted-foreground">since 09:45 </dt>
         <dd className="inline">{r.sinceEntryPct == null ? 'unrecorded' : pct(r.sinceEntryPct)}</dd>
       </div>
+      {r.needs && <div className="col-span-full">needs: {r.needs}</div>}
       <div className="col-span-full">
         {GATE_ORDER.map((k) => (
           <span key={k} className="mr-2">
@@ -271,15 +272,15 @@ function WatchRow({ r, dim = false }: { r: TfBoardRow; dim?: boolean }) {
   const bull = r.side === 'CE';
   const flat = r.deltaR == null || r.deltaR <= FROZEN_DELTA_R;
   return (
-    <div className={`rounded border border-border px-1.5 py-1 ${dim ? 'bg-muted/10 opacity-60' : 'bg-muted/30'}`}>
+    <div className={`rounded border border-border px-1.5 py-0.5 ${dim ? 'bg-muted/10 opacity-60' : 'bg-muted/30'}`}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full flex-wrap items-center gap-x-2 gap-y-0.5 text-left"
+        className="flex w-full flex-wrap items-center gap-x-1.5 text-left"
       >
-        <span className="w-7 shrink-0 text-[11px] font-bold tabular-nums text-foreground">#{r.rankNow}</span>
-        <span className="min-w-16 text-[11px] font-semibold text-foreground">{r.symbol}</span>
+        <span className="w-6 shrink-0 text-[10px] font-bold tabular-nums text-foreground">#{r.rankNow}</span>
+        <span className="min-w-14 text-[11px] font-semibold text-foreground">{r.symbol}</span>
         <span className="text-[10px] tabular-nums text-violet-600 dark:text-violet-400">R {r.rFactor.toFixed(2)}</span>
         <span className={`text-[10px] font-semibold tabular-nums ${flat ? 'text-muted-foreground' : 'text-emerald-600 dark:text-emerald-400'}`}>
           {r.deltaR == null ? '—' : flat ? 'flat' : `↑${r.deltaR.toFixed(2)}`}
@@ -291,11 +292,15 @@ function WatchRow({ r, dim = false }: { r: TfBoardRow; dim?: boolean }) {
           {pct(r.pctChange)}
         </span>
         <Chips r={r} />
-        <span className="ml-auto flex items-center gap-1">
+        {r.needs && (
+          <span title={`needs: ${r.needs}`} className="min-w-0 flex-1 truncate text-[9px] text-muted-foreground">
+            needs: {r.needs}
+          </span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-1">
           <GateDots gates={r.gates} />
           <ChartLink symbol={r.symbol} />
         </span>
-        {r.needs && <span className="basis-full pl-9 text-[10px] text-muted-foreground">needs: {r.needs}</span>}
       </button>
       {open && <Details r={r} />}
     </div>

@@ -23,10 +23,11 @@ import {
   selectTfCandidates,
   type TfSymbolContext,
 } from '@/lib/tf-live/selector';
-import { boardAtMinute, raceAtMinute, raceCaptures, type TfBoardAt } from '@/lib/tf-live/race';
+import { boardAtMinute, dropPreOpen, raceAtMinute, raceCaptures, type TfBoardAt } from '@/lib/tf-live/race';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   allPass,
+  climberIntervals,
   climbingSince,
   droppedClimbers,
   firstNeed,
@@ -391,6 +392,35 @@ function main(): void {
     const vals = new Map([['NIFTY PSU BANK', 3.25], ['NIFTY BANK', 0.04], ['NiFTY 50', -0.06]]);
     check('sector: skips the broad baskets', pickSector(['NiFTY 50', 'NIFTY PSU BANK'], vals)?.name === 'NIFTY PSU BANK');
     check('sector: none with a value = null', pickSector(['OTHERS'], vals) === null);
+  }
+
+  // ── 16. Boards before 09:15 are another session's — ignored ────────────
+  // 2026-10-08: a manual off-hours capture left a 02:02 board carrying the
+  // previous day's R-Factors; at 09:55 the 30-min rate compared against it and
+  // showed PNB at −1.90 "stopped climbing". TF restarts its counter each morning.
+  {
+    const kept = dropPreOpen([board(122, [['PNB', 3.8, 1]]), board(554, [['PNB', 0, 1]]), board(555, [['PNB', 0.2, 1]]), board(595, [['PNB', 1.9, 1]])]);
+    check('pre-open boards are dropped, 09:15 onward kept', kept.map((b) => b.minuteIST).join(',') === '555,595');
+  }
+
+  // ── 17. When each name entered and left TF Climbers ─────────────────────
+  {
+    // A climbs 10:05–10:15, stops at 10:20, climbs again from 10:40 to the end.
+    const b = [
+      board(575, [['A', 1.0, 1], ['B', 2.0, 1]]),
+      board(605, [['A', 1.5, 1], ['B', 2.0, 1]]), // A +0.5 vs 09:35 → in
+      board(615, [['A', 1.6, 1], ['B', 2.0, 1]]), // A +0.6 vs 09:35 → in
+      board(620, [['A', 1.5, 1], ['B', 2.0, 1]]), // A vs 09:50 (=09:35 board) +0.5 … still in
+      board(650, [['A', 1.5, 1], ['B', 2.0, 1]]), // A vs 10:20 = 0 → out at 10:50
+      board(680, [['A', 2.5, 1], ['B', 2.0, 1]]), // A vs 10:50 +1.0 → in again
+    ];
+    const iv = climberIntervals(b, { fromMin: 575, asOfMin: 680, topN: 20, minDeltaR: 0.05 });
+    const a = iv.filter((x) => x.symbol === 'A');
+    check('climbers: an entry and an exit are recorded', a[0]?.enteredAt === 605 && a[0]?.exitedAt === 650, JSON.stringify(a));
+    check('climbers: a re-entry opens a second interval, still active', a.length === 2 && a[1].enteredAt === 680 && a[1].exitedAt === null);
+    check('climbers: a name that never climbed never appears', !iv.some((x) => x.symbol === 'B'));
+    const top1 = climberIntervals(b, { fromMin: 575, asOfMin: 680, topN: 1, minDeltaR: 0.05 });
+    check('climbers: only names inside the top N count', !top1.some((x) => x.symbol === 'A' && x.enteredAt === 605));
   }
 
   // ── 12. Sector evidence must stay OUT of the selector ──────────────────

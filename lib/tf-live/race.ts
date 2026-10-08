@@ -27,6 +27,19 @@ const WINDOW_START_MIN = 9 * 60 + 35; // 09:35 IST
 /** When the race starts measuring — NOT when entries open (09:45, auto-trade config). */
 export const RACE_WINDOW_START_MIN = WINDOW_START_MIN;
 
+/** 09:15 IST — TF restarts its R-Factor counter each morning. */
+const SESSION_OPEN_MIN = 9 * 60 + 15;
+
+/**
+ * Drop boards captured before the session opened. A pre-open board (e.g. a manual
+ * off-hours capture at 02:02) still carries the PREVIOUS day's R-Factors; left in,
+ * the 30-min rate compares today's numbers against yesterday's (2026-10-08: PNB
+ * showed −1.90 "stopped climbing" at 09:55).
+ */
+export function dropPreOpen(boards: TfBoardAt[]): TfBoardAt[] {
+  return boards.filter((b) => b.minuteIST >= SESSION_OPEN_MIN);
+}
+
 /**
  * A day with TF Intraday Boost captures races on those alone (operator,
  * 2026-10-08: "Intraday Boost list is good"); older days fall back to the full
@@ -221,7 +234,7 @@ export async function getTfBoardsForDate(date: string): Promise<TfBoardAt[]> {
       spread: scored.filter((s) => s.rFactor > 1).length,
     });
   }
-  return boards;
+  return dropPreOpen(boards);
 }
 
 /**

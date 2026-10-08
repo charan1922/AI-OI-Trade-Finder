@@ -215,3 +215,49 @@ export function pickSector(
   }
   return null;
 }
+
+export interface ClimberInterval {
+  symbol: string;
+  /** Board minute (IST) it entered TF Climbers: climbing inside the top N. */
+  enteredAt: number;
+  /** Board minute it left — out of the top N or no longer climbing. Null = still in at `asOfMin`. */
+  exitedAt: number | null;
+  /** Best (lowest) rank it held while in. */
+  bestRank: number;
+}
+
+/**
+ * When each name entered and left TF Climbers over a session — the Climbed
+ * Stocks card and its day history (operator, 2026-10-08). "In" = inside the top
+ * N with a 30-min R-Factor rise above `minDeltaR`, the same test the WATCH/TAKE
+ * tiers use. A name can leave and come back: each run is its own interval.
+ */
+export function climberIntervals(
+  boards: TfBoardAt[],
+  opts: { fromMin: number; asOfMin: number; topN: number; minDeltaR: number; lookbackMin?: number }
+): ClimberInterval[] {
+  const lookback = opts.lookbackMin ?? 30;
+  const done: ClimberInterval[] = [];
+  const open = new Map<string, ClimberInterval>();
+  for (const b of boards) {
+    if (b.minuteIST < opts.fromMin || b.minuteIST > opts.asOfMin) continue;
+    const inNow = new Set<string>();
+    for (const [symbol, rank] of b.rank) {
+      if (rank > opts.topN) continue;
+      const r = b.rFactor.get(symbol);
+      const ago = rAt(boards, symbol, b.minuteIST - lookback);
+      if (r == null || ago == null || r - ago <= opts.minDeltaR) continue;
+      inNow.add(symbol);
+      const cur = open.get(symbol);
+      if (cur) cur.bestRank = Math.min(cur.bestRank, rank);
+      else open.set(symbol, { symbol, enteredAt: b.minuteIST, exitedAt: null, bestRank: rank });
+    }
+    for (const [symbol, cur] of open) {
+      if (inNow.has(symbol)) continue;
+      cur.exitedAt = b.minuteIST;
+      done.push(cur);
+      open.delete(symbol);
+    }
+  }
+  return [...done, ...open.values()].sort((a, b) => a.enteredAt - b.enteredAt || a.bestRank - b.bestRank);
+}
