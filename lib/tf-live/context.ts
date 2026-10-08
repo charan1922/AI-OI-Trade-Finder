@@ -30,6 +30,7 @@ import { prisma } from '@/lib/db';
 import { getFyersCandles, type StoredFyersBar } from '@/lib/fyers/candle-store';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import { supertrend } from '@/lib/signals/indicators';
+import type { TfBeacon } from '@/lib/tf-live/parse';
 import type { TfSymbolContext } from '@/lib/tf-live/selector';
 
 /** Minimum bars before the entry bucket for Supertrend(10,3) to mean anything. */
@@ -49,6 +50,18 @@ function bucketMinuteIST(bucketTs: number): number {
   );
 }
 
+/** Price beyond an opening range in the trade's direction; null until the range is complete. */
+export function orbBreak(
+  side: 'CE' | 'PE',
+  price: number | null,
+  complete: boolean,
+  high: number | null,
+  low: number | null
+): boolean | null {
+  if (price == null || !complete) return null;
+  return side === 'CE' ? high != null && price > high : low != null && price < low;
+}
+
 export interface TfContextRequest {
   symbol: string;
   /** Direction under consideration — breakout and display-only Supertrend are direction-aware. */
@@ -66,7 +79,10 @@ export interface TfContextRequest {
 export async function buildRecordedTfContext(
   date: string,
   entries: TfContextRequest[],
-  asOfMinuteIST: number
+  asOfMinuteIST: number,
+  /** TF breakout beacons as of the same moment (getTfBeaconsAt). Required, so no
+   *  caller can forget it: a missing beacon rejects, it never passes. */
+  beacons: ReadonlyMap<string, TfBeacon>
 ): Promise<Map<string, TfSymbolContext>> {
   const out = new Map<string, TfSymbolContext>();
   if (entries.length === 0) return out;
@@ -94,6 +110,8 @@ export async function buildRecordedTfContext(
     const empty: TfSymbolContext = {
       supertrendAligned: null,
       breakout: null,
+      breakout30: null,
+      tfBeacon: beacons.get(symbol)?.dir ?? null,
       premValueCr: premBySymbol.get(symbol) ?? null,
       sinceEntryPct: null,
     };
@@ -125,11 +143,10 @@ export async function buildRecordedTfContext(
 
     out.set(symbol, {
       supertrendAligned: st == null ? null : side === 'CE' ? st.direction === 'up' : st.direction === 'down',
-      breakout: !sc.openRangeComplete
-        ? null
-        : side === 'CE'
-          ? sc.openRangeHigh != null && price > sc.openRangeHigh
-          : sc.openRangeLow != null && price < sc.openRangeLow,
+      // The GATE is the 15-min range (operator, 2026-10-08); 30-min is a recorded shadow.
+      breakout: orbBreak(side, price, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
+      breakout30: orbBreak(side, price, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
+      tfBeacon: beacons.get(symbol)?.dir ?? null,
       premValueCr: premBySymbol.get(symbol) ?? null,
       // Direction-aware: positive means the move has gone OUR way since 09:45.
       sinceEntryPct: rawSince == null ? null : side === 'CE' ? rawSince : -rawSince,

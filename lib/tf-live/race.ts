@@ -12,7 +12,7 @@
  * this says so rather than inventing a rank from a single data point.
  */
 import { prisma } from '@/lib/db';
-import { TF_BOARD_ENDPOINTS_SQL, TF_INDEX_ENDPOINTS_SQL } from '@/lib/tf-live/endpoints';
+import { TF_INDEX_ENDPOINTS_SQL, TF_RACE_ENDPOINTS_SQL } from '@/lib/tf-live/endpoints';
 import { parseTfBoard as parseBoardCapture, parseTfIndices } from '@/lib/tf-live/parse';
 
 /**
@@ -24,6 +24,20 @@ import { parseTfBoard as parseBoardCapture, parseTfIndices } from '@/lib/tf-live
  * produces large, meaningless rank swings. See MIN_SPREAD_SYMBOLS.
  */
 const WINDOW_START_MIN = 9 * 60 + 35; // 09:35 IST
+/** When the race starts measuring — NOT when entries open (09:45, auto-trade config). */
+export const RACE_WINDOW_START_MIN = WINDOW_START_MIN;
+
+/**
+ * A day with TF Intraday Boost captures races on those alone (operator,
+ * 2026-10-08: "Intraday Boost list is good"); older days fall back to the full
+ * boards. Never mixes sources inside one day — the per-minute collapse keeps the
+ * first capture of a minute, so mixing would let the source flip minute to minute.
+ * The ranking is the same either way (Intraday Boost = the board's top 80, 80/80).
+ */
+export function raceCaptures<T extends { endpoint: string; payloadJson: string | null }>(captures: T[]): T[] {
+  const boost = captures.filter((c) => c.endpoint === 'market_pulse' && c.payloadJson?.includes('"intraday_boost"'));
+  return boost.length > 0 ? boost : captures.filter((c) => c.endpoint !== 'market_pulse');
+}
 const WINDOW_END_MIN = 11 * 60; // 11:00 IST
 
 /**
@@ -174,7 +188,7 @@ export async function getTfBoardsForDate(date: string): Promise<TfBoardAt[]> {
     `
     SELECT endpoint, capturedAt, payloadJson
     FROM tf_live_captures
-    WHERE endpoint IN (${TF_BOARD_ENDPOINTS_SQL}) AND status = 'success'
+    WHERE endpoint IN (${TF_RACE_ENDPOINTS_SQL}) AND status = 'success'
       AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
     ORDER BY capturedAt ASC
   `,
@@ -182,7 +196,7 @@ export async function getTfBoardsForDate(date: string): Promise<TfBoardAt[]> {
   )) as { endpoint: string; capturedAt: string; payloadJson: string | null }[];
 
   const boards: TfBoardAt[] = [];
-  for (const capture of captures) {
+  for (const capture of raceCaptures(captures)) {
     if (!capture.payloadJson) continue;
     let scored: { symbol: string; rFactor: number; pctChange: number | null }[] = [];
     try {
@@ -369,14 +383,14 @@ export async function getTfRaceForWindow(date: string, maxRank = 20, limit = 20)
     `
     SELECT id, endpoint, capturedAt, payloadJson
     FROM tf_live_captures
-    WHERE endpoint IN (${TF_BOARD_ENDPOINTS_SQL}) AND status = 'success'
+    WHERE endpoint IN (${TF_RACE_ENDPOINTS_SQL}) AND status = 'success'
       AND date(datetime(capturedAt, '+5 hours', '+30 minutes')) = ?
     ORDER BY capturedAt ASC
   `,
     date
   )) as { id: number; endpoint: string; capturedAt: string; payloadJson: string | null }[];
 
-  const rawWindow = captures.filter((c) => {
+  const rawWindow = raceCaptures(captures).filter((c) => {
     const min = minutesIST(c.capturedAt);
     return min >= WINDOW_START_MIN && min <= WINDOW_END_MIN;
   });

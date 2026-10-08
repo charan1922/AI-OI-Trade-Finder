@@ -5,11 +5,13 @@ import {
   endpointTagFor,
   failureAlarmMessage,
 } from '@/lib/tf-live/ingest';
-import { TF_BOARD_ENDPOINTS } from '@/lib/tf-live/endpoints';
+import { TF_BOARD_ENDPOINTS, TF_RACE_ENDPOINTS } from '@/lib/tf-live/endpoints';
 import {
   isPriceList,
   isRFactorParam3,
   parseAllSector,
+  parseBeacons,
+  parseIntradayBoost,
   parseMarketPulse,
   parseSectorScope,
   parseTfBoard,
@@ -212,6 +214,36 @@ function main(): void {
   );
   check('market_pulse: no board, no label', !isRFactorParam3(boost, new Map()));
   check('market_pulse: an unrelated payload yields no lists', parseMarketPulse({ payload: { data: null } }).length === 0);
+  // ── Intraday Boost is the race board (operator, 2026-10-08). Real rows. ──
+  const pulsePayload = {
+    status: 'SUCCESS',
+    payload: {
+      data: {
+        intraday_boost: [
+          { Symbol: 'INDIANB', param_0: 826.6, param_1: 813, param_2: 1.67, param_3: 4.27 },
+          { Symbol: 'UNIONBANK', param_0: 172.99, param_1: 168.44, param_2: 2.7, param_3: 3.99 },
+        ],
+        breakout_beacon: [
+          { Symbol: 'UNIONBANK', param_0: 2.7, param_1: 3.99, param_2: 'BULL', param_3: '10:15' },
+          { Symbol: 'ASTRAL', param_0: 1.62, param_1: 2.95, param_2: 'BULL', param_3: '9:40' },
+          { Symbol: 'ASTRAL', param_0: 1.62, param_1: 2.95, param_2: 'BEAR', param_3: '10:05' },
+          { Symbol: 'JUNK', param_0: 1, param_1: 1, param_2: 'UP', param_3: 'soon' },
+        ],
+      },
+    },
+  };
+  const boostRows = parseIntradayBoost(pulsePayload);
+  check(
+    'intraday boost: param_0..3 = LTP, prev close, %, R-Factor',
+    boostRows.length === 2 && boostRows[0].symbol === 'INDIANB' && boostRows[0].ltp === 826.6 && boostRows[0].pctChange === 1.67 && boostRows[0].rFactor === 4.27,
+  );
+  check('parseTfBoard reads market_pulse as Intraday Boost', parseTfBoard('market_pulse', pulsePayload)[1]?.rFactor === 3.99);
+  const beacons = parseBeacons(pulsePayload);
+  check('beacon: BULL + time is read', beacons.get('UNIONBANK')?.dir === 'BULL' && beacons.get('UNIONBANK')?.time === '10:15');
+  check('beacon: the LATEST signal for a symbol wins', beacons.get('ASTRAL')?.dir === 'BEAR');
+  check('beacon: anything but BULL/BEAR + HH:MM is skipped', !beacons.has('JUNK'));
+  check('beacon: no list, no beacons', parseBeacons({ payload: { data: {} } }).size === 0);
+  check('race endpoints: Intraday Boost first', TF_RACE_ENDPOINTS[0] === 'market_pulse');
 }
 
 main();

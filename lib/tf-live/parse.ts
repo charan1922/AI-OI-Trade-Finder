@@ -167,6 +167,51 @@ export function parseMarketPulse(payload: unknown): TfPulseList[] {
 }
 
 /**
+ * TF's Intraday Boost as a race board: `market_pulse.data.intraday_boost`, whose
+ * param_0..3 are LTP, prev close, % change and R-Factor — all four checked on the
+ * 2026-10-08 captures ((p0−p1)/p1 = p2 on every row; p3 equals the sector_scope
+ * R-Factor on 80 of 80). No sector baskets: those live in sector_scope.
+ */
+export function parseIntradayBoost(payload: unknown): TfStockRow[] {
+  const list = parseMarketPulse(payload).find((l) => l.name === 'intraday_boost');
+  return (list?.rows ?? []).map((r) => ({
+    symbol: r.symbol.trim().toUpperCase(),
+    baskets: [],
+    ltp: num(r.params[0]),
+    previousClose: num(r.params[1]),
+    pctChange: num(r.params[2]),
+    rFactor: num(r.params[3]),
+  }));
+}
+
+export interface TfBeacon {
+  dir: 'BULL' | 'BEAR';
+  /** 'HH:MM' IST as TF prints it. */
+  time: string;
+}
+
+/**
+ * TF's breakout beacon per symbol (`market_pulse.data.breakout_beacon`). Only
+ * param_2 (BULL/BEAR) and param_3 (HH:MM) are read — plain on every row;
+ * param_0/1 are unconfirmed and ignored. A symbol listed more than once keeps
+ * its LATEST signal. Malformed rows are skipped, never guessed.
+ */
+export function parseBeacons(payload: unknown): Map<string, TfBeacon> {
+  const out = new Map<string, TfBeacon>();
+  const list = parseMarketPulse(payload).find((l) => l.name === 'breakout_beacon');
+  for (const { symbol, params } of list?.rows ?? []) {
+    const dir = params[2];
+    const time = params[3];
+    if ((dir !== 'BULL' && dir !== 'BEAR') || typeof time !== 'string' || !/^\d{1,2}:\d{2}$/.test(time)) continue;
+    const key = symbol.trim().toUpperCase();
+    const prev = out.get(key);
+    if (prev && prev.time.padStart(5, '0') >= time.padStart(5, '0')) continue;
+    out.set(key, { dir, time });
+  }
+  return out;
+}
+
+/**
  * Whether a market_pulse list's first three params are LTP, prev close and %
  * change — MEASURED on the capture itself, never assumed: every row must
  * satisfy (p0 − p1) / p1 × 100 ≈ p2. On the 2026-10-07 capture this held for
@@ -218,6 +263,7 @@ export function parseDailyIndex(payload: unknown): { name: string; value: number
  *  each nests it differently, and reading one with another's parser yields
  *  rows full of nulls rather than an error. */
 export function parseTfBoard(endpoint: string, payload: unknown): TfStockRow[] {
+  if (endpoint === 'market_pulse') return parseIntradayBoost(payload);
   if (endpoint === 'sector_scope') return parseSectorScope(payload);
   if (endpoint === 'rfactor_data') return parseRFactorData(payload);
   return parseAllSector(payload);

@@ -2,7 +2,6 @@
 
 import { Clock3, Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { TF_BOARD_ENDPOINTS } from '@/lib/tf-live/endpoints';
 
 interface ClimbInterval {
   symbol: string;
@@ -16,17 +15,21 @@ interface RaceResponse {
   success: boolean;
   hasRace: boolean;
   climbHistory?: ClimbInterval[];
-  captureStatus?: Record<string, { successCount: number; lastSuccessAt: string | null }>;
   error?: string;
 }
 
-function timeIST(value: number): string {
-  return new Date(value).toLocaleTimeString('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+/** One chip per stock: a name that climbed twice shows once — active if any of
+ *  its climbs is still running, with the rank of its latest climb. */
+function chipsFrom(intervals: ClimbInterval[]): { symbol: string; rank: number; active: boolean }[] {
+  const bySymbol = new Map<string, { symbol: string; rank: number; active: boolean; at: number }>();
+  for (const i of intervals) {
+    const prev = bySymbol.get(i.symbol);
+    const active = (prev?.active ?? false) || i.exitedAt == null;
+    if (!prev || i.enteredAt >= prev.at) bySymbol.set(i.symbol, { symbol: i.symbol, rank: i.entryRank, active, at: i.enteredAt });
+    else prev.active = active;
+  }
+  // Active first, then the most recent climb.
+  return [...bySymbol.values()].sort((x, y) => Number(y.active) - Number(x.active) || y.at - x.at);
 }
 
 export function TfClimbHistory() {
@@ -51,17 +54,19 @@ export function TfClimbHistory() {
     };
   }, []);
 
-  const intervals = data?.climbHistory ?? [];
-  // Board captures today, whichever feed carried them (TF_BOARD_ENDPOINTS).
-  const boardCaptures = TF_BOARD_ENDPOINTS.reduce((n, e) => n + (data?.captureStatus?.[e]?.successCount ?? 0), 0);
-  const marketPulse = data?.captureStatus?.market_pulse;
+  const chips = chipsFrom(data?.climbHistory ?? []);
+  const activeCount = chips.filter((c) => c.active).length;
 
   return (
     <section className="rounded-lg border border-border bg-card">
       <header className="flex items-center gap-1.5 border-b border-border px-2 py-1">
         <Clock3 className="h-3.5 w-3.5 text-violet-500" />
         <h2 className="text-[12px] font-semibold tracking-wide text-foreground uppercase">Climbed stocks</h2>
-        <span className="ml-auto text-[9px] text-muted-foreground">entry / exit IST</span>
+        {chips.length > 0 && (
+          <span className="ml-auto text-[9px] text-muted-foreground">
+            {activeCount} active · {chips.length - activeCount} out
+          </span>
+        )}
       </header>
       <div className="p-2">
         {!data ? (
@@ -70,45 +75,27 @@ export function TfClimbHistory() {
           </p>
         ) : !data.success ? (
           <p className="py-3 text-center text-[10px] text-red-600">{data.error ?? 'Unavailable'}</p>
-        ) : intervals.length > 0 ? (
-          <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
-            {intervals.map((item, index) => (
-              <button
-                type="button"
-                key={`${item.symbol}-${item.enteredAt}-${index}`}
-                onClick={() =>
-                  window.open(
-                    `https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(item.symbol)}&interval=5`,
-                    '_blank',
-                    'noopener,noreferrer'
-                  )
-                }
-                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded border border-border bg-muted/20 px-2 py-1 text-left hover:bg-muted/50"
+        ) : chips.length > 0 ? (
+          <div className="flex max-h-72 flex-wrap gap-1 overflow-y-auto">
+            {chips.map((c) => (
+              <a
+                key={c.symbol}
+                href={`https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(c.symbol)}&interval=5`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`${c.symbol} — climbed into #${c.rank}; ${c.active ? 'still climbing' : 'no longer climbing'}. Open chart.`}
+                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted/50 ${
+                  c.active ? 'border-violet-400/50 bg-violet-500/5' : 'border-border bg-muted/20 opacity-60'
+                }`}
               >
-                <span>
-                  <span className="block truncate text-[11px] font-semibold text-foreground">{item.symbol}</span>
-                  <span className="text-[9px] text-muted-foreground">entered #{item.entryRank}</span>
-                </span>
-                <span className="text-right text-[9px] tabular-nums">
-                  <span className="text-emerald-600 dark:text-emerald-400">{timeIST(item.enteredAt)}</span>
-                  <span className="mx-1 text-muted-foreground">→</span>
-                  <span className={item.exitedAt == null ? 'font-semibold text-violet-600 dark:text-violet-400' : 'text-muted-foreground'}>
-                    {item.exitedAt == null ? 'active' : timeIST(item.exitedAt)}
-                  </span>
-                </span>
-              </button>
+                <span className={`h-1.5 w-1.5 rounded-full ${c.active ? 'bg-emerald-500' : 'bg-zinc-400'}`} />
+                <span className="font-semibold text-foreground">{c.symbol}</span>
+                <span className="tabular-nums text-muted-foreground">#{c.rank}</span>
+              </a>
             ))}
           </div>
         ) : (
-          <div className="space-y-1 py-3 text-center text-[10px] text-muted-foreground">
-            <p>No climbed-stock interval is available yet.</p>
-            {boardCaptures === 0 &&
-            (marketPulse?.successCount ?? 0) > 0 ? (
-              <p className="rounded border border-amber-300/50 bg-amber-50 px-2 py-1 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
-                Market Pulse is capturing, but no TradeFinder R-Factor board response has been captured today.
-              </p>
-            ) : null}
-          </div>
+          <p className="py-3 text-center text-[10px] text-muted-foreground">No stock has climbed TF&apos;s board yet today.</p>
         )}
       </div>
     </section>

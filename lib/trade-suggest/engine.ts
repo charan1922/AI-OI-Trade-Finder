@@ -59,6 +59,9 @@ import { chaoticOpenRatio } from '@/lib/trade-suggest/chaotic-open';
 import { detectConsolidationBreakout } from '@/lib/trade-suggest/consolidation-breakout';
 import { classifyMoveFreshness, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
 import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
+import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
+import { orbBreak } from '@/lib/tf-live/context';
+import type { TfBeacon } from '@/lib/tf-live/parse';
 // istMinutesNow is imported, NOT redefined here. It was duplicated in this file
 // while /api/tf/race used the exported copy — two implementations of the same
 // clock, one of which decides whether a board is fresh enough to TRADE on
@@ -1061,6 +1064,7 @@ async function buildTfSelection(
 
   // Per-symbol context, from data already in hand.
   const byRow = new Map(rows.map((r) => [r.symbol, r]));
+  const beacons = await getTfBeaconsAt(date, race.capturedAt ?? undefined).catch(() => new Map<string, TfBeacon>());
   const context = new Map<string, TfSymbolContext>();
   for (const runner of race.runners) {
     const row = byRow.get(runner.symbol);
@@ -1072,12 +1076,11 @@ async function buildTfSelection(
       // Kept in the shared context shape for /live display compatibility. The
       // Auto Trade / Commentary selector explicitly ignores Supertrend.
       supertrendAligned: null,
-      breakout:
-        ltp == null || !sc.openRangeComplete
-          ? null
-          : side === 'CE'
-            ? sc.openRangeHigh != null && ltp > sc.openRangeHigh
-            : sc.openRangeLow != null && ltp < sc.openRangeLow,
+      // The GATE is the 15-min range (operator, 2026-10-08); 30-min is a recorded shadow.
+      breakout: orbBreak(side, ltp, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
+      breakout30: orbBreak(side, ltp, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
+      // TF's own beacon, from the same capture minute as the board (fail closed).
+      tfBeacon: beacons.get(runner.symbol)?.dir ?? null,
       // Prefer the LIVE oi-spurts reading (matches NSE exactly); fall back to
       // whatever the quote row recorded. Null stays null — never zero, which
       // would read as "thin" instead of "unknown" and silently pass a gate.

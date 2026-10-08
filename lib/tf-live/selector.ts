@@ -58,9 +58,16 @@ import type { TfRunnerAt } from '@/lib/tf-live/race';
 export interface TfSymbolContext {
   /** Optional display evidence. The selector deliberately ignores Supertrend. */
   supertrendAligned: boolean | null;
-  /** True when price has cleared the opening range in the trade's direction.
-   *  Null = opening range not complete yet → REJECTED. */
+  /** True when price has cleared the 15-MIN opening range (09:15–09:30) in the
+   *  trade's direction (operator, 2026-10-08). Null = range not complete → REJECTED. */
   breakout: boolean | null;
+  /** The same test against the 30-min range (09:15–09:45). A recorded SHADOW for
+   *  the 15-vs-30 comparison — the selector never reads it. */
+  breakout30: boolean | null;
+  /** TradeFinder's own breakout beacon for this symbol (market_pulse
+   *  breakout_beacon), or null when TF has not flagged it. Must agree with the
+   *  trade's side (operator, 2026-10-08: our ORB AND TF's beacon). */
+  tfBeacon: 'BULL' | 'BEAR' | null;
   /** NSE options premium pool traded today (₹ Cr) — the tradeability read.
    *  Null = the name was not on a /live watchlist, so we have no evidence. */
   premValueCr: number | null;
@@ -80,6 +87,8 @@ export interface TfSelectorConfig {
   maxSinceEntryPct: number;
   /** Require an opening-range breakout in the trade's direction. */
   requireBreakout: boolean;
+  /** Require TF's breakout beacon in the trade's direction (BULL for CE, BEAR for PE). */
+  requireTfBeacon: boolean;
   /** Cap on returned candidates. */
   maxCandidates: number;
 }
@@ -108,6 +117,7 @@ export interface TfSelectorRejections {
   unknownDeltaR: number;
   flatPrice: number;
   noBreakout: number;
+  noTfBeacon: number;
   thinPremium: number;
   premiumUnknown: number;
   moveExhausted: number;
@@ -126,6 +136,7 @@ const emptyRejections = (): TfSelectorRejections => ({
   unknownDeltaR: 0,
   flatPrice: 0,
   noBreakout: 0,
+  noTfBeacon: 0,
   thinPremium: 0,
   premiumUnknown: 0,
   moveExhausted: 0,
@@ -145,6 +156,10 @@ export const DEFAULT_TF_SELECTOR_CONFIG: TfSelectorConfig = {
   minPremValueCr: 20,
   maxSinceEntryPct: 2,
   requireBreakout: true,
+  // Operator, 2026-10-08: "both" — our ORB AND TF's beacon. Not replayable on
+  // history (no stored beacons for a usable session), so it is measured forward
+  // through the `noTfBeacon` rejection count.
+  requireTfBeacon: true,
   maxCandidates: 7,
 };
 
@@ -205,6 +220,12 @@ export function selectTfCandidates(
       continue;
     }
 
+    // ③b TF's own breakout beacon must agree. Null = TF has not flagged it = reject.
+    if (cfg.requireTfBeacon && ctx.tfBeacon !== (side === 'CE' ? 'BULL' : 'BEAR')) {
+      rejected.noTfBeacon++;
+      continue;
+    }
+
     // ④ Tradeability: a real options premium pool to trade against.
     if (ctx.premValueCr == null) {
       rejected.premiumUnknown++;
@@ -241,7 +262,9 @@ export function selectTfCandidates(
         `TF R-Factor ${runner.rFactorNow.toFixed(2)}, rank #${runner.rankNow} (up ${runner.climb} from #${runner.rankAtBaseline})`,
         `still accumulating: TF R +${runner.deltaR.toFixed(2)} over the last 30 min`,
         `TF has it ${pct > 0 ? 'up' : 'down'} ${Math.abs(pct).toFixed(2)}%`,
-        ctx.breakout === true ? 'cleared its opening range in that direction' : 'no opening-range breakout',
+        ctx.breakout === true ? 'cleared its 15-min opening range in that direction' : 'no opening-range breakout',
+        `TF breakout beacon ${ctx.tfBeacon ?? 'none'}${ctx.tfBeacon ? ' agrees' : ''}`,
+        `30-min ORB: ${ctx.breakout30 == null ? 'not complete' : ctx.breakout30 ? 'cleared' : 'not cleared'} (shadow, not a gate)`,
         `options premium pool ₹${Math.round(ctx.premValueCr)} Cr`,
         ctx.sinceEntryPct == null
           ? 'move since 09:45 unrecorded'
@@ -264,6 +287,7 @@ export function describeRejections(r: TfSelectorRejections, considered: number):
     [r.unknownDeltaR, 'no earlier board to measure the rate against'],
     [r.flatPrice, 'not moving enough to call a direction'],
     [r.noBreakout, 'has not cleared its opening range'],
+    [r.noTfBeacon, 'no TF breakout beacon in that direction'],
     [r.thinPremium, 'options premium pool too thin'],
     [r.premiumUnknown, 'no options premium reading'],
     [r.moveExhausted, 'move already extended past the entry band'],

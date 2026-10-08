@@ -35,6 +35,9 @@ process.loadEnvFile('.env.local');
 import { prisma } from '@/lib/db';
 import { getTfBoardsForDate, raceAtMinute, type TfBoardAt } from '@/lib/tf-live/race';
 import { selectTfCandidates, type TfSymbolContext } from '@/lib/tf-live/selector';
+import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
+import { orbBreak } from '@/lib/tf-live/context';
+import type { TfBeacon } from '@/lib/tf-live/parse';
 import { buildSpotPlan } from '@/lib/trade-suggest/scoring';
 import { trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
 import { deriveSessionContext } from '@/lib/signals/session-context';
@@ -144,12 +147,15 @@ async function main(): Promise<void> {
       const race = raceAtMinute(boards, em, TF_RACE_MAX_RANK);
       if (!race.available) continue;
 
-      // Per-symbol context, exactly as the live engine assembles it.
+      // Per-symbol context, exactly as the live engine assembles it. TF beacons as
+      // of this replayed minute (empty when none were stored → beacon gate rejects).
+      const asOfIso = new Date(`${date}T${String(Math.floor(em / 60)).padStart(2, '0')}:${String(em % 60).padStart(2, '0')}:59+05:30`).toISOString();
+      const beacons = await getTfBeaconsAt(date, asOfIso).catch(() => new Map<string, TfBeacon>());
       const context = new Map<string, TfSymbolContext>();
       for (const runner of race.runners) {
         const sb = (bySym.get(runner.symbol) ?? []).filter((b) => b.high > 0);
         const entryTs = sb.find((b) => istMin(b.bucketTs * 1000) >= em)?.bucketTs;
-        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, breakout: null, premValueCr: null, sinceEntryPct: null }); continue; }
+        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, breakout: null, breakout30: null, tfBeacon: beacons.get(runner.symbol)?.dir ?? null, premValueCr: null, sinceEntryPct: null }); continue; }
         const prior = sb.filter((b) => b.bucketTs < entryTs);
         const entry = sb.find((b) => b.bucketTs === entryTs)!.open;
         const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
@@ -159,9 +165,9 @@ async function main(): Promise<void> {
         const prem = [...(oiBy.get(runner.symbol) ?? [])].reverse().find((r) => r.bucketTs <= entryTs)?.premValueCr ?? null;
         context.set(runner.symbol, {
           supertrendAligned: null,
-          breakout: !sc.openRangeComplete ? null
-            : side === 'CE' ? sc.openRangeHigh != null && entry > sc.openRangeHigh
-              : sc.openRangeLow != null && entry < sc.openRangeLow,
+          breakout: orbBreak(side, entry, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
+          breakout30: orbBreak(side, entry, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
+          tfBeacon: beacons.get(runner.symbol)?.dir ?? null,
           premValueCr: prem,
           sinceEntryPct: raw == null ? null : side === 'CE' ? raw : -raw,
         });

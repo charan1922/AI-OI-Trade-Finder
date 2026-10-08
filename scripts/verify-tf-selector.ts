@@ -23,7 +23,18 @@ import {
   selectTfCandidates,
   type TfSymbolContext,
 } from '@/lib/tf-live/selector';
-import { boardAtMinute, raceAtMinute, type TfBoardAt } from '@/lib/tf-live/race';
+import { boardAtMinute, raceAtMinute, raceCaptures, type TfBoardAt } from '@/lib/tf-live/race';
+import { deriveSessionContext } from '@/lib/signals/session-context';
+import {
+  allPass,
+  climbingSince,
+  droppedClimbers,
+  firstNeed,
+  gateStrip,
+  pickSector,
+  rPath,
+  rTrend,
+} from '@/lib/tf-live/board-view';
 import { isTighterStop, trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
 import { MIN_RISK_PCT, TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK, TRAIL_R } from '@/lib/trade-suggest/config';
 import { DEFAULT_SETTINGS } from '@/lib/auto-trade/config';
@@ -58,6 +69,8 @@ function board(minuteIST: number, rows: [string, number, number][]): TfBoardAt {
 const ok = (over: Partial<TfSymbolContext> = {}): TfSymbolContext => ({
   supertrendAligned: true,
   breakout: true,
+  breakout30: true,
+  tfBeacon: 'BULL',
   premValueCr: 50,
   sinceEntryPct: 0.8,
   ...over,
@@ -125,7 +138,8 @@ function main(): void {
       { symbol: 'FROZEN', rankNow: 1, rankAtBaseline: 5, climb: 4, rFactorNow: 3.5, rFactorAgo: 3.5, deltaR: 0, pctChange: -1.6 },
       { symbol: 'MOVING', rankNow: 2, rankAtBaseline: 9, climb: 7, rFactorNow: 3.0, rFactorAgo: 1.8, deltaR: 1.2, pctChange: -3.8 },
     ];
-    const ctx = new Map([['FROZEN', ok()], ['MOVING', ok()]]);
+    // Both are PE (negative %), so both carry the matching BEAR beacon.
+    const ctx = new Map([['FROZEN', ok({ tfBeacon: 'BEAR' })], ['MOVING', ok({ tfBeacon: 'BEAR' })]]);
     const r = selectTfCandidates(runners, ctx);
     check('frozen R-Factor rejected despite rank #1', !r.candidates.some((c) => c.symbol === 'FROZEN'));
     check('still-accumulating name accepted', r.candidates.some((c) => c.symbol === 'MOVING'));
@@ -137,6 +151,8 @@ function main(): void {
     const base = { rankNow: 1, rankAtBaseline: 5, climb: 4, rFactorNow: 3.0, rFactorAgo: 1.5, deltaR: 1.5, pctChange: 2.5 };
     const cases: [string, Partial<TfSymbolContext> | null, keyof ReturnType<typeof selectTfCandidates>['rejected']][] = [
       ['no breakout', { breakout: false }, 'noBreakout'],
+      ['no TF breakout beacon', { tfBeacon: null }, 'noTfBeacon'],
+      ['TF beacon against the trade (BEAR on a CE)', { tfBeacon: 'BEAR' }, 'noTfBeacon'],
       ['unknown breakout', { breakout: null }, 'noBreakout'],
       ['unknown premium pool', { premValueCr: null }, 'premiumUnknown'],
       ['thin premium pool', { premValueCr: 3 }, 'thinPremium'],
@@ -153,6 +169,14 @@ function main(): void {
       );
       check(`Supertrend ${supertrendAligned === null ? 'unknown' : 'disagreement'} is ignored`, r.candidates.length === 1);
     }
+    // The 30-min ORB is a recorded shadow — it never decides (operator, 2026-10-08).
+    check(
+      '30-min ORB is never a gate',
+      selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok({ breakout30: false })]])).candidates.length === 1,
+    );
+    const why = selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok({ breakout30: false })]])).candidates[0]?.reasons.join(' | ') ?? '';
+    check('30-min ORB result is recorded in the reasons', /30-min ORB: not cleared/.test(why), why);
+    check('TF beacon agreement is recorded in the reasons', /TF breakout beacon BULL/.test(why), why);
     // No context row at all.
     const none = selectTfCandidates([{ symbol: 'X', ...base }], new Map());
     check('rejects: no context row at all', none.candidates.length === 0 && none.rejected.noBoard === 1);
@@ -171,7 +195,8 @@ function main(): void {
   {
     const mk = (pct: number) => ({ symbol: 'X', rankNow: 1, rankAtBaseline: 5, climb: 4, rFactorNow: 3, rFactorAgo: 1.5, deltaR: 1.5, pctChange: pct });
     check('positive TF % change → CE', selectTfCandidates([mk(2.5)], new Map([['X', ok()]])).candidates[0]?.side === 'CE');
-    check('negative TF % change → PE', selectTfCandidates([mk(-2.5)], new Map([['X', ok()]])).candidates[0]?.side === 'PE');
+    check('negative TF % change → PE', selectTfCandidates([mk(-2.5)], new Map([['X', ok({ tfBeacon: 'BEAR' })]])).candidates[0]?.side === 'PE');
+    check('a PE needs a BEAR beacon — BULL rejects it', selectTfCandidates([mk(-2.5)], new Map([['X', ok()]])).rejected.noTfBeacon === 1);
     const flat = selectTfCandidates([mk(0.1)], new Map([['X', ok()]]));
     check('a flat name has no direction and is dropped', flat.candidates.length === 0 && flat.rejected.flatPrice === 1);
   }
@@ -277,6 +302,95 @@ function main(): void {
     );
     check('a non-climber gets climb 0, never a fabricated jump',
       full.runners.find((r) => r.symbol === 'ALREADYSTRONG')?.climb === 0);
+  }
+
+  // ── 13. 15-min ORB (09:15–09:30) for the TF selector; 30-min unchanged ──
+  {
+    // Bar-start epoch seconds for an IST minute on 2026-10-08.
+    const at = (minIST: number) => Date.UTC(2026, 9, 8, 0, 0, 0) / 1000 + (minIST - 330) * 60;
+    const bar = (minIST: number, high: number, low: number) => ({ bucketTs: at(minIST), high, low });
+    const early = [bar(555, 101, 100), bar(560, 102, 100.5)]; // 09:15, 09:20
+    const sc0 = deriveSessionContext(early);
+    check('15-min range is NOT complete before the 09:25 bar', sc0.openRange15Complete === false);
+    const full = [...early, bar(565, 101.5, 100.2), bar(570, 103, 101), bar(575, 102, 101), bar(580, 102.5, 101)];
+    const sc = deriveSessionContext(full);
+    check('15-min range = 09:15–09:30 bars only', sc.openRange15High === 102 && sc.openRange15Low === 100 && sc.openRange15Complete);
+    check('30-min range unchanged (09:15–09:45)', sc.openRangeHigh === 103 && sc.openRangeComplete);
+  }
+
+  // ── 14. A day with Intraday Boost captures races on those alone ─────────
+  {
+    const boost = { endpoint: 'market_pulse', payloadJson: '{"payload":{"data":{"intraday_boost":[]}}}' };
+    const full = { endpoint: 'sector_scope', payloadJson: '{}' };
+    const oldPulse = { endpoint: 'market_pulse', payloadJson: '{"payload":{"data":{"top_gainers":[]}}}' };
+    check('race source: Intraday Boost captures win when present', raceCaptures([full, boost]).every((c) => c.endpoint === 'market_pulse'));
+    check('race source: never mixes sources within a day', raceCaptures([full, boost]).length === 1);
+    check('race source: no Intraday Boost → the full boards', raceCaptures([full, oldPulse]).every((c) => c.endpoint === 'sector_scope'));
+  }
+
+  // ── 15. Cockpit view: the dots can never disagree with the selector ─────
+  {
+    const cfg = DEFAULT_TF_SELECTOR_CONFIG;
+    const ctxs: TfSymbolContext[] = [
+      ok(), ok({ breakout: false }), ok({ breakout: null }), ok({ tfBeacon: null }), ok({ tfBeacon: 'BEAR' }),
+      ok({ premValueCr: 5 }), ok({ premValueCr: null }), ok({ sinceEntryPct: 3 }), ok({ sinceEntryPct: null }),
+      ok({ breakout30: false }),
+    ];
+    const runner = { symbol: 'X', rankNow: 3, rankAtBaseline: 9, climb: 6, rFactorNow: 2.5, rFactorAgo: 2.0, deltaR: 0.5, pctChange: 1.2 };
+    let agree = 0;
+    let total = 0;
+    for (const c of ctxs) {
+      for (const deltaR of [0.5, 0.01, null]) {
+        for (const pctChange of [1.2, 0.1, null]) {
+          const r = { ...runner, deltaR, pctChange };
+          const picked = selectTfCandidates([r], new Map([['X', c]]), cfg).candidates.length === 1;
+          total++;
+          if (allPass(gateStrip(deltaR, pctChange, c, cfg)) === picked) agree++;
+        }
+      }
+    }
+    check('all six dots green ⇔ the selector picks it (every combination)', agree === total, `${agree}/${total}`);
+    const none = gateStrip(0.5, 1.2, undefined, cfg);
+    check('no evidence is grey, never green', none.orb === null && none.pool === null);
+    check(
+      'needs: names the first missing check',
+      firstNeed(gateStrip(0.5, 1.2, ok({ breakout: false }), cfg), ok({ breakout: false }), cfg) === 'our 15-min opening-range breakout',
+    );
+    check('needs: TF beacon named when only it is missing', firstNeed(gateStrip(0.5, 1.2, ok({ tfBeacon: null }), cfg), ok({ tfBeacon: null }), cfg) === 'TF breakout beacon in the trade direction');
+    check('needs: null when everything passes', firstNeed(gateStrip(0.5, 1.2, ok(), cfg), ok(), cfg) === null);
+
+    const b = [
+      board(600, [['A', 1.0, 1], ['B', 3.0, 1]]), // 10:00
+      board(615, [['A', 1.1, 1], ['B', 3.0, 1]]), // 10:15
+      board(630, [['A', 1.6, 1], ['B', 3.0, 1]]), // 10:30
+    ];
+    check('trend: +0.5 in the last 15 vs +0.1 before = faster', rTrend(b, 'A', 630) === 'faster');
+    check('trend: flat in both halves = steady', rTrend(b, 'B', 630) === 'steady');
+    check('trend: not enough history = null', rTrend(b, 'A', 615) === null);
+    const slow = [board(600, [['A', 1.0, 1]]), board(615, [['A', 1.6, 1]]), board(630, [['A', 1.7, 1]])];
+    check('trend: +0.1 in the last 15 vs +0.6 before = slower', rTrend(slow, 'A', 630) === 'slower');
+    check('climbing since: the first board of the unbroken climb', climbingSince(b, 'A', 630, 0.05) === 630);
+    check('climbing since: not climbing now = null', climbingSince(b, 'B', 630, 0.05) === null);
+    check('path: one point per board in range', rPath(b, 'A', 600, 630).length === 3 && rPath(b, 'A', 601, 630).length === 2);
+
+    const d = [
+      board(575, [['A', 1.0, 1], ['Z', 0.5, 1]]),
+      board(605, [['A', 1.5, 1], ['Z', 0.5, 1]]), // A climbing at 10:05
+      board(640, [['Z', 2.0, 1], ['A', 1.0, 1]]), // Z overtakes; with topN 1, A is off the board
+    ];
+    const dropped = droppedClimbers(d, { asOfMin: 640, fromMin: 575, topN: 1, minDeltaR: 0.05, onBoardNow: new Set(['Z']) });
+    check(
+      'dropped: a climber that left the top N stays listed',
+      dropped.length === 1 && dropped[0].symbol === 'A' && dropped[0].from === 605 && dropped[0].to === 605 && dropped[0].rankNow === 2,
+      JSON.stringify(dropped),
+    );
+    check('dropped: a name on the board now is not repeated', !dropped.some((x) => x.symbol === 'Z'));
+    const gone = droppedClimbers([...d.slice(0, 2), board(640, [['Z', 2.0, 1]])], { asOfMin: 640, fromMin: 575, topN: 1, minDeltaR: 0.05, onBoardNow: new Set(['Z']) });
+    check('dropped: off the list entirely → rankNow null (left Intraday Boost)', gone[0]?.rankNow === null);
+
+    const vals = new Map([['NIFTY PSU BANK', 3.25], ['NIFTY BANK', 0.04], ['NiFTY 50', -0.06]]);
+    check('sector: skips the broad baskets', pickSector(['NiFTY 50', 'NIFTY PSU BANK'], vals)?.name === 'NIFTY PSU BANK');
+    check('sector: none with a value = null', pickSector(['OTHERS'], vals) === null);
   }
 
   // ── 12. Sector evidence must stay OUT of the selector ──────────────────

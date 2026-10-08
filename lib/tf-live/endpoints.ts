@@ -54,6 +54,11 @@ export const TF_ENDPOINT_URL: Record<TfCapturedEndpoint, string> = {
  */
 export const TF_BOARD_ENDPOINTS = ['sector_scope', 'rfactor_data', 'all_sector'] as const;
 
+/** Feeds the RUNNING RACE reads: TF's Intraday Boost (market_pulse — operator,
+ *  2026-10-08) and, for days before it was captured, the full boards. A day with
+ *  Intraday Boost captures races on those alone (see race.ts raceCaptures). */
+export const TF_RACE_ENDPOINTS = ['market_pulse', ...TF_BOARD_ENDPOINTS] as const;
+
 /** Every stored feed that holds TradeFinder's per-SECTOR values (param_3):
  *  sector_scope embeds the old `daily-index` list. Parse with `parseTfIndices()`. */
 export const TF_INDEX_ENDPOINTS = ['sector_scope', 'daily-index'] as const;
@@ -61,3 +66,4 @@ export const TF_INDEX_ENDPOINTS = ['sector_scope', 'daily-index'] as const;
 /** SQL `IN (…)` lists for the two sets above — fixed literals, never user input. */
 export const TF_BOARD_ENDPOINTS_SQL = TF_BOARD_ENDPOINTS.map((e) => `'${e}'`).join(', ');
 export const TF_INDEX_ENDPOINTS_SQL = TF_INDEX_ENDPOINTS.map((e) => `'${e}'`).join(', ');
+export const TF_RACE_ENDPOINTS_SQL = TF_RACE_ENDPOINTS.map((e) => `'${e}'`).join(', ');
