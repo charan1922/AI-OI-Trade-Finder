@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { adminOnly } from '@/lib/auth/server';
 import { isTradingDay, todayIST } from '@/lib/market-data';
 import { ENTRY_END_MIN, ENTRY_START_MIN } from '@/lib/auto-trade/config';
+import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
 import {
   climberIntervals,
@@ -136,6 +137,21 @@ function dayClimbers(
     topN: TF_RACE_MAX_RANK,
     minDeltaR: LIVE_TF_SELECTOR_CONFIG.minDeltaR,
   }).filter((c) => eligible.has(c.symbol));
+}
+
+/**
+ * The EFFECTIVE entry window — the runtime settings the risk gates enforce, not
+ * the code defaults. 2026-10-08: prod's settings allowed entries until 13:30
+ * while the card counted down to the 11:00 default, so it said "closes in 10
+ * min" at 10:50 and a paper entry then opened at 11:10.
+ */
+async function entryWindow(): Promise<{ windowStartMin: number; windowEndMin: number }> {
+  try {
+    const s = await getAutoTradeSettings();
+    return { windowStartMin: s.entryStartMin ?? ENTRY_START_MIN, windowEndMin: s.entryEndMin ?? ENTRY_END_MIN };
+  } catch {
+    return { windowStartMin: ENTRY_START_MIN, windowEndMin: ENTRY_END_MIN };
+  }
 }
 
 async function buildBody(today: string, nowMin: number) {
@@ -337,8 +353,7 @@ async function buildBody(today: string, nowMin: number) {
     dropped,
     climbers,
     // The ENTRY window (auto-trade config) — not the race's 09:35 measuring start.
-    windowStartMin: ENTRY_START_MIN,
-    windowEndMin: ENTRY_END_MIN,
+    ...(await entryWindow()),
   };
 }
 
