@@ -16,6 +16,7 @@ import { runExpiryPolicyChecks } from './expiry-policy-checks';
 import { runStopMoveChecks, runTfParseChecks } from './stop-move-checks';
 import { runEntryQualityChecks } from './entry-quality-checks';
 import { runTfParseCurlChecks } from './tf-parse-curl-checks';
+import { runFyersMasterChecks, runStableDropChecks } from './fyers-master-checks';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -32,6 +33,8 @@ async function main(): Promise<void> {
   runTfParseChecks(check);
   runEntryQualityChecks(check);
   runTfParseCurlChecks(check);
+  runFyersMasterChecks(check);
+  runStableDropChecks(check);
   runGradeChecks(check);
   runProfitProtectChecks(check);
   runExpiryPolicyChecks(check);

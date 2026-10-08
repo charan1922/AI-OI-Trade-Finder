@@ -7,6 +7,7 @@
 
 import { createHash } from 'node:crypto';
 import { fetchFyersMaster } from '@/lib/fyers/master';
+import { checkStableDrop, providerOfSourceHash } from '@/lib/historify/master-guards';
 import fnoUniverse from '@/lib/data/fno_stocks_list.json';
 import { prisma } from '@/lib/db';
 import {
@@ -409,9 +410,30 @@ async function persistMaster(today: string, entries: Awaited<ReturnType<typeof l
       `master-contracts sync aborted: parsed ${entries.length} rows (${parsedStable} stable, ${parsedOptStk} OPTSTK) — CSV truncated or format changed; existing ${existingCount} rows kept`,
     );
   }
-  if (existingStable > 0 && parsedStable < existingStable * 0.9) {
+  // Guard 2 compares like with like across a provider switch — see checkStableDrop.
+  const FUTURES = ['FUTSTK', 'FUTIDX'];
+  const parsedFutures = entries.reduce((n, e) => (FUTURES.includes(e.instrument) ? n + 1 : n), 0);
+  const existingFutures = await prisma.masterContract.count({ where: { instrument: { in: FUTURES } } });
+  let existingSourceHash: string | null = null;
+  try {
+    const rows = await prisma.$queryRawUnsafe<{ sourceHash: string }[]>(
+      `SELECT sourceHash FROM master_contract_snapshots ORDER BY completedAt DESC LIMIT 1`,
+    );
+    existingSourceHash = rows[0]?.sourceHash ?? null;
+  } catch {
+    // No snapshot table yet (first ever sync) — nothing to compare against.
+  }
+  const stableDrop = checkStableDrop({
+    existingProvider: providerOfSourceHash(existingSourceHash),
+    provider,
+    existingStable,
+    parsedStable,
+    existingFutures,
+    parsedFutures,
+  });
+  if (!stableDrop.ok) {
     throw new Error(
-      `master-contracts sync aborted: stable instruments dropped ${existingStable}→${parsedStable} (>10%) — refusing to replace a good table; investigate the CSV before re-syncing`,
+      `master-contracts sync aborted: ${stableDrop.reason} — refusing to replace a good table; investigate the CSV before re-syncing`,
     );
   }
   // Guard 3 — option-series COVERAGE, not row count. Losing one monthly series

@@ -18,7 +18,10 @@ export interface FyersMasterEntry {
 export function parseFyersMaster(raw: unknown, today: string): FyersMasterEntry[] {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid Fyers symbol master');
   const out: FyersMasterEntry[] = [];
-  const instruments: Record<number, string> = { 0: 'EQUITY', 10: 'FUTSTK', 11: 'FUTIDX', 14: 'OPTIDX', 15: 'OPTSTK' };
+  // Fyers exInstType, checked against the real masters (2026-10-08): 13 is a
+  // stock future; 10 is an INDEX in the cash master (lot size 0) and is skipped.
+  // Mapping 10 to FUTSTK made every index fail validation and abort the sync.
+  const instruments: Record<number, string> = { 0: 'EQUITY', 11: 'FUTIDX', 13: 'FUTSTK', 14: 'OPTIDX', 15: 'OPTSTK' };
   for (const [fyersSymbol, value] of Object.entries(raw)) {
     if (!value || typeof value !== 'object') continue;
     const v = value as Record<string, unknown>;
