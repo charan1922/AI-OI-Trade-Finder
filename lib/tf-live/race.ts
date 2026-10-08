@@ -311,6 +311,28 @@ export function raceAtMinute(
 }
 
 /**
+ * THE trade selector's candidates (operator, 2026-10-08): TF's top N by R-Factor
+ * that are tradeable (`eligible` — not the 'avoid' lot band, live future), with
+ * NO rank-climb filter. Climb was the old gate and it hid TF's strongest names
+ * (BANKBARODA #2 and PNB #3 never "climbed" — they started there), while the card
+ * showed them: the two disagreed. Momentum is judged by the 30-min R-Factor rise
+ * in the selector instead. Still refuses to rank until a usable baseline board
+ * exists (MIN_SPREAD_SYMBOLS), exactly as raceAtMinute does.
+ */
+export function tfCandidatesAtMinute(
+  boards: TfBoardAt[],
+  asOfMinuteIST: number,
+  topN: number,
+  eligible: ReadonlySet<string>,
+  lookbackMin = DELTA_R_LOOKBACK_MIN
+): TfRaceAt {
+  const guard = raceAtMinute(boards, asOfMinuteIST, topN, lookbackMin);
+  if (!guard.available) return guard;
+  const board = boardAtMinute(boards, asOfMinuteIST, topN, lookbackMin);
+  return { ...board, baselineMinuteIST: guard.baselineMinuteIST, runners: board.runners.filter((r) => eligible.has(r.symbol)) };
+}
+
+/**
  * TF's top-N board as of one minute, WITHOUT the climbed-since-baseline filter.
  *
  * Why this exists alongside `raceAtMinute`: rank-climb is a poor proxy for

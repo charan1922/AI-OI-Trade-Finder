@@ -50,6 +50,25 @@ function bucketMinuteIST(bucketTs: number): number {
   );
 }
 
+/**
+ * Direction-aware move since 09:45 (%), positive = our way, anchored on the 09:45
+ * CANDLE's open — the true price at the entry-window open. Never anchored on a
+ * recorded quote: on 2026-10-08 the recorded price sat at 1318.3 from 09:22 to
+ * 10:05 (stale), so ADANIGREEN read 3.45% extended and was rejected while the
+ * 09:45 candle opened at 1300.8 (1.93%). Null without a 09:45 candle or a price.
+ */
+export function sinceEntryFromBars(
+  bars: { bucketTs: number; open: number }[],
+  price: number | null,
+  side: 'CE' | 'PE'
+): number | null {
+  if (price == null || !(price > 0)) return null;
+  const at945 = bars.find((b) => b.open > 0 && bucketMinuteIST(b.bucketTs) >= 9 * 60 + 45);
+  if (!at945) return null;
+  const raw = ((price - at945.open) / at945.open) * 100;
+  return side === 'CE' ? raw : -raw;
+}
+
 /** Price beyond an opening range in the trade's direction; null until the range is complete. */
 export function orbBreak(
   side: 'CE' | 'PE',
@@ -138,8 +157,6 @@ export async function buildRecordedTfContext(
 
     const sc = deriveSessionContext(prior);
     const st = prior.length >= MIN_BARS_FOR_TREND ? supertrend(prior) : null;
-    const at945 = usable.find((b) => bucketMinuteIST(b.bucketTs) >= 9 * 60 + 45);
-    const rawSince = at945 != null && at945.open > 0 ? ((price - at945.open) / at945.open) * 100 : null;
 
     out.set(symbol, {
       supertrendAligned: st == null ? null : side === 'CE' ? st.direction === 'up' : st.direction === 'down',
@@ -149,7 +166,7 @@ export async function buildRecordedTfContext(
       tfBeacon: beacons.get(symbol)?.dir ?? null,
       premValueCr: premBySymbol.get(symbol) ?? null,
       // Direction-aware: positive means the move has gone OUR way since 09:45.
-      sinceEntryPct: rawSince == null ? null : side === 'CE' ? rawSince : -rawSince,
+      sinceEntryPct: sinceEntryFromBars(usable, price, side),
     });
   }
 

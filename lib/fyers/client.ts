@@ -61,7 +61,7 @@ function throughFyersGate<T>(task: () => Promise<T>, deadline = Date.now() + 60_
     gate.dispatched = (gate.dispatched ?? []).filter((at) => at > Date.now() - 60_000);
     const minuteAt = gate.dispatched.length >= limits.perMinute ? gate.dispatched[0] + 60_001 : 0;
     const target = Math.max(gate.lastDispatchAt + Math.max(MIN_INTERVAL_MS, 1000 / limits.perSecond), gate.cooldownUntil, minuteAt);
-    if (Math.max(Date.now(), target) > deadline) throw new Error('Fyers data capacity unavailable within request deadline; check FYERS_API_PLAN and reduce polling');
+    if (Math.max(Date.now(), target) > deadline) throw new Error('Fyers data capacity unavailable within request deadline; reduce polling');
     const wait = target - Date.now();
     if (wait > 0) await sleep(wait);
     gate.lastDispatchAt = Date.now();

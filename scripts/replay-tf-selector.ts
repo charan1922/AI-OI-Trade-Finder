@@ -4,7 +4,7 @@
  *   pnpm exec tsx scripts/replay-tf-selector.ts
  *
  * Replays every session that has TradeFinder captures through the SAME pure
- * modules the live engine uses — `raceAtMinute`, `selectTfCandidates`,
+ * modules the live engine uses — `tfCandidatesAtMinute`, `selectTfCandidates`,
  * `buildSpotPlan`, `trailedSpotStop` — so a number printed here and a live pick
  * cannot diverge through code drift. Nothing is re-implemented locally except
  * the bar walk, which is what a live position guard does tick by tick.
@@ -33,17 +33,18 @@
 process.loadEnvFile('.env.local');
 
 import { prisma } from '@/lib/db';
-import { getTfBoardsForDate, raceAtMinute, type TfBoardAt } from '@/lib/tf-live/race';
+import { getTfBoardsForDate, tfCandidatesAtMinute, type TfBoardAt } from '@/lib/tf-live/race';
+import { getTfEligibleSectors } from '@/lib/trade-suggest/candidates';
 import { selectTfCandidates, type TfSymbolContext } from '@/lib/tf-live/selector';
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
-import { orbBreak } from '@/lib/tf-live/context';
+import { orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
 import type { TfBeacon } from '@/lib/tf-live/parse';
 import { buildSpotPlan } from '@/lib/trade-suggest/scoring';
 import { trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import { MIN_RISK_PCT, TF_RACE_MAX_RANK, TRAIL_R } from '@/lib/trade-suggest/config';
 import { DEFAULT_SETTINGS } from '@/lib/auto-trade/config';
-import { TF_BOARD_ENDPOINTS_SQL } from '../lib/tf-live/endpoints';
+import { TF_RACE_ENDPOINTS_SQL } from '../lib/tf-live/endpoints';
 
 const q = (sql: string, ...p: unknown[]) =>
   prisma.$queryRawUnsafe(sql, ...p) as Promise<Record<string, unknown>[]>;
@@ -100,8 +101,10 @@ function walk(side: 'CE' | 'PE', entry: number, initialStop: number, bars: Bar[]
 async function main(): Promise<void> {
   const dates = (await q(
     `SELECT DISTINCT date(datetime(capturedAt,'+5 hours','+30 minutes')) d
-     FROM tf_live_captures WHERE endpoint IN (${TF_BOARD_ENDPOINTS_SQL}) AND status='success' ORDER BY d`
+     FROM tf_live_captures WHERE endpoint IN (${TF_RACE_ENDPOINTS_SQL}) AND status='success' ORDER BY d`
   )).map((r) => String(r.d));
+  // Same eligibility the live engine applies (today's lot bands — they rarely change).
+  const eligible = new Set((await getTfEligibleSectors()).keys());
 
   console.log('\n' + '═'.repeat(92));
   console.log('  TF RUNNING RACE SELECTOR — REPLAY');
@@ -144,7 +147,7 @@ async function main(): Promise<void> {
 
     for (const em of ENTRY_MINUTES) {
       if (halted || dayTrades.length >= MAX_TRADES_PER_DAY) break;
-      const race = raceAtMinute(boards, em, TF_RACE_MAX_RANK);
+      const race = tfCandidatesAtMinute(boards, em, TF_RACE_MAX_RANK, eligible);
       if (!race.available) continue;
 
       // Per-symbol context, exactly as the live engine assembles it. TF beacons as
@@ -160,8 +163,6 @@ async function main(): Promise<void> {
         const entry = sb.find((b) => b.bucketTs === entryTs)!.open;
         const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
         const sc = deriveSessionContext(prior);
-        const at945 = sb.find((b) => istMin(b.bucketTs * 1000) >= 9 * 60 + 45);
-        const raw = at945 && at945.open > 0 ? ((entry - at945.open) / at945.open) * 100 : null;
         const prem = [...(oiBy.get(runner.symbol) ?? [])].reverse().find((r) => r.bucketTs <= entryTs)?.premValueCr ?? null;
         context.set(runner.symbol, {
           supertrendAligned: null,
@@ -169,7 +170,7 @@ async function main(): Promise<void> {
           breakout30: orbBreak(side, entry, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
           tfBeacon: beacons.get(runner.symbol)?.dir ?? null,
           premValueCr: prem,
-          sinceEntryPct: raw == null ? null : side === 'CE' ? raw : -raw,
+          sinceEntryPct: sinceEntryFromBars(sb, entry, side),
         });
       }
 

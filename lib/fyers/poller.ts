@@ -38,7 +38,7 @@ import { pruneQuoteSnapshots } from '@/lib/auto-trade/store';
 import { pruneOptionChainSnapshots } from '@/lib/option-chain/store';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import { reviewUngradedBacklog } from '@/lib/trade-suggest/review';
-import { fyersDataLimits } from '@/lib/market-data/provider';
+import { fyersDataLimits, symbolsPerCycle } from '@/lib/market-data/provider';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
@@ -435,12 +435,11 @@ export async function runFyersCycle(
 
     const priorityOrdered = universe.filter((symbol) => priority.has(symbol));
     const tail = universe.filter((symbol) => !priority.has(symbol));
-    const limits = fyersDataLimits();
-    // Standard has a 5,000-request daily Data API allowance. Three calls per
-    // symbol across ~75 market cycles would exhaust it before lunch if the full
-    // universe ran every tick. Keep current candidates first and rotate the
-    // remaining universe; Prime retains full-universe five-minute coverage.
-    const maxSymbolsThisCycle = limits.perDay >= 500_000 ? universe.length : 16;
+    // Fyers' official limits allow the whole universe every cycle (~500 calls in
+    // ~3.3 min at the gate's 150/min; ~37k of the 90k daily budget). The old
+    // invented 5,000/day "standard plan" capped this at 16 symbols and froze
+    // prices for 40+ minutes (2026-10-08). Candidates still go first.
+    const maxSymbolsThisCycle = symbolsPerCycle(fyersDataLimits(), universe.length);
     const tailSlots = Math.max(0, maxSymbolsThisCycle - Math.min(priorityOrdered.length, maxSymbolsThisCycle));
     const tailStart = tail.length === 0 ? 0 : (state.cycles * Math.max(1, tailSlots)) % tail.length;
     const rotatingTail = [...tail.slice(tailStart), ...tail.slice(0, tailStart)].slice(0, tailSlots);

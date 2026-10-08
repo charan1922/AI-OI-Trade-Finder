@@ -51,6 +51,7 @@ import { getOpenTrades } from '@/lib/auto-trade/store';
 import { getNumberSetting } from '@/lib/config/feature-toggles';
 import {
   discoverCandidateSnapshot,
+  getTfEligibleSectors,
   internalAuthHeaders,
   internalOrigin,
   type CandidateSnapshot,
@@ -60,7 +61,7 @@ import { detectConsolidationBreakout } from '@/lib/trade-suggest/consolidation-b
 import { classifyMoveFreshness, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
 import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
-import { orbBreak } from '@/lib/tf-live/context';
+import { orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
 import type { TfBeacon } from '@/lib/tf-live/parse';
 // istMinutesNow is imported, NOT redefined here. It was duplicated in this file
 // while /api/tf/race used the exported copy — two implementations of the same
@@ -72,7 +73,7 @@ import {
   getTfRaceForWindow,
   getTfSectorBoard,
   istMinutesNow,
-  raceAtMinute,
+  tfCandidatesAtMinute,
 } from '@/lib/tf-live/race';
 import {
   describeRejections,
@@ -1047,7 +1048,15 @@ async function buildTfSelection(
   }
   if (boards.length === 0) return notTradeable('No TradeFinder capture today — not trading blind.');
 
-  const race = raceAtMinute(boards, nowMin, TF_RACE_MAX_RANK);
+  // Candidates = TF's top 20 that are tradeable (not 'avoid', live future) — the
+  // SAME set the /live TF Climbers card judges; no rank-climb filter (2026-10-08).
+  let eligible: Map<string, string>;
+  try {
+    eligible = await getTfEligibleSectors();
+  } catch (err) {
+    return notTradeable(`F&O eligibility unreadable: ${(err as Error).message}`);
+  }
+  const race = tfCandidatesAtMinute(boards, nowMin, TF_RACE_MAX_RANK, new Set(eligible.keys()));
   if (!race.available || race.boardMinuteIST == null) {
     return notTradeable(
       "TradeFinder's board has not yet separated enough to rank (needs a baseline after 09:35)."
@@ -1085,9 +1094,10 @@ async function buildTfSelection(
       // whatever the quote row recorded. Null stays null — never zero, which
       // would read as "thin" instead of "unknown" and silently pass a gate.
       premValueCr: nseOiRowMap.get(runner.symbol)?.premValueCr ?? row?.nsePremValueCr ?? null,
-      // Direction-aware: positive means the move has gone OUR way since 09:45.
-      sinceEntryPct:
-        row?.sinceEntryPct == null ? null : side === 'CE' ? row.sinceEntryPct : -row.sinceEntryPct,
+      // Direction-aware, anchored on the 09:45 CANDLE — never the recorded quote,
+      // which can sit stale for 40+ minutes (ADANIGREEN 2026-10-08: 3.45% vs a
+      // true 1.93%). Same definition as the card and the replay.
+      sinceEntryPct: sinceEntryFromBars(bars, ltp, side),
     });
   }
 
@@ -1097,7 +1107,7 @@ async function buildTfSelection(
     candidates: result.candidates,
     summary: {
       available: true,
-      reason: describeRejections(result.rejected, result.considered),
+      reason: describeRejections(result.rejected, result.considered, result.candidates.length),
       boardAgeMin: ageMin,
       considered: result.considered,
       selected: result.candidates.map((c) => ({

@@ -26,7 +26,9 @@ import {
   getTfRaceForWindow,
   istMinutesNow,
   RACE_WINDOW_START_MIN,
+  tfCandidatesAtMinute,
 } from '@/lib/tf-live/race';
+import { getTfEligibleSectors } from '@/lib/trade-suggest/candidates';
 import { buildRecordedTfContext } from '@/lib/tf-live/context';
 import { getTfLiveCaptureForDate } from '@/lib/tf-live/store';
 import { LIVE_TF_SELECTOR_CONFIG, selectTfCandidates } from '@/lib/tf-live/selector';
@@ -91,12 +93,15 @@ export async function GET(req: Request) {
         return NextResponse.json({ success: false, error: 'date must be YYYY-MM-DD' }, { status: 400 });
       }
       const boards = await getTfBoardsForDate(historyDate);
+      // Today's eligibility list — the lot bands rarely change, and 'avoid' names
+      // never appear on /live (operator rule).
+      const eligible = new Set((await getTfEligibleSectors()).keys());
       const lastBoardMinute = boards.at(-1)?.minuteIST ?? null;
       return NextResponse.json({
         success: true,
         date: historyDate,
         lastBoardMinute,
-        climbers: lastBoardMinute == null ? [] : dayClimbers(boards, lastBoardMinute),
+        climbers: lastBoardMinute == null ? [] : dayClimbers(boards, lastBoardMinute, eligible),
       });
     }
 
@@ -120,13 +125,17 @@ export async function GET(req: Request) {
 
 /** Every name that entered TF Climbers on a day, with when it entered and left —
  *  the same "in" test as the cockpit's WATCH/TAKE tiers, over the whole session. */
-function dayClimbers(boards: Awaited<ReturnType<typeof getTfBoardsForDate>>, asOfMin: number): ClimberInterval[] {
+function dayClimbers(
+  boards: Awaited<ReturnType<typeof getTfBoardsForDate>>,
+  asOfMin: number,
+  eligible: ReadonlySet<string>
+): ClimberInterval[] {
   return climberIntervals(boards, {
     fromMin: RACE_WINDOW_START_MIN,
     asOfMin,
     topN: TF_RACE_MAX_RANK,
     minDeltaR: LIVE_TF_SELECTOR_CONFIG.minDeltaR,
-  });
+  }).filter((c) => eligible.has(c.symbol));
 }
 
 async function buildBody(today: string, nowMin: number) {
@@ -189,7 +198,14 @@ async function buildBody(today: string, nowMin: number) {
   try {
     const boards = await getTfBoardsForDate(date);
     const asOfMinute = boards.length > 0 ? boards[boards.length - 1].minuteIST : 0;
+    // The SAME names the trade engine judges: TF's top 20 minus the 'avoid' lot
+    // band (never shown on /live) and names without a live future. Before
+    // 2026-10-08 the card judged all of the top 20 while the engine judged only
+    // rank-climbers, so the card could say TAKE for a name the engine never saw.
+    const eligible = new Set((await getTfEligibleSectors()).keys());
     const full = boardAtMinute(boards, asOfMinute, TF_RACE_MAX_RANK);
+    const shown = full.runners.filter((r) => eligible.has(r.symbol));
+    const candidates = tfCandidatesAtMinute(boards, asOfMinute, TF_RACE_MAX_RANK, eligible);
     // Only a board that exists has a capture time. Reporting 0 here rendered
     // as "board 00:00", which is a time, not an absence.
     boardMinuteIST = boards.length > 0 ? asOfMinute : null;
@@ -229,7 +245,7 @@ async function buildBody(today: string, nowMin: number) {
     // recorded evidence. Reusing selectTfCandidates is deliberate: a card that
     // re-implemented the gates would drift from the engine and quietly start
     // disagreeing with the trades actually being taken.
-    const entries = full.runners.map((r) => ({
+    const entries = shown.map((r) => ({
       symbol: r.symbol,
       side: (r.pctChange ?? 0) > 0 ? ('CE' as const) : ('PE' as const),
     }));
@@ -247,10 +263,10 @@ async function buildBody(today: string, nowMin: number) {
       }
     }
     const picked = new Set(
-      selectTfCandidates(full.runners, context, LIVE_TF_SELECTOR_CONFIG).candidates.map((c) => c.symbol)
+      selectTfCandidates(candidates.runners, context, LIVE_TF_SELECTOR_CONFIG).candidates.map((c) => c.symbol)
     );
 
-    board = full.runners.map((r) => {
+    board = shown.map((r) => {
       const side: 'CE' | 'PE' = (r.pctChange ?? 0) > 0 ? 'CE' : 'PE';
       const ctx = context.get(r.symbol);
       // Forced false off a board the engine would refuse. Suppressing it HERE
@@ -294,14 +310,14 @@ async function buildBody(today: string, nowMin: number) {
       };
     });
     // Climbers that left the top 20 stay visible (operator, 2026-10-08).
-    climbers = dayClimbers(boards, asOfMinute);
+    climbers = dayClimbers(boards, asOfMinute, eligible);
     dropped = droppedClimbers(boards, {
       asOfMin: asOfMinute,
       fromMin: RACE_WINDOW_START_MIN,
       topN: TF_RACE_MAX_RANK,
       minDeltaR: LIVE_TF_SELECTOR_CONFIG.minDeltaR,
-      onBoardNow: new Set(full.runners.map((r) => r.symbol)),
-    });
+      onBoardNow: new Set(shown.map((r) => r.symbol)),
+    }).filter((d) => eligible.has(d.symbol));
   } catch (error) {
     // The board is an enhancement; its failure must not blank the card.
     console.warn(`[TfRace] full board unavailable: ${(error as Error).message}`);

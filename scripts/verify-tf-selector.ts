@@ -23,7 +23,8 @@ import {
   selectTfCandidates,
   type TfSymbolContext,
 } from '@/lib/tf-live/selector';
-import { boardAtMinute, dropPreOpen, raceAtMinute, raceCaptures, type TfBoardAt } from '@/lib/tf-live/race';
+import { boardAtMinute, dropPreOpen, raceAtMinute, raceCaptures, tfCandidatesAtMinute, type TfBoardAt } from '@/lib/tf-live/race';
+import { sinceEntryFromBars } from '@/lib/tf-live/context';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   allPass,
@@ -154,7 +155,8 @@ function main(): void {
       ['no breakout', { breakout: false }, 'noBreakout'],
       ['no TF breakout beacon', { tfBeacon: null }, 'noTfBeacon'],
       ['TF beacon against the trade (BEAR on a CE)', { tfBeacon: 'BEAR' }, 'noTfBeacon'],
-      ['unknown breakout', { breakout: null }, 'noBreakout'],
+      // Unknown is counted apart from "not cleared" so the narration never calls missing data a failed range.
+      ['unknown breakout (no price data)', { breakout: null }, 'breakoutUnknown'],
       ['unknown premium pool', { premValueCr: null }, 'premiumUnknown'],
       ['thin premium pool', { premValueCr: 3 }, 'thinPremium'],
       ['move already extended', { sinceEntryPct: 5 }, 'moveExhausted'],
@@ -421,6 +423,55 @@ function main(): void {
     check('climbers: a name that never climbed never appears', !iv.some((x) => x.symbol === 'B'));
     const top1 = climberIntervals(b, { fromMin: 575, asOfMin: 680, topN: 1, minDeltaR: 0.05 });
     check('climbers: only names inside the top N count', !top1.some((x) => x.symbol === 'A' && x.enteredAt === 605));
+  }
+
+  // ── 18. Missing price data is described as missing, not as a failed range ──
+  {
+    const none = { noBoard: 0, frozenR: 0, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 3, noTfBeacon: 0, thinPremium: 0, premiumUnknown: 0, moveExhausted: 0 };
+    const text = describeRejections(none, 3);
+    check('rejections: unknown breakout reads as missing price data', /no price data/.test(text) && !/not cleared/.test(text), text);
+  }
+
+  // ── 19. Candidates = TF top 20 minus 'avoid', NO rank-climb filter (2026-10-08) ──
+  // ADANIENT showed all six checks green on the card, but the engine only
+  // evaluated rank-climbers, so it was never considered. One set for both now.
+  {
+    const base = board(575, [['HIGH', 4.0, 1], ['AVOID', 3.5, 1], ['RISER', 1.2, 1], ...filler(10)]);
+    const now = board(640, [['HIGH', 4.6, 1], ['AVOID', 4.0, 1], ['RISER', 2.0, 1], ...filler(10)]);
+    const eligible = new Set(['HIGH', 'RISER', ...filler(10).map((f) => f[0])]);
+    const c = tfCandidatesAtMinute([base, now], 640, 20, eligible);
+    const syms = c.runners.map((r) => r.symbol);
+    check('candidates: a name that did NOT climb in rank is still a candidate', syms.includes('HIGH'), syms.join(','));
+    check("candidates: an 'avoid'-band name is never a candidate", !syms.includes('AVOID'));
+    check('candidates: rank cap still applies', tfCandidatesAtMinute([base, now], 640, 2, eligible).runners.every((r) => r.rankNow <= 2));
+    const early = board(570, Array.from({ length: 12 }, (_, i) => [`Z${i}`, 0, 0.5] as [string, number, number]));
+    check('candidates: no usable baseline (degenerate board) → none', !tfCandidatesAtMinute([early], 570, 20, eligible).available);
+  }
+
+  // ── 20. "Since 09:45" anchors on the 09:45 CANDLE, never a recorded quote ──
+  // 2026-10-08: the recorded price sat at 1318.3 from 09:22 to 10:05 (stale), so
+  // ADANIGREEN read 3.45% extended and was rejected; the 09:45 candle opened 1300.8.
+  {
+    const at = (minIST: number) => Date.UTC(2026, 9, 8, 0, 0, 0) / 1000 + (minIST - 330) * 60;
+    const bars = [
+      { bucketTs: at(580), open: 1318.3, high: 1320, low: 1300, close: 1302 },
+      { bucketTs: at(585), open: 1300.8, high: 1305, low: 1299, close: 1303.8 },
+      { bucketTs: at(625), open: 1275.7, high: 1279.8, low: 1270, close: 1272.8 },
+    ];
+    const pe = sinceEntryFromBars(bars, 1272.8, 'PE');
+    check('since 09:45: PE move measured from the 09:45 candle open', pe != null && Math.abs(pe - 2.15) < 0.01, String(pe));
+    check('since 09:45: CE sign is the other way', (sinceEntryFromBars(bars, 1272.8, 'CE') ?? 0) < 0);
+    check('since 09:45: no 09:45 candle yet → null', sinceEntryFromBars(bars.slice(0, 1), 1272.8, 'PE') === null);
+    check('since 09:45: no price → null', sinceEntryFromBars(bars, null, 'PE') === null);
+  }
+
+  // ── 21. The summary never says "none tradeable" when something was picked ──
+  // Found replaying 2026-10-08 10:25: 3 picks, summary "13 runners, none tradeable".
+  {
+    const r = { noBoard: 0, frozenR: 2, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 0, noTfBeacon: 0, thinPremium: 4, premiumUnknown: 0, moveExhausted: 0 };
+    const withPicks = describeRejections(r, 9, 3);
+    check('summary: picks are stated, not "none tradeable"', /3 picked/.test(withPicks) && !/none tradeable/.test(withPicks), withPicks);
+    check('summary: still "none tradeable" when nothing was picked', /none tradeable/.test(describeRejections(r, 6, 0)));
   }
 
   // ── 12. Sector evidence must stay OUT of the selector ──────────────────

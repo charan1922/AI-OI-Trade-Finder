@@ -117,6 +117,9 @@ export interface TfSelectorRejections {
   unknownDeltaR: number;
   flatPrice: number;
   noBreakout: number;
+  /** No price data to test the opening range — kept apart from noBreakout so
+   *  missing data is never narrated as a failed range (2026-10-08). */
+  breakoutUnknown: number;
   noTfBeacon: number;
   thinPremium: number;
   premiumUnknown: number;
@@ -136,6 +139,7 @@ const emptyRejections = (): TfSelectorRejections => ({
   unknownDeltaR: 0,
   flatPrice: 0,
   noBreakout: 0,
+  breakoutUnknown: 0,
   noTfBeacon: 0,
   thinPremium: 0,
   premiumUnknown: 0,
@@ -216,7 +220,8 @@ export function selectTfCandidates(
 
     // ③ Breakout. Supertrend is intentionally ignored.
     if (cfg.requireBreakout && ctx.breakout !== true) {
-      rejected.noBreakout++;
+      if (ctx.breakout == null) rejected.breakoutUnknown++;
+      else rejected.noBreakout++;
       continue;
     }
 
@@ -278,8 +283,8 @@ export function selectTfCandidates(
   return { candidates, rejected, considered: runners.length };
 }
 
-/** One-line summary of why nothing survived — for the UI's empty state. */
-export function describeRejections(r: TfSelectorRejections, considered: number): string {
+/** One-line summary of the selection — what was picked, and why the rest were not. */
+export function describeRejections(r: TfSelectorRejections, considered: number, picked = 0): string {
   if (considered === 0) return 'TradeFinder has no runners climbing its board right now.';
   const parts: [number, string][] = [
     [r.noBoard, 'missing quote/candle context'],
@@ -287,6 +292,7 @@ export function describeRejections(r: TfSelectorRejections, considered: number):
     [r.unknownDeltaR, 'no earlier board to measure the rate against'],
     [r.flatPrice, 'not moving enough to call a direction'],
     [r.noBreakout, 'has not cleared its opening range'],
+    [r.breakoutUnknown, 'no price data to check the opening range'],
     [r.noTfBeacon, 'no TF breakout beacon in that direction'],
     [r.thinPremium, 'options premium pool too thin'],
     [r.premiumUnknown, 'no options premium reading'],
@@ -296,7 +302,10 @@ export function describeRejections(r: TfSelectorRejections, considered: number):
     .filter(([n]) => n > 0)
     .sort((a, b) => b[0] - a[0])
     .map(([n, why]) => `${n} ${why}`);
-  return said.length === 0
-    ? `All ${considered} runners passed.`
+  if (said.length === 0) return `All ${considered} runners passed.`;
+  // Never "none tradeable" when something WAS picked — this line feeds the
+  // commentary, which would then contradict its own picks (2026-10-08 replay).
+  return picked > 0
+    ? `${considered} runners on TF's board, ${picked} picked; the rest: ${said.join('; ')}.`
     : `${considered} runners on TF's board, none tradeable: ${said.join('; ')}.`;
 }
