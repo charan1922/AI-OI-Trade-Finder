@@ -61,6 +61,8 @@ import { detectConsolidationBreakout } from '@/lib/trade-suggest/consolidation-b
 import { classifyMoveFreshness, type MoveFreshness } from '@/lib/trade-suggest/move-freshness';
 import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live/snapshot';
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
+import { fetchFyersDepth, spreadFromDepth } from '@/lib/fyers/market-feed';
+import { toEqSymbol } from '@/lib/fyers/symbols';
 import { orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
 import type { TfBeacon } from '@/lib/tf-live/parse';
 // istMinutesNow is imported, NOT redefined here. It was duplicated in this file
@@ -551,6 +553,23 @@ export async function runTradeSuggest(
     return base;
   }
   const tfBySymbol = new Map(tf.candidates.map((candidate) => [candidate.symbol, candidate]));
+
+  // Real bid/ask for the few TF candidates. Since the Fyers migration (ea74b3e,
+  // 2026-10-06) the quote rows carry no order book (bid/ask/spreadPct null) and a
+  // null spread reads as "illiquid" below — which rejected EVERY TF candidate
+  // (2026-10-08: ADANIENT and JUBLFOOD selected, "survivors 0"). One depth call
+  // per candidate (≤ maxCandidates, through the shared Fyers gate); a failed call
+  // leaves the spread null, so the name stays rejected (fail closed).
+  for (const row of quotes.rows) {
+    if (!tfBySymbol.has(row.symbol) || row.spreadPct != null) continue;
+    const depth = await fetchFyersDepth(toEqSymbol(row.symbol)).catch(() => null);
+    const book = depth ? spreadFromDepth(depth) : null;
+    if (book) {
+      row.bid = book.bid;
+      row.ask = book.ask;
+      row.spreadPct = book.spreadPct;
+    }
+  }
 
   for (const row of quotes.rows) {
     // On the TF path, a name that is not a qualified race runner is not a

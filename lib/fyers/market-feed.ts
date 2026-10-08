@@ -52,6 +52,21 @@ export async function resolveFeedSymbols(securities: Record<string, number[]>) {
 }
 
 const host = globalThis as unknown as { __fyersDepthRequests?: Map<string, Promise<MarketFeedQuote>> };
+/**
+ * Best bid / best ask and the spread (% of mid) from a depth reply — or null when
+ * either side is empty, a price is not positive, or the book is crossed (missing
+ * evidence stays missing; the engine then keeps treating the name as illiquid).
+ */
+export function spreadFromDepth(q: MarketFeedQuote): { bid: number; ask: number; spreadPct: number } | null {
+  const bids = (q.depth?.buy ?? []).map((l) => l.price).filter((p) => p > 0);
+  const asks = (q.depth?.sell ?? []).map((l) => l.price).filter((p) => p > 0);
+  if (bids.length === 0 || asks.length === 0) return null;
+  const bid = Math.max(...bids);
+  const ask = Math.min(...asks);
+  if (ask < bid) return null;
+  return { bid, ask, spreadPct: ((ask - bid) / ((ask + bid) / 2)) * 100 };
+}
+
 host.__fyersDepthRequests ??= new Map();
 
 export async function fetchFyersDepth(symbol: string, deadline = Date.now() + 8_000): Promise<MarketFeedQuote> {
