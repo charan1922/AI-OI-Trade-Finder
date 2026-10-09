@@ -15,7 +15,8 @@ import {
   pickSector,
   rPath,
   rTrend,
-  type ClimberInterval,
+  climbedStocks,
+  type ClimbedStock,
   type DroppedClimber,
   type GateStrip,
 } from '@/lib/tf-live/board-view';
@@ -102,7 +103,7 @@ export async function GET(req: Request) {
         success: true,
         date: historyDate,
         lastBoardMinute,
-        climbers: lastBoardMinute == null ? [] : dayClimbers(boards, lastBoardMinute, eligible),
+        climbed: lastBoardMinute == null ? [] : dayClimbers(boards, lastBoardMinute, eligible),
       });
     }
 
@@ -124,19 +125,26 @@ export async function GET(req: Request) {
   }
 }
 
-/** Every name that entered TF Climbers on a day, with when it entered and left —
- *  the same "in" test as the cockpit's WATCH/TAKE tiers, over the whole session. */
+/** Exit confirmed only after this long out; shorter dips merge into one run. */
+const CLIMB_GRACE_MIN = 10;
+/** A closed run shorter than this is a blip and is not shown. */
+const CLIMB_MIN_STAY_MIN = 5;
+
+/** Every stock that entered TF Climbers on a day, ONCE each, with its runs —
+ *  the same "in" test as the cockpit's WATCH/TAKE tiers, steadied for display
+ *  (climbedStocks). 2026-10-08: 61 raw entries → 24 stocks. */
 function dayClimbers(
   boards: Awaited<ReturnType<typeof getTfBoardsForDate>>,
   asOfMin: number,
   eligible: ReadonlySet<string>
-): ClimberInterval[] {
-  return climberIntervals(boards, {
+): ClimbedStock[] {
+  const raw = climberIntervals(boards, {
     fromMin: RACE_WINDOW_START_MIN,
     asOfMin,
     topN: TF_RACE_MAX_RANK,
     minDeltaR: LIVE_TF_SELECTOR_CONFIG.minDeltaR,
   }).filter((c) => eligible.has(c.symbol));
+  return climbedStocks(raw, { asOfMin, graceMin: CLIMB_GRACE_MIN, minStayMin: CLIMB_MIN_STAY_MIN });
 }
 
 /**
@@ -199,7 +207,7 @@ async function buildBody(today: string, nowMin: number) {
   // `newEntrants` above are left untouched for any existing consumer.
   let board: TfBoardRow[] = [];
   let dropped: DroppedClimber[] = [];
-  let climbers: ClimberInterval[] = [];
+  let climbed: ClimbedStock[] = [];
   // The clock time the board was captured at. Surfaced because the card's
   // "09:35-11:00 IST" badge is the ENTRY WINDOW, not the age of the data:
   // post-market this serves the day's LAST board (14:56 on 2026-08-12), and
@@ -326,7 +334,7 @@ async function buildBody(today: string, nowMin: number) {
       };
     });
     // Climbers that left the top 20 stay visible (operator, 2026-10-08).
-    climbers = dayClimbers(boards, asOfMinute, eligible);
+    climbed = dayClimbers(boards, asOfMinute, eligible);
     dropped = droppedClimbers(boards, {
       asOfMin: asOfMinute,
       fromMin: RACE_WINDOW_START_MIN,
@@ -351,7 +359,7 @@ async function buildBody(today: string, nowMin: number) {
     verdictNote,
     sessionOpenedToday,
     dropped,
-    climbers,
+    climbed,
     // The ENTRY window (auto-trade config) — not the race's 09:35 measuring start.
     ...(await entryWindow()),
   };

@@ -261,3 +261,60 @@ export function climberIntervals(
   }
   return [...done, ...open.values()].sort((a, b) => a.enteredAt - b.enteredAt || a.bestRank - b.bestRank);
 }
+
+/** One stock on the Climbed Stocks card: every run it had, merged and steadied. */
+export interface ClimbedStock {
+  symbol: string;
+  firstEnteredAt: number;
+  /** Null = still in at `asOfMin` (or its last exit is not yet confirmed). */
+  lastExitedAt: number | null;
+  bestRank: number;
+  runs: { enteredAt: number; exitedAt: number | null; bestRank: number }[];
+}
+
+/**
+ * Steadies the raw per-capture intervals for DISPLAY (operator, 2026-10-09:
+ * "same stock multiple entry exit — no quality"). On 2026-10-08 the raw test
+ * logged 61 entries for 27 stocks: 12 re-entries came back within 10 minutes
+ * (TATAELXSI out 12:56, back 12:57) and 7 runs lasted ≤ 5 minutes — one capture
+ * dipping under the line, not money leaving. So:
+ *  - an exit only counts once the name stays out `graceMin`: a return inside
+ *    that merges into the same run, and a last exit younger than `graceMin` at
+ *    `asOfMin` is not yet confirmed (shown as still in);
+ *  - a closed run shorter than `minStayMin` is a blip and is dropped;
+ *  - each stock appears ONCE, its runs listed inside.
+ * Genuine pauses (JINDALSTEL out 37 minutes, then back) stay separate runs.
+ * Display only: the selector and the cockpit tiers keep the raw test.
+ */
+export function climbedStocks(
+  intervals: ClimberInterval[],
+  opts: { asOfMin: number; graceMin: number; minStayMin: number }
+): ClimbedStock[] {
+  const bySymbol = new Map<string, ClimberInterval[]>();
+  for (const iv of intervals) bySymbol.set(iv.symbol, [...(bySymbol.get(iv.symbol) ?? []), iv]);
+  const out: ClimbedStock[] = [];
+  for (const [symbol, list] of bySymbol) {
+    const runs: ClimbedStock['runs'] = [];
+    for (const iv of [...list].sort((a, b) => a.enteredAt - b.enteredAt)) {
+      const prev = runs.at(-1);
+      if (prev && prev.exitedAt != null && iv.enteredAt - prev.exitedAt <= opts.graceMin) {
+        prev.exitedAt = iv.exitedAt;
+        prev.bestRank = Math.min(prev.bestRank, iv.bestRank);
+      } else {
+        runs.push({ enteredAt: iv.enteredAt, exitedAt: iv.exitedAt, bestRank: iv.bestRank });
+      }
+    }
+    const last = runs.at(-1);
+    if (last && last.exitedAt != null && opts.asOfMin - last.exitedAt < opts.graceMin) last.exitedAt = null;
+    const kept = runs.filter((r) => r.exitedAt == null || r.exitedAt - r.enteredAt >= opts.minStayMin);
+    if (kept.length === 0) continue;
+    out.push({
+      symbol,
+      firstEnteredAt: kept[0].enteredAt,
+      lastExitedAt: kept.at(-1)!.exitedAt,
+      bestRank: Math.min(...kept.map((r) => r.bestRank)),
+      runs: kept,
+    });
+  }
+  return out.sort((a, b) => a.firstEnteredAt - b.firstEnteredAt || a.bestRank - b.bestRank);
+}

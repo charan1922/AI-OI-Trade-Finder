@@ -2,23 +2,27 @@
 
 /**
  * Climbed Stocks — every name that entered TF Climbers on a day (climbing inside
- * TF's Intraday Boost top 20), with WHEN it entered and when it left (operator,
- * 2026-10-08). Today updates live; any earlier day is rebuilt from the stored
- * captures, so the history needs no separate table.
+ * TF's Intraday Boost top 20), ONCE per stock, with when it first entered, when
+ * it last left, and how many separate runs it had (operator, 2026-10-08/09).
+ * Dips shorter than 10 minutes are merged and blips under 5 minutes dropped on
+ * the server (climbedStocks). Today updates live; any earlier day is rebuilt
+ * from the stored captures, so the history needs no separate table.
  */
 import { Clock3, Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-interface ClimberInterval {
+interface ClimbedStock {
   symbol: string;
-  enteredAt: number;
-  exitedAt: number | null;
+  firstEnteredAt: number;
+  /** Null = still in (or its last exit is not yet confirmed). */
+  lastExitedAt: number | null;
   bestRank: number;
+  runs: { enteredAt: number; exitedAt: number | null; bestRank: number }[];
 }
 
 interface ClimbersResponse {
   success: boolean;
-  climbers?: ClimberInterval[];
+  climbed?: ClimbedStock[];
   /** The day the climbers belong to. Off-hours, "today" falls back to the last session. */
   date?: string;
   /** True when "today" is really a retained earlier session (off-hours fallback). */
@@ -80,11 +84,11 @@ export function TfClimbHistory() {
     };
   }, [day]);
 
-  // Still in first, then the most recent entry.
-  const climbers = [...(data?.climbers ?? [])].sort(
-    (a, b) => Number(b.exitedAt == null) - Number(a.exitedAt == null) || b.enteredAt - a.enteredAt
+  // Still in first, then the most recent first entry.
+  const climbers = [...(data?.climbed ?? [])].sort(
+    (a, b) => Number(b.lastExitedAt == null) - Number(a.lastExitedAt == null) || b.firstEnteredAt - a.firstEnteredAt
   );
-  const inCount = climbers.filter((c) => c.exitedAt == null).length;
+  const inCount = climbers.filter((c) => c.lastExitedAt == null).length;
   // "Live" only when the data really is today's — off-hours the route serves the last session.
   const live = day === TODAY && data?.stale !== true;
 
@@ -100,7 +104,7 @@ export function TfClimbHistory() {
         )}
         {climbers.length > 0 && (
           <span className="text-[9px] text-muted-foreground">
-            {live ? `${inCount} in · ${climbers.length - inCount} out` : `${climbers.length} entries`}
+            {live ? `${inCount} in · ${climbers.length - inCount} out` : `${climbers.length} stocks`}
           </span>
         )}
         <select
@@ -130,15 +134,18 @@ export function TfClimbHistory() {
         ) : climbers.length > 0 ? (
           <div className="flex max-h-72 flex-wrap gap-1 overflow-y-auto">
             {climbers.map((c) => {
-              const stillIn = c.exitedAt == null;
+              const stillIn = c.lastExitedAt == null;
+              const runsText = c.runs
+                .map((r) => `${hhmm(r.enteredAt)}–${r.exitedAt == null ? (live ? 'now' : 'close') : hhmm(r.exitedAt)}`)
+                .join(', ');
               return (
                 <a
-                  key={`${c.symbol}-${c.enteredAt}`}
+                  key={c.symbol}
                   href={`https://in.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(c.symbol)}&interval=5`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  title={`${c.symbol} — entered TF Climbers at ${hhmm(c.enteredAt)}${
-                    stillIn ? (live ? ', still in' : ', in until the last capture') : `, left at ${hhmm(c.exitedAt!)}`
+                  title={`${c.symbol} — in TF Climbers ${runsText}${
+                    c.runs.length > 1 ? ` (${c.runs.length} separate runs)` : ''
                   }; best rank #${c.bestRank}. Open chart.`}
                   className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted/50 ${
                     stillIn ? 'border-violet-400/50 bg-violet-500/5' : 'border-border bg-muted/20'
@@ -147,8 +154,11 @@ export function TfClimbHistory() {
                   <span className={`h-1.5 w-1.5 rounded-full ${stillIn && live ? 'bg-emerald-500' : 'bg-zinc-400'}`} />
                   <span className="font-semibold text-foreground">{c.symbol}</span>
                   <span className="tabular-nums text-muted-foreground">
-                    {hhmm(c.enteredAt)}→{stillIn ? (live ? 'in' : 'close') : hhmm(c.exitedAt!)}
+                    {hhmm(c.firstEnteredAt)}→{stillIn ? (live ? 'in' : 'close') : hhmm(c.lastExitedAt!)}
                   </span>
+                  {c.runs.length > 1 && (
+                    <span className="rounded bg-muted px-0.5 tabular-nums text-muted-foreground">×{c.runs.length}</span>
+                  )}
                   <span className="tabular-nums text-muted-foreground/70">#{c.bestRank}</span>
                 </a>
               );
