@@ -6,11 +6,17 @@
 #   • PR to `main`      → validate + BUILD the runtime image + smoke-test it
 #                         (no g++, native module loads, boots on a fresh DB and
 #                         answers HTTP). NEVER pushed.
-#   • push to `prod`    → validate + build + PUSH `:latest` (+ sha-*); the box pulls it.
+#   • push to `prod`    → validate and build IN PARALLEL; build pushes only the
+#                         commit-addressed `sha-*` tag; `promote` then points
+#                         `:latest` at it ONLY after BOTH jobs passed. The box
+#                         pulls `:latest` alone, so an unvalidated image never
+#                         reaches it. Measured 2026-10-09: validate 67s + 13s
+#                         hand-off + build 168s ran back to back; in parallel the
+#                         deploy is ~1 min shorter.
 #   • workflow_dispatch → validate + build + smoke-test, NEVER pushed — so a manual
 #                         run on main/any branch can't overwrite production `latest`.
-# Publishing is gated on `event==push && ref==refs/heads/prod`; the ghcr login and
-# push both carry that condition, nothing else can publish.
+# Publishing is gated on `event==push && ref==refs/heads/prod`; the ghcr login,
+# the sha push and the promote job all carry that condition, nothing else can publish.
 #
 # Speed/cost: buildx layer caching via the GitHub Actions cache (type=gha).
 # GitHub runners start empty every run — without this cache every build redoes
@@ -170,7 +176,9 @@ jobs:
       - run: pnpm exec tsx scripts/verify-user-access-store.ts
 
   build:
-    needs: validate
+    # No `needs: validate` — it runs alongside validate. It may push the sha-*
+    # tag before validation finishes; that tag is inert (the box only pulls
+    # :latest), and only `promote` below, which needs BOTH jobs, moves :latest.
     # Runs on EVERY trigger now (PR#7 review): PRs and manual dispatch build +
     # smoke-test the image; only a real prod push publishes it (see the publish
     # condition below). Building on PRs is what proves the exact runtime container
@@ -219,9 +227,10 @@ jobs:
           # `latest` is the box's auto-pull alias; the sha-* tag is the
           # commit-addressed rollback target (not registry-immutable unless the
           # package enforces it — treated as an operational rollback id).
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          # Only the commit-addressed tag here; `promote` moves :latest after
+          # validation (the box's auto-pull alias). sha-* doubles as the
+          # operational rollback id.
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -260,3 +269,31 @@ jobs:
           docker rm -f pr-smoke >/dev/null 2>&1 || true
           [ "$ok" = "1" ] || { echo "::error::runtime container did not answer HTTP within 120s"; exit 1; }
           echo "::endgroup::"
+
+  # Point the box's auto-pull alias at the image ONLY once both the checks and
+  # the build passed. A registry-side retag of the already-pushed manifest — no
+  # rebuild, no layer upload, a few seconds.
+  promote:
+    needs: [validate, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    # Two quick prod pushes: a newer queued promote replaces an older pending
+    # one and never runs before a running one finishes, so :latest ends on the
+    # newest validated commit.
+    concurrency:
+      group: promote-prod-latest
+      cancel-in-progress: false
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/project-r-simulator
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Point :latest at this validated commit
+        run: docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:sha-$GITHUB_SHA"
