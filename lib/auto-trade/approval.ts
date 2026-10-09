@@ -18,7 +18,7 @@ import { findTfSelectedSuggestion } from '@/lib/trade-suggest/tf-provenance';
 import { getExecutionAdapter } from './brokers';
 import { MAX_RISK_PER_LOT_FALLBACK, minuteOfDayIST } from './config';
 import { placeEntryOrder, type ExecOutcome } from './execution';
-import { fetchOptionQuote } from './quotes';
+import { fetchLiveSpot, fetchOptionQuote } from './quotes';
 import { checkEntryGates } from './risk/gates';
 import { getRiskLatch } from './risk/latch';
 import { isVerifiedTradingDay } from '@/lib/backtest/trading-calendar';
@@ -83,8 +83,9 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
     };
   }
 
-  // Fresh premium + slippage vs the proposal quote.
-  const fresh = await fetchOptionQuote(trade.optSecurityId);
+  // Fresh premium + live spot (the chart-stop risk is modelled from the two
+  // together) + slippage vs the proposal quote.
+  const [fresh, liveSpot] = await Promise.all([fetchOptionQuote(trade.optSecurityId), fetchLiveSpot(trade.symbol)]);
   const slippagePct =
     fresh != null && trade.entryPremium > 0 ? ((fresh.ltp - trade.entryPremium) / trade.entryPremium) * 100 : null;
 
@@ -152,6 +153,12 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
       trade.entryPremium > 0 && trade.slPremium > 0 && trade.slPremium < trade.entryPremium
         ? (1 - trade.slPremium / trade.entryPremium) * 100
         : null,
+    // The chart stop the guard will actually manage this position with.
+    spot: liveSpot,
+    slSpot: trade.slSpot,
+    strike: trade.strike,
+    optionType: trade.optionType,
+    nowMs: Date.now(),
     slippagePct,
     spreadPct: fresh?.spreadPct ?? null,
     hasSlSpot: trade.slSpot != null,
@@ -187,6 +194,7 @@ export async function approveTrade(tradeId: number): Promise<ExecOutcome> {
   const claimed = await claimApprovalForPlacement(tradeId, {
     maxRiskPerLotRupees: settings.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK,
     entryAskPremium: fresh?.ask ?? null,
+    stopValuePremium: verdict.chartStopRisk?.premiumAtStop ?? null,
     // The capital cap is re-checked ATOMICALLY inside this claim (not only in the
     // gate above): if a DIFFERENT approval or AI proposal reserved capital in the
     // gap between the gate read and here, the aggregate check refuses this one so

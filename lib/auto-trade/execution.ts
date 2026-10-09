@@ -158,11 +158,20 @@ async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): 
     const currentSetting =
       snapshot != null && Number.isFinite(snapshot) ? null : (await getAutoTradeSettings()).maxRiskPerLotRupees;
     const ceiling = effectiveBreachCeiling(snapshot, currentSetting, MAX_RISK_PER_LOT_FALLBACK);
-    const actualRiskPerLot = fillRiskPerLotRupees(fill, stops.slPremium, trade.lotSize);
+    // Measured where the gate measured it: at the CHART stop (fill − the option
+    // value modelled there). A fill above the ask adds rupee-for-rupee. Rows from
+    // before that snapshot existed fall back to the premium backstop.
+    const stopValue = trade.approvedStopValuePremium ?? null;
+    const atChartStop = stopValue != null && Number.isFinite(stopValue) && stopValue > 0;
+    const measuredTo = atChartStop ? stopValue : stops.slPremium;
+    const actualRiskPerLot = fillRiskPerLotRupees(fill, measuredTo, trade.lotSize);
     if (Number.isFinite(actualRiskPerLot) && actualRiskPerLot > ceiling) {
       const detail =
         `${trade.symbol} ${trade.strike}${trade.optionType}: filled at ₹${fill} (proposal ₹${trade.entryPremium}), ` +
-        `so this lot now risks ₹${actualRiskPerLot.toLocaleString('en-IN')} to its ₹${stops.slPremium} stop — ` +
+        `so this lot now risks ₹${actualRiskPerLot.toLocaleString('en-IN')} to ` +
+        (atChartStop
+          ? `its ₹${trade.slSpot} chart stop (option ≈ ₹${stopValue} there) — `
+          : `its ₹${stops.slPremium} stop — `) +
         `above the ₹${ceiling.toLocaleString('en-IN')} per-lot budget the gate approved. ` +
         `A market buy can fill above the ask, so the ceiling is a PLANNED figure, not a guaranteed maximum loss.`;
       console.warn(`${TAG} ${detail}`);

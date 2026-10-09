@@ -28,9 +28,9 @@ export interface OptionPremium {
    *  actually commits. The engine's affordability skip uses this, so it agrees
    *  with auto-trade's ask-based capital gate. `ltp` is the mark, kept separate. */
   perLotCost: number;
-  /** Premium stop: ltp × (1 − OPTION_STOP_PCT/100) — sized to the OPTION's own
-   *  noise and independent of lot size. The per-lot rupee budget is enforced by
-   *  refusing an over-sized contract, not by tightening this. */
+  /** Premium BACKSTOP: ltp × (1 − width/100), width = max(optionStopPct, 1.5 ×
+   *  the drop modelled at the chart stop). The per-lot rupee budget is measured
+   *  at the chart stop and enforced by refusing an over-sized contract. */
   slPremium: number;
   /** Premium level that books ~₹TF_LOT_TARGET_RUPEES on one lot. */
   targetPremium: number;

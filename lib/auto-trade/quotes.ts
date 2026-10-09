@@ -154,3 +154,27 @@ export async function latestSpotRead(symbol: string, date: string): Promise<Spot
 export async function latestSpot(symbol: string, date: string): Promise<number | null> {
   return (await latestSpotRead(symbol, date))?.price ?? null;
 }
+
+/**
+ * LIVE underlying price for an entry decision — read alongside the option's ask,
+ * because the per-lot risk is modelled from the two together (risk/option-model)
+ * and a 5-min candle close can be minutes old: a 0.3% stale spot moves a near-ATM
+ * lot's modelled risk by ~₹1,000. Null when the master or the feed has nothing —
+ * the entry gate then fails closed. Never falls back to a recorded close.
+ */
+export async function fetchLiveSpot(symbol: string): Promise<number | null> {
+  try {
+    const eq = await prisma.masterContract.findFirst({
+      where: { symbol, segment: 'NSE_EQ' },
+      select: { securityId: true },
+    });
+    const id = Number(eq?.securityId);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    const q = await marketFeed('ohlc', { NSE_EQ: [id] });
+    const ltp = Number(q.NSE_EQ?.[String(id)]?.last_price);
+    return Number.isFinite(ltp) && ltp > 0 ? ltp : null;
+  } catch (err) {
+    console.warn(`[AutoTrade] live spot unavailable for ${symbol}: ${(err as Error).message}`);
+    return null;
+  }
+}

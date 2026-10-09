@@ -30,7 +30,8 @@ import {
   nowISTClock,
 } from '../config';
 import { backstopsFromFill, exitTrade, placeEntryOrder, targetRupeesForPosition, type ExecOutcome } from '../execution';
-import { fetchOptionQuote, fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
+import { fetchLiveSpot, fetchOptionQuote, fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
+import { backstopStopPct } from '../risk/option-model';
 import { checkEntryGates, checkStopMove, type EntryGateInput } from '../risk/gates';
 import { getRiskLatch } from '../risk/latch';
 import { getAutoTradeSettings } from '../settings';
@@ -254,15 +255,18 @@ async function buildGateInput(
   pick: TradeSuggestion
 ): Promise<{ input: EntryGateInput; freshPremium: number | null }> {
   const scanPremium = pick.option?.premium?.ltp ?? null;
-  const [state, fresh, tradedToday, entryCutoffMin, latch, sessionVerified, blockStaleAutoEntry] = await Promise.all([
-    buildAccountState(rt, { includeBrokerFunds: true }),
-    pick.option ? fetchOptionQuote(pick.option.optSecurityId) : null,
-    symbolTradedToday(rt.date, pick.symbol),
-    getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
-    getRiskLatch(),
-    isVerifiedTradingDay(rt.date),
-    getToggle('BLOCK_STALE_AUTO_ENTRY', BLOCK_STALE_AUTO_ENTRY),
-  ]);
+  const [state, fresh, liveSpot, tradedToday, entryCutoffMin, latch, sessionVerified, blockStaleAutoEntry] =
+    await Promise.all([
+      buildAccountState(rt, { includeBrokerFunds: true }),
+      pick.option ? fetchOptionQuote(pick.option.optSecurityId) : null,
+      // Read with the ask: the per-lot risk is modelled from the two together.
+      fetchLiveSpot(pick.symbol),
+      symbolTradedToday(rt.date, pick.symbol),
+      getNumberSetting('COMMENTARY_ENTRY_CUTOFF_MIN', COMMENTARY_ENTRY_CUTOFF_MIN_DEFAULT),
+      getRiskLatch(),
+      isVerifiedTradingDay(rt.date),
+      getToggle('BLOCK_STALE_AUTO_ENTRY', BLOCK_STALE_AUTO_ENTRY),
+    ]);
   // Freshness is read LAST, after the slower gate inputs above, so it reflects
   // the closest possible moment to placement (plan §26, PR#10 review). Prove the
   // REQUIRED completed bucket was FINALIZED (fetched after it closed), not merely
@@ -309,6 +313,11 @@ async function buildGateInput(
       // the entry price we actually pay (PR#18 review).
       askPrice,
       askQty: fresh?.askQty ?? null,
+      spot: liveSpot,
+      slSpot: pick.plan.slSpot,
+      strike: pick.option?.strike ?? null,
+      optionType: pick.option?.optionType ?? null,
+      nowMs: Date.now(),
       slippagePct,
       spreadPct: fresh?.spreadPct ?? null,
       hasSlSpot: pick.plan.slSpot != null,
@@ -577,12 +586,17 @@ export async function executeAutoTradeTool(
       }
       const entryPremium = freshPremium ?? pick.option.premium.ltp;
       const lots = 1;
+      // The premium stop is a BACKSTOP behind the chart stop: never tighter than
+      // the operator's optionStopPct, otherwise 1.5× the drop modelled at the
+      // chart stop, so it does not fire before the chart stop does. The gate
+      // allowed only with a modelled risk, so chartStopRisk is present here.
+      const backstopPct = backstopStopPct(rt.settings.optionStopPct, verdict.chartStopRisk?.dropPct ?? 0);
       const configuredBackstops = backstopsFromFill(
         entryPremium,
         pick.option.lotSize,
         lots,
         targetRupeesForPosition(rt.settings, lots),
-        rt.settings.optionStopPct
+        backstopPct
       );
       const status = rt.settings.mode === 'approval' ? 'pending_approval' : 'placing';
       // Proposal-time SHADOW context (in-memory only): the pick's sector rank.
@@ -620,6 +634,7 @@ export async function executeAutoTradeTool(
         // a since-changed setting or the cheaper ltp/mid mark (PR#18 review).
         approvedMaxRiskPerLotRupees: rt.settings.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK,
         approvedEntryAskPremium: input.askPrice ?? null,
+        approvedStopValuePremium: verdict.chartStopRisk?.premiumAtStop ?? null,
         // Enforce the capital cap ATOMICALLY at insert (not only in the gate
         // pre-check): the row is created only if this ask-based reservation still
         // fits alongside every other risk-bearing row — race-proof against a
