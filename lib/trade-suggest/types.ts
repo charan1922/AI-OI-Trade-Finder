@@ -77,12 +77,13 @@ export interface OptionExpiryResolution {
 /** Spot-level trade plan. Premium-level numbers are never fabricated. */
 export interface SpotPlan {
   entrySpot: number;
-  /** Last completed 5-min candle low (CE) / high (PE); OR boundary fallback;
+  /** Last completed 5-min candle low (CE) / high (PE); else the nearest swing
+   *  (most recent completed candle beyond the entry); else the OR boundary;
    *  widened to the MIN_RISK_PCT floor when the structural level is inside noise. */
   slSpot: number | null;
   /** 1:2 reward:risk from entry/SL. Null when SL couldn't be derived. */
   targetSpot: number | null;
-  slBasis: 'last-candle' | 'opening-range' | 'floor' | 'none';
+  slBasis: 'last-candle' | 'swing' | 'opening-range' | 'floor' | 'none';
 }
 
 /** Context factors attached to each pick — DISPLAY EVIDENCE, deliberately not

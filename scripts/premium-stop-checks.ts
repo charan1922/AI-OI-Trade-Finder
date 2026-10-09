@@ -39,6 +39,7 @@ import {
   shouldAlertOnExitFailure,
 } from '../lib/auto-trade/risk/exit-backoff';
 import type { EntryGateInput } from '../lib/auto-trade/risk/gates';
+import { buildSpotPlan } from '../lib/trade-suggest/scoring';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
@@ -183,6 +184,62 @@ export function runPremiumStopChecks(check: CheckFn): void {
     'ADANIENT 08-Oct: a 1%-floored stop risks < ₹5,000 and is ALLOWED (old 20% rule: ₹5,302, refused)',
     adaniNear.allow && (adaniNear.chartStopRisk?.riskPerLot ?? 0) < 5000,
     `₹${adaniNear.chartStopRisk?.riskPerLot} · ${adaniNear.reasons.join('; ')}`
+  );
+
+  // ── 3b. Stop PLACEMENT — nearest swing before the opening-range edge ─────
+  // Real ADANIENT 5-min bars, 2026-10-08 09:15–11:05 IST (prod fyers_candles):
+  // [minute, high, low]. At 11:10 the spot (2638.3) sat ABOVE the 11:05 high, so
+  // the old code fell back to the opening-range high 2743 (4% away).
+  const adaniBars = (
+    [
+      [555, 2743, 2703.5], [560, 2713.2, 2689], [565, 2700, 2661], [570, 2685.6, 2667.6],
+      [575, 2675.2, 2664.2], [580, 2672, 2652.6], [585, 2658.5, 2644.4], [590, 2659.4, 2646],
+      [595, 2650.1, 2632.5], [600, 2637.7, 2629.4], [605, 2639.7, 2629.6], [610, 2642.4, 2633.1],
+      [615, 2647, 2625], [620, 2629, 2615.8], [625, 2628, 2618], [630, 2624.9, 2616.4],
+      [635, 2626.6, 2607], [640, 2613.6, 2598.3], [645, 2637.8, 2611], [650, 2633.8, 2620],
+      [655, 2622.1, 2614.8], [660, 2622.9, 2613], [665, 2633.6, 2619],
+    ] as const
+  ).map(([m, high, low]) => ({ bucketTs: istEpochMs('2026-10-08', m) / 1000, high, low }));
+  const adaniOr = { openRangeHigh: 2743, openRangeLow: 2644.4 };
+  const nowBucket = istEpochMs('2026-10-08', 670) / 1000;
+  const adaniPlan = buildSpotPlan('PE', 2638.3, adaniBars, adaniOr, nowBucket, { atrMult: 0 });
+  check(
+    'stop: ADANIENT 08-Oct uses the nearest swing (10:15 high 2647), floored to 1% → 2664.68 — not the OR high 2743',
+    adaniPlan.slSpot === 2664.68 && adaniPlan.slBasis === 'floor',
+    `${adaniPlan.slSpot} (${adaniPlan.slBasis})`
+  );
+  const swingPlan = buildSpotPlan('PE', 2638.3, adaniBars, adaniOr, nowBucket, { atrMult: 0, minRiskPct: 0.1 });
+  check(
+    'stop: with no floor in the way the basis reads "swing" at the 10:15 high',
+    swingPlan.slSpot === 2647 && swingPlan.slBasis === 'swing',
+    `${swingPlan.slSpot} (${swingPlan.slBasis})`
+  );
+  const lastPlan = buildSpotPlan('PE', 2630, adaniBars, adaniOr, nowBucket, { atrMult: 0, minRiskPct: 0.1 });
+  check(
+    'stop: when the last candle is beyond the entry it is still used first',
+    lastPlan.slSpot === 2633.6 && lastPlan.slBasis === 'last-candle',
+    `${lastPlan.slSpot} (${lastPlan.slBasis})`
+  );
+  const ceSwing = buildSpotPlan('CE', 2612, adaniBars, adaniOr, nowBucket, { atrMult: 0, minRiskPct: 0.01 });
+  check(
+    'stop: CE mirror — newest candle whose LOW is below the entry (11:05/11:00/10:55/10:50 are above; 10:45 low 2611)',
+    ceSwing.slSpot === 2611 && ceSwing.slBasis === 'swing',
+    `${ceSwing.slSpot} (${ceSwing.slBasis})`
+  );
+  // Without the 09:15 bar the highest completed high is 2713.2, so a PE at 2715
+  // has no candle above it and only the OR high 2743 remains.
+  const noSwing = buildSpotPlan('PE', 2715, adaniBars.slice(1), adaniOr, nowBucket, { atrMult: 0, minRiskPct: 0.1 });
+  check(
+    'stop: the OR boundary is used only when no completed candle is beyond the entry',
+    noSwing.slSpot === 2743 && noSwing.slBasis === 'opening-range',
+    `${noSwing.slSpot} (${noSwing.slBasis})`
+  );
+  check(
+    'stop: a still-forming candle (at/after the current bucket) is never used',
+    buildSpotPlan('PE', 2638.3, [...adaniBars, { bucketTs: nowBucket, high: 2640, low: 2628 }], adaniOr, nowBucket, {
+      atrMult: 0,
+      minRiskPct: 0.1,
+    }).slSpot === 2647
   );
 
   // ── 4. FAIL CLOSED — "cannot calculate risk" must never mean "allow" ───────
