@@ -29,6 +29,7 @@ import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
   allPass,
   climberIntervals,
+  climbedStocks,
   climbingSince,
   droppedClimbers,
   firstNeed,
@@ -425,6 +426,40 @@ function main(): void {
     check('climbers: a name that never climbed never appears', !iv.some((x) => x.symbol === 'B'));
     const top1 = climberIntervals(b, { fromMin: 575, asOfMin: 680, topN: 1, minDeltaR: 0.05 });
     check('climbers: only names inside the top N count', !top1.some((x) => x.symbol === 'A' && x.enteredAt === 605));
+  }
+
+  // ── 17b. Climbed Stocks: one chip per stock, flicker merged (2026-10-09) ──
+  // Patterns from 2026-10-08's real intervals (61 raw entries, 27 stocks).
+  {
+    const iv = (symbol: string, enteredAt: number, exitedAt: number | null, bestRank = 5) => ({
+      symbol,
+      enteredAt,
+      exitedAt,
+      bestRank,
+    });
+    const raw = [
+      iv('TATAELXSI', 624, 776, 3), // 10:24–12:56
+      iv('TATAELXSI', 777, 807, 2), // back after ONE minute → same run
+      iv('INDIANB', 624, 625), // a 1-minute blip
+      iv('JINDALSTEL', 624, 717), // 10:24–11:57
+      iv('JINDALSTEL', 740, 790), // out 23 min → a genuine second run
+      iv('LUPIN', 753, 875), // 12:33–14:35, back after 30 min, still in
+      iv('LUPIN', 905, null),
+    ];
+    const out = climbedStocks(raw, { asOfMin: 931, graceMin: 10, minStayMin: 5 });
+    const get = (s: string) => out.find((x) => x.symbol === s);
+    check('climbed: each stock appears once', out.length === new Set(out.map((x) => x.symbol)).size && out.length === 3, out.map((x) => x.symbol).join(','));
+    check(
+      'climbed: a 1-minute dip merges into one run (TATAELXSI)',
+      get('TATAELXSI')?.runs.length === 1 && get('TATAELXSI')?.lastExitedAt === 807 && get('TATAELXSI')?.bestRank === 2
+    );
+    check('climbed: a 1-minute blip is dropped (INDIANB)', !get('INDIANB'));
+    check('climbed: a 23-minute pause stays a separate run (JINDALSTEL ×2)', get('JINDALSTEL')?.runs.length === 2);
+    check('climbed: still-in is preserved (LUPIN ×2, open)', get('LUPIN')?.runs.length === 2 && get('LUPIN')?.lastExitedAt === null);
+    const pending = climbedStocks([iv('CAMS', 900, 925)], { asOfMin: 930, graceMin: 10, minStayMin: 5 });
+    check('climbed: an exit younger than the grace is not yet confirmed (shown as in)', pending[0]?.lastExitedAt === null);
+    const confirmed = climbedStocks([iv('CAMS', 900, 915)], { asOfMin: 930, graceMin: 10, minStayMin: 5 });
+    check('climbed: an exit older than the grace is confirmed', confirmed[0]?.lastExitedAt === 915);
   }
 
   // ── 18. Missing price data is described as missing, not as a failed range ──
