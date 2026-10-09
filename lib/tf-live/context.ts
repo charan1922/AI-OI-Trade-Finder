@@ -32,6 +32,7 @@ import { deriveSessionContext } from '@/lib/signals/session-context';
 import { supertrend } from '@/lib/signals/indicators';
 import type { TfBeacon } from '@/lib/tf-live/parse';
 import type { TfSymbolContext } from '@/lib/tf-live/selector';
+import { dayBaseline, measureStretch, type DailyBar, type DayBaseline, type Stretch } from '@/lib/tf-live/stretch';
 
 /** Minimum bars before the entry bucket for Supertrend(10,3) to mean anything. */
 const MIN_BARS_FOR_TREND = 10;
@@ -81,6 +82,41 @@ export function orbBreak(
   return side === 'CE' ? high != null && price > high : low != null && price < low;
 }
 
+/**
+ * Normal daily range + previous close per symbol, from the OFFICIAL NSE daily
+ * bars (bhavcopy_days) strictly before `date` — verified 2026-10-09 to match
+ * our own 5-min candles' day range exactly on most days, and to be the wider
+ * (complete) one where they differ. Missing → absent from the map (never a guess).
+ */
+export async function loadDayBaselines(symbols: string[], date: string): Promise<Map<string, DayBaseline>> {
+  const out = new Map<string, DayBaseline>();
+  const unique = [...new Set(symbols)];
+  if (unique.length === 0) return out;
+  const since = new Date(Date.parse(`${date}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
+  try {
+    const rows = (await prisma.$queryRawUnsafe(
+      `SELECT symbol, date, eqHigh AS high, eqLow AS low, eqClose AS close FROM bhavcopy_days
+        WHERE date < ? AND date >= ? AND symbol IN (${unique.map(() => '?').join(',')})`,
+      date,
+      since,
+      ...unique
+    )) as ({ symbol: string } & DailyBar)[];
+    const bySymbol = new Map<string, DailyBar[]>();
+    for (const r of rows) {
+      const list = bySymbol.get(r.symbol) ?? [];
+      list.push({ date: String(r.date), high: Number(r.high), low: Number(r.low), close: Number(r.close) });
+      bySymbol.set(r.symbol, list);
+    }
+    for (const [symbol, days] of bySymbol) {
+      const base = dayBaseline(days, date);
+      if (base) out.set(symbol, base);
+    }
+  } catch (error) {
+    console.warn(`[TfContext] bhavcopy_days unreadable for ${date}: ${(error as Error).message}`);
+  }
+  return out;
+}
+
 export interface TfContextRequest {
   symbol: string;
   /** Direction under consideration — breakout and display-only Supertrend are direction-aware. */
@@ -125,6 +161,11 @@ export async function buildRecordedTfContext(
     console.warn(`[TfContext] oi_intraday unreadable for ${date}: ${(error as Error).message}`);
   }
 
+  const baselines = await loadDayBaselines(
+    entries.map((e) => e.symbol),
+    date
+  );
+
   for (const { symbol, side } of entries) {
     const empty: TfSymbolContext = {
       supertrendAligned: null,
@@ -167,8 +208,42 @@ export async function buildRecordedTfContext(
       premValueCr: premBySymbol.get(symbol) ?? null,
       // Direction-aware: positive means the move has gone OUR way since 09:45.
       sinceEntryPct: sinceEntryFromBars(usable, price, side),
+      // Recorded evidence only — the selector never reads it (lib/tf-live/stretch.ts).
+      stretch: measureStretch(prior, price, side, baselines.get(symbol) ?? null),
     });
   }
 
   return out;
+}
+
+/**
+ * Stretch at an auto-trade ENTRY, stored on the trade so option P&L can later be
+ * read by how stretched the entry was (scripts/measure-stretch.ts). Bars are
+ * today's candles that STARTED before the current 5-min bucket — the forming bar
+ * is excluded, the price taken is the decision price. Never throws and never
+ * blocks: a measurement failure stores nulls, the entry is unaffected.
+ */
+export async function measureEntryStretch(
+  symbol: string,
+  date: string,
+  price: number | null,
+  side: 'CE' | 'PE',
+  nowMs: number = Date.now()
+): Promise<Stretch | null> {
+  try {
+    const [baselines, bars] = await Promise.all([
+      loadDayBaselines([symbol], date),
+      getFyersCandles(symbol, date, 'EQ'),
+    ]);
+    const currentBucket = Math.floor(nowMs / 1000 / 300) * 300;
+    return measureStretch(
+      bars.filter((b) => b.bucketTs < currentBucket),
+      price,
+      side,
+      baselines.get(symbol) ?? null
+    );
+  } catch (error) {
+    console.warn(`[TfContext] entry stretch unavailable for ${symbol}: ${(error as Error).message}`);
+    return null;
+  }
 }

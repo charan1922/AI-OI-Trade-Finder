@@ -53,6 +53,7 @@
  */
 
 import type { TfRunnerAt } from '@/lib/tf-live/race';
+import type { Stretch } from '@/lib/tf-live/stretch';
 
 /** Per-symbol evidence the selector needs but cannot derive from the TF board. */
 export interface TfSymbolContext {
@@ -75,6 +76,11 @@ export interface TfSymbolContext {
   /** Direction-aware price change since 09:45 IST (%), positive = moving our
    *  way. Null before 09:45 / when unrecorded. */
   sinceEntryPct: number | null;
+  /** How stretched the stock already is vs its normal day (lib/tf-live/stretch.ts).
+   *  RECORDED EVIDENCE ONLY (2026-10-09): the selector never reads it and it is
+   *  not in the candidate reasons the AI sees. Optional so builders that do not
+   *  measure it (the live engine, the replay) need not fake a value. */
+  stretch?: Stretch | null;
 }
 
 export interface TfSelectorConfig {

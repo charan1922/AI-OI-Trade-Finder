@@ -30,6 +30,8 @@ interface TfBoardRow {
   blockedBy: string | null;
   premValueCr: number | null;
   sinceEntryPct: number | null;
+  /** How stretched vs the stock's normal day — recorded evidence, NOT a check. */
+  stretch: { rangeUsed: number; firstCandle: number | null; fromPrevClosePct: number } | null;
   gates: GateStrip;
   needs: string | null;
   trend: 'faster' | 'slower' | 'steady' | null;
@@ -218,6 +220,19 @@ function Details({ r }: { r: TfBoardRow }) {
       <div>
         <dt className="inline text-muted-foreground">since 09:45 </dt>
         <dd className="inline">{r.sinceEntryPct == null ? 'unrecorded' : pct(r.sinceEntryPct)}</dd>
+      </div>
+      <div
+        className="col-span-full"
+        title="Recorded to measure, not a check: how much of a normal day's range (10-day average) is already used, the 09:15 candle against a normal day, and the move from yesterday's close in the trade's direction."
+      >
+        <dt className="inline text-muted-foreground">vs normal day </dt>
+        <dd className="inline">
+          {r.stretch == null
+            ? 'no daily baseline'
+            : `range used ${r.stretch.rangeUsed.toFixed(2)}× · 1st candle ${
+                r.stretch.firstCandle == null ? '—' : `${r.stretch.firstCandle.toFixed(2)}×`
+              } · ${pct(r.stretch.fromPrevClosePct)} from prev close`}
+        </dd>
       </div>
       {r.needs && <div className="col-span-full">needs: {r.needs}</div>}
       <div className="col-span-full">
