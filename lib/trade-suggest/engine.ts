@@ -83,7 +83,7 @@ import {
   type TfCandidate,
   type TfSymbolContext,
 } from '@/lib/tf-live/selector';
-import { attachPremiums, type PremiumPolicy } from '@/lib/trade-suggest/premiums';
+import { applyChartStopRisk, attachPremiums, type PremiumPolicy } from '@/lib/trade-suggest/premiums';
 import { buildSpotPlan, computeCompositeScore } from '@/lib/trade-suggest/scoring';
 import { getSuggestions, upsertSuggestions } from '@/lib/trade-suggest/store';
 import type {
@@ -714,7 +714,11 @@ export async function runTradeSuggest(
   let premiumPolicy: PremiumPolicy | undefined;
   try {
     const at = await getAutoTradeSettings();
-    premiumPolicy = { stopPct: at.optionStopPct, maxRiskPerLot: at.maxRiskPerLotRupees };
+    premiumPolicy = {
+      stopPct: at.optionStopPct,
+      maxRiskPerLot: at.maxRiskPerLotRupees,
+      squareOffMin: at.squareOffMin,
+    };
   } catch {
     premiumPolicy = undefined; // fall back to the coded defaults inside attachPremiums
   }
@@ -754,6 +758,10 @@ export async function runTradeSuggest(
       atr: a14,
       atrMult: SL_ATR_MULT,
     });
+    // Per-lot risk at the CHART stop — the number auto-trade's gate enforces.
+    if (option) {
+      applyChartStopRisk(option, { spot: ltp, slSpot: plan.slSpot, tradeDate: date, nowMs: Date.now() }, premiumPolicy);
+    }
 
     // Display factors — evidence for the trader, deliberately not gates (see
     // types.PickFactors for the replay findings behind that call).

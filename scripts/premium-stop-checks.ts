@@ -21,6 +21,14 @@ import {
   stopPremiumForFill,
 } from '../lib/auto-trade/backstops';
 import { DEFAULT_SETTINGS, MAX_RISK_PER_LOT_FALLBACK } from '../lib/auto-trade/config';
+import {
+  BACKSTOP_MAX_PCT,
+  backstopStopPct,
+  bsPrice,
+  impliedVol,
+  istEpochMs,
+  spotStopRiskPerLot,
+} from '../lib/auto-trade/risk/option-model';
 // Leaf module on purpose: importing position-guard would drag prisma, the
 // broker adapters and the candle store into this DB-free bench.
 import {
@@ -35,7 +43,8 @@ import type { EntryGateInput } from '../lib/auto-trade/risk/gates';
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
 /** A gate input that PASSES, so each test below isolates one failure cause.
- *  Mirrors a real 23-Jul entry: SRF at ₹44.05 on a 200 lot. */
+ *  SRF-like: ₹44.05 ask on a 200 lot, ATM 2900 CE, spot 2900, chart stop 2880
+ *  (models ≈ ₹2,135/lot at the stop — under the ₹2,500 coded ceiling). */
 function passingGate(over: Partial<EntryGateInput> = {}): EntryGateInput {
   return {
     settings: { ...DEFAULT_SETTINGS, mode: 'paper' as const },
@@ -56,6 +65,11 @@ function passingGate(over: Partial<EntryGateInput> = {}): EntryGateInput {
     lotSize: 200,
     askPrice: 44.05,
     askQty: 200,
+    spot: 2900,
+    slSpot: 2880,
+    strike: 2900,
+    optionType: 'CE',
+    nowMs: istEpochMs('2099-01-01', 10 * 60),
     slippagePct: 1,
     spreadPct: 2,
     hasSlSpot: true,
@@ -109,30 +123,66 @@ export function runPremiumStopChecks(check: CheckFn): void {
     String(backstopsFromProposalFill(128, 125, 1, 127, 135.8, 114.3).slPremium)
   );
 
-  // ── 3. Per-lot risk ceiling: refuse the contract, never tighten the stop ───
-  check('gates: a lot risking ₹2,202 passes the ₹2,500 ceiling', checkEntryGates(passingGate()).allow);
+  // ── 3. Per-lot risk ceiling — measured at the CHART stop (2026-10-09) ────
+  // The trade is stopped by its spot plan, so the budget is measured there: the
+  // option priced with the stock AT the stop (Black-Scholes, IV from the ask).
+  const base = checkEntryGates(passingGate());
   check(
-    'gates: POLYCAB-sized lot (₹127 ask × 125, risks ₹3,969) is REFUSED',
-    refused(passingGate({ askPrice: 127, lotSize: 125, askQty: 125, perLotCost: 15_875 }))
+    'gates: a lot risking ≈₹2,135 at its chart stop passes the ₹2,500 ceiling',
+    base.allow,
+    base.reasons.join('; ')
   );
   check(
-    'gates: the refusal says the stop is NOT tightened to fit',
-    because(passingGate({ askPrice: 127, lotSize: 125, askQty: 125, perLotCost: 15_875 }), 'not tightened')
+    'gates: an ALLOW carries the chart-stop risk the caller sizes the backstop from',
+    base.chartStopRisk != null && base.chartStopRisk.riskPerLot > 2000 && base.chartStopRisk.riskPerLot < 2500,
+    JSON.stringify(base.chartStopRisk)
   );
-  // Boundary: ₹40 ask × 250 = ₹2,500 exactly at a 25% stop.
+  const fartherStop = passingGate({ slSpot: 2871 });
+  check('gates: the same lot with a FARTHER chart stop (2871) is refused', refused(fartherStop));
+  check('gates: the refusal says the stop is NOT tightened to fit', because(fartherStop, 'not tightened'));
+  check('gates: the refusal names the chart stop it measured at', because(fartherStop, '2871 chart stop'));
+  // Boundary: ceiling set to exactly the modelled risk → allowed; ₹1 under → refused.
+  const exact = base.chartStopRisk?.riskPerLot ?? Number.NaN;
+  const withCeiling = (c: number) =>
+    passingGate({ settings: { ...DEFAULT_SETTINGS, mode: 'paper' as const, maxRiskPerLotRupees: c } });
   check(
-    'gates: exactly AT the ceiling is allowed (₹2,500 is not > ₹2,500)',
-    checkEntryGates(passingGate({ askPrice: 40, lotSize: 250, askQty: 250, perLotCost: 10_000 })).allow,
-    String(riskPerLotRupees(40, 250))
+    'gates: exactly AT the ceiling is allowed (the check is >, not >=)',
+    checkEntryGates(withCeiling(exact)).allow,
+    `₹${exact}`
   );
-  // The stop level is rounded to 2dp, so the smallest step that genuinely moves
-  // the risk above the ceiling on a 250 lot is ₹0.04, not ₹0.01 — ₹40.02 still
-  // computes to exactly ₹2,500. The assertion is that the comparison is `>`,
-  // not `>=`; using a price that only LOOKS over would prove nothing.
+  check('gates: ₹1 under the modelled risk is refused', refused(withCeiling(exact - 1)));
+
+  // The motivating case, REAL numbers (trade_suggestions 2026-10-08 11:10 IST):
+  // ADANIENT 2650 PE, ₹85.8, lot 309, spot 2638.3, prod ceiling ₹5,000. The plan's
+  // stop was the opening-range HIGH 2743 (4% away) because price sat above the
+  // last candle's high. The old 20%-premium rule called it ₹5,302 — it really
+  // risked ≈₹12.8k. With a 1%-floored stop (2664.68) it risks ≈₹3.9k.
+  const adani = (slSpot: number) =>
+    passingGate({
+      settings: { ...DEFAULT_SETTINGS, mode: 'paper' as const, maxRiskPerLotRupees: 5000, optionStopPct: 20 },
+      tradeDate: '2026-10-08',
+      expiryDate: '2026-10-27',
+      nowMs: Date.parse('2026-10-08T05:40:18Z'),
+      optionType: 'PE',
+      strike: 2650,
+      spot: 2638.3,
+      slSpot,
+      askPrice: 85.8,
+      askQty: 309,
+      lotSize: 309,
+      perLotCost: 26_512,
+    });
+  const adaniFar = checkEntryGates(adani(2743)).chartStopRisk?.riskPerLot ?? 0;
   check(
-    'gates: just over the ceiling is refused (the check is >, not >=)',
-    refused(passingGate({ askPrice: 40.04, lotSize: 250, askQty: 250, perLotCost: 10_010 })),
-    `₹${riskPerLotRupees(40.04, 250)} vs ceiling ₹2,500`
+    'ADANIENT 08-Oct: the real 4%-away stop (2743) risks > ₹12k and is REFUSED',
+    refused(adani(2743)) && adaniFar > 12_000,
+    `₹${adaniFar}`
+  );
+  const adaniNear = checkEntryGates(adani(2664.68));
+  check(
+    'ADANIENT 08-Oct: a 1%-floored stop risks < ₹5,000 and is ALLOWED (old 20% rule: ₹5,302, refused)',
+    adaniNear.allow && (adaniNear.chartStopRisk?.riskPerLot ?? 0) < 5000,
+    `₹${adaniNear.chartStopRisk?.riskPerLot} · ${adaniNear.reasons.join('; ')}`
   );
 
   // ── 4. FAIL CLOSED — "cannot calculate risk" must never mean "allow" ───────
@@ -147,23 +197,35 @@ export function runPremiumStopChecks(check: CheckFn): void {
   );
   check('gates: no live ask FAILS the entry (no executable price to size from)', refused(passingGate({ askPrice: null })));
   check('gates: a zero ask FAILS the entry', refused(passingGate({ askPrice: 0 })));
+  check('gates: no live spot FAILS the entry (risk cannot be modelled)', refused(passingGate({ spot: null })));
+  check('gates: no chart stop FAILS the entry', refused(passingGate({ slSpot: null })));
+  check('gates: no strike FAILS the entry', refused(passingGate({ strike: null })));
+  check('gates: no option type FAILS the entry', refused(passingGate({ optionType: null })));
   check(
-    'gates: a corrupt optionStopPct FAILS the entry',
-    refused(passingGate({ settings: { ...DEFAULT_SETTINGS, mode: 'paper', optionStopPct: Number.NaN } }))
+    'gates: a chart stop already ABOVE spot on a CE (stopped before entry) FAILS',
+    because(passingGate({ slSpot: 2905 }), 'not on the losing side')
   );
+  check(
+    'gates: a contract that expires before the hold ends FAILS',
+    because(passingGate({ expiryDate: '2098-12-31' }), 'expires before')
+  );
+  check('gates: a NaN clock FAILS the entry', refused(passingGate({ nowMs: Number.NaN })));
 
-  // ── 5. Risk is priced off the ASK we pay, not the ltp/mid mark ─────────────
-  // A market BUY lifts the offer. Sizing off a ₹100 mark while the ask is ₹110
-  // understates the rupees really behind the stop.
+  // ── 5. Risk is priced off the ASK we pay, at the stop, not off premium size ─
+  // At a chart stop the loss is ≈ delta × stop distance × lot. A dearer option
+  // (higher IV) on the SAME stop barely moves it — the old % rule refused the
+  // dear contract outright. Paying more still costs rupee-for-rupee at the
+  // fill-breach check (fill − value at stop).
+  const cheap = checkEntryGates(passingGate()).chartStopRisk?.riskPerLot ?? Number.NaN;
+  const dear =
+    checkEntryGates(passingGate({ askPrice: 55, perLotCost: 11_000 })).chartStopRisk?.riskPerLot ?? Number.NaN;
   check(
-    'gates: an lot that is cheap on the MARK but dear on the ASK is refused',
-    refused(passingGate({ perLotCost: 9_500, askPrice: 55, lotSize: 200, askQty: 200 })),
-    `mark ₹9,500 → looks fine; ask ₹55 × 200 risks ₹${riskPerLotRupees(55, 200)}`
+    'gates: a dearer ask on the same stop still passes (risk is distance, not premium)',
+    dear < 2500,
+    `₹${cheap} → ₹${dear}`
   );
-  check(
-    'gates: the refusal names the ask it priced from',
-    because(passingGate({ perLotCost: 9_500, askPrice: 55, lotSize: 200, askQty: 200 }), 'ask we would actually pay')
-  );
+  check('gates: a dearer ask never LOWERS the modelled risk', dear >= cheap, `₹${cheap} → ₹${dear}`);
+  check('gates: the refusal names the ask it priced from', because(passingGate({ slSpot: 2871 }), '₹44.05 ask'));
 
   // ── 6. Depth: a lot bigger than the resting offer sweeps the book ──────────
   check(
@@ -179,42 +241,74 @@ export function runPremiumStopChecks(check: CheckFn): void {
     '2 × 200 units needed, 200 offered'
   );
 
-  // ── 7. stopPctOverride — the approval path gates on the PROPOSAL's width ───
-  // Same contract, same ceiling: allowed at the proposal's 10% width, refused at
-  // a 25% one. Gating on a since-changed setting would ship a different policy
-  // than the one evaluated.
+  // ── 7. stopPctOverride is the BACKSTOP width — validated, never the budget ─
   check(
-    'gates: a proposal snapshotted at a 10% width is sized at 10%',
-    checkEntryGates(passingGate({ askPrice: 127, lotSize: 125, askQty: 125, perLotCost: 15_875, stopPctOverride: 10 }))
-      .allow,
-    `risk at 10% = ₹${riskPerLotRupees(127, 125, 10)}`
-  );
-  check(
-    'gates: the same contract at the 25% runtime width is refused',
-    refused(passingGate({ askPrice: 127, lotSize: 125, askQty: 125, perLotCost: 15_875 })),
-    `risk at 25% = ₹${riskPerLotRupees(127, 125)}`
+    'gates: a proposal backstop width does not change the chart-stop risk',
+    checkEntryGates(passingGate({ stopPctOverride: 10 })).chartStopRisk?.riskPerLot === cheap
   );
   check(
     'gates: a corrupt override FAILS closed rather than falling back silently',
     refused(passingGate({ stopPctOverride: 150 }))
   );
-
-  // ── 8. The approval drift scenario the review described, end to end ────────
-  // Proposal sized just under the ceiling; the option ticks up ~2.9% while the
-  // human decides — inside the slippage guard, so nothing else objects — and the
-  // fresh risk crosses the limit. Before the fix this was approved, because the
-  // approval path never passed lotSize and the ceiling skipped itself.
-  const atProposal = passingGate({ askPrice: 49, lotSize: 200, askQty: 200, perLotCost: 9_800 });
-  const atApproval = passingGate({ askPrice: 50.42, lotSize: 200, askQty: 200, perLotCost: 10_084, slippagePct: 2.9 });
   check(
-    'approval drift: the proposal was under the ceiling',
-    checkEntryGates(atProposal).allow,
-    `₹${riskPerLotRupees(49, 200)}`
+    'gates: a corrupt optionStopPct FAILS the entry',
+    refused(passingGate({ settings: { ...DEFAULT_SETTINGS, mode: 'paper', optionStopPct: Number.NaN } }))
+  );
+
+  // ── 7b. The model itself ───────────────────────────────────────────────────
+  // Textbook values (Hull, S=42 K=40 r=10% σ=20% T=0.5): call 4.76, put 0.81.
+  check('model: Black-Scholes call matches Hull (4.76)', Math.abs(bsPrice('CE', 42, 40, 0.5, 0.1, 0.2) - 4.76) < 0.005);
+  check('model: Black-Scholes put matches Hull (0.81)', Math.abs(bsPrice('PE', 42, 40, 0.5, 0.1, 0.2) - 0.81) < 0.005);
+  check(
+    'model: implied vol round-trips a known price (σ 31%)',
+    Math.abs((impliedVol('CE', bsPrice('CE', 100, 105, 0.1, 0.065, 0.31), 100, 105, 0.1, 0.065) ?? 0) - 0.31) < 1e-4
   );
   check(
-    'approval drift: a +2.9% move (inside the slippage guard) now breaches it and is REFUSED',
+    'model: an impossible price (above any σ) has no implied vol',
+    impliedVol('CE', 99, 100, 105, 0.1, 0.065) == null
+  );
+  const riskAt = (evalAtMs: number) =>
+    spotStopRiskPerLot({
+      optionType: 'PE',
+      ask: 85.8,
+      spot: 2638.3,
+      slSpot: 2664.68,
+      strike: 2650,
+      expiryDate: '2026-10-27',
+      lotSize: 309,
+      nowMs: Date.parse('2026-10-08T05:40:18Z'),
+      evalAtMs,
+    });
+  const instant = riskAt(Date.parse('2026-10-08T05:40:18Z'));
+  const atSquareOff = riskAt(istEpochMs('2026-10-08', 15 * 60 + 12));
+  check(
+    'model: counting decay to square-off makes the risk LARGER, never smaller',
+    instant.ok && atSquareOff.ok && atSquareOff.riskPerLot > instant.riskPerLot,
+    `${instant.ok ? instant.riskPerLot : '-'} → ${atSquareOff.ok ? atSquareOff.riskPerLot : '-'}`
+  );
+
+  // ── 7c. Premium BACKSTOP width = max(optionStopPct, 1.5 × modelled drop) ──
+  check('backstop: never tighter than the operator setting', backstopStopPct(20, 5) === 20);
+  check('backstop: 1.5× the modelled drop when that is wider (14.66% → 21.99%)', backstopStopPct(20, 14.66) === 21.99);
+  check('backstop: the modelled term is capped', backstopStopPct(20, 80) === BACKSTOP_MAX_PCT);
+  check('backstop: an operator setting above the cap is never narrowed', backstopStopPct(70, 10) === 70);
+  check(
+    'backstop: a corrupt setting → NaN, which stopPremiumForFill replaces with the default',
+    Number.isNaN(backstopStopPct(Number.NaN, 10)) &&
+      stopPremiumForFill(100, backstopStopPct(Number.NaN, 10)) === stopPremiumForFill(100)
+  );
+
+  // ── 8. Approval drift — re-measured at approval against the LIVE spot ────
+  // Proposal under the ceiling; while the human decides the stock runs 6 points
+  // further from the same chart stop (option up with it, inside the slippage
+  // guard). The stop is now farther away, so the lot risks more — refused.
+  const atProposal = passingGate();
+  const atApproval = passingGate({ spot: 2906, askPrice: 47.3, perLotCost: 9_460, slippagePct: 2.9 });
+  check('approval drift: the proposal was under the ceiling', checkEntryGates(atProposal).allow);
+  check(
+    'approval drift: the stock running away from the stop breaches it and is REFUSED',
     refused(atApproval),
-    `₹${riskPerLotRupees(50.42, 200)} > ₹2,500`
+    `₹${checkEntryGates(atApproval).chartStopRisk?.riskPerLot} > ₹2,500`
   );
 
   // ── 9. Fill-breach ceiling: the SNAPSHOT wins over the live setting ─────────
@@ -252,6 +346,12 @@ export function runPremiumStopChecks(check: CheckFn): void {
   check(
     'breach: ceiling LEFT at ₹2,500 → ₹2,800 fill IS a breach (latch fires)',
     breachRisk > effectiveBreachCeiling(2500, 2500, MAX_RISK_PER_LOT_FALLBACK)
+  );
+  // Since 2026-10-09 the breach is measured at the CHART stop: fill − the option
+  // value modelled there. A fill ₹2 over the ask adds ₹2 × lot, rupee-for-rupee.
+  check(
+    'breach: at the chart stop, paying ₹2 over the ask adds exactly ₹2 × lot',
+    fillRiskPerLotRupees(46.05, 33.38, 200) - fillRiskPerLotRupees(44.05, 33.38, 200) === 400
   );
 
   // ── 10. Aggregate capital cap — the decision behind the atomic reservation ─

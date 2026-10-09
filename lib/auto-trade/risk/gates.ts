@@ -6,7 +6,7 @@
  * file is the enforcement — a failed gate is final for the attempt.
  */
 
-import { riskPerLotRupees } from '../backstops';
+import { istEpochMs, spotStopRiskPerLot } from './option-model';
 import { checkOptionExpiryForEntry } from '@/lib/options/expiry-policy';
 import {
   ENTRY_END_MIN,
@@ -69,6 +69,16 @@ export interface EntryGateInput {
    *  to — gating on a since-changed setting would evaluate one policy and ship
    *  another (PR#18 review). Null → fall back to the runtime/coded value. */
   stopPctOverride?: number | null;
+  /** LIVE underlying price, read at the same moment as the ask. The per-lot risk
+   *  is modelled from (ask, spot) to the chart stop; a stale spot would misprice
+   *  it, so null → fail closed. */
+  spot: number | null;
+  /** The plan's spot (chart) stop — where the trade is actually stopped. */
+  slSpot: number | null;
+  strike: number | null;
+  optionType: 'CE' | 'PE' | null;
+  /** When the ask and spot were read, epoch ms. */
+  nowMs: number;
   /** Scanner's quote this cycle vs the fresh quote at placement time (%). */
   slippagePct: number | null;
   /** Bid-ask spread % on the option contract (null when no depth available). */
@@ -184,27 +194,24 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
     }
   }
 
-  // ── Per-lot risk ceiling ───────────────────────────────────────────────────
-  // The premium stop is a fixed % of the option's price (sized to the CONTRACT's
-  // noise), so an expensive lot carries proportionally more rupees behind that
-  // stop. The budget is enforced HERE, by refusing the contract — never by
-  // tightening the stop until the arithmetic fits, which is what produced stop
-  // widths of 7.7%–23.8% that nobody chose and that lost every time they landed
-  // under ~12% (2026-07-23 review).
+  // ── Per-lot risk ceiling — measured at the CHART stop ─────────────────────
+  // The trade is stopped where the spot plan says (last candle / range, floored
+  // at MIN_RISK_PCT), so that is where the budget is measured: the option is
+  // priced with the stock AT the stop (Black-Scholes, IV solved from the ask we
+  // would pay — risk/option-model.ts). Until 2026-10-09 it was measured at a flat
+  // premium-stop %, which both refused normal trades whose chart stop was close
+  // and UNDER-measured ones whose chart stop was far (ADANIENT 2026-10-08: ₹5,302
+  // "at 20%" vs ₹12,842 at its real 4%-away stop).
   //
-  // Deliberately OUTSIDE the `perLotCost` else-branch and fail-closed throughout:
-  // a risk gate that skips itself when an input is missing is a risk gate that
-  // approves the unmeasurable (PR#18 review found exactly that on the human
-  // approval path, which never passed lotSize at all).
+  // The budget is enforced by REFUSING the contract — never by tightening a stop
+  // until the arithmetic fits — and fails closed on every missing input.
   //
-  // Priced off the ASK, not the resolved ltp/mid. The entry is a market BUY, so
-  // the ask is what we actually pay; the stop is then re-anchored to that higher
-  // fill at the same percentage width, which is real rupees of risk the old
-  // ltp-based figure did not count.
+  // Priced off the ASK, not the ltp/mid: the entry is a market BUY.
   const stopPct = x.stopPctOverride ?? s.optionStopPct ?? OPTION_STOP_PCT_FALLBACK;
   const maxRiskPerLot = s.maxRiskPerLotRupees ?? MAX_RISK_PER_LOT_FALLBACK;
   const lotSize = x.lotSize;
   const qtyUnits = lotSize != null ? lotSize * x.lots : null;
+  let chartStopRisk: GateVerdict['chartStopRisk'];
   if (lotSize == null || !Number.isFinite(lotSize) || lotSize <= 0) {
     reasons.push('lot size unavailable — per-lot risk cannot be computed, failing closed');
   } else if (x.askPrice == null || !Number.isFinite(x.askPrice) || x.askPrice <= 0) {
@@ -212,15 +219,36 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
   } else if (!Number.isFinite(stopPct) || stopPct <= 0 || stopPct >= 100) {
     reasons.push(`invalid premium stop width (${stopPct}) — failing closed`);
   } else {
-    const riskPerLot = riskPerLotRupees(x.askPrice, lotSize, stopPct);
-    if (!Number.isFinite(riskPerLot)) {
-      reasons.push('per-lot risk could not be computed — failing closed');
-    } else if (riskPerLot > maxRiskPerLot) {
-      reasons.push(
-        `lot risks ₹${Math.round(riskPerLot).toLocaleString('en-IN')} at the ${stopPct}% premium stop ` +
-          `(priced off the ₹${x.askPrice} ask we would actually pay) > max ₹${maxRiskPerLot.toLocaleString('en-IN')} ` +
-          `per lot — contract too expensive for this account (the stop is not tightened to fit)`
-      );
+    const modelled =
+      x.spot != null && x.slSpot != null && x.strike != null && x.optionType != null && x.expiryDate != null
+        ? spotStopRiskPerLot({
+            optionType: x.optionType,
+            ask: x.askPrice,
+            spot: x.spot,
+            slSpot: x.slSpot,
+            strike: x.strike,
+            expiryDate: x.expiryDate,
+            lotSize,
+            nowMs: x.nowMs,
+            evalAtMs: istEpochMs(x.tradeDate, s.squareOffMin),
+          })
+        : { ok: false as const, reason: 'live spot, chart stop or contract details missing' };
+    if (!modelled.ok) {
+      reasons.push(`risk at the chart stop cannot be computed (${modelled.reason}) — failing closed`);
+    } else {
+      chartStopRisk = {
+        riskPerLot: modelled.riskPerLot,
+        premiumAtStop: modelled.premiumAtStop,
+        dropPct: modelled.dropPct,
+        iv: modelled.iv,
+      };
+      if (modelled.riskPerLot > maxRiskPerLot) {
+        reasons.push(
+          `lot risks ₹${modelled.riskPerLot.toLocaleString('en-IN')} if the stock reaches its ₹${x.slSpot} chart stop ` +
+            `(option modelled at ₹${modelled.premiumAtStop} there vs the ₹${x.askPrice} ask, spot ₹${x.spot}) ` +
+            `> max ₹${maxRiskPerLot.toLocaleString('en-IN')} per lot — refused (the stop is not tightened to fit)`
+        );
+      }
     }
     // A lot larger than the resting ask sweeps up the book, so the real fill is
     // worse than `askPrice` and the risk above is an under-estimate. Refuse
@@ -258,7 +286,7 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
     );
   }
 
-  return { allow: reasons.length === 0, reasons };
+  return { allow: reasons.length === 0, reasons, chartStopRisk };
 }
 
 /**

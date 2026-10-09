@@ -796,14 +796,12 @@ export default function AutoTradePage() {
             (one place for every clock; still enforced in code — brokers penalty-square intraday ~15:26, we act first).
           </p>
           <p className="text-[11px] text-muted-foreground">
-            <b>Stop width</b> is how far the option price may fall below your fill before the guard exits, as a % of that
-            fill — sized to the option&apos;s own movement, never tightened to squeeze a lot in. <b>Max risk/lot</b> is
-            the most one lot may lose at that stop, as a <i>planned</i> figure (before exit slippage, fees and taxes);
-            the entry gate <b>refuses an over-sized contract</b> instead of narrowing the stop. At{' '}
-            <b>{s.optionStopPct}%</b> × <b>₹{s.maxRiskPerLotRupees.toLocaleString('en-IN')}</b>, the biggest lot that
-            still fits costs about{' '}
-            <b>₹{(s.optionStopPct > 0 ? Math.round(s.maxRiskPerLotRupees / (s.optionStopPct / 100)) : 0).toLocaleString('en-IN')}</b>{' '}
-            in premium.
+            <b>Max risk/lot</b> is what one lot may lose if the stock reaches its <b>chart stop</b> (the spot stop from
+            the plan) — the option is priced at that stop from the live ask, a <i>planned</i> figure before exit
+            slippage, fees and taxes. The entry gate <b>refuses an over-sized contract</b> instead of narrowing the
+            stop. <b>Stop width</b> is the <i>minimum</i> premium backstop, as a % of the fill: the backstop is set
+            wider when the chart stop needs it (1.5× the option&apos;s modelled drop at that stop), so it only fires if
+            the option falls far faster than the chart explains.
             {s.dailyLossHaltRupees <= s.maxRiskPerLotRupees && (
               <span className="ml-1 inline-flex items-center gap-1 font-semibold text-amber-600 dark:text-amber-400">
                 <AlertTriangle className="size-3" /> Daily loss halt (₹{s.dailyLossHaltRupees.toLocaleString('en-IN')})

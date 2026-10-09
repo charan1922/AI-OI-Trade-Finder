@@ -160,6 +160,8 @@ AI-driven order execution over the deterministic `/trade-suggest` scanner. Desig
 
 ### Premium stop: size it to the OPTION, cap the risk by REFUSING (not by tightening)
 
+**2026-10-09: the per-lot budget is measured at the CHART stop, not at the premium stop.** `risk/option-model.ts` solves IV from the ask at the LIVE spot (`fetchLiveSpot`, never a candle close — a 0.3% stale spot moves a lot's risk ~₹1,000), prices the contract with the stock AT `plan.slSpot` at today's square-off (decay counted), and the gate refuses when `(ask − that) × lot > maxRiskPerLotRupees`. The premium stop is now a BACKSTOP: `max(optionStopPct, 1.5 × modelled drop)` (`backstopStopPct`), so it never fires before the chart stop. The fill-breach check measures `fill − approvedStopValuePremium`. Why: at a chart stop the loss is ≈ delta × distance × lot and barely depends on the premium, so the flat % rule refused dear-but-tight trades and **under**-measured cheap-but-wide ones — ADANIENT 2650 PE 2026-10-08 read ₹5,302 "at 20%" but its plan stop was the opening-range high 2743 (4% away: price sat above the last candle's high, so `buildSpotPlan` fell back to the OR boundary) and it really risked **₹12,842**. With a 1%-floored stop it models ₹3,888. Every missing input fails closed. Pure checks: `scripts/premium-stop-checks.ts`. The rules below about refusing (never tightening) and pricing off the ask still hold.
+
 Changed 2026-07-23 after reviewing all 9 completed live trades. **Never restore the old rule.**
 
 - The stop is `OPTION_STOP_PCT` (**25%**) of the option's own entry price — `stopPremiumForFill()` in `lib/auto-trade/backstops.ts`. It is **not a function of lot size**.

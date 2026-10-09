@@ -27,6 +27,7 @@ import {
   TF_LOT_TARGET_RUPEES,
 } from '@/lib/trade-suggest/config';
 import type { OptionPlan, OptionPremium } from '@/lib/trade-suggest/types';
+import { backstopStopPct, istEpochMs, spotStopRiskPerLot } from '@/lib/auto-trade/risk/option-model';
 
 const TAG = '[TradeSuggest]';
 
@@ -64,16 +65,22 @@ export function resolveOptionPrice(
 export interface PremiumPolicy {
   stopPct: number;
   maxRiskPerLot: number;
+  /** Forced square-off minute (IST) — the chart-stop risk counts decay to it. */
+  squareOffMin?: number;
 }
 
-const DEFAULT_PREMIUM_POLICY: PremiumPolicy = {
+/** 15:12 IST — the coded square-off, for callers with no runtime settings. */
+const DEFAULT_SQUARE_OFF_MIN = 15 * 60 + 12;
+
+const DEFAULT_PREMIUM_POLICY: Required<PremiumPolicy> = {
   stopPct: OPTION_STOP_PCT,
   maxRiskPerLot: MAX_RISK_PER_LOT_RUPEES,
+  squareOffMin: DEFAULT_SQUARE_OFF_MIN,
 };
 
 /** Guard the injected policy: a corrupt runtime value must fall back to the
  *  coded default rather than produce a nonsense stop on a real plan. */
-function safePolicy(policy?: PremiumPolicy): PremiumPolicy {
+function safePolicy(policy?: PremiumPolicy): Required<PremiumPolicy> {
   const stopPct =
     policy != null && Number.isFinite(policy.stopPct) && policy.stopPct > 0 && policy.stopPct < 100
       ? policy.stopPct
@@ -82,7 +89,11 @@ function safePolicy(policy?: PremiumPolicy): PremiumPolicy {
     policy != null && Number.isFinite(policy.maxRiskPerLot) && policy.maxRiskPerLot > 0
       ? policy.maxRiskPerLot
       : DEFAULT_PREMIUM_POLICY.maxRiskPerLot;
-  return { stopPct, maxRiskPerLot };
+  const squareOffMin =
+    policy?.squareOffMin != null && Number.isFinite(policy.squareOffMin) && policy.squareOffMin > 0
+      ? policy.squareOffMin
+      : DEFAULT_PREMIUM_POLICY.squareOffMin;
+  return { stopPct, maxRiskPerLot, squareOffMin };
 }
 
 /**
@@ -93,7 +104,7 @@ function safePolicy(policy?: PremiumPolicy): PremiumPolicy {
  * fabricated) when no price of any kind comes back — and says so in the log.
  */
 export async function attachPremiums(options: OptionPlan[], policy?: PremiumPolicy): Promise<void> {
-  const { stopPct, maxRiskPerLot } = safePolicy(policy);
+  const { stopPct } = safePolicy(policy);
   const ids = options.map((o) => Number(o.optSecurityId)).filter((n) => n > 0);
   if (ids.length === 0) return;
   const unpriced: string[] = [];
@@ -128,22 +139,13 @@ export async function attachPremiums(options: OptionPlan[], policy?: PremiumPoli
             ? 'last trade is stale (outside the live book) — priced off the bid-ask mid'
             : 'no trade printed yet — priced off the bid-ask mid'
         );
-      // The contract is priceable but too big for the per-lot risk budget: at the
-      // fixed OPTION_STOP_PCT stop it would put more than MAX_RISK_PER_LOT_RUPEES
-      // behind that stop. Auto-trade REFUSES this outright (risk/gates.ts); the
-      // scanner only warns, so a manual trader still sees the pick and the reason.
       // The executable price a market BUY actually lifts: the ASK when there is a
-      // book, else the resolved mark. Both the per-lot COST (affordability) and
-      // the per-lot RISK are sized off this, so the scanner's "fits the budget"
-      // and "risks too much" agree with what auto-trade's gate enforces (PR#18
-      // review + re-review — the affordability filter used the cheaper mark, so a
-      // pick could look affordable here yet be refused there).
+      // book, else the resolved mark. The per-lot COST (affordability) is sized
+      // off this so the scanner's "fits the budget" agrees with auto-trade's
+      // ask-based capital gate (PR#18 review + re-review). The per-lot RISK needs
+      // the chart stop, which is known only once the spot plan is built — see
+      // applyChartStopRisk.
       const executablePrice = book?.ask ?? price;
-      const riskAtStop = ((executablePrice * stopPct) / 100) * o.lotSize;
-      if (riskAtStop > maxRiskPerLot)
-        warnings.push(
-          `lot risks ₹${Math.round(riskAtStop).toLocaleString('en-IN')} at the ${stopPct}% premium stop (off the ₹${Math.round(executablePrice * 100) / 100} ${book?.ask != null ? 'ask' : 'mark'}) — above the ₹${maxRiskPerLot.toLocaleString('en-IN')} per-lot budget`
-        );
       const premium: OptionPremium = {
         ltp: Math.round(price * 100) / 100,
         priceSource: resolved.source,
@@ -157,12 +159,9 @@ export async function attachPremiums(options: OptionPlan[], policy?: PremiumPoli
         // it must agree with auto-trade's ask-based capital gate. `ltp` above
         // keeps the mark for display/analytics (PR#18 re-review).
         perLotCost: Math.round(executablePrice * o.lotSize * 100) / 100,
-        // Stop premium = a straight OPTION_STOP_PCT of the contract's own price.
-        // It is deliberately NOT squeezed to fit a rupee budget: dividing a flat
-        // ₹/lot cap by lot sizes that range 75–700 produced stops of 7.7%–23.8%
-        // that nobody chose, and every one under ~12% lost (2026-07-23 review).
-        // The rupee budget is enforced instead by refusing an over-sized lot —
-        // surfaced here as a warning, blocked for real in risk/gates.ts.
+        // Provisional premium backstop = the policy's minimum width; widened by
+        // applyChartStopRisk once the chart stop is known. Never squeezed to fit
+        // a rupee budget (2026-07-23 review) — over-budget lots are refused.
         slPremium: Math.round(Math.max(0.05, price * (1 - stopPct / 100)) * 100) / 100,
         targetPremium: Math.round((price + TF_LOT_TARGET_RUPEES / o.lotSize) * 100) / 100,
         liquidityWarning: warnings.length > 0 ? warnings.join('; ') : null,
@@ -175,4 +174,49 @@ export async function attachPremiums(options: OptionPlan[], policy?: PremiumPoli
   }
   if (midPriced > 0) console.log(`${TAG} ${midPriced}/${options.length} contract(s) priced off the bid-ask mid`);
   if (unpriced.length > 0) console.warn(`${TAG} unpriceable contract(s) dropped: ${unpriced.join(' · ')}`);
+}
+
+/**
+ * Once the spot plan exists: measure the per-lot risk at the CHART stop (the
+ * same model auto-trade's entry gate enforces — risk/option-model.ts), warn when
+ * it is over budget, and widen the premium backstop to
+ * max(stopPct, 1.5 × modelled drop) so the displayed stop is the one that will
+ * actually be set. The scanner only WARNS; risk/gates.ts refuses for real.
+ */
+export function applyChartStopRisk(
+  option: OptionPlan,
+  at: { spot: number; slSpot: number | null; tradeDate: string; nowMs: number },
+  policy?: PremiumPolicy
+): void {
+  const p = option.premium;
+  if (!p) return;
+  const { stopPct, maxRiskPerLot, squareOffMin } = safePolicy(policy);
+  const ask = p.ask ?? p.ltp;
+  const warnings = p.liquidityWarning ? [p.liquidityWarning] : [];
+  if (at.slSpot == null) {
+    warnings.push('no chart stop — per-lot risk cannot be measured');
+  } else {
+    const r = spotStopRiskPerLot({
+      optionType: option.optionType,
+      ask,
+      spot: at.spot,
+      slSpot: at.slSpot,
+      strike: option.strike,
+      expiryDate: option.expiryDate,
+      lotSize: option.lotSize,
+      nowMs: at.nowMs,
+      evalAtMs: istEpochMs(at.tradeDate, squareOffMin),
+    });
+    if (!r.ok) {
+      warnings.push(`risk at the chart stop cannot be modelled (${r.reason})`);
+    } else {
+      if (r.riskPerLot > maxRiskPerLot)
+        warnings.push(
+          `lot risks ₹${r.riskPerLot.toLocaleString('en-IN')} if the stock reaches its ₹${at.slSpot} chart stop — above the ₹${maxRiskPerLot.toLocaleString('en-IN')} per-lot budget`
+        );
+      const width = backstopStopPct(stopPct, r.dropPct);
+      p.slPremium = Math.round(Math.max(0.05, p.ltp * (1 - width / 100)) * 100) / 100;
+    }
+  }
+  p.liquidityWarning = warnings.length > 0 ? warnings.join('; ') : null;
 }

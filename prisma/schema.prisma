@@ -472,6 +472,7 @@ model AutoTrade {
   // The ask the gate sized against — pending/placing exposure reserves off this
   // executable price, not the ltp/mid mark (PR#18 re-review).
   approvedEntryAskPremium     Float?
+  approvedStopValuePremium    Float?
   // Contract-selection audit. These fields make rollover trades measurable as
   // a separate economic bucket from ordinary near-month entries.
   nearestListedExpiry String?

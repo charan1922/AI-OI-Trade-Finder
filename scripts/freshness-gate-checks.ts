@@ -48,6 +48,13 @@ const gbase: EntryGateInput = {
   lotSize: 500,
   askPrice: 60,
   askQty: 500,
+  // The ceiling is measured at the CHART stop (risk/option-model.ts): ATM CE on a
+  // ₹1,000 stock with a 1% stop models well under the ₹10,000 ceiling.
+  spot: 1000,
+  slSpot: 990,
+  strike: 1000,
+  optionType: 'CE',
+  nowMs: Date.parse('2099-01-01T10:00:00+05:30'),
   slippagePct: 1,
   spreadPct: 2,
   hasSlSpot: true,

@@ -39,10 +39,12 @@ export interface AutoTradeSettings {
   /** Hard cap on premium capital deployed across open+pending positions (₹).
    *  User rule: 50–60k account — whichever of lots/₹ binds first wins. */
   maxCapitalRupees: number;
-  /** Premium stop distance as a % of the option's entry price — sized to the
-   *  OPTION's own noise, independent of lot size (see OPTION_STOP_PCT). */
+  /** MINIMUM width of the premium BACKSTOP, as a % of the option's entry price.
+   *  The actual backstop is max(this, 1.5 × the drop modelled at the chart stop)
+   *  so it never fires before the chart stop does (2026-10-09). */
   optionStopPct: number;
-  /** ₹ ceiling on the risk one lot may carry. Enforced by REFUSING an over-sized
+  /** ₹ ceiling on what one lot may lose if the stock reaches its CHART (spot)
+   *  stop, modelled from the live ask. Enforced by REFUSING an over-sized
    *  contract at the entry gate, never by tightening the stop. */
   maxRiskPerLotRupees: number;
   /** Realized loss on the day at which the module halts new entries (₹). */
@@ -116,6 +118,12 @@ export interface AutoTrade {
    *  capital cap is a true hard cap while an order is unresolved. Refreshed to
    *  the approval-time ask on the approval path. */
   approvedEntryAskPremium?: number | null;
+  /** Modelled option value with the stock AT the chart stop, when the gate
+   *  approved this order (risk/option-model.ts). The post-fill breach check
+   *  measures (fill − this) × lot — what the lot loses where the trade is really
+   *  stopped. Null on rows written before 2026-10-09 → the check falls back to
+   *  the premium backstop. */
+  approvedStopValuePremium?: number | null;
   /** Actual fills (null until the broker confirms — never fabricated). */
   entryFillPremium: number | null;
   exitFillPremium: number | null;
@@ -236,6 +244,10 @@ export interface AutoQuoteSnapshot {
 export interface GateVerdict {
   allow: boolean;
   reasons: string[];
+  /** The option modelled AT the chart stop (risk/option-model.ts), when the gate
+   *  could compute it. Callers size the premium backstop from `dropPct` and
+   *  snapshot `premiumAtStop` for the post-fill breach check. */
+  chartStopRisk?: { riskPerLot: number; premiumAtStop: number; dropPct: number; iv: number };
 }
 
 /** Aggregate account/cap state — what the gates and the AI both look at. */

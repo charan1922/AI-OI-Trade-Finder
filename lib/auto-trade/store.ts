@@ -100,6 +100,7 @@ async function ensureTables(): Promise<void> {
     'shadowMaeR REAL', // max ADVERSE excursion in R from the OBSERVED fill (candle high/low, observed risk)
     'approvedMaxRiskPerLotRupees REAL', // per-lot ₹ risk ceiling in force when the order was gated (PR#18 review — the fill-breach check compares against THIS, not the current setting)
     'approvedEntryAskPremium REAL', // the ASK the gate sized this entry against (PR#18 re-review — pending/placing exposure reserves off this executable price, not the ltp/mid mark)
+    'approvedStopValuePremium REAL', // option value modelled AT the chart stop when the gate approved (2026-10-09 — the fill-breach check measures fill − this)
     'nearestListedExpiry TEXT',
     'expiryRolled INTEGER',
     'expiryRollReason TEXT',
@@ -256,6 +257,8 @@ export interface NewTrade {
   /** The ASK the gate sized this entry against — the executable price a market
    *  BUY lifts. Pending/placing exposure reserves off this, not the ltp/mid mark. */
   approvedEntryAskPremium?: number | null;
+  /** Option value modelled at the chart stop when the gate approved. */
+  approvedStopValuePremium?: number | null;
   /** Proposal-time SHADOW context (sector activity rank among scanned sectors) —
    *  written in the insert so it costs no extra round-trip before placement. */
   entrySectorRank?: number | null;
@@ -291,9 +294,10 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
        optSecurityId, nearestListedExpiry, expiryRolled, expiryRollReason, expiryCalendarDte,
        masterSyncDate, mode, broker, status, entrySpot, slSpot, targetSpot,
        entryPremium, slPremium, targetPremium, aiReasonEntry,
-       approvedMaxRiskPerLotRupees, approvedEntryAskPremium, entrySectorRank, entrySectorCount, proposedAt, updatedAt
+       approvedMaxRiskPerLotRupees, approvedEntryAskPremium, approvedStopValuePremium, entrySectorRank, entrySectorCount,
+       proposedAt, updatedAt
      )
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM auto_trades
         WHERE date = ? AND symbol = ?
@@ -327,6 +331,7 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     t.aiReasonEntry,
     t.approvedMaxRiskPerLotRupees ?? null,
     t.approvedEntryAskPremium ?? null,
+    t.approvedStopValuePremium ?? null,
     t.entrySectorRank ?? null,
     t.entrySectorCount ?? null,
     now,
@@ -508,6 +513,8 @@ export async function claimApprovalForPlacement(
   approved: {
     maxRiskPerLotRupees: number | null;
     entryAskPremium: number | null;
+    /** Option value modelled at the chart stop by the APPROVAL-time gate. */
+    stopValuePremium?: number | null;
     /** Hard capital cap enforced atomically: the claim is refused if reserved
      *  capital across OTHER risk-bearing rows for the date, plus this trade's
      *  fresh ask cost, would exceed it — closing the concurrent-approval race
@@ -522,12 +529,14 @@ export async function claimApprovalForPlacement(
        SET status = 'placing',
            approvedMaxRiskPerLotRupees = ?,
            approvedEntryAskPremium = ?,
+           approvedStopValuePremium = ?,
            updatedAt = ?
      WHERE id = ? AND status = 'pending_approval'
        AND (${RESERVED_CAPITAL_SUM(true)} + (COALESCE(?, entryPremium) * lotSize * lots)) <= ?
      RETURNING id`,
     approved.maxRiskPerLotRupees,
     approved.entryAskPremium,
+    approved.stopValuePremium ?? null,
     new Date().toISOString(),
     id,
     approved.date, // RESERVED_CAPITAL_SUM date
@@ -558,6 +567,7 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     targetPremium: Number(r.targetPremium),
     approvedMaxRiskPerLotRupees: r.approvedMaxRiskPerLotRupees == null ? null : Number(r.approvedMaxRiskPerLotRupees),
     approvedEntryAskPremium: r.approvedEntryAskPremium == null ? null : Number(r.approvedEntryAskPremium),
+    approvedStopValuePremium: r.approvedStopValuePremium == null ? null : Number(r.approvedStopValuePremium),
     entryFillPremium: r.entryFillPremium == null ? null : Number(r.entryFillPremium),
     exitFillPremium: r.exitFillPremium == null ? null : Number(r.exitFillPremium),
     realizedPnlRupees: r.realizedPnlRupees == null ? null : Number(r.realizedPnlRupees),
