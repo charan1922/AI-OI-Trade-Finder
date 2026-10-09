@@ -23,7 +23,15 @@ import {
   selectTfCandidates,
   type TfSymbolContext,
 } from '@/lib/tf-live/selector';
-import { boardAtMinute, dropPreOpen, raceAtMinute, raceCaptures, tfCandidatesAtMinute, type TfBoardAt } from '@/lib/tf-live/race';
+import {
+  boardAtMinute,
+  dropPreOpen,
+  raceAtMinute,
+  raceCaptures,
+  tfCandidatesAtMinute,
+  type TfBoardAt,
+  type TfRunnerAt,
+} from '@/lib/tf-live/race';
 import { sinceEntryFromBars } from '@/lib/tf-live/context';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
@@ -41,6 +49,7 @@ import {
 import { isTighterStop, trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
 import { MIN_RISK_PCT, TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK, TRAIL_R } from '@/lib/trade-suggest/config';
 import { DEFAULT_SETTINGS } from '@/lib/auto-trade/config';
+import { ADR_MAX_STALE_DAYS, dayBaseline, measureStretch } from '@/lib/tf-live/stretch';
 
 let passed = 0;
 const failures: string[] = [];
@@ -460,6 +469,74 @@ function main(): void {
     check('climbed: an exit younger than the grace is not yet confirmed (shown as in)', pending[0]?.lastExitedAt === null);
     const confirmed = climbedStocks([iv('CAMS', 900, 915)], { asOfMin: 930, graceMin: 10, minStayMin: 5 });
     check('climbed: an exit older than the grace is confirmed', confirmed[0]?.lastExitedAt === 915);
+  }
+
+  // ── 17c. Stretch vs the normal day — RECORDED evidence, never a gate (2026-10-09) ──
+  {
+    const days = Array.from({ length: 12 }, (_, i) => ({
+      date: `2026-09-${String(28 - i).padStart(2, '0')}`,
+      high: 1040,
+      low: 1000,
+      close: 1020 + i,
+    }));
+    const base = dayBaseline(days, '2026-10-01');
+    check('stretch: ADR = mean range of the last 10 sessions', base?.adr === 40, JSON.stringify(base));
+    check('stretch: previous close = the newest session before the trade date', base?.prevClose === 1020);
+    check(
+      'stretch: the trade date itself is never part of its own baseline',
+      dayBaseline([...days, { date: '2026-10-01', high: 5000, low: 1, close: 3000 }], '2026-10-01')?.adr === 40
+    );
+    check('stretch: fewer than 5 sessions → no baseline', dayBaseline(days.slice(0, 4), '2026-10-01') === null);
+    check(
+      `stretch: newest bar older than ${ADR_MAX_STALE_DAYS} days → no baseline`,
+      dayBaseline(days, '2026-10-20') === null
+    );
+    check(
+      'stretch: corrupt rows are skipped, not averaged',
+      dayBaseline([...days, { date: '2026-09-29', high: 0, low: 0, close: 0 }], '2026-10-01')?.prevClose === 1020
+    );
+
+    // COLPAL 2026-10-09, real 5-min bars 09:15–09:50 (prod fyers_candles), entry 09:57 at 1859.2.
+    const t = (hhmm: string) => Date.parse(`2026-10-09T${hhmm}:00+05:30`) / 1000;
+    const colpal = [
+      { bucketTs: t('09:15'), high: 1804.4, low: 1736.2 },
+      { bucketTs: t('09:20'), high: 1828.2, low: 1800.8 },
+      { bucketTs: t('09:25'), high: 1831.5, low: 1814 },
+      { bucketTs: t('09:30'), high: 1829.7, low: 1820 },
+      { bucketTs: t('09:35'), high: 1844.5, low: 1822 },
+      { bucketTs: t('09:40'), high: 1845.1, low: 1837 },
+      { bucketTs: t('09:45'), high: 1857, low: 1836.7 },
+      { bucketTs: t('09:50'), high: 1862, low: 1846.6 },
+    ];
+    const cBase = { adr: 42.1, prevClose: 1735.7 };
+    const ce = measureStretch(colpal, 1859.2, 'CE', cBase);
+    check('stretch: COLPAL entry had used 2.99× a normal day', ce?.rangeUsed === 2.99, JSON.stringify(ce));
+    check('stretch: COLPAL first candle was 1.62× a normal day', ce?.firstCandle === 1.62);
+    check('stretch: COLPAL was +7.12% from prev close, in the CE direction', ce?.fromPrevClosePct === 7.12);
+    check(
+      'stretch: the same move reads negative for a PE (it ran against a put)',
+      measureStretch(colpal, 1859.2, 'PE', cBase)?.fromPrevClosePct === -7.12
+    );
+    check(
+      'stretch: the decision price counts toward the range (a new high)',
+      measureStretch(colpal, 1870, 'CE', cBase)?.rangeUsed === Math.round(((1870 - 1736.2) / 42.1) * 100) / 100
+    );
+    check('stretch: no 09:15 candle → first candle unknown', measureStretch(colpal.slice(1), 1859.2, 'CE', cBase)?.firstCandle === null);
+    check('stretch: no baseline → null, never a guess', measureStretch(colpal, 1859.2, 'CE', null) === null);
+    check('stretch: no price → null', measureStretch(colpal, null, 'CE', cBase) === null);
+    // It is recorded only: the selector must ignore it entirely.
+    const runner: TfRunnerAt[] = [
+      { symbol: 'AAA', rankNow: 1, rankAtBaseline: 5, climb: 4, rFactorNow: 3, rFactorAgo: 2.5, deltaR: 0.5, pctChange: 1.2 },
+    ];
+    const plain = selectTfCandidates(runner, new Map([['AAA', ok()]]));
+    const stretched = selectTfCandidates(
+      runner,
+      new Map([['AAA', ok({ stretch: { rangeUsed: 9.99, firstCandle: 5, fromPrevClosePct: 20 } })]])
+    );
+    check(
+      'stretch: the selector ignores it — same picks and same reasons with or without it',
+      JSON.stringify(plain) === JSON.stringify(stretched)
+    );
   }
 
   // ── 18. Missing price data is described as missing, not as a failed range ──

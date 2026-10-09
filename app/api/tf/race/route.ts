@@ -34,6 +34,7 @@ import { getTfEligibleSectors } from '@/lib/trade-suggest/candidates';
 import { buildRecordedTfContext } from '@/lib/tf-live/context';
 import { getTfLiveCaptureForDate } from '@/lib/tf-live/store';
 import { LIVE_TF_SELECTOR_CONFIG, selectTfCandidates } from '@/lib/tf-live/selector';
+import type { Stretch } from '@/lib/tf-live/stretch';
 import { TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK } from '@/lib/trade-suggest/config';
 
 export const dynamic = 'force-dynamic';
@@ -322,6 +323,7 @@ async function buildBody(today: string, nowMin: number) {
             : (needs ?? 'below the pick limit'),
         premValueCr: ctx?.premValueCr ?? null,
         sinceEntryPct: ctx?.sinceEntryPct ?? null,
+        stretch: ctx?.stretch ?? null,
         supertrendAligned: ctx?.supertrendAligned ?? null,
         breakout: ctx?.breakout ?? null,
         gates,
@@ -380,6 +382,8 @@ interface TfBoardRow {
   blockedBy: string | null;
   premValueCr: number | null;
   sinceEntryPct: number | null;
+  /** Recorded stretch vs the stock's normal day — evidence only, not a gate. */
+  stretch: Stretch | null;
   supertrendAligned: boolean | null;
   breakout: boolean | null;
   /** The six selector checks, in its order — all true ⇔ the selector picks it. */

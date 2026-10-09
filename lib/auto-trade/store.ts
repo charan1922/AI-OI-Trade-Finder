@@ -25,7 +25,9 @@ import type {
 
 let tablesReady = false;
 
-async function ensureTables(): Promise<void> {
+/** Idempotent: creates the auto-trade tables and adds any missing columns.
+ *  Exported so read-only reports (scripts/measure-stretch.ts) work on any DB. */
+export async function ensureTables(): Promise<void> {
   if (tablesReady) return;
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS auto_trades (
@@ -101,6 +103,11 @@ async function ensureTables(): Promise<void> {
     'approvedMaxRiskPerLotRupees REAL', // per-lot ₹ risk ceiling in force when the order was gated (PR#18 review — the fill-breach check compares against THIS, not the current setting)
     'approvedEntryAskPremium REAL', // the ASK the gate sized this entry against (PR#18 re-review — pending/placing exposure reserves off this executable price, not the ltp/mid mark)
     'approvedStopValuePremium REAL', // option value modelled AT the chart stop when the gate approved (2026-10-09 — the fill-breach check measures fill − this)
+    // Stretch at entry vs the stock's normal day (lib/tf-live/stretch.ts) — RECORDED
+    // ONLY, never read by a gate; scripts/measure-stretch.ts reads option P&L by it.
+    'entryRangeUsedAdr REAL', // today's range so far ÷ 10-day average daily range
+    'entryFirstCandleAdr REAL', // 09:15 candle range ÷ average daily range
+    'entryFromPrevClosePct REAL', // move from previous close in the trade direction, %
     'nearestListedExpiry TEXT',
     'expiryRolled INTEGER',
     'expiryRollReason TEXT',
@@ -259,6 +266,10 @@ export interface NewTrade {
   approvedEntryAskPremium?: number | null;
   /** Option value modelled at the chart stop when the gate approved. */
   approvedStopValuePremium?: number | null;
+  /** Stretch at entry vs the stock's normal day — recorded only, never a gate. */
+  entryRangeUsedAdr?: number | null;
+  entryFirstCandleAdr?: number | null;
+  entryFromPrevClosePct?: number | null;
   /** Proposal-time SHADOW context (sector activity rank among scanned sectors) —
    *  written in the insert so it costs no extra round-trip before placement. */
   entrySectorRank?: number | null;
@@ -295,9 +306,9 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
        masterSyncDate, mode, broker, status, entrySpot, slSpot, targetSpot,
        entryPremium, slPremium, targetPremium, aiReasonEntry,
        approvedMaxRiskPerLotRupees, approvedEntryAskPremium, approvedStopValuePremium, entrySectorRank, entrySectorCount,
-       proposedAt, updatedAt
+       entryRangeUsedAdr, entryFirstCandleAdr, entryFromPrevClosePct, proposedAt, updatedAt
      )
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM auto_trades
         WHERE date = ? AND symbol = ?
@@ -334,6 +345,9 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     t.approvedStopValuePremium ?? null,
     t.entrySectorRank ?? null,
     t.entrySectorCount ?? null,
+    t.entryRangeUsedAdr ?? null,
+    t.entryFirstCandleAdr ?? null,
+    t.entryFromPrevClosePct ?? null,
     now,
     now,
     t.date,
@@ -568,6 +582,9 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     approvedMaxRiskPerLotRupees: r.approvedMaxRiskPerLotRupees == null ? null : Number(r.approvedMaxRiskPerLotRupees),
     approvedEntryAskPremium: r.approvedEntryAskPremium == null ? null : Number(r.approvedEntryAskPremium),
     approvedStopValuePremium: r.approvedStopValuePremium == null ? null : Number(r.approvedStopValuePremium),
+    entryRangeUsedAdr: r.entryRangeUsedAdr == null ? null : Number(r.entryRangeUsedAdr),
+    entryFirstCandleAdr: r.entryFirstCandleAdr == null ? null : Number(r.entryFirstCandleAdr),
+    entryFromPrevClosePct: r.entryFromPrevClosePct == null ? null : Number(r.entryFromPrevClosePct),
     entryFillPremium: r.entryFillPremium == null ? null : Number(r.entryFillPremium),
     exitFillPremium: r.exitFillPremium == null ? null : Number(r.exitFillPremium),
     realizedPnlRupees: r.realizedPnlRupees == null ? null : Number(r.realizedPnlRupees),

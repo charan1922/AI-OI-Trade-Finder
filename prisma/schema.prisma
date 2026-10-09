@@ -473,6 +473,10 @@ model AutoTrade {
   // executable price, not the ltp/mid mark (PR#18 re-review).
   approvedEntryAskPremium     Float?
   approvedStopValuePremium    Float?
+  // Stretch at entry vs the normal day — recorded only, never a gate (2026-10-09).
+  entryRangeUsedAdr           Float?
+  entryFirstCandleAdr         Float?
+  entryFromPrevClosePct       Float?
   // Contract-selection audit. These fields make rollover trades measurable as
   // a separate economic bucket from ordinary near-month entries.
   nearestListedExpiry String?
