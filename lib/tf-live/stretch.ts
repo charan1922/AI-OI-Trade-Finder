@@ -2,7 +2,12 @@
  * How STRETCHED a stock already is when we consider an entry — measured against
  * its own normal day. PURE (no DB, no clock) so CI pins it.
  *
- * RECORDED, NOT A GATE (operator, 2026-10-09). The question came from three
+ * TWO OF THESE NUMBERS ARE NOW A GATE (operator rule, 2026-10-09 — spec
+ * docs/superpowers/specs/2026-10-09-dont-chase-gate-design.md): the selector refuses an
+ * entry whose 09:15 candle ≥ 1.25× ADR or that has moved ≥ 2.0× ADR from the previous
+ * close (selector.ts ⑥). The history below is why it stayed measurement-only at first:
+ *
+ * RECORDED, NOT A GATE (first cut, 2026-10-09). The question came from three
  * paper entries that day, all calls bought after the stock had already run:
  *   COLPAL  first candle 1.62× a normal day, range used 2.99×, +7.1% vs prev close
  *   TCS     first candle 1.54×,              range used 2.32×, +5.8%
@@ -49,12 +54,26 @@ export interface Stretch {
   firstCandle: number | null;
   /** Move from the previous close in the TRADE's direction, % (positive = already ran our way). */
   fromPrevClosePct: number;
+  /** The same move in units of the normal daily range — what the "don't chase" gate reads. */
+  fromPrevCloseAdr: number;
 }
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
-/** Normal daily range + previous close from daily bars strictly BEFORE `tradeDate`. */
-export function dayBaseline(days: DailyBar[], tradeDate: string): DayBaseline | null {
+/**
+ * Normal daily range + previous close from daily bars strictly BEFORE `tradeDate`.
+ *
+ * `lastKnownSession` = the newest earlier session our own candle store recorded. The
+ * daily bars must reach at least that date: if the overnight bhavcopy sync missed a
+ * session that demonstrably traded, `prevClose` would be an OLDER close and "moved
+ * from yesterday's close" would be measured wrong — so the baseline is refused (the
+ * gate then fails closed) rather than silently mis-measuring. Null = no constraint.
+ */
+export function dayBaseline(
+  days: DailyBar[],
+  tradeDate: string,
+  lastKnownSession: string | null = null
+): DayBaseline | null {
   const usable = days
     .filter(
       (d) =>
@@ -71,6 +90,7 @@ export function dayBaseline(days: DailyBar[], tradeDate: string): DayBaseline | 
   if (usable.length < ADR_MIN_SESSIONS) return null;
   const ageDays = (Date.parse(`${tradeDate}T00:00:00Z`) - Date.parse(`${usable[0].date}T00:00:00Z`)) / 86_400_000;
   if (!(ageDays > 0) || ageDays > ADR_MAX_STALE_DAYS) return null;
+  if (lastKnownSession != null && lastKnownSession < tradeDate && usable[0].date < lastKnownSession) return null;
   const adr = usable.reduce((sum, d) => sum + (d.high - d.low), 0) / usable.length;
   if (!(adr > 0)) return null;
   return { adr, prevClose: usable[0].close };
@@ -100,5 +120,6 @@ export function measureStretch(
     rangeUsed: round2((hi - lo) / base.adr),
     firstCandle: first ? round2((first.high - first.low) / base.adr) : null,
     fromPrevClosePct: round2(side === 'CE' ? raw : -raw),
+    fromPrevCloseAdr: round2(((side === 'CE' ? 1 : -1) * (price - base.prevClose)) / base.adr),
   };
 }

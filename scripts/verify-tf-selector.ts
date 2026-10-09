@@ -85,6 +85,8 @@ const ok = (over: Partial<TfSymbolContext> = {}): TfSymbolContext => ({
   tfBeacon: 'BULL',
   premValueCr: 50,
   sinceEntryPct: 0.8,
+  // A calm, unstretched stock — passes the "not chasing" check (2026-10-09).
+  stretch: { rangeUsed: 1, firstCandle: 0.4, fromPrevClosePct: 1.5, fromPrevCloseAdr: 1 },
   ...over,
 });
 
@@ -170,6 +172,13 @@ function main(): void {
       ['unknown premium pool', { premValueCr: null }, 'premiumUnknown'],
       ['thin premium pool', { premValueCr: 3 }, 'thinPremium'],
       ['move already extended', { sinceEntryPct: 5 }, 'moveExhausted'],
+      // "Don't chase" (operator rule 2026-10-09): missing evidence is its own counter, never "chasing".
+      ['no daily baseline', { stretch: null }, 'stretchUnknown'],
+      ['no 09:15 candle', { stretch: { rangeUsed: 1, firstCandle: null, fromPrevClosePct: 1, fromPrevCloseAdr: 1 } }, 'stretchUnknown'],
+      ['long opening candle (COLPAL 1.62×)', { stretch: { rangeUsed: 3, firstCandle: 1.62, fromPrevClosePct: 7, fromPrevCloseAdr: 1 } }, 'chasing'],
+      ['already ran (TCS 2.37×)', { stretch: { rangeUsed: 2.3, firstCandle: 0.5, fromPrevClosePct: 6, fromPrevCloseAdr: 2.37 } }, 'chasing'],
+      ['opening candle exactly at the 1.25× limit', { stretch: { rangeUsed: 1, firstCandle: 1.25, fromPrevClosePct: 1, fromPrevCloseAdr: 1 } }, 'chasing'],
+      ['ran exactly the 2.0× limit', { stretch: { rangeUsed: 1, firstCandle: 0.5, fromPrevClosePct: 1, fromPrevCloseAdr: 2 } }, 'chasing'],
     ];
     for (const [label, over, key] of cases) {
       const r = selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok(over ?? {})]]));
@@ -350,6 +359,11 @@ function main(): void {
       ok(), ok({ breakout: false }), ok({ breakout: null }), ok({ tfBeacon: null }), ok({ tfBeacon: 'BEAR' }),
       ok({ premValueCr: 5 }), ok({ premValueCr: null }), ok({ sinceEntryPct: 3 }), ok({ sinceEntryPct: null }),
       ok({ breakout15: false }),
+      // The 7th check — "don't chase" (2026-10-09): unknown, long opening candle, already ran.
+      ok({ stretch: null }),
+      ok({ stretch: { rangeUsed: 1, firstCandle: null, fromPrevClosePct: 1, fromPrevCloseAdr: 1 } }),
+      ok({ stretch: { rangeUsed: 3, firstCandle: 1.62, fromPrevClosePct: 7, fromPrevCloseAdr: 2.92 } }),
+      ok({ stretch: { rangeUsed: 2, firstCandle: 0.5, fromPrevClosePct: 6, fromPrevCloseAdr: 2.37 } }),
     ];
     const runner = { symbol: 'X', rankNow: 3, rankAtBaseline: 9, climb: 6, rFactorNow: 2.5, rFactorAgo: 2.0, deltaR: 0.5, pctChange: 1.2 };
     let agree = 0;
@@ -364,7 +378,7 @@ function main(): void {
         }
       }
     }
-    check('all six dots green ⇔ the selector picks it (every combination)', agree === total, `${agree}/${total}`);
+    check('all seven dots green ⇔ the selector picks it (every combination)', agree === total, `${agree}/${total}`);
     const none = gateStrip(0.5, 1.2, undefined, cfg);
     check('no evidence is grey, never green', none.orb === null && none.pool === null);
     check(
@@ -373,6 +387,21 @@ function main(): void {
     );
     check('needs: TF beacon named when only it is missing', firstNeed(gateStrip(0.5, 1.2, ok({ tfBeacon: null }), cfg), ok({ tfBeacon: null }), cfg) === 'TF breakout beacon in the trade direction');
     check('needs: null when everything passes', firstNeed(gateStrip(0.5, 1.2, ok(), cfg), ok(), cfg) === null);
+    const longOpen = ok({ stretch: { rangeUsed: 3, firstCandle: 1.62, fromPrevClosePct: 7, fromPrevCloseAdr: 1 } });
+    check(
+      'needs: a long opening candle is named with its size',
+      firstNeed(gateStrip(0.5, 1.2, longOpen, cfg), longOpen, cfg) ===
+        'a calmer open — the 09:15 candle was 1.62× a normal day (max 1.25×)',
+      String(firstNeed(gateStrip(0.5, 1.2, longOpen, cfg), longOpen, cfg))
+    );
+    const ran = ok({ stretch: { rangeUsed: 2, firstCandle: 0.5, fromPrevClosePct: 6, fromPrevCloseAdr: 2.37 } });
+    check(
+      'needs: an already-run stock is named with how far it ran',
+      firstNeed(gateStrip(0.5, 1.2, ran, cfg), ran, cfg) ===
+        "room left — already 2.37× a normal day from yesterday's close (max 2×)",
+      String(firstNeed(gateStrip(0.5, 1.2, ran, cfg), ran, cfg))
+    );
+    check('no daily range is grey, never green', gateStrip(0.5, 1.2, ok({ stretch: null }), cfg).notChasing === null);
 
     const b = [
       board(600, [['A', 1.0, 1], ['B', 3.0, 1]]), // 10:00
@@ -491,6 +520,21 @@ function main(): void {
       `stretch: newest bar older than ${ADR_MAX_STALE_DAYS} days → no baseline`,
       dayBaseline(days, '2026-10-20') === null
     );
+    // Previous close must be the LAST session: if the overnight bhavcopy sync missed a day
+    // that our own candle store saw trade, "from yesterday's close" would be measured
+    // against an older close — refuse the baseline instead (self-review 2026-10-09).
+    check(
+      'stretch: daily data that missed a known session → no baseline (stale previous close)',
+      dayBaseline(days, '2026-10-01', '2026-09-30') === null
+    );
+    check(
+      'stretch: daily data as recent as the last known session → baseline kept',
+      dayBaseline(days, '2026-10-01', '2026-09-28')?.prevClose === 1020
+    );
+    check(
+      'stretch: no known prior session (fresh candle store) → no extra constraint',
+      dayBaseline(days, '2026-10-01', null)?.prevClose === 1020
+    );
     check(
       'stretch: corrupt rows are skipped, not averaged',
       dayBaseline([...days, { date: '2026-09-29', high: 0, low: 0, close: 0 }], '2026-10-01')?.prevClose === 1020
@@ -513,6 +557,7 @@ function main(): void {
     check('stretch: COLPAL entry had used 2.99× a normal day', ce?.rangeUsed === 2.99, JSON.stringify(ce));
     check('stretch: COLPAL first candle was 1.62× a normal day', ce?.firstCandle === 1.62);
     check('stretch: COLPAL was +7.12% from prev close, in the CE direction', ce?.fromPrevClosePct === 7.12);
+    check('stretch: …which is 2.93 normal days from prev close', ce?.fromPrevCloseAdr === 2.93, String(ce?.fromPrevCloseAdr));
     check(
       'stretch: the same move reads negative for a PE (it ran against a put)',
       measureStretch(colpal, 1859.2, 'PE', cBase)?.fromPrevClosePct === -7.12
@@ -524,24 +569,48 @@ function main(): void {
     check('stretch: no 09:15 candle → first candle unknown', measureStretch(colpal.slice(1), 1859.2, 'CE', cBase)?.firstCandle === null);
     check('stretch: no baseline → null, never a guess', measureStretch(colpal, 1859.2, 'CE', null) === null);
     check('stretch: no price → null', measureStretch(colpal, null, 'CE', cBase) === null);
-    // It is recorded only: the selector must ignore it entirely.
-    const runner: TfRunnerAt[] = [
-      { symbol: 'AAA', rankNow: 1, rankAtBaseline: 5, climb: 4, rFactorNow: 3, rFactorAgo: 2.5, deltaR: 0.5, pctChange: 1.2 },
+    // The gate on REAL entries (spec 2026-10-09-dont-chase-gate-design.md): the two chase
+    // entries blocked, every good / picked entry of 2026-10-06/08 still picked.
+    const runner = (pct: number): TfRunnerAt[] => [
+      { symbol: 'AAA', rankNow: 1, rankAtBaseline: 5, climb: 4, rFactorNow: 3, rFactorAgo: 2.5, deltaR: 0.5, pctChange: pct },
     ];
-    const plain = selectTfCandidates(runner, new Map([['AAA', ok()]]));
-    const stretched = selectTfCandidates(
-      runner,
-      new Map([['AAA', ok({ stretch: { rangeUsed: 9.99, firstCandle: 5, fromPrevClosePct: 20 } })]])
-    );
+    const real: [string, 'CE' | 'PE', number, number, boolean][] = [
+      ['COLPAL 10-09 (−₹4,001)', 'CE', 1.62, 2.92, false],
+      ['TCS 10-09 (−₹2,351)', 'CE', 1.54, 2.37, false],
+      ['JUBLFOOD 10-08 (+2R)', 'PE', 1.02, 1.85, true],
+      ['ITC 10-08', 'PE', 0.78, 1.8, true],
+      ['ADANIGREEN 10-08', 'PE', 0.7, 1.56, true],
+      ['ADANIENT 10-08 (TF traded it)', 'PE', 0.44, 1.34, true],
+      ['ADANIPORTS 10-08', 'PE', 0.53, 1.33, true],
+      ['RELIANCE 10-06', 'CE', 0.21, 0.9, true],
+    ];
+    for (const [label, side, firstCandle, fromPrevCloseAdr, picked] of real) {
+      const r = selectTfCandidates(
+        runner(side === 'CE' ? 1.2 : -1.2),
+        new Map([
+          [
+            'AAA',
+            ok({ tfBeacon: side === 'CE' ? 'BULL' : 'BEAR', stretch: { rangeUsed: 1, firstCandle, fromPrevClosePct: 1, fromPrevCloseAdr } }),
+          ],
+        ])
+      );
+      check(
+        `don't chase: ${label} ${picked ? 'still picked' : 'BLOCKED'}`,
+        (r.candidates.length === 1) === picked && (picked || r.rejected.chasing === 1),
+        JSON.stringify(r.rejected)
+      );
+    }
+    const passed = selectTfCandidates(runner(1.2), new Map([['AAA', ok()]])).candidates[0];
     check(
-      'stretch: the selector ignores it — same picks and same reasons with or without it',
-      JSON.stringify(plain) === JSON.stringify(stretched)
+      "don't chase: a pick says how far it had moved",
+      passed?.reasons.some((x) => x.includes('not chasing: 09:15 candle 0.40× a normal day, 1.00× from yesterday')) === true,
+      passed?.reasons.join(' | ')
     );
   }
 
   // ── 18. Missing price data is described as missing, not as a failed range ──
   {
-    const none = { noBoard: 0, frozenR: 0, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 3, noTfBeacon: 0, thinPremium: 0, premiumUnknown: 0, moveExhausted: 0 };
+    const none = { noBoard: 0, frozenR: 0, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 3, noTfBeacon: 0, thinPremium: 0, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0 };
     const text = describeRejections(none, 3);
     check('rejections: unknown breakout reads as missing price data', /no price data/.test(text) && !/not cleared/.test(text), text);
   }
@@ -582,7 +651,7 @@ function main(): void {
   // ── 21. The summary never says "none tradeable" when something was picked ──
   // Found replaying 2026-10-08 10:25: 3 picks, summary "13 runners, none tradeable".
   {
-    const r = { noBoard: 0, frozenR: 2, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 0, noTfBeacon: 0, thinPremium: 4, premiumUnknown: 0, moveExhausted: 0 };
+    const r = { noBoard: 0, frozenR: 2, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 0, noTfBeacon: 0, thinPremium: 4, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0 };
     const withPicks = describeRejections(r, 9, 3);
     check('summary: picks are stated, not "none tradeable"', /3 picked/.test(withPicks) && !/none tradeable/.test(withPicks), withPicks);
     check('summary: still "none tradeable" when nothing was picked', /none tradeable/.test(describeRejections(r, 6, 0)));

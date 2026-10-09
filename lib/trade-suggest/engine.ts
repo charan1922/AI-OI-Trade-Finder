@@ -63,7 +63,8 @@ import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
 import { fetchFyersDepth, spreadFromDepth } from '@/lib/fyers/market-feed';
 import { toEqSymbol } from '@/lib/fyers/symbols';
-import { orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
+import { loadDayBaselines, orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
+import { measureStretch } from '@/lib/tf-live/stretch';
 import type { TfBeacon } from '@/lib/tf-live/parse';
 // istMinutesNow is imported, NOT redefined here. It was duplicated in this file
 // while /api/tf/race used the exported copy — two implementations of the same
@@ -1102,6 +1103,12 @@ async function buildTfSelection(
   const byRow = new Map(rows.map((r) => [r.symbol, r]));
   const beacons = await getTfBeaconsAt(date, race.capturedAt ?? undefined).catch(() => new Map<string, TfBeacon>());
   const context = new Map<string, TfSymbolContext>();
+  // Normal daily range per runner, from the official daily bars — the "don't chase"
+  // check ⑥ (one query for the whole board; missing → null → that name is rejected).
+  const baselines = await loadDayBaselines(
+    race.runners.map((r) => r.symbol),
+    date
+  );
   for (const runner of race.runners) {
     const row = byRow.get(runner.symbol);
     const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
@@ -1125,6 +1132,8 @@ async function buildTfSelection(
       // which can sit stale for 40+ minutes (ADANIGREEN 2026-10-08: 3.45% vs a
       // true 1.93%). Same definition as the card and the replay.
       sinceEntryPct: sinceEntryFromBars(bars, ltp, side),
+      // Long 09:15 candle / already ran 2+ normal days → rejected (operator rule 2026-10-09).
+      stretch: measureStretch(bars, ltp, side, baselines.get(runner.symbol) ?? null),
     });
   }
 

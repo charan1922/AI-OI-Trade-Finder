@@ -77,10 +77,9 @@ export interface TfSymbolContext {
    *  way. Null before 09:45 / when unrecorded. */
   sinceEntryPct: number | null;
   /** How stretched the stock already is vs its normal day (lib/tf-live/stretch.ts).
-   *  RECORDED EVIDENCE ONLY (2026-10-09): the selector never reads it and it is
-   *  not in the candidate reasons the AI sees. Optional so builders that do not
-   *  measure it (the live engine, the replay) need not fake a value. */
-  stretch?: Stretch | null;
+   *  Read by the "don't chase" check ⑥. REQUIRED so no builder can forget it; null
+   *  (no ADR baseline) REJECTS — missing evidence never passes. */
+  stretch: Stretch | null;
 }
 
 export interface TfSelectorConfig {
@@ -96,6 +95,10 @@ export interface TfSelectorConfig {
   requireBreakout: boolean;
   /** Require TF's breakout beacon in the trade's direction (BULL for CE, BEAR for PE). */
   requireTfBeacon: boolean;
+  /** Reject when the 09:15 candle's range is at least this many normal days (ADR). */
+  maxFirstCandleAdr: number;
+  /** Reject when the move from the previous close (trade direction) is at least this many ADRs. */
+  maxFromPrevCloseAdr: number;
   /** Cap on returned candidates. */
   maxCandidates: number;
 }
@@ -131,6 +134,10 @@ export interface TfSelectorRejections {
   thinPremium: number;
   premiumUnknown: number;
   moveExhausted: number;
+  /** No ADR baseline or no 09:15 candle — the chase check could not be made. */
+  stretchUnknown: number;
+  /** Long opening candle, or already ran 2+ normal days from the previous close. */
+  chasing: number;
 }
 
 export interface TfSelectorResult {
@@ -151,6 +158,8 @@ const emptyRejections = (): TfSelectorRejections => ({
   thinPremium: 0,
   premiumUnknown: 0,
   moveExhausted: 0,
+  stretchUnknown: 0,
+  chasing: 0,
 });
 
 /**
@@ -171,6 +180,11 @@ export const DEFAULT_TF_SELECTOR_CONFIG: TfSelectorConfig = {
   // history (no stored beacons for a usable session), so it is measured forward
   // through the `noTfBeacon` rejection count.
   requireTfBeacon: true,
+  // Operator rule 2026-10-09 ("don't chase"): COLPAL (09:15 candle 1.62×, ran 2.92×) and
+  // TCS (1.54×, 2.37×) were bought after the move and lost ₹6,352; every good entry of
+  // 2026-10-06/08 sat at ≤ 1.02× and ≤ 1.85×. On 1,458 spot breakouts it blocks 0.8%.
+  maxFirstCandleAdr: 1.25,
+  maxFromPrevCloseAdr: 2.0,
   maxCandidates: 7,
 };
 
@@ -258,6 +272,21 @@ export function selectTfCandidates(
       continue;
     }
 
+    // ⑥ Don't chase (operator rule 2026-10-09). ⑤ only sees the move since 09:45; a
+    //    stock that made its whole move between 09:15 and 09:45 (COLPAL: a 09:15 candle
+    //    1.62× its normal day) slipped through it. Unknown REJECTS, counted apart.
+    if (ctx.stretch == null || ctx.stretch.firstCandle == null) {
+      rejected.stretchUnknown++;
+      continue;
+    }
+    if (
+      ctx.stretch.firstCandle >= cfg.maxFirstCandleAdr ||
+      ctx.stretch.fromPrevCloseAdr >= cfg.maxFromPrevCloseAdr
+    ) {
+      rejected.chasing++;
+      continue;
+    }
+
     candidates.push({
       symbol: runner.symbol,
       side,
@@ -281,6 +310,7 @@ export function selectTfCandidates(
         ctx.sinceEntryPct == null
           ? 'move since 09:45 unrecorded'
           : `${ctx.sinceEntryPct >= 0 ? '+' : ''}${ctx.sinceEntryPct.toFixed(2)}% since 09:45 — not yet extended`,
+        `not chasing: 09:15 candle ${ctx.stretch.firstCandle.toFixed(2)}× a normal day, ${ctx.stretch.fromPrevCloseAdr.toFixed(2)}× from yesterday's close`,
       ],
     });
 
@@ -304,6 +334,8 @@ export function describeRejections(r: TfSelectorRejections, considered: number, 
     [r.thinPremium, 'options premium pool too thin'],
     [r.premiumUnknown, 'no options premium reading'],
     [r.moveExhausted, 'move already extended past the entry band'],
+    [r.stretchUnknown, 'no daily range or opening candle to check for chasing'],
+    [r.chasing, "move already made (long opening candle or 2+ normal days from yesterday's close)"],
   ];
   const said = parts
     .filter(([n]) => n > 0)

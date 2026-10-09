@@ -605,8 +605,9 @@ export async function executeAutoTradeTool(
       // later at fill confirmation (execution.ts applyEntryFill), off the
       // pre-submission path.
       const { rank: entrySectorRank, count: entrySectorCount } = sectorRankForPick(rt, pick);
-      // RECORDED ONLY (lib/tf-live/stretch.ts): how stretched the stock already is
-      // vs its normal day. Never gates, never null-blocks — failure stores nulls.
+      // Recorded at entry (lib/tf-live/stretch.ts) so option P&L can be read by how
+      // stretched the stock was. The GATE is the selector's check ⑥; this
+      // measurement never blocks — a failure here stores nulls.
       const stretch = await measureEntryStretch(pick.symbol, rt.date, pick.plan.entrySpot, pick.option.optionType);
       const tradeId = await insertTrade({
         date: rt.date,
@@ -650,6 +651,7 @@ export async function executeAutoTradeTool(
         entryRangeUsedAdr: stretch?.rangeUsed ?? null,
         entryFirstCandleAdr: stretch?.firstCandle ?? null,
         entryFromPrevClosePct: stretch?.fromPrevClosePct ?? null,
+        entryFromPrevCloseAdr: stretch?.fromPrevCloseAdr ?? null,
       });
       if (tradeId == null) {
         const result = {

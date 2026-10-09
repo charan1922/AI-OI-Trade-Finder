@@ -2,7 +2,7 @@
  * What the /live TF Climbers cockpit shows per name — pure, so CI can pin it.
  * Spec: docs/superpowers/specs/2026-10-08-tf-climbers-cockpit-design.md.
  *
- * gateStrip() mirrors selectTfCandidates() check for check: all six true ⇔ the
+ * gateStrip() mirrors selectTfCandidates() check for check: all seven true ⇔ the
  * selector picks the name (verify-tf-selector.ts proves it), so the card can
  * never disagree with the auto-trader. Missing evidence is null (grey), never true.
  */
@@ -18,10 +18,12 @@ export interface GateStrip {
   beacon: Gate;
   pool: Gate;
   notExtended: Gate;
+  /** "Don't chase" (operator rule 2026-10-09): 09:15 candle and move from prev close vs a normal day. */
+  notChasing: Gate;
 }
 
 /** The selector's own order. */
-export const GATE_ORDER = ['climbing', 'moving', 'orb', 'beacon', 'pool', 'notExtended'] as const;
+export const GATE_ORDER = ['climbing', 'moving', 'orb', 'beacon', 'pool', 'notExtended', 'notChasing'] as const;
 
 export const GATE_LABEL: Record<keyof GateStrip, string> = {
   climbing: 'climbing',
@@ -30,6 +32,7 @@ export const GATE_LABEL: Record<keyof GateStrip, string> = {
   beacon: 'TF beacon',
   pool: 'options pool',
   notExtended: 'not extended',
+  notChasing: 'not chasing',
 };
 
 export function gateStrip(
@@ -53,6 +56,11 @@ export function gateStrip(
     // The selector passes an unrecorded 09:45 bar (selector.ts ⑤) — so does the strip,
     // but only when there is context at all.
     notExtended: ctx == null ? null : ctx.sinceEntryPct == null ? true : ctx.sinceEntryPct < cfg.maxSinceEntryPct,
+    // Missing daily range or 09:15 candle is grey — and the selector rejects it (⑥).
+    notChasing:
+      ctx?.stretch == null || ctx.stretch.firstCandle == null
+        ? null
+        : ctx.stretch.firstCandle < cfg.maxFirstCandleAdr && ctx.stretch.fromPrevCloseAdr < cfg.maxFromPrevCloseAdr,
   };
 }
 
@@ -83,6 +91,13 @@ export function firstNeed(g: GateStrip, ctx: TfSymbolContext | undefined, cfg: T
         return missing
           ? 'recorded price data'
           : `a pullback — ${(ctx?.sinceEntryPct ?? 0).toFixed(1)}% extended since 09:45 (max ${cfg.maxSinceEntryPct}%)`;
+      case 'notChasing': {
+        const st = ctx?.stretch;
+        if (missing || st == null || st.firstCandle == null) return 'a normal-day range and the 09:15 candle (daily data)';
+        return st.firstCandle >= cfg.maxFirstCandleAdr
+          ? `a calmer open — the 09:15 candle was ${st.firstCandle.toFixed(2)}× a normal day (max ${cfg.maxFirstCandleAdr}×)`
+          : `room left — already ${st.fromPrevCloseAdr.toFixed(2)}× a normal day from yesterday's close (max ${cfg.maxFromPrevCloseAdr}×)`;
+      }
     }
   }
   return null;

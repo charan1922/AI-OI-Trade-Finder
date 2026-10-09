@@ -473,10 +473,12 @@ model AutoTrade {
   // executable price, not the ltp/mid mark (PR#18 re-review).
   approvedEntryAskPremium     Float?
   approvedStopValuePremium    Float?
-  // Stretch at entry vs the normal day — recorded only, never a gate (2026-10-09).
+  // Stretch at entry vs the normal day (2026-10-09). The 09:15 candle and the ADR move are
+  // also the selector's "not chasing" gate; all four are measured by scripts/measure-stretch.ts.
   entryRangeUsedAdr           Float?
   entryFirstCandleAdr         Float?
   entryFromPrevClosePct       Float?
+  entryFromPrevCloseAdr       Float?
   // Contract-selection audit. These fields make rollover trades measurable as
   // a separate economic bucket from ordinary near-month entries.
   nearestListedExpiry String?

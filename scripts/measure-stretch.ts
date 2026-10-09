@@ -5,6 +5,10 @@
  *   npx tsx scripts/measure-stretch.ts            # all recorded trades
  *   npx tsx scripts/measure-stretch.ts --mode=paper
  *
+ * Since 2026-10-10 the selector REFUSES entries with a 09:15 candle ≥ 1.25× ADR or a move
+ * ≥ 2.0× ADR from the previous close ("don't chase", operator rule). This report is how
+ * those limits get re-checked — and how the 1.0–2.0× zone (EICHERMOT 1.71×) gets judged.
+ *
  * Why it exists: on 2026-10-09 COLPAL, TCS and EICHERMOT calls were bought after
  * the stocks had already used 2.99× / 2.32× / 1.55× a normal day's range; the
  * stocks then went sideways and every option bled 4–10%. A spot-only study of
@@ -35,6 +39,7 @@ interface Row {
   rangeUsed: number | null;
   firstCandle: number | null;
   fromPrev: number | null;
+  fromPrevAdr: number | null;
 }
 
 function bucketTable(title: string, rows: Row[], pick: (r: Row) => number | null, edges: number[]): void {
@@ -68,7 +73,8 @@ async function main(): Promise<void> {
   const modeArg = process.argv.find((a) => a.startsWith('--mode='))?.slice('--mode='.length) ?? null;
   const raw = (await prisma.$queryRawUnsafe(
     `SELECT date, symbol, optionType, mode, entryFillPremium, exitFillPremium, realizedPnlRupees,
-            entryRangeUsedAdr AS rangeUsed, entryFirstCandleAdr AS firstCandle, entryFromPrevClosePct AS fromPrev
+            entryRangeUsedAdr AS rangeUsed, entryFirstCandleAdr AS firstCandle, entryFromPrevClosePct AS fromPrev,
+            entryFromPrevCloseAdr AS fromPrevAdr
        FROM auto_trades
       WHERE status = 'closed' AND entryFillPremium > 0 AND exitFillPremium IS NOT NULL
         ${modeArg ? 'AND mode = ?' : ''}
@@ -87,6 +93,7 @@ async function main(): Promise<void> {
     rangeUsed: num(r.rangeUsed),
     firstCandle: num(r.firstCandle),
     fromPrev: num(r.fromPrev),
+    fromPrevAdr: num(r.fromPrevAdr),
   }));
   const measured = rows.filter((r) => r.rangeUsed != null);
   console.log(
@@ -100,6 +107,9 @@ async function main(): Promise<void> {
   bucketTable('RANGE USED at entry (× normal daily range)', rows, (r) => r.rangeUsed, [0, 1, 1.5, 2, 2.5, 99]);
   bucketTable('FIRST 09:15 CANDLE (× normal daily range)', rows, (r) => r.firstCandle, [0, 0.5, 1, 1.5, 99]);
   bucketTable('MOVE FROM PREV CLOSE in the trade direction (%)', rows, (r) => r.fromPrev, [-99, 0, 2, 4, 6, 99]);
+  // The "not chasing" gate refuses ≥ 2.0 here and ≥ 1.25 on the 09:15 candle (selector ⑥),
+  // so trades above those lines only exist from before 2026-10-10 — read them as history.
+  bucketTable('MOVE FROM PREV CLOSE (× normal daily range)', rows, (r) => r.fromPrevAdr, [-99, 0, 1, 1.5, 2, 99]);
   console.log(
     '\nCaveats: in-sample, one lot per trade, paper fills at live quotes. Option return includes theta and IV' +
       ' changes by construction — that is the point. Promote nothing to a gate from a bucket under ' +

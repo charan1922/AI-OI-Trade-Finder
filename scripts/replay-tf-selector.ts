@@ -37,7 +37,8 @@ import { getTfBoardsForDate, tfCandidatesAtMinute, type TfBoardAt } from '@/lib/
 import { getTfEligibleSectors } from '@/lib/trade-suggest/candidates';
 import { selectTfCandidates, type TfSymbolContext } from '@/lib/tf-live/selector';
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
-import { orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
+import { loadDayBaselines, orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
+import { measureStretch } from '@/lib/tf-live/stretch';
 import type { TfBeacon } from '@/lib/tf-live/parse';
 import { buildSpotPlan } from '@/lib/trade-suggest/scoring';
 import { trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
@@ -155,10 +156,11 @@ async function main(): Promise<void> {
       const asOfIso = new Date(`${date}T${String(Math.floor(em / 60)).padStart(2, '0')}:${String(em % 60).padStart(2, '0')}:59+05:30`).toISOString();
       const beacons = await getTfBeaconsAt(date, asOfIso).catch(() => new Map<string, TfBeacon>());
       const context = new Map<string, TfSymbolContext>();
+      const baselines = await loadDayBaselines(race.runners.map((r) => r.symbol), date);
       for (const runner of race.runners) {
         const sb = (bySym.get(runner.symbol) ?? []).filter((b) => b.high > 0);
         const entryTs = sb.find((b) => istMin(b.bucketTs * 1000) >= em)?.bucketTs;
-        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, breakout: null, breakout15: null, tfBeacon: beacons.get(runner.symbol)?.dir ?? null, premValueCr: null, sinceEntryPct: null }); continue; }
+        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, breakout: null, breakout15: null, tfBeacon: beacons.get(runner.symbol)?.dir ?? null, premValueCr: null, sinceEntryPct: null, stretch: null }); continue; }
         const prior = sb.filter((b) => b.bucketTs < entryTs);
         const entry = sb.find((b) => b.bucketTs === entryTs)!.open;
         const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
@@ -171,6 +173,7 @@ async function main(): Promise<void> {
           tfBeacon: beacons.get(runner.symbol)?.dir ?? null,
           premValueCr: prem,
           sinceEntryPct: sinceEntryFromBars(sb, entry, side),
+          stretch: measureStretch(prior, entry, side, baselines.get(runner.symbol) ?? null),
         });
       }
 
