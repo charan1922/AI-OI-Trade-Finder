@@ -60,9 +60,20 @@ export interface SpotPlanOptions {
 
 /**
  * Spot-level plan: entry at LTP; SL at the last COMPLETED 5-min candle's
- * low (CE) / high (PE), falling back to the opening-range boundary; the risk
- * is floored (slBasis 'floor') when the structural level sits inside normal
- * 5-min noise; target at TARGET_RR × risk.
+ * low (CE) / high (PE). When price has already moved past that candle, the SL
+ * is the NEAREST SWING: the most recent completed candle whose low (CE) / high
+ * (PE) is still beyond the entry ('swing'). Only when no candle qualifies does
+ * it fall back to the opening-range boundary. The risk is floored (slBasis
+ * 'floor') when the structural level sits inside normal 5-min noise; target at
+ * TARGET_RR × risk.
+ *
+ * Why the swing step (2026-10-09): ADANIENT 2650 PE on 2026-10-08 11:10 sat
+ * above its last candle's high, so the stop fell straight to the opening-range
+ * HIGH 2743 — 4% away, ₹12,842 of risk on one lot. The nearest swing was the
+ * 10:15 high 2647, floored to 1% → 2664.68 (₹3,888). Over 20 sessions of real
+ * candles, on the 326 such entries whose OR stop was > 1.5% away, the swing stop
+ * kept the same average move (+0.20% vs +0.19%) at about half the distance
+ * (1.00% vs 1.89% median) and cut the worst trade from −3.13% to −1.47%.
  *
  * `nowBucketTs` is the CURRENT bucket's start — bars at/after it are still
  * forming and are excluded (in replay this is the scan tick's bucket, which
@@ -81,18 +92,21 @@ export function buildSpotPlan(
 
   let sl: number | null = null;
   let slBasis: SpotPlan['slBasis'] = 'none';
+  // Nearest completed candle (newest first) whose protective extreme is beyond
+  // the entry — the last candle itself when it qualifies.
+  const swing = [...completed].reverse().find((b) => (side === 'CE' ? b.low < entry : b.high > entry)) ?? null;
   if (side === 'CE') {
-    if (lastBar && lastBar.low < entry) {
-      sl = lastBar.low;
-      slBasis = 'last-candle';
+    if (swing) {
+      sl = swing.low;
+      slBasis = swing === lastBar ? 'last-candle' : 'swing';
     } else if (or.openRangeLow != null && or.openRangeLow < entry) {
       sl = or.openRangeLow;
       slBasis = 'opening-range';
     }
   } else {
-    if (lastBar && lastBar.high > entry) {
-      sl = lastBar.high;
-      slBasis = 'last-candle';
+    if (swing) {
+      sl = swing.high;
+      slBasis = swing === lastBar ? 'last-candle' : 'swing';
     } else if (or.openRangeHigh != null && or.openRangeHigh > entry) {
       sl = or.openRangeHigh;
       slBasis = 'opening-range';
