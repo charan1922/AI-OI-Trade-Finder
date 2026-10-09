@@ -158,7 +158,7 @@ async function main(): Promise<void> {
       for (const runner of race.runners) {
         const sb = (bySym.get(runner.symbol) ?? []).filter((b) => b.high > 0);
         const entryTs = sb.find((b) => istMin(b.bucketTs * 1000) >= em)?.bucketTs;
-        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, breakout: null, breakout30: null, tfBeacon: beacons.get(runner.symbol)?.dir ?? null, premValueCr: null, sinceEntryPct: null }); continue; }
+        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, breakout: null, breakout15: null, tfBeacon: beacons.get(runner.symbol)?.dir ?? null, premValueCr: null, sinceEntryPct: null }); continue; }
         const prior = sb.filter((b) => b.bucketTs < entryTs);
         const entry = sb.find((b) => b.bucketTs === entryTs)!.open;
         const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
@@ -166,8 +166,8 @@ async function main(): Promise<void> {
         const prem = [...(oiBy.get(runner.symbol) ?? [])].reverse().find((r) => r.bucketTs <= entryTs)?.premValueCr ?? null;
         context.set(runner.symbol, {
           supertrendAligned: null,
-          breakout: orbBreak(side, entry, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
-          breakout30: orbBreak(side, entry, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
+          breakout: orbBreak(side, entry, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
+          breakout15: orbBreak(side, entry, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
           tfBeacon: beacons.get(runner.symbol)?.dir ?? null,
           premValueCr: prem,
           sinceEntryPct: sinceEntryFromBars(sb, entry, side),

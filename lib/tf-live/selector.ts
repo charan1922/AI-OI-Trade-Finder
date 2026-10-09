@@ -58,12 +58,13 @@ import type { TfRunnerAt } from '@/lib/tf-live/race';
 export interface TfSymbolContext {
   /** Optional display evidence. The selector deliberately ignores Supertrend. */
   supertrendAligned: boolean | null;
-  /** True when price has cleared the 15-MIN opening range (09:15–09:30) in the
-   *  trade's direction (operator, 2026-10-08). Null = range not complete → REJECTED. */
+  /** True when price has cleared the 30-MIN opening range (09:15–09:45) in the
+   *  trade's direction. Back to 30 min on 2026-10-09 (operator: "make ORB 30
+   *  mins") after a one-day switch to 15. Null = range not complete → REJECTED. */
   breakout: boolean | null;
-  /** The same test against the 30-min range (09:15–09:45). A recorded SHADOW for
-   *  the 15-vs-30 comparison — the selector never reads it. */
-  breakout30: boolean | null;
+  /** The same test against the 15-min range (09:15–09:30). A recorded SHADOW so
+   *  15 vs 30 can still be compared on graded trades — the selector never reads it. */
+  breakout15: boolean | null;
   /** TradeFinder's own breakout beacon for this symbol (market_pulse
    *  breakout_beacon), or null when TF has not flagged it. Must agree with the
    *  trade's side (operator, 2026-10-08: our ORB AND TF's beacon). */
@@ -267,9 +268,9 @@ export function selectTfCandidates(
         `TF R-Factor ${runner.rFactorNow.toFixed(2)}, rank #${runner.rankNow} (up ${runner.climb} from #${runner.rankAtBaseline})`,
         `still accumulating: TF R +${runner.deltaR.toFixed(2)} over the last 30 min`,
         `TF has it ${pct > 0 ? 'up' : 'down'} ${Math.abs(pct).toFixed(2)}%`,
-        ctx.breakout === true ? 'cleared its 15-min opening range in that direction' : 'no opening-range breakout',
+        ctx.breakout === true ? 'cleared its 30-min opening range in that direction' : 'no opening-range breakout',
         `TF breakout beacon ${ctx.tfBeacon ?? 'none'}${ctx.tfBeacon ? ' agrees' : ''}`,
-        `30-min ORB: ${ctx.breakout30 == null ? 'not complete' : ctx.breakout30 ? 'cleared' : 'not cleared'} (shadow, not a gate)`,
+        `15-min ORB: ${ctx.breakout15 == null ? 'not complete' : ctx.breakout15 ? 'cleared' : 'not cleared'} (shadow, not a gate)`,
         `options premium pool ₹${Math.round(ctx.premValueCr)} Cr`,
         ctx.sinceEntryPct == null
           ? 'move since 09:45 unrecorded'

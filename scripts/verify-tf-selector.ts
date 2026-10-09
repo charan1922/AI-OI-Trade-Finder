@@ -71,7 +71,7 @@ function board(minuteIST: number, rows: [string, number, number][]): TfBoardAt {
 const ok = (over: Partial<TfSymbolContext> = {}): TfSymbolContext => ({
   supertrendAligned: true,
   breakout: true,
-  breakout30: true,
+  breakout15: true,
   tfBeacon: 'BULL',
   premValueCr: 50,
   sinceEntryPct: 0.8,
@@ -172,13 +172,15 @@ function main(): void {
       );
       check(`Supertrend ${supertrendAligned === null ? 'unknown' : 'disagreement'} is ignored`, r.candidates.length === 1);
     }
-    // The 30-min ORB is a recorded shadow — it never decides (operator, 2026-10-08).
+    // The GATE is the 30-min ORB (operator, 2026-10-09: "make ORB 30 mins");
+    // the 15-min result is a recorded shadow that never decides.
     check(
-      '30-min ORB is never a gate',
-      selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok({ breakout30: false })]])).candidates.length === 1,
+      '15-min ORB is never a gate',
+      selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok({ breakout15: false })]])).candidates.length === 1,
     );
-    const why = selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok({ breakout30: false })]])).candidates[0]?.reasons.join(' | ') ?? '';
-    check('30-min ORB result is recorded in the reasons', /30-min ORB: not cleared/.test(why), why);
+    const why = selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok({ breakout15: false })]])).candidates[0]?.reasons.join(' | ') ?? '';
+    check('the gate is described as the 30-min opening range', /cleared its 30-min opening range/.test(why), why);
+    check('15-min ORB result is recorded in the reasons as a shadow', /15-min ORB: not cleared \(shadow/.test(why), why);
     check('TF beacon agreement is recorded in the reasons', /TF breakout beacon BULL/.test(why), why);
     // No context row at all.
     const none = selectTfCandidates([{ symbol: 'X', ...base }], new Map());
@@ -337,7 +339,7 @@ function main(): void {
     const ctxs: TfSymbolContext[] = [
       ok(), ok({ breakout: false }), ok({ breakout: null }), ok({ tfBeacon: null }), ok({ tfBeacon: 'BEAR' }),
       ok({ premValueCr: 5 }), ok({ premValueCr: null }), ok({ sinceEntryPct: 3 }), ok({ sinceEntryPct: null }),
-      ok({ breakout30: false }),
+      ok({ breakout15: false }),
     ];
     const runner = { symbol: 'X', rankNow: 3, rankAtBaseline: 9, climb: 6, rFactorNow: 2.5, rFactorAgo: 2.0, deltaR: 0.5, pctChange: 1.2 };
     let agree = 0;
@@ -357,7 +359,7 @@ function main(): void {
     check('no evidence is grey, never green', none.orb === null && none.pool === null);
     check(
       'needs: names the first missing check',
-      firstNeed(gateStrip(0.5, 1.2, ok({ breakout: false }), cfg), ok({ breakout: false }), cfg) === 'our 15-min opening-range breakout',
+      firstNeed(gateStrip(0.5, 1.2, ok({ breakout: false }), cfg), ok({ breakout: false }), cfg) === 'our 30-min opening-range breakout',
     );
     check('needs: TF beacon named when only it is missing', firstNeed(gateStrip(0.5, 1.2, ok({ tfBeacon: null }), cfg), ok({ tfBeacon: null }), cfg) === 'TF breakout beacon in the trade direction');
     check('needs: null when everything passes', firstNeed(gateStrip(0.5, 1.2, ok(), cfg), ok(), cfg) === null);

@@ -129,7 +129,7 @@ export async function buildRecordedTfContext(
     const empty: TfSymbolContext = {
       supertrendAligned: null,
       breakout: null,
-      breakout30: null,
+      breakout15: null,
       tfBeacon: beacons.get(symbol)?.dir ?? null,
       premValueCr: premBySymbol.get(symbol) ?? null,
       sinceEntryPct: null,
@@ -160,9 +160,9 @@ export async function buildRecordedTfContext(
 
     out.set(symbol, {
       supertrendAligned: st == null ? null : side === 'CE' ? st.direction === 'up' : st.direction === 'down',
-      // The GATE is the 15-min range (operator, 2026-10-08); 30-min is a recorded shadow.
-      breakout: orbBreak(side, price, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
-      breakout30: orbBreak(side, price, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
+      // The GATE is the 30-min range (operator, 2026-10-09); 15-min is a recorded shadow.
+      breakout: orbBreak(side, price, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
+      breakout15: orbBreak(side, price, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
       tfBeacon: beacons.get(symbol)?.dir ?? null,
       premValueCr: premBySymbol.get(symbol) ?? null,
       // Direction-aware: positive means the move has gone OUR way since 09:45.

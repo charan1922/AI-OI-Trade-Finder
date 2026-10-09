@@ -72,7 +72,7 @@ export function firstNeed(g: GateStrip, ctx: TfSymbolContext | undefined, cfg: T
       case 'moving':
         return missing ? 'a % change from TF' : `a move of at least ${cfg.minAbsPctChange}% to set the side`;
       case 'orb':
-        return missing ? 'the 15-min opening range (complete at 09:30)' : 'our 15-min opening-range breakout';
+        return missing ? 'the 30-min opening range (complete at 09:45)' : 'our 30-min opening-range breakout';
       case 'beacon':
         return missing ? 'TF breakout beacon data' : 'TF breakout beacon in the trade direction';
       case 'pool':

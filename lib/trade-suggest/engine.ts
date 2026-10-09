@@ -1104,9 +1104,9 @@ async function buildTfSelection(
       // Kept in the shared context shape for /live display compatibility. The
       // Auto Trade / Commentary selector explicitly ignores Supertrend.
       supertrendAligned: null,
-      // The GATE is the 15-min range (operator, 2026-10-08); 30-min is a recorded shadow.
-      breakout: orbBreak(side, ltp, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
-      breakout30: orbBreak(side, ltp, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
+      // The GATE is the 30-min range (operator, 2026-10-09); 15-min is a recorded shadow.
+      breakout: orbBreak(side, ltp, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
+      breakout15: orbBreak(side, ltp, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
       // TF's own beacon, from the same capture minute as the board (fail closed).
       tfBeacon: beacons.get(runner.symbol)?.dir ?? null,
       // Prefer the LIVE oi-spurts reading (matches NSE exactly); fall back to
