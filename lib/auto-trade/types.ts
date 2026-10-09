@@ -126,11 +126,13 @@ export interface AutoTrade {
   approvedStopValuePremium?: number | null;
   /** How stretched the stock was at entry vs its normal day (lib/tf-live/stretch.ts):
    *  range used ÷ 10-day ADR, the 09:15 candle ÷ ADR, and the move from the
-   *  previous close in the trade direction (%). RECORDED ONLY — no gate reads it;
-   *  scripts/measure-stretch.ts reads option P&L by it (2026-10-09). */
+   *  previous close in the trade direction (% and in normal days). Recorded at entry;
+   *  the selector's "not chasing" check gates on the 09:15 candle and the ADR move,
+   *  and scripts/measure-stretch.ts reads option P&L by all of them (2026-10-09). */
   entryRangeUsedAdr?: number | null;
   entryFirstCandleAdr?: number | null;
   entryFromPrevClosePct?: number | null;
+  entryFromPrevCloseAdr?: number | null;
   /** Actual fills (null until the broker confirms — never fabricated). */
   entryFillPremium: number | null;
   exitFillPremium: number | null;

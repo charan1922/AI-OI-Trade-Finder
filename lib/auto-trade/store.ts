@@ -108,6 +108,7 @@ export async function ensureTables(): Promise<void> {
     'entryRangeUsedAdr REAL', // today's range so far ÷ 10-day average daily range
     'entryFirstCandleAdr REAL', // 09:15 candle range ÷ average daily range
     'entryFromPrevClosePct REAL', // move from previous close in the trade direction, %
+    'entryFromPrevCloseAdr REAL', // the same move in normal days — the "not chasing" gate's own metric
     'nearestListedExpiry TEXT',
     'expiryRolled INTEGER',
     'expiryRollReason TEXT',
@@ -270,6 +271,7 @@ export interface NewTrade {
   entryRangeUsedAdr?: number | null;
   entryFirstCandleAdr?: number | null;
   entryFromPrevClosePct?: number | null;
+  entryFromPrevCloseAdr?: number | null;
   /** Proposal-time SHADOW context (sector activity rank among scanned sectors) —
    *  written in the insert so it costs no extra round-trip before placement. */
   entrySectorRank?: number | null;
@@ -306,9 +308,9 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
        masterSyncDate, mode, broker, status, entrySpot, slSpot, targetSpot,
        entryPremium, slPremium, targetPremium, aiReasonEntry,
        approvedMaxRiskPerLotRupees, approvedEntryAskPremium, approvedStopValuePremium, entrySectorRank, entrySectorCount,
-       entryRangeUsedAdr, entryFirstCandleAdr, entryFromPrevClosePct, proposedAt, updatedAt
+       entryRangeUsedAdr, entryFirstCandleAdr, entryFromPrevClosePct, entryFromPrevCloseAdr, proposedAt, updatedAt
      )
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM auto_trades
         WHERE date = ? AND symbol = ?
@@ -348,6 +350,7 @@ export async function insertTrade(t: NewTrade): Promise<number | null> {
     t.entryRangeUsedAdr ?? null,
     t.entryFirstCandleAdr ?? null,
     t.entryFromPrevClosePct ?? null,
+    t.entryFromPrevCloseAdr ?? null,
     now,
     now,
     t.date,
@@ -585,6 +588,7 @@ function rowToTrade(r: Record<string, unknown>): AutoTrade {
     entryRangeUsedAdr: r.entryRangeUsedAdr == null ? null : Number(r.entryRangeUsedAdr),
     entryFirstCandleAdr: r.entryFirstCandleAdr == null ? null : Number(r.entryFirstCandleAdr),
     entryFromPrevClosePct: r.entryFromPrevClosePct == null ? null : Number(r.entryFromPrevClosePct),
+    entryFromPrevCloseAdr: r.entryFromPrevCloseAdr == null ? null : Number(r.entryFromPrevCloseAdr),
     entryFillPremium: r.entryFillPremium == null ? null : Number(r.entryFillPremium),
     exitFillPremium: r.exitFillPremium == null ? null : Number(r.exitFillPremium),
     realizedPnlRupees: r.realizedPnlRupees == null ? null : Number(r.realizedPnlRupees),

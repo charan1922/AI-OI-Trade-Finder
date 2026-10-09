@@ -94,6 +94,13 @@ export async function loadDayBaselines(symbols: string[], date: string): Promise
   if (unique.length === 0) return out;
   const since = new Date(Date.parse(`${date}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
   try {
+    // The newest earlier session our own candle store saw trade — the daily bars must
+    // reach it, or the previous close is stale (dayBaseline refuses it).
+    const known = (await prisma.$queryRawUnsafe(
+      `SELECT MAX(date) AS d FROM fyers_candles WHERE date < ?`,
+      date
+    )) as { d: string | null }[];
+    const lastKnownSession = known[0]?.d ?? null;
     const rows = (await prisma.$queryRawUnsafe(
       `SELECT symbol, date, eqHigh AS high, eqLow AS low, eqClose AS close FROM bhavcopy_days
         WHERE date < ? AND date >= ? AND symbol IN (${unique.map(() => '?').join(',')})`,
@@ -108,7 +115,7 @@ export async function loadDayBaselines(symbols: string[], date: string): Promise
       bySymbol.set(r.symbol, list);
     }
     for (const [symbol, days] of bySymbol) {
-      const base = dayBaseline(days, date);
+      const base = dayBaseline(days, date, lastKnownSession);
       if (base) out.set(symbol, base);
     }
   } catch (error) {
@@ -174,6 +181,7 @@ export async function buildRecordedTfContext(
       tfBeacon: beacons.get(symbol)?.dir ?? null,
       premValueCr: premBySymbol.get(symbol) ?? null,
       sinceEntryPct: null,
+      stretch: null,
     };
     let bars: StoredFyersBar[] = [];
     try {
@@ -208,7 +216,7 @@ export async function buildRecordedTfContext(
       premValueCr: premBySymbol.get(symbol) ?? null,
       // Direction-aware: positive means the move has gone OUR way since 09:45.
       sinceEntryPct: sinceEntryFromBars(usable, price, side),
-      // Recorded evidence only — the selector never reads it (lib/tf-live/stretch.ts).
+      // The "don't chase" check ⑥ reads this — same measurement as the live engine.
       stretch: measureStretch(prior, price, side, baselines.get(symbol) ?? null),
     });
   }

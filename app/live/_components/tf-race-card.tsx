@@ -8,7 +8,7 @@
  * (TAKE), what is close and exactly which check it still needs (WATCH), what has
  * stalled, and what climbed earlier but left the top 20 (DROPPED — never just
  * vanishes). Every verdict comes from /api/tf/race, which runs the SAME selector
- * the auto-trader uses; the six dots are that selector's checks in its own order.
+ * the auto-trader uses; the seven dots are that selector's checks in its own order.
  *
  * Still participation evidence, not a standalone buy signal: the route withholds
  * every verdict off a stale or other-day board, and this card never re-derives one.
@@ -30,8 +30,14 @@ interface TfBoardRow {
   blockedBy: string | null;
   premValueCr: number | null;
   sinceEntryPct: number | null;
-  /** How stretched vs the stock's normal day — recorded evidence, NOT a check. */
-  stretch: { rangeUsed: number; firstCandle: number | null; fromPrevClosePct: number } | null;
+  /** How stretched vs the stock's normal day. The 09:15 candle and the move from the
+   *  previous close (in normal days) are the "not chasing" check; range used is evidence. */
+  stretch: {
+    rangeUsed: number;
+    firstCandle: number | null;
+    fromPrevClosePct: number;
+    fromPrevCloseAdr: number;
+  } | null;
   gates: GateStrip;
   needs: string | null;
   trend: 'faster' | 'slower' | 'steady' | null;
@@ -142,7 +148,7 @@ function RPath({ path }: { path: TfBoardRow['rPath'] }) {
   );
 }
 
-/** TF's own evidence — shown, and (beacon) also one of the six checks. */
+/** TF's own evidence — shown, and (beacon) also one of the seven checks. */
 function Chips({ r }: { r: TfBoardRow }) {
   return (
     <>
@@ -223,7 +229,7 @@ function Details({ r }: { r: TfBoardRow }) {
       </div>
       <div
         className="col-span-full"
-        title="Recorded to measure, not a check: how much of a normal day's range (10-day average) is already used, the 09:15 candle against a normal day, and the move from yesterday's close in the trade's direction."
+        title="Against a normal day (10-day average range). The 09:15 candle (max 1.25×) and the move from yesterday's close in the trade's direction (max 2×) are the 'not chasing' check; range used is shown for context."
       >
         <dt className="inline text-muted-foreground">vs normal day </dt>
         <dd className="inline">
@@ -231,7 +237,7 @@ function Details({ r }: { r: TfBoardRow }) {
             ? 'no daily baseline'
             : `range used ${r.stretch.rangeUsed.toFixed(2)}× · 1st candle ${
                 r.stretch.firstCandle == null ? '—' : `${r.stretch.firstCandle.toFixed(2)}×`
-              } · ${pct(r.stretch.fromPrevClosePct)} from prev close`}
+              } · ${r.stretch.fromPrevCloseAdr.toFixed(2)}× (${pct(r.stretch.fromPrevClosePct)}) from prev close`}
         </dd>
       </div>
       {r.needs && <div className="col-span-full">needs: {r.needs}</div>}
@@ -453,7 +459,7 @@ export function TfRaceCard() {
       </header>
       <p className="border-b border-border px-2 py-1 text-[10px] leading-snug text-muted-foreground">
         TF Intraday Boost top 20. A name is <b className="text-emerald-700 dark:text-emerald-300">TAKE</b> when it passes all
-        six checks — the same ones the auto-trader uses. Participation evidence, not a buy signal by itself.
+        seven checks — the same ones the auto-trader uses. Participation evidence, not a buy signal by itself.
       </p>
       <div className="flex-1 px-2 py-1.5">
         {!data ? (
@@ -500,7 +506,7 @@ export function TfRaceCard() {
               </div>
             ) : (
               <p className="rounded border border-dashed border-border px-2 py-1.5 text-center text-[10px] text-muted-foreground">
-                Nothing passes all six checks right now.{watch.length > 0 ? ' Closest names below.' : ''}
+                Nothing passes all seven checks right now.{watch.length > 0 ? ' Closest names below.' : ''}
               </p>
             )}
 

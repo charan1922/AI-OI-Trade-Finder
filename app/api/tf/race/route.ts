@@ -382,11 +382,11 @@ interface TfBoardRow {
   blockedBy: string | null;
   premValueCr: number | null;
   sinceEntryPct: number | null;
-  /** Recorded stretch vs the stock's normal day — evidence only, not a gate. */
+  /** Stretch vs the stock's normal day — feeds the "not chasing" check. */
   stretch: Stretch | null;
   supertrendAligned: boolean | null;
   breakout: boolean | null;
-  /** The six selector checks, in its order — all true ⇔ the selector picks it. */
+  /** The seven selector checks, in its order — all true ⇔ the selector picks it. */
   gates: GateStrip;
   /** Plain English for the first check not passed, or null. */
   needs: string | null;
