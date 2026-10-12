@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * TF Climbers — the live-trading cockpit for TradeFinder's Intraday Boost top 20.
+ * TF Climbers — the live-trading cockpit for TradeFinder's Intraday Boost top N (TF_RACE_MAX_RANK, 10).
  * Spec: docs/superpowers/specs/2026-10-08-tf-climbers-cockpit-design.md.
  *
  * Answers, at a glance on a laptop or a phone: what clears every check now
@@ -74,6 +74,8 @@ interface TfRaceResponse {
   sessionOpenedToday?: boolean;
   windowStartMin?: number;
   windowEndMin?: number;
+  /** TF's top-N the board and the engine apply (TF_RACE_MAX_RANK) — wording comes from here. */
+  rankLimit?: number;
   error?: string;
 }
 
@@ -542,7 +544,7 @@ export function TfRaceCard() {
         </span>
       </header>
       <p className="border-b border-border px-2 py-1 text-[10px] leading-snug text-muted-foreground">
-        TF Intraday Boost top 20. A name is <b className="text-emerald-700 dark:text-emerald-300">TAKE</b> when it passes all
+        TF Intraday Boost top {data?.rankLimit ?? 10}. A name is <b className="text-emerald-700 dark:text-emerald-300">TAKE</b> when it passes all
         eight checks — the same ones the auto-trader uses. Participation evidence, not a buy signal by itself.
       </p>
       <GateLegend />
@@ -609,7 +611,7 @@ export function TfRaceCard() {
             {stalled.length > 0 && (
               <Collapsible
                 title="Stalled · R-Factor not advancing"
-                hint="Still in TF's top 20, but the R-Factor stopped rising — the money is in, none is arriving."
+                hint={`Still in TF's top ${data?.rankLimit ?? 10}, but the R-Factor stopped rising — the money is in, none is arriving.`}
                 count={stalled.length}
               >
                 {stalled.map((r) => (
@@ -620,8 +622,8 @@ export function TfRaceCard() {
 
             {dropped.length > 0 && (
               <Collapsible
-                title="Dropped · climbed earlier, left the top 20"
-                hint="Names that were climbing inside TF's top 20 earlier today — kept visible, never silently removed."
+                title={`Dropped · climbed earlier, left the top ${data?.rankLimit ?? 10}`}
+                hint={`Names that were climbing inside TF's top ${data?.rankLimit ?? 10} earlier today — kept visible, never silently removed.`}
                 count={dropped.length}
               >
                 {dropped.map((d) => (

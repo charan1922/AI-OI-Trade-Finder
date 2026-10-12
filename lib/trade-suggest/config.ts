@@ -268,8 +268,14 @@ export const EXTENDED_SCORE_MULT = 0.6;
  */
 export const TF_BOARD_MAX_AGE_MIN = 10;
 
-/** Only names inside TF's own top-N count as "on the board". Matches the /tf
- *  race display (`maxRank`). Rank ≤ 20 corresponded to TF R ≈ 1.4 on all three
- *  measured sessions, which is what makes the sub-1.0 band (−0.317R, t=−11.12)
- *  structurally unreachable rather than merely discouraged. */
-export const TF_RACE_MAX_RANK = 20;
+/** Only names inside TF's own top-N count as "on the board" — the TF Climbers card, the
+ *  Climbed Stocks list, the engine's candidate set and the poller's priority list all read
+ *  this ONE constant, so the card and the auto-trader cannot disagree.
+ *
+ *  OPERATOR RULE 2026-10-12: top 10 (was 20). Not evidence-backed — graded suggestions since
+ *  2026-08-13 by TF rank: 1-10 n=27 avg -0.09R, 11-20 n=14 avg -0.04R (no difference), and it
+ *  would have dropped JUBLFOOD (#19, +2R) and ITC (#15, won) as well as TCS (#16, lost).
+ *  Rank <= 20 had corresponded to TF R ~ 1.4, which keeps the sub-1.0 band (-0.317R,
+ *  t=-11.12) structurally unreachable; a smaller N only tightens that. Set back to 20 to
+ *  restore the earlier behaviour. */
+export const TF_RACE_MAX_RANK = 10;

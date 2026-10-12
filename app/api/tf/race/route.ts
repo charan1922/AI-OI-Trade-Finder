@@ -368,6 +368,8 @@ async function buildBody(today: string, nowMin: number) {
     sessionOpenedToday,
     dropped,
     climbed,
+    // The rank cut the board and the engine apply (TF's top N) — the card words itself from this.
+    rankLimit: TF_RACE_MAX_RANK,
     // The ENTRY window (auto-trade config) — not the race's 09:35 measuring start.
     ...(await entryWindow()),
   };

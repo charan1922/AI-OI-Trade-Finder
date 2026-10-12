@@ -1077,7 +1077,7 @@ async function buildTfSelection(
   }
   if (boards.length === 0) return notTradeable('No TradeFinder capture today — not trading blind.');
 
-  // Candidates = TF's top 20 that are tradeable (not 'avoid', live future) — the
+  // Candidates = TF's top N (TF_RACE_MAX_RANK) that are tradeable (not 'avoid', live future) — the
   // SAME set the /live TF Climbers card judges; no rank-climb filter (2026-10-08).
   let eligible: Map<string, string>;
   try {

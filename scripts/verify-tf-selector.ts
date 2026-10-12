@@ -299,7 +299,9 @@ function main(): void {
     check('MIN_RISK_PCT widened to 1.0', MIN_RISK_PCT === 1.0, `got ${MIN_RISK_PCT}`);
     check('TRAIL_R is set (fixed target retired)', TRAIL_R === 2, `got ${TRAIL_R}`);
     check('TF board staleness cap is 10 min', TF_BOARD_MAX_AGE_MIN === 10);
-    check('race rank cap is 20', TF_RACE_MAX_RANK === 20);
+    // Operator rule 2026-10-12: TF Climbers considers only TF's top 10 (was 20). One constant, read by the
+    // card, the engine, Climbed Stocks and the poller - pinned so it is only ever changed on purpose.
+    check('race rank cap is 10 (operator rule 2026-10-12)', TF_RACE_MAX_RANK === 10);
     // The inversion: ONE full stop ends the day. If someone "fixes" this back to
     // 2×, the strategy silently regains the revenge trade it was designed to lose.
     check(
@@ -783,6 +785,14 @@ function main(): void {
     check('candidates: rank cap still applies', tfCandidatesAtMinute([base, now], 640, 2, eligible).runners.every((r) => r.rankNow <= 2));
     const early = board(570, Array.from({ length: 12 }, (_, i) => [`Z${i}`, 0, 0.5] as [string, number, number]));
     check('candidates: no usable baseline (degenerate board) → none', !tfCandidatesAtMinute([early], 570, 20, eligible).available);
+
+    // The TF top-10 rule, through the SAME call the engine, the card and the poller make.
+    const wide = board(575, Array.from({ length: 14 }, (_, i) => [`T${i + 1}`, 5 - i * 0.2, 1] as [string, number, number]));
+    const wideNow = board(640, Array.from({ length: 14 }, (_, i) => [`T${i + 1}`, 6 - i * 0.2, 1] as [string, number, number]));
+    const all = new Set(Array.from({ length: 14 }, (_, i) => `T${i + 1}`));
+    const top = tfCandidatesAtMinute([wide, wideNow], 640, TF_RACE_MAX_RANK, all).runners.map((r) => r.rankNow);
+    check('top-10 rule: rank 10 is a candidate', top.includes(10), top.join(','));
+    check('top-10 rule: rank 11 is NOT a candidate', !top.includes(11) && Math.max(...top) === 10, top.join(','));
   }
 
   // ── 20. "Since 09:45" anchors on the 09:45 CANDLE, never a recorded quote ──
