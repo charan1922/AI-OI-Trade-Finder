@@ -53,6 +53,7 @@
  */
 
 import type { TfRunnerAt } from '@/lib/tf-live/race';
+import type { NseListMembership } from '@/lib/nse/live-lists';
 import type { Stretch } from '@/lib/tf-live/stretch';
 
 /** Per-symbol evidence the selector needs but cannot derive from the TF board. */
@@ -80,6 +81,10 @@ export interface TfSymbolContext {
    *  Read by the "don't chase" check ⑥. REQUIRED so no builder can forget it; null
    *  (no ADR baseline) REJECTS — missing evidence never passes. */
   stretch: Stretch | null;
+  /** Which of /live's visible NSE lists (F&O OI Build-up, Most Active) the stock is in
+   *  (lib/nse/live-lists.ts). Read by check ⑦. REQUIRED so no builder can forget it;
+   *  null (lists unavailable or stale) REJECTS as unknown — never as "in neither". */
+  nseLists: NseListMembership | null;
 }
 
 export interface TfSelectorConfig {
@@ -99,6 +104,10 @@ export interface TfSelectorConfig {
   maxFirstCandleAdr: number;
   /** Reject when the move from the previous close (trade direction) is at least this many ADRs. */
   maxFromPrevCloseAdr: number;
+  /** Require the stock to be in the visible F&O OI Build-up OR Most Active list on /live. */
+  requireNseList: boolean;
+  /** Rank cut-off WITHIN each visible list (e.g. 10 = top 10). Null = the whole visible list. */
+  maxNseListRank: number | null;
   /** Cap on returned candidates. */
   maxCandidates: number;
 }
@@ -138,6 +147,10 @@ export interface TfSelectorRejections {
   stretchUnknown: number;
   /** Long opening candle, or already ran 2+ normal days from the previous close. */
   chasing: number;
+  /** The NSE lists were unavailable/stale, or one was down and the stock was in none of the others. */
+  listsUnknown: number;
+  /** Every list was read and the stock is in none of them. */
+  notInNseLists: number;
 }
 
 export interface TfSelectorResult {
@@ -160,6 +173,8 @@ const emptyRejections = (): TfSelectorRejections => ({
   moveExhausted: 0,
   stretchUnknown: 0,
   chasing: 0,
+  listsUnknown: 0,
+  notInNseLists: 0,
 });
 
 /**
@@ -185,6 +200,12 @@ export const DEFAULT_TF_SELECTOR_CONFIG: TfSelectorConfig = {
   // 2026-10-06/08 sat at ≤ 1.02× and ≤ 1.85×. On 1,458 spot breakouts it blocks 0.8%.
   maxFirstCandleAdr: 1.25,
   maxFromPrevCloseAdr: 2.0,
+  // Operator rule 2026-10-12: the stock must be in /live's visible "F&O OI Build-up" or
+  // "Most Active" list ("F, M or FM should inside it"). Whole visible list by default; set
+  // maxNseListRank to 10 for a strict top 10. 8 historic entries rebuilt from stored NSE OI %:
+  // blocks EICHERMOT and TCS (losers) and RELIANCE (a winner), passes the 8-Oct trend trades.
+  requireNseList: true,
+  maxNseListRank: null,
   maxCandidates: 7,
 };
 
@@ -287,6 +308,23 @@ export function selectTfCandidates(
       continue;
     }
 
+    // ⑦ Must be in /live's visible F&O OI Build-up or Most Active list (operator rule
+    //    2026-10-12). Found in either (or both) = pass. A stock found in NO readable list
+    //    is "in neither" only when every list was read; with a feed down it is UNKNOWN.
+    if (cfg.requireNseList) {
+      const lists = ctx.nseLists;
+      if (lists == null) {
+        rejected.listsUnknown++;
+        continue;
+      }
+      const within = (rank: number | null) => rank != null && (cfg.maxNseListRank == null || rank <= cfg.maxNseListRank);
+      if (!within(lists.oiBuildupRank) && !within(lists.mostActiveRank)) {
+        if (lists.complete) rejected.notInNseLists++;
+        else rejected.listsUnknown++;
+        continue;
+      }
+    }
+
     candidates.push({
       symbol: runner.symbol,
       side,
@@ -310,6 +348,14 @@ export function selectTfCandidates(
         ctx.sinceEntryPct == null
           ? 'move since 09:45 unrecorded'
           : `${ctx.sinceEntryPct >= 0 ? '+' : ''}${ctx.sinceEntryPct.toFixed(2)}% since 09:45 — not yet extended`,
+        ctx.nseLists == null
+          ? 'NSE lists not checked'
+          : `in /live's lists: ${[
+              ctx.nseLists.oiBuildupRank != null ? `F&O OI Build-up #${ctx.nseLists.oiBuildupRank}` : null,
+              ctx.nseLists.mostActiveRank != null ? `Most Active #${ctx.nseLists.mostActiveRank}` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ') || 'none (check switched off)'}`,
         `not chasing: 09:15 candle ${ctx.stretch.firstCandle.toFixed(2)}× a normal day, ${ctx.stretch.fromPrevCloseAdr.toFixed(2)}× from yesterday's close`,
       ],
     });
@@ -336,6 +382,8 @@ export function describeRejections(r: TfSelectorRejections, considered: number, 
     [r.moveExhausted, 'move already extended past the entry band'],
     [r.stretchUnknown, 'no daily range or opening candle to check for chasing'],
     [r.chasing, "move already made (long opening candle or 2+ normal days from yesterday's close)"],
+    [r.notInNseLists, "not in /live's F&O OI Build-up or Most Active list"],
+    [r.listsUnknown, "NSE's OI Build-up / Most Active lists unavailable or stale"],
   ];
   const said = parts
     .filter(([n]) => n > 0)

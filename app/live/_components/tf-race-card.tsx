@@ -8,7 +8,7 @@
  * (TAKE), what is close and exactly which check it still needs (WATCH), what has
  * stalled, and what climbed earlier but left the top 20 (DROPPED — never just
  * vanishes). Every verdict comes from /api/tf/race, which runs the SAME selector
- * the auto-trader uses; the seven dots are that selector's checks in its own order.
+ * the auto-trader uses; the eight dots are that selector's checks in its own order.
  *
  * Still participation evidence, not a standalone buy signal: the route withholds
  * every verdict off a stale or other-day board, and this card never re-derives one.
@@ -40,6 +40,8 @@ interface TfBoardRow {
     fromPrevClosePct: number;
     fromPrevCloseAdr: number;
   } | null;
+  /** Which of /live's visible NSE lists the stock is in; null = lists unavailable / not today. */
+  nseLists: { oiBuildupRank: number | null; mostActiveRank: number | null; complete: boolean } | null;
   gates: GateStrip;
   needs: string | null;
   trend: 'faster' | 'slower' | 'steady' | null;
@@ -115,6 +117,8 @@ const GATE_HELP: Record<(typeof GATE_ORDER)[number], string> = {
     'TradeFinder has also flagged a breakout on this stock, pointing the same way as the trade (bullish for Call, bearish for Put). Both we and TradeFinder must agree.',
   pool: `Enough real money is trading in the options: at least ₹${CFG.minPremValueCr} Cr of premium. Thin options are hard to buy and sell at a fair price.`,
   notExtended: `The stock hasn't already run too far since 09:45 — less than ${CFG.maxSinceEntryPct}% in the trade's direction. We don't want to buy after the move is done.`,
+  inNseList:
+    "The stock also shows in /live's F&O OI Build-up list or its Most Active list below — fresh positions being built, or heavy trading, on NSE's own ranking. In either list, or both, is fine. If NSE's lists can't be read, the check stays grey and the stock is not taken.",
   notChasing: `We're not late to the party. The 09:15 candle was less than ${CFG.maxFirstCandleAdr}× a normal day's range, and the stock is less than ${CFG.maxFromPrevCloseAdr}× a normal day's range away from yesterday's close.`,
 };
 
@@ -210,7 +214,7 @@ function RPath({ path }: { path: TfBoardRow['rPath'] }) {
   );
 }
 
-/** TF's own evidence — shown, and (beacon) also one of the seven checks. */
+/** TF's own evidence — shown, and (beacon) also one of the eight checks. */
 function Chips({ r }: { r: TfBoardRow }) {
   return (
     <>
@@ -300,6 +304,23 @@ function Details({ r }: { r: TfBoardRow }) {
             : `range used ${r.stretch.rangeUsed.toFixed(2)}× · 1st candle ${
                 r.stretch.firstCandle == null ? '—' : `${r.stretch.firstCandle.toFixed(2)}×`
               } · ${r.stretch.fromPrevCloseAdr.toFixed(2)}× (${pct(r.stretch.fromPrevClosePct)}) from prev close`}
+        </dd>
+      </div>
+      <div className="col-span-full" title="Which of the lists below on this page the stock is in right now (check 8). Either list, or both, passes.">
+        <dt className="inline text-muted-foreground">NSE lists </dt>
+        <dd className="inline">
+          {r.nseLists == null
+            ? 'unavailable (not today / NSE unreachable)'
+            : r.nseLists.oiBuildupRank == null && r.nseLists.mostActiveRank == null
+              ? r.nseLists.complete
+                ? 'in neither OI Build-up nor Most Active'
+                : 'not in the lists that could be read'
+              : [
+                  r.nseLists.oiBuildupRank != null ? `OI Build-up #${r.nseLists.oiBuildupRank}` : null,
+                  r.nseLists.mostActiveRank != null ? `Most Active #${r.nseLists.mostActiveRank}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
         </dd>
       </div>
       {r.needs && <div className="col-span-full">needs: {r.needs}</div>}
@@ -522,7 +543,7 @@ export function TfRaceCard() {
       </header>
       <p className="border-b border-border px-2 py-1 text-[10px] leading-snug text-muted-foreground">
         TF Intraday Boost top 20. A name is <b className="text-emerald-700 dark:text-emerald-300">TAKE</b> when it passes all
-        seven checks — the same ones the auto-trader uses. Participation evidence, not a buy signal by itself.
+        eight checks — the same ones the auto-trader uses. Participation evidence, not a buy signal by itself.
       </p>
       <GateLegend />
       <div className="flex-1 px-2 py-1.5">
@@ -570,7 +591,7 @@ export function TfRaceCard() {
               </div>
             ) : (
               <p className="rounded border border-dashed border-border px-2 py-1.5 text-center text-[10px] text-muted-foreground">
-                Nothing passes all seven checks right now.{watch.length > 0 ? ' Closest names below.' : ''}
+                Nothing passes all eight checks right now.{watch.length > 0 ? ' Closest names below.' : ''}
               </p>
             )}
 

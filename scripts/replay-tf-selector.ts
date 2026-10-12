@@ -39,6 +39,7 @@ import { selectTfCandidates, type TfSymbolContext } from '@/lib/tf-live/selector
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
 import { loadDayBaselines, orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
 import { measureStretch } from '@/lib/tf-live/stretch';
+import { OI_DISPLAY } from '@/lib/nse/live-lists';
 import type { TfBeacon } from '@/lib/tf-live/parse';
 import { buildSpotPlan } from '@/lib/trade-suggest/scoring';
 import { trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
@@ -133,6 +134,13 @@ async function main(): Promise<void> {
       });
       bySym.set(String(b.symbol), a);
     }
+    // NSE's own OI % per symbol per bucket (stamped on the FUT candle rows each poller cycle) — the
+    // input to rebuilding the visible "F&O OI Build-up" list at any past minute. Most Active has no
+    // history, so the replay can only ever test HALF of the 8th check (see nseListsAt below).
+    const nseOiRows = await q(
+      `SELECT symbol,bucketTs,nseOiPct FROM fyers_candles WHERE date=? AND instrument='FUT' AND nseOiPct IS NOT NULL ORDER BY bucketTs`,
+      date
+    );
     const oi = await q(`SELECT symbol,bucketTs,premValueCr FROM oi_intraday WHERE date=? ORDER BY symbol,bucketTs`, date);
     const oiBy = new Map<string, { bucketTs: number; premValueCr: number | null }[]>();
     for (const r of oi) {
@@ -157,10 +165,28 @@ async function main(): Promise<void> {
       const beacons = await getTfBeaconsAt(date, asOfIso).catch(() => new Map<string, TfBeacon>());
       const context = new Map<string, TfSymbolContext>();
       const baselines = await loadDayBaselines(race.runners.map((r) => r.symbol), date);
+      // The visible OI Build-up list at this minute: latest NSE OI % per symbol before `em`, top 24 by
+      // it, then the same Live-Urgency filter /live applies (here: the TF-eligible set). Most Active is
+      // UNKNOWN (no history), so `complete: false` — a name not in the OI list is "unknown", never
+      // "in neither": the replay UNDERSTATES what the live check lets through.
+      const latestOi = new Map<string, number>();
+      for (const r of nseOiRows) {
+        if (istMin(Number(r.bucketTs) * 1000) >= em) continue;
+        latestOi.set(String(r.symbol), Number(r.nseOiPct));
+      }
+      const oiVisible = [...latestOi.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, OI_DISPLAY)
+        .map(([symbol]) => symbol)
+        .filter((symbol) => eligible.has(symbol));
+      const nseListsAt = (symbol: string) => {
+        const i = oiVisible.indexOf(symbol);
+        return { oiBuildupRank: i < 0 ? null : i + 1, mostActiveRank: null, complete: false };
+      };
       for (const runner of race.runners) {
         const sb = (bySym.get(runner.symbol) ?? []).filter((b) => b.high > 0);
         const entryTs = sb.find((b) => istMin(b.bucketTs * 1000) >= em)?.bucketTs;
-        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, breakout: null, breakout15: null, tfBeacon: beacons.get(runner.symbol)?.dir ?? null, premValueCr: null, sinceEntryPct: null, stretch: null }); continue; }
+        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, breakout: null, breakout15: null, tfBeacon: beacons.get(runner.symbol)?.dir ?? null, premValueCr: null, sinceEntryPct: null, stretch: null, nseLists: nseListsAt(runner.symbol) }); continue; }
         const prior = sb.filter((b) => b.bucketTs < entryTs);
         const entry = sb.find((b) => b.bucketTs === entryTs)!.open;
         const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
@@ -174,6 +200,7 @@ async function main(): Promise<void> {
           premValueCr: prem,
           sinceEntryPct: sinceEntryFromBars(sb, entry, side),
           stretch: measureStretch(prior, entry, side, baselines.get(runner.symbol) ?? null),
+          nseLists: nseListsAt(runner.symbol),
         });
       }
 

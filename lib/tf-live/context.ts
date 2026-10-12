@@ -32,6 +32,7 @@ import { deriveSessionContext } from '@/lib/signals/session-context';
 import { supertrend } from '@/lib/signals/indicators';
 import type { TfBeacon } from '@/lib/tf-live/parse';
 import type { TfSymbolContext } from '@/lib/tf-live/selector';
+import { listMembership, type VisibleNseLists } from '@/lib/nse/live-lists';
 import { dayBaseline, measureStretch, type DailyBar, type DayBaseline, type Stretch } from '@/lib/tf-live/stretch';
 
 /** Minimum bars before the entry bucket for Supertrend(10,3) to mean anything. */
@@ -144,7 +145,11 @@ export async function buildRecordedTfContext(
   asOfMinuteIST: number,
   /** TF breakout beacons as of the same moment (getTfBeaconsAt). Required, so no
    *  caller can forget it: a missing beacon rejects, it never passes. */
-  beacons: ReadonlyMap<string, TfBeacon>
+  beacons: ReadonlyMap<string, TfBeacon>,
+  /** /live's visible OI Build-up / Most Active lists NOW (loadVisibleNseLists), or null for a
+   *  past or stale board and when NSE is unreachable. Required, so no caller can forget it:
+   *  null makes every name's list membership UNKNOWN (the selector rejects it). */
+  nseLists: VisibleNseLists | null
 ): Promise<Map<string, TfSymbolContext>> {
   const out = new Map<string, TfSymbolContext>();
   if (entries.length === 0) return out;
@@ -182,6 +187,7 @@ export async function buildRecordedTfContext(
       premValueCr: premBySymbol.get(symbol) ?? null,
       sinceEntryPct: null,
       stretch: null,
+      nseLists: nseLists ? listMembership(nseLists, symbol) : null,
     };
     let bars: StoredFyersBar[] = [];
     try {
@@ -218,6 +224,8 @@ export async function buildRecordedTfContext(
       sinceEntryPct: sinceEntryFromBars(usable, price, side),
       // The "don't chase" check ⑥ reads this — same measurement as the live engine.
       stretch: measureStretch(prior, price, side, baselines.get(symbol) ?? null),
+      // The 8th check reads this — the same lists /live shows.
+      nseLists: nseLists ? listMembership(nseLists, symbol) : null,
     });
   }
 

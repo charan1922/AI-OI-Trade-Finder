@@ -65,6 +65,7 @@ import { fetchFyersDepth, spreadFromDepth } from '@/lib/fyers/market-feed';
 import { toEqSymbol } from '@/lib/fyers/symbols';
 import { loadDayBaselines, orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
 import { measureStretch } from '@/lib/tf-live/stretch';
+import { listMembership, loadVisibleNseLists } from '@/lib/nse/live-lists';
 import type { TfBeacon } from '@/lib/tf-live/parse';
 // istMinutesNow is imported, NOT redefined here. It was duplicated in this file
 // while /api/tf/race used the exported copy — two implementations of the same
@@ -1109,6 +1110,10 @@ async function buildTfSelection(
     race.runners.map((r) => r.symbol),
     date
   );
+  // /live's visible F&O OI Build-up / Most Active lists, read ONCE for the whole board (the
+  // 8th check). Null when NSE is unreachable or the lists are stale → every name is UNKNOWN
+  // and is rejected (fail closed), with the reason surfaced in the scan summary.
+  const nseLists = await loadVisibleNseLists();
   for (const runner of race.runners) {
     const row = byRow.get(runner.symbol);
     const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
@@ -1134,6 +1139,7 @@ async function buildTfSelection(
       sinceEntryPct: sinceEntryFromBars(bars, ltp, side),
       // Long 09:15 candle / already ran 2+ normal days → rejected (operator rule 2026-10-09).
       stretch: measureStretch(bars, ltp, side, baselines.get(runner.symbol) ?? null),
+      nseLists: nseLists ? listMembership(nseLists, runner.symbol) : null,
     });
   }
 
