@@ -50,6 +50,13 @@ import { isTighterStop, trailedSpotStop } from '@/lib/auto-trade/risk/trailing-s
 import { MIN_RISK_PCT, TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK, TRAIL_R } from '@/lib/trade-suggest/config';
 import { DEFAULT_SETTINGS } from '@/lib/auto-trade/config';
 import { ADR_MAX_STALE_DAYS, dayBaseline, measureStretch } from '@/lib/tf-live/stretch';
+import {
+  assembleVisibleLists,
+  filterToLiveUniverse,
+  listMembership,
+  NSE_LIST_MAX_AGE_MS,
+  type NseListMembership,
+} from '@/lib/nse/live-lists';
 
 let passed = 0;
 const failures: string[] = [];
@@ -87,6 +94,8 @@ const ok = (over: Partial<TfSymbolContext> = {}): TfSymbolContext => ({
   sinceEntryPct: 0.8,
   // A calm, unstretched stock — passes the "not chasing" check (2026-10-09).
   stretch: { rangeUsed: 1, firstCandle: 0.4, fromPrevClosePct: 1.5, fromPrevCloseAdr: 1 },
+  // In the visible F&O OI Build-up list (#3) — passes the 8th check (operator, 2026-10-12).
+  nseLists: { oiBuildupRank: 3, mostActiveRank: null, complete: true },
   ...over,
 });
 
@@ -179,6 +188,10 @@ function main(): void {
       ['already ran (TCS 2.37×)', { stretch: { rangeUsed: 2.3, firstCandle: 0.5, fromPrevClosePct: 6, fromPrevCloseAdr: 2.37 } }, 'chasing'],
       ['opening candle exactly at the 1.25× limit', { stretch: { rangeUsed: 1, firstCandle: 1.25, fromPrevClosePct: 1, fromPrevCloseAdr: 1 } }, 'chasing'],
       ['ran exactly the 2.0× limit', { stretch: { rangeUsed: 1, firstCandle: 0.5, fromPrevClosePct: 1, fromPrevCloseAdr: 2 } }, 'chasing'],
+      // 8th check — must be in the visible F&O OI Build-up or Most Active list.
+      ['in neither visible list (all lists read)', { nseLists: { oiBuildupRank: null, mostActiveRank: null, complete: true } }, 'notInNseLists'],
+      ['lists unavailable (null) is UNKNOWN, not "in neither"', { nseLists: null }, 'listsUnknown'],
+      ['in no readable list while another list is unavailable is UNKNOWN', { nseLists: { oiBuildupRank: null, mostActiveRank: null, complete: false } }, 'listsUnknown'],
     ];
     for (const [label, over, key] of cases) {
       const r = selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok(over ?? {})]]));
@@ -364,6 +377,11 @@ function main(): void {
       ok({ stretch: { rangeUsed: 1, firstCandle: null, fromPrevClosePct: 1, fromPrevCloseAdr: 1 } }),
       ok({ stretch: { rangeUsed: 3, firstCandle: 1.62, fromPrevClosePct: 7, fromPrevCloseAdr: 2.92 } }),
       ok({ stretch: { rangeUsed: 2, firstCandle: 0.5, fromPrevClosePct: 6, fromPrevCloseAdr: 2.37 } }),
+      // The 8th check - in neither list, lists unknown, one list down, in M only.
+      ok({ nseLists: { oiBuildupRank: null, mostActiveRank: null, complete: true } }),
+      ok({ nseLists: null }),
+      ok({ nseLists: { oiBuildupRank: null, mostActiveRank: null, complete: false } }),
+      ok({ nseLists: { oiBuildupRank: null, mostActiveRank: 7, complete: true } }),
     ];
     const runner = { symbol: 'X', rankNow: 3, rankAtBaseline: 9, climb: 6, rFactorNow: 2.5, rFactorAgo: 2.0, deltaR: 0.5, pctChange: 1.2 };
     let agree = 0;
@@ -378,7 +396,7 @@ function main(): void {
         }
       }
     }
-    check('all seven dots green ⇔ the selector picks it (every combination)', agree === total, `${agree}/${total}`);
+    check('all eight dots green ⇔ the selector picks it (every combination)', agree === total, `${agree}/${total}`);
     const none = gateStrip(0.5, 1.2, undefined, cfg);
     check('no evidence is grey, never green', none.orb === null && none.pool === null);
     check(
@@ -402,6 +420,22 @@ function main(): void {
       String(firstNeed(gateStrip(0.5, 1.2, ran, cfg), ran, cfg))
     );
     check('no daily range is grey, never green', gateStrip(0.5, 1.2, ok({ stretch: null }), cfg).notChasing === null);
+    const noList = ok({ nseLists: { oiBuildupRank: null, mostActiveRank: null, complete: true } });
+    check(
+      'needs: names the lists when the stock is in neither',
+      firstNeed(gateStrip(0.5, 1.2, noList, cfg), noList, cfg) ===
+        "a spot in /live's F&O OI Build-up or Most Active list (it is in neither right now)",
+      String(firstNeed(gateStrip(0.5, 1.2, noList, cfg), noList, cfg))
+    );
+    const unkList = ok({ nseLists: null });
+    check(
+      'needs: unknown lists are described as unavailable, not as "in neither"',
+      firstNeed(gateStrip(0.5, 1.2, unkList, cfg), unkList, cfg) ===
+        "NSE's live OI Build-up and Most Active lists (unavailable or stale)",
+      String(firstNeed(gateStrip(0.5, 1.2, unkList, cfg), unkList, cfg))
+    );
+    check('lists unknown is grey, never green', gateStrip(0.5, 1.2, unkList, cfg).inNseList === null);
+    check('in neither list (all read) is hollow-red, not grey', gateStrip(0.5, 1.2, noList, cfg).inNseList === false);
 
     const b = [
       board(600, [['A', 1.0, 1], ['B', 3.0, 1]]), // 10:00
@@ -608,9 +642,129 @@ function main(): void {
     );
   }
 
+  // ── 17d. 8th check: must be in the visible F&O OI Build-up / Most Active list (operator 2026-10-12) ──
+  // "F, M or FM should inside it": in the OI Build-up list (F), the Most Active list (M), or both.
+  {
+    const runner: TfRunnerAt[] = [
+      { symbol: 'AAA', rankNow: 1, rankAtBaseline: 5, climb: 4, rFactorNow: 3, rFactorAgo: 2.5, deltaR: 0.5, pctChange: 1.2 },
+    ];
+    const run = (nseLists: NseListMembership | null, cfg = DEFAULT_TF_SELECTOR_CONFIG) =>
+      selectTfCandidates(runner, new Map([['AAA', ok({ nseLists })]]), cfg);
+    const inF = { oiBuildupRank: 3, mostActiveRank: null, complete: true };
+    const inM = { oiBuildupRank: null, mostActiveRank: 7, complete: true };
+    const inFM = { oiBuildupRank: 3, mostActiveRank: 7, complete: true };
+    check('lists: in F (OI Build-up) only passes', run(inF).candidates.length === 1);
+    check('lists: in M (Most Active) only passes', run(inM).candidates.length === 1);
+    check('lists: in both F and M passes', run(inFM).candidates.length === 1);
+    check(
+      'lists: in a list that was read while another feed is down still passes',
+      run({ oiBuildupRank: 3, mostActiveRank: null, complete: false }).candidates.length === 1
+    );
+    check(
+      'lists: a pick says which list(s) it is in',
+      run(inFM).candidates[0]?.reasons.some((x) => x.includes('F&O OI Build-up #3') && x.includes('Most Active #7')) === true,
+      run(inFM).candidates[0]?.reasons.join(' | ')
+    );
+    const top10 = { ...DEFAULT_TF_SELECTOR_CONFIG, maxNseListRank: 10 };
+    check('lists: with a top-10 cut-off, rank 10 passes', run({ ...inF, oiBuildupRank: 10 }, top10).candidates.length === 1);
+    check('lists: with a top-10 cut-off, rank 11 is refused', run({ ...inF, oiBuildupRank: 11 }, top10).rejected.notInNseLists === 1);
+    check('lists: default is the WHOLE visible list (no rank cut-off)', DEFAULT_TF_SELECTOR_CONFIG.maxNseListRank === null);
+    check(
+      'lists: the check can be switched off (requireNseList false) and then passes without evidence',
+      run(null, { ...DEFAULT_TF_SELECTOR_CONFIG, requireNseList: false }).candidates.length === 1
+    );
+
+    // listMembership — pure ranking over the visible lists
+    const lists = { oiBuildup: ['ITC', 'JUBLFOOD', 'ADANIENT'], mostActiveValue: ['TCS', 'ITC'], mostActiveVolume: ['ITC'] };
+    check('membership: OI Build-up rank is 1-based', listMembership(lists, 'ADANIENT').oiBuildupRank === 3);
+    check('membership: Most Active takes the better of value/volume (ITC #1 by volume)', listMembership(lists, 'ITC').mostActiveRank === 1);
+    check(
+      'membership: a name in no list has null ranks and complete lists',
+      (() => {
+        const m = listMembership(lists, 'COLPAL');
+        return m.oiBuildupRank === null && m.mostActiveRank === null && m.complete;
+      })()
+    );
+    check(
+      'membership: an unavailable list makes the answer incomplete (unknown, not "in neither")',
+      listMembership({ ...lists, mostActiveValue: null }, 'COLPAL').complete === false
+    );
+
+    // filterToLiveUniverse — the SAME filter /live uses
+    const fno = new Map([
+      ['ITC', { sector: 'FMCG', tradeBand: 'ok', isIndex: false }],
+      ['JUBLFOOD', { sector: 'CONSUMER', tradeBand: 'ok', isIndex: false }],
+      ['SLOWCO', { sector: 'X', tradeBand: 'avoid', isIndex: false }],
+      ['NIFTY', { sector: 'IDX', tradeBand: 'ok', isIndex: true }],
+      ['NOFUT', { sector: 'Y', tradeBand: 'ok', isIndex: false }],
+    ]);
+    const liveFut = new Set(['ITC', 'JUBLFOOD', 'SLOWCO', 'NIFTY']);
+    const raw = ['PENNY', 'ITC', 'SLOWCO', 'NIFTY', 'NOFUT', 'ITC', 'JUBLFOOD'].map((symbol, i) => ({ symbol, pct: 10 - i }));
+    const f = filterToLiveUniverse(raw, fno, liveFut);
+    check(
+      'live universe: keeps F&O, drops non-F&O / index / avoid / no live future, in NSE order',
+      f.picks.map((x) => x.symbol).join() === 'ITC,JUBLFOOD',
+      f.picks.map((x) => x.symbol).join()
+    );
+    check('live universe: duplicates collapse to the first (best) rank', f.picks.filter((x) => x.symbol === 'ITC').length === 1);
+    check('live universe: counts avoid-band exclusions', f.excludedAvoid === 1);
+
+    // The freshness / per-feed-failure rule (assembleVisibleLists).
+    const NOW = 1_000_000_000_000;
+    const read = (symbols: string[], ageMs: number) => ({
+      movers: symbols.map((symbol, i) => ({ symbol, pct: 10 - i })),
+      fetchedAt: NOW - ageMs,
+    });
+    const allFresh = assembleVisibleLists(
+      { oi: read(['ITC', 'JUBLFOOD'], 60_000), value: read(['ITC'], 60_000), volume: read([], 60_000) },
+      fno,
+      liveFut,
+      NOW
+    );
+    check('assemble: fresh feeds give every list (an empty list is still a list)', allFresh?.oiBuildup?.join() === 'ITC,JUBLFOOD' && allFresh.mostActiveVolume?.length === 0);
+    check(
+      'assemble: a feed exactly at the age limit is still fresh',
+      assembleVisibleLists({ oi: read(['ITC'], NSE_LIST_MAX_AGE_MS), value: null, volume: null }, fno, liveFut, NOW)?.oiBuildup?.join() === 'ITC'
+    );
+    const staleOi = assembleVisibleLists(
+      { oi: read(['ITC'], NSE_LIST_MAX_AGE_MS + 1), value: read(['ITC'], 1000), volume: null },
+      fno,
+      liveFut,
+      NOW
+    );
+    check('assemble: a feed 1 ms past the limit is dropped to null (stale ≠ visible)', staleOi?.oiBuildup === null && staleOi.mostActiveValue?.join() === 'ITC');
+    check(
+      'assemble: a dropped feed leaves the others counting, and membership is then incomplete',
+      staleOi != null && listMembership(staleOi, 'ITC').mostActiveRank === 1 && listMembership(staleOi, 'JUBLFOOD').complete === false
+    );
+    check(
+      'assemble: no usable feed at all → null (every name becomes unknown)',
+      assembleVisibleLists({ oi: null, value: read(['ITC'], NSE_LIST_MAX_AGE_MS + 5), volume: null }, fno, liveFut, NOW) === null
+    );
+
+    // The past trades, with OI Build-up ranks rebuilt from stored NSE OI % (fyers_candles.nseOiPct,
+    // top-24 BEFORE the F&O filter, so the real visible list is the same or stricter). Most Active has
+    // no history, so M is unknown for these. Honest read: it blocks EICHERMOT (the loser nothing else
+    // catches) and TCS, passes COLPAL (#1 - the don't-chase check blocks that one), and would also have
+    // blocked RELIANCE (a +0.69R winner, 6 Oct replay).
+    const past: [string, number, boolean][] = [
+      ['COLPAL 10-09 (lost 4,001)', 1, true],
+      ['TCS 10-09 (lost 2,351)', 36, false],
+      ['EICHERMOT 10-09 (lost 970)', 80, false],
+      ['ADANIENT 10-08 (won, TF traded it)', 4, true],
+      ['JUBLFOOD 10-08 (won +2R)', 3, true],
+      ['ITC 10-08 (won)', 2, true],
+      ['RELIANCE 10-06 (won +0.69R)', 92, false],
+    ];
+    for (const [label, oiRank, passes] of past) {
+      const r = run({ oiBuildupRank: oiRank <= 24 ? oiRank : null, mostActiveRank: null, complete: true });
+      check(`lists: ${label} OI rank #${oiRank} ${passes ? 'passes' : 'is refused'}`, (r.candidates.length === 1) === passes, JSON.stringify(r.rejected));
+    }
+  }
+
   // ── 18. Missing price data is described as missing, not as a failed range ──
   {
-    const none = { noBoard: 0, frozenR: 0, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 3, noTfBeacon: 0, thinPremium: 0, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0 };
+    const none = { noBoard: 0, frozenR: 0, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 3, noTfBeacon: 0, thinPremium: 0, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0, listsUnknown: 0, notInNseLists: 0 };
     const text = describeRejections(none, 3);
     check('rejections: unknown breakout reads as missing price data', /no price data/.test(text) && !/not cleared/.test(text), text);
   }
@@ -651,7 +805,7 @@ function main(): void {
   // ── 21. The summary never says "none tradeable" when something was picked ──
   // Found replaying 2026-10-08 10:25: 3 picks, summary "13 runners, none tradeable".
   {
-    const r = { noBoard: 0, frozenR: 2, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 0, noTfBeacon: 0, thinPremium: 4, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0 };
+    const r = { noBoard: 0, frozenR: 2, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 0, noTfBeacon: 0, thinPremium: 4, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0, listsUnknown: 0, notInNseLists: 0 };
     const withPicks = describeRejections(r, 9, 3);
     check('summary: picks are stated, not "none tradeable"', /3 picked/.test(withPicks) && !/none tradeable/.test(withPicks), withPicks);
     check('summary: still "none tradeable" when nothing was picked', /none tradeable/.test(describeRejections(r, 6, 0)));

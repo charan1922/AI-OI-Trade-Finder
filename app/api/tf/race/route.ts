@@ -35,6 +35,8 @@ import { buildRecordedTfContext } from '@/lib/tf-live/context';
 import { getTfLiveCaptureForDate } from '@/lib/tf-live/store';
 import { LIVE_TF_SELECTOR_CONFIG, selectTfCandidates } from '@/lib/tf-live/selector';
 import type { Stretch } from '@/lib/tf-live/stretch';
+import type { NseListMembership } from '@/lib/nse/live-lists';
+import { loadVisibleNseLists } from '@/lib/nse/live-lists';
 import { TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK } from '@/lib/trade-suggest/config';
 
 export const dynamic = 'force-dynamic';
@@ -277,7 +279,10 @@ async function buildBody(today: string, nowMin: number) {
     // TF's beacon and sector values from the captures of the SAME moment as the board.
     const boardAt = boards.at(-1)?.capturedAt;
     const beacons = await getTfBeaconsAt(date, boardAt).catch(() => new Map<string, TfBeacon>());
-    const context = await buildRecordedTfContext(date, entries, asOfMinute, beacons);
+    // /live's visible lists are LIVE-only: read them only for today's board the engine would act on.
+    // A past or stale board gets null (unknown) — its dot is grey and it is never "tradeable".
+    const nseLists = verdictsLive ? await loadVisibleNseLists() : null;
+    const context = await buildRecordedTfContext(date, entries, asOfMinute, beacons, nseLists);
     const basketsBySymbol = new Map<string, string[]>();
     const sectorValues = new Map<string, number>();
     const sectorCapture = await getTfLiveCaptureForDate('sector_scope', date, boardAt).catch(() => null);
@@ -324,6 +329,7 @@ async function buildBody(today: string, nowMin: number) {
         premValueCr: ctx?.premValueCr ?? null,
         sinceEntryPct: ctx?.sinceEntryPct ?? null,
         stretch: ctx?.stretch ?? null,
+        nseLists: ctx?.nseLists ?? null,
         supertrendAligned: ctx?.supertrendAligned ?? null,
         breakout: ctx?.breakout ?? null,
         gates,
@@ -384,9 +390,11 @@ interface TfBoardRow {
   sinceEntryPct: number | null;
   /** Stretch vs the stock's normal day — feeds the "not chasing" check. */
   stretch: Stretch | null;
+  /** Which of /live's visible NSE lists the stock is in (null = lists unavailable / not today). */
+  nseLists: NseListMembership | null;
   supertrendAligned: boolean | null;
   breakout: boolean | null;
-  /** The seven selector checks, in its order — all true ⇔ the selector picks it. */
+  /** The eight selector checks, in its order — all true ⇔ the selector picks it. */
   gates: GateStrip;
   /** Plain English for the first check not passed, or null. */
   needs: string | null;
