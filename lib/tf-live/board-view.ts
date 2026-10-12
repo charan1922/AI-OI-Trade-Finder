@@ -252,6 +252,84 @@ export function pickSector(
   return null;
 }
 
+/** The sectors proper: every TF index value except the broad baskets. */
+export function realSectors(values: ReadonlyMap<string, number>): { name: string; value: number }[] {
+  return [...values.entries()]
+    .filter(([name]) => !BROAD_BASKETS.has(name.toUpperCase()))
+    .map(([name, value]) => ({ name, value }));
+}
+
+/**
+ * Sector strength — the 9th dot (operator, 2026-10-12): ADVISORY, NEVER a check. It is not in
+ * GATE_ORDER, `allPass` ignores it, and the selector / auto-trader never read it, so a stock
+ * climbs and is taken with or without it. It only says whether the stock's sector is moving
+ * WITH the trade — up for a Call, down for a Put — and how strongly compared with the other
+ * sectors (TF's own sector reading: a signed value, used here only for direction and rank,
+ * never narrated as a %).
+ */
+export const SECTOR_TOP_N = 3;
+
+export type SectorStrengthState =
+  /** Moving the trade's way and among the top-N sectors doing so — the strong case. */
+  | 'top'
+  /** Moving the trade's way, but not among the top-N. */
+  | 'with'
+  /** Exactly flat. */
+  | 'flat'
+  /** Moving AGAINST the trade. */
+  | 'against';
+
+export interface SectorStrength {
+  name: string;
+  /** TF's own signed sector reading. */
+  value: number;
+  state: SectorStrengthState;
+  /** 1-based rank among sectors moving the trade's way (strongest first); null when not moving our way. */
+  rank: number | null;
+  /** How many sectors move the trade's way. */
+  of: number;
+  topN: number;
+}
+
+/** Null when the stock has no sector reading — missing evidence, never a guess. */
+export function sectorStrength(
+  sector: { name: string; value: number } | null,
+  all: readonly { name: string; value: number }[],
+  side: 'CE' | 'PE',
+  topN: number = SECTOR_TOP_N
+): SectorStrength | null {
+  if (sector == null || !Number.isFinite(sector.value)) return null;
+  const sign = side === 'CE' ? 1 : -1;
+  // Sectors moving the trade's way, strongest first (largest up-move for a Call, largest down-move for a Put).
+  const ours = all.filter((s) => Number.isFinite(s.value) && s.value * sign > 0).sort((a, b) => b.value * sign - a.value * sign);
+  const idx = ours.findIndex((s) => s.name === sector.name);
+  const rank = idx < 0 ? null : idx + 1;
+  const state: SectorStrengthState =
+    sector.value === 0 ? 'flat' : sector.value * sign < 0 ? 'against' : rank != null && rank <= topN ? 'top' : 'with';
+  return { name: sector.name, value: sector.value, state, rank, of: ours.length, topN };
+}
+
+/** The 9th dot's colour: green only for the strong case; hollow otherwise; grey = no reading. */
+export const sectorDot = (s: SectorStrength | null): Gate => (s == null ? null : s.state === 'top');
+
+/** Plain English for the 9th dot — never a % (the reading is TF's own unit). */
+export function describeSector(s: SectorStrength | null, side: 'CE' | 'PE'): string {
+  if (s == null) return 'no sector reading for this stock';
+  const label = s.name.replace(/^NIFTY /i, '').replace(/^NiFTY /, '');
+  const dir = side === 'CE' ? 'up' : 'down';
+  const reading = `TF reading ${s.value >= 0 ? '+' : ''}${s.value}`;
+  switch (s.state) {
+    case 'top':
+      return `${label} is #${s.rank} of ${s.of} sectors moving ${dir} (${reading}) — strong, with the trade`;
+    case 'with':
+      return `${label} is moving ${dir} (${reading}, #${s.rank} of ${s.of}) but is not among the top ${s.topN}`;
+    case 'flat':
+      return `${label} is flat (${reading}) — no sector direction`;
+    case 'against':
+      return `${label} is moving against this trade (${reading})`;
+  }
+}
+
 export interface ClimberInterval {
   symbol: string;
   /** Board minute (IST) it entered TF Climbers: climbing inside the top N. */
