@@ -15,7 +15,16 @@
  */
 import { ChevronDown, ChevronRight, ExternalLink, Loader2, Target } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { GATE_LABEL, GATE_ORDER, passedCount, type GateStrip } from '@/lib/tf-live/board-view';
+import {
+  describeSector,
+  GATE_LABEL,
+  GATE_ORDER,
+  passedCount,
+  sectorDot,
+  SECTOR_TOP_N,
+  type GateStrip,
+  type SectorStrength,
+} from '@/lib/tf-live/board-view';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { LIVE_TF_SELECTOR_CONFIG as CFG } from '@/lib/tf-live/selector';
 
@@ -49,6 +58,8 @@ interface TfBoardRow {
   rPath: { minute: number; r: number }[];
   beacon: { dir: 'BULL' | 'BEAR'; time: string } | null;
   sector: { name: string; value: number } | null;
+  /** Advisory only (the 9th dot): how this stock's sector moves relative to the trade's direction. */
+  sectorStrength: SectorStrength | null;
 }
 
 interface DroppedClimber {
@@ -138,8 +149,38 @@ function GateTipContent({ index, status }: { index: number; status?: string }) {
   );
 }
 
-/** Seven numbered dots in the selector's order. Green = passed, hollow = failed, grey = no data — never green without evidence. */
-function GateDots({ gates }: { gates: GateStrip }) {
+/** What the 9th (advisory) dot means, in plain English. */
+const SECTOR_HELP = `Sector strength — NOT a check; a stock climbs and is taken without it. Is this stock's sector one of the top ${SECTOR_TOP_N} movers in the trade's direction (up for a Call, down for a Put)? Uses TradeFinder's own sector reading, for direction and rank only. Green = the sector is strong and with the trade; hollow = not (weaker, flat, or against); grey = no sector reading.`;
+
+/** The 9th dot: dashed so it never reads as one of the eight checks. */
+function SectorDot({ sector, side }: { sector: SectorStrength | null; side: 'CE' | 'PE' }) {
+  const g = sectorDot(sector);
+  const cls =
+    g === true
+      ? 'border-emerald-500 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+      : g === false
+        ? 'border-zinc-400 bg-transparent text-zinc-500 dark:text-zinc-400'
+        : 'border-zinc-300 bg-zinc-200 text-zinc-500 dark:border-zinc-600 dark:bg-zinc-700 dark:text-zinc-300';
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={`ml-0.5 inline-flex h-3 w-3 items-center justify-center rounded-full border border-dashed text-[7px] leading-none font-semibold tabular-nums ${cls}`}
+        >
+          9
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="block max-w-[240px] px-2 py-1 text-[10px] leading-snug">
+        <b>9. sector strength — advisory</b>
+        <span className="mt-0.5 block font-normal">{describeSector(sector, side)}</span>
+        <span className="mt-0.5 block font-normal opacity-90">{SECTOR_HELP}</span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Eight numbered dots in the selector's order (+ the dashed advisory 9th). Green = passed, hollow = failed, grey = no data — never green without evidence. */
+function GateDots({ gates, sector, side }: { gates: GateStrip; sector: SectorStrength | null; side: 'CE' | 'PE' }) {
   return (
     <span className="inline-flex shrink-0 items-center gap-0.5" aria-label="checks">
       {GATE_ORDER.map((k, i) => {
@@ -164,6 +205,7 @@ function GateDots({ gates }: { gates: GateStrip }) {
           </Tooltip>
         );
       })}
+      <SectorDot sector={sector} side={side} />
     </span>
   );
 }
@@ -187,6 +229,22 @@ function GateLegend() {
           </Tooltip>
         </li>
       ))}
+      <li>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button" className="inline-flex cursor-help items-center gap-0.5 hover:text-foreground">
+              <span className="inline-flex h-2.5 w-2.5 items-center justify-center rounded-full border border-dashed border-zinc-400 text-[6px] leading-none font-semibold tabular-nums">
+                9
+              </span>
+              sector strength <i className="not-italic opacity-70">(advisory)</i>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="block max-w-[240px] px-2 py-1 text-[10px] leading-snug">
+            <b>9. sector strength — advisory</b>
+            <span className="mt-0.5 block font-normal opacity-90">{SECTOR_HELP}</span>
+          </TooltipContent>
+        </Tooltip>
+      </li>
     </ul>
   );
 }
@@ -364,7 +422,7 @@ function TakeRow({ r }: { r: TfBoardRow }) {
         </span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] text-muted-foreground">
-        <GateDots gates={r.gates} />
+        <GateDots gates={r.gates} sector={r.sectorStrength} side={r.side} />
         <span>{GATE_ORDER.map((k) => GATE_LABEL[k]).join(' · ')}</span>
         {r.climbingSince != null && <span>· climbing since {hhmm(r.climbingSince)}</span>}
       </div>
@@ -404,7 +462,7 @@ function WatchRow({ r, dim = false }: { r: TfBoardRow; dim?: boolean }) {
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-1">
-          <GateDots gates={r.gates} />
+          <GateDots gates={r.gates} sector={r.sectorStrength} side={r.side} />
           <ChartLink symbol={r.symbol} />
         </span>
       </button>

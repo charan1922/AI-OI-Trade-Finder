@@ -13,6 +13,9 @@ import {
   firstNeed,
   gateStrip,
   pickSector,
+  realSectors,
+  sectorStrength,
+  type SectorStrength,
   rPath,
   rTrend,
   climbedStocks,
@@ -339,6 +342,12 @@ async function buildBody(today: string, nowMin: number) {
         rPath: rPath(boards, r.symbol, RACE_WINDOW_START_MIN, asOfMinute),
         beacon: beacons.get(r.symbol) ?? null,
         sector: pickSector(basketsBySymbol.get(r.symbol) ?? [], sectorValues),
+        // ADVISORY 9th dot (board-view.ts sectorStrength) — never a check, never read by the selector.
+        sectorStrength: sectorStrength(
+          pickSector(basketsBySymbol.get(r.symbol) ?? [], sectorValues),
+          realSectors(sectorValues),
+          side
+        ),
       };
     });
     // Climbers that left the top 20 stay visible (operator, 2026-10-08).
@@ -406,4 +415,6 @@ interface TfBoardRow {
   rPath: { minute: number; r: number }[];
   beacon: TfBeacon | null;
   sector: { name: string; value: number } | null;
+  /** Advisory only: how this stock's sector is moving relative to the trade's direction. */
+  sectorStrength: SectorStrength | null;
 }

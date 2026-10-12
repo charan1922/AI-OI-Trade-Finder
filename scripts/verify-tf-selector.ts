@@ -45,6 +45,13 @@ import {
   pickSector,
   rPath,
   rTrend,
+  describeSector,
+  GATE_ORDER,
+  passedCount,
+  realSectors,
+  SECTOR_TOP_N,
+  sectorDot,
+  sectorStrength,
 } from '@/lib/tf-live/board-view';
 import { isTighterStop, trailedSpotStop } from '@/lib/auto-trade/risk/trailing-stop';
 import { MIN_RISK_PCT, TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK, TRAIL_R } from '@/lib/trade-suggest/config';
@@ -762,6 +769,62 @@ function main(): void {
       const r = run({ oiBuildupRank: oiRank <= 24 ? oiRank : null, mostActiveRank: null, complete: true });
       check(`lists: ${label} OI rank #${oiRank} ${passes ? 'passes' : 'is refused'}`, (r.candidates.length === 1) === passes, JSON.stringify(r.rejected));
     }
+  }
+
+  // ── 17e. 9th dot: sector strength — ADVISORY, never a check (operator 2026-10-12) ──
+  // Real TF sector readings (the newest sector_scope capture of each session).
+  {
+    const today = new Map<string, number>([
+      ['NIFTY AUTO', 0.95], ['NIFTY METAL', 0.48], ['NIFTY REALTY', 0.47], ['NIFTY PHARMA', 0.33], ['NIFTY IT', 0.17],
+      ['NIFTY MID SELECT', 0.05], ['OTHERS', 0], ['NIFTY FIN SERVICE', -0.07], ['NIFTY BANK', -0.09], ['NiFTY 50', -0.1],
+      ['SENSEX', -0.11], ['NIFTY CEMENT', -0.14], ['NIFTY PVT BANK', -0.14], ['NIFTY ENERGY', -0.31],
+      ['NIFTY PSU BANK', -1.01], ['NIFTY FMCG', -1.29],
+    ]);
+    const sectors = realSectors(today);
+    const pick = (name: string) => ({ name, value: today.get(name)! });
+    check('sector: broad baskets are not sectors (NIFTY 50 / SENSEX / MID SELECT / OTHERS dropped)', sectors.length === 12 && !sectors.some((x) => /50|SENSEX|MID SELECT|OTHERS/i.test(x.name)), String(sectors.length));
+    const auto = sectorStrength(pick('NIFTY AUTO'), sectors, 'CE');
+    check('sector: CE, AUTO +0.95 is the #1 of 5 sectors moving up → top', auto?.state === 'top' && auto.rank === 1 && auto.of === 5, JSON.stringify(auto));
+    const it = sectorStrength(pick('NIFTY IT'), sectors, 'CE');
+    check('sector: CE, IT +0.17 moves up but is #5 of 5 → with (not top 3)', it?.state === 'with' && it.rank === 5, JSON.stringify(it));
+    const energyCe = sectorStrength(pick('NIFTY ENERGY'), sectors, 'CE');
+    check('sector: CE, ENERGY −0.31 moves AGAINST a call', energyCe?.state === 'against' && energyCe.rank === null, JSON.stringify(energyCe));
+    const fmcg = sectorStrength(pick('NIFTY FMCG'), sectors, 'PE');
+    check('sector: PE, FMCG −1.29 is the #1 of 7 sectors moving down → top', fmcg?.state === 'top' && fmcg.rank === 1 && fmcg.of === 7, JSON.stringify(fmcg));
+    check('sector: PE, PSU BANK −1.01 is #2 → top', sectorStrength(pick('NIFTY PSU BANK'), sectors, 'PE')?.rank === 2);
+    check('sector: PE, AUTO +0.95 moves AGAINST a put', sectorStrength(pick('NIFTY AUTO'), sectors, 'PE')?.state === 'against');
+    check('sector: PE, FIN SERVICE −0.07 is #7 of 7 → with (the weakest down-mover)', sectorStrength(pick('NIFTY FIN SERVICE'), sectors, 'PE')?.state === 'with');
+    check('sector: the top-N is configurable (top 1: METAL +0.48 is only #2)', sectorStrength(pick('NIFTY METAL'), sectors, 'CE', 1)?.state === 'with');
+    check('sector: default top-N is 3', SECTOR_TOP_N === 3 && sectorStrength(pick('NIFTY REALTY'), sectors, 'CE')?.state === 'top');
+    check('sector: an exactly-flat sector has no direction', sectorStrength({ name: 'NIFTY X', value: 0 }, [...sectors, { name: 'NIFTY X', value: 0 }], 'CE')?.state === 'flat');
+    check('sector: no sector reading → null (missing evidence, never a guess)', sectorStrength(null, sectors, 'CE') === null);
+    check('sector: a non-finite reading → null', sectorStrength({ name: 'NIFTY AUTO', value: Number.NaN }, sectors, 'CE') === null);
+
+    // The dot: green ONLY for the strong case; hollow otherwise; grey with no reading.
+    check('sector dot: top → green', sectorDot(auto) === true);
+    check('sector dot: with / against → hollow (false), never green', sectorDot(it) === false && sectorDot(energyCe) === false);
+    check('sector dot: no reading → grey (null), never green', sectorDot(null) === null);
+
+    // Plain English — and never a "%": the reading is TF's own unit.
+    check(
+      'sector text: top call reads in plain English with no %',
+      describeSector(auto, 'CE') === 'AUTO is #1 of 5 sectors moving up (TF reading +0.95) — strong, with the trade',
+      describeSector(auto, 'CE')
+    );
+    check('sector text: a put speaks of "down"', describeSector(fmcg, 'PE').includes('moving down') && !describeSector(fmcg, 'PE').includes('%'));
+    check('sector text: against is stated', describeSector(energyCe, 'CE').includes('against this trade'));
+    check('sector text: no reading is stated', describeSector(null, 'CE') === 'no sector reading for this stock');
+
+    // A very different day: 2026-10-09 (a rising market, every sector positive) — calls are with the market, puts are against it.
+    const rising = realSectors(new Map([['NIFTY FMCG', 4.14], ['NIFTY IT', 3.82], ['NIFTY PHARMA', 2.97], ['NIFTY ENERGY', 2.73], ['NIFTY AUTO', 2.65]]));
+    check('sector: rising day, CE on IT is #2 of 5 → top', sectorStrength({ name: 'NIFTY IT', value: 3.82 }, rising, 'CE')?.rank === 2);
+    check('sector: rising day, every PE is against its sector', rising.every((x) => sectorStrength(x, rising, 'PE')?.state === 'against'));
+
+    // NEVER a check: not one of the eight, and the strip's verdict ignores it.
+    check('sector: the advisory dot is not in GATE_ORDER (still exactly eight checks)', GATE_ORDER.length === 8 && !(GATE_ORDER as readonly string[]).includes('sectorStrength'));
+    const strip = gateStrip(0.5, 1.2, ok(), DEFAULT_TF_SELECTOR_CONFIG);
+    check('sector: all eight checks green is TAKE whatever the sector says', allPass(strip) && sectorDot(energyCe) === false);
+    check('sector: passedCount can never exceed eight', passedCount(strip) === 8);
   }
 
   // ── 18. Missing price data is described as missing, not as a failed range ──
