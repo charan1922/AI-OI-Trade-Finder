@@ -16,6 +16,7 @@
 import { ChevronDown, ChevronRight, ExternalLink, Loader2, Target } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { GATE_LABEL, GATE_ORDER, passedCount, type GateStrip } from '@/lib/tf-live/board-view';
+import { LIVE_TF_SELECTOR_CONFIG as CFG } from '@/lib/tf-live/selector';
 
 interface TfBoardRow {
   symbol: string;
@@ -104,22 +105,58 @@ const inSession = () => {
   return weekday && minute >= 9 * 60 + 15 && minute <= 15 * 60 + 30;
 };
 
-/** Six dots in the selector's order. Green = passed, hollow = failed, grey = no data — never green without evidence. */
+/** Plain-English meaning of each check, keyed like GATE_ORDER (dot number = position + 1). Numbers come from the live selector config. */
+const GATE_HELP: Record<(typeof GATE_ORDER)[number], string> = {
+  climbing: `Money is still flowing in right now. TradeFinder's R-Factor must have risen by more than ${CFG.minDeltaR} in the last 30 minutes. A flat R-Factor means the buying or selling has stopped.`,
+  moving: `The stock's price has actually moved — at least ${CFG.minAbsPctChange}% up or down today. Up means we look at a Call (CE), down means a Put (PE).`,
+  orb: 'Our own breakout test: the price has broken out of its first 30 minutes (09:15–09:45) high or low, in the direction of the trade.',
+  beacon:
+    'TradeFinder has also flagged a breakout on this stock, pointing the same way as the trade (bullish for Call, bearish for Put). Both we and TradeFinder must agree.',
+  pool: `Enough real money is trading in the options: at least ₹${CFG.minPremValueCr} Cr of premium. Thin options are hard to buy and sell at a fair price.`,
+  notExtended: `The stock hasn't already run too far since 09:45 — less than ${CFG.maxSinceEntryPct}% in the trade's direction. We don't want to buy after the move is done.`,
+  notChasing: `We're not late to the party. The 09:15 candle was less than ${CFG.maxFirstCandleAdr}× a normal day's range, and the stock is less than ${CFG.maxFromPrevCloseAdr}× a normal day's range away from yesterday's close.`,
+};
+
+/** Seven numbered dots in the selector's order. Green = passed, hollow = failed, grey = no data — never green without evidence. */
 function GateDots({ gates }: { gates: GateStrip }) {
   return (
     <span className="inline-flex shrink-0 items-center gap-0.5" aria-label="checks">
-      {GATE_ORDER.map((k) => {
+      {GATE_ORDER.map((k, i) => {
         const g = gates[k];
         const cls =
           g === true
-            ? 'bg-emerald-500 border-emerald-500'
+            ? 'bg-emerald-500 border-emerald-500 text-white'
             : g === false
-              ? 'border-red-400 bg-transparent'
-              : 'border-zinc-300 bg-zinc-200 dark:border-zinc-600 dark:bg-zinc-700';
+              ? 'border-red-400 bg-transparent text-red-500'
+              : 'border-zinc-300 bg-zinc-200 text-zinc-500 dark:border-zinc-600 dark:bg-zinc-700 dark:text-zinc-300';
         const state = g === true ? 'passed' : g === false ? 'not passed' : 'no data';
-        return <span key={k} title={`${GATE_LABEL[k]}: ${state}`} className={`h-2 w-2 rounded-full border ${cls}`} />;
+        return (
+          <span
+            key={k}
+            title={`${i + 1}. ${GATE_LABEL[k]}: ${state}\n${GATE_HELP[k]}`}
+            className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[8px] leading-none font-semibold tabular-nums ${cls}`}
+          >
+            {i + 1}
+          </span>
+        );
       })}
     </span>
+  );
+}
+
+/** Key to the numbered dots — label always visible, plain-English definition on hover. */
+function GateLegend() {
+  return (
+    <ul className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 border-b border-border px-2 py-1 text-[9px] text-muted-foreground">
+      {GATE_ORDER.map((k, i) => (
+        <li key={k} title={GATE_HELP[k]} className="inline-flex cursor-help items-center gap-1 hover:text-foreground">
+          <span className="inline-flex h-3 w-3 items-center justify-center rounded-full border border-zinc-300 text-[7px] leading-none font-semibold tabular-nums dark:border-zinc-600">
+            {i + 1}
+          </span>
+          {GATE_LABEL[k]}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -461,6 +498,7 @@ export function TfRaceCard() {
         TF Intraday Boost top 20. A name is <b className="text-emerald-700 dark:text-emerald-300">TAKE</b> when it passes all
         seven checks — the same ones the auto-trader uses. Participation evidence, not a buy signal by itself.
       </p>
+      <GateLegend />
       <div className="flex-1 px-2 py-1.5">
         {!data ? (
           <p className="flex items-center justify-center gap-2 py-3 text-[11px] text-muted-foreground">
