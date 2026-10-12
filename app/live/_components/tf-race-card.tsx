@@ -16,6 +16,7 @@
 import { ChevronDown, ChevronRight, ExternalLink, Loader2, Target } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { GATE_LABEL, GATE_ORDER, passedCount, type GateStrip } from '@/lib/tf-live/board-view';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { LIVE_TF_SELECTOR_CONFIG as CFG } from '@/lib/tf-live/selector';
 
 interface TfBoardRow {
@@ -117,6 +118,20 @@ const GATE_HELP: Record<(typeof GATE_ORDER)[number], string> = {
   notChasing: `We're not late to the party. The 09:15 candle was less than ${CFG.maxFirstCandleAdr}× a normal day's range, and the stock is less than ${CFG.maxFromPrevCloseAdr}× a normal day's range away from yesterday's close.`,
 };
 
+/** Small tooltip body shared by the dots and the legend: heading (+ optional status), then the plain-English definition. */
+function GateTipContent({ index, status }: { index: number; status?: string }) {
+  const k = GATE_ORDER[index];
+  return (
+    <TooltipContent side="top" className="block max-w-[220px] px-2 py-1 text-[10px] leading-snug">
+      <b>
+        {index + 1}. {GATE_LABEL[k]}
+        {status ? ` — ${status}` : ''}
+      </b>
+      <span className="mt-0.5 block font-normal opacity-90">{GATE_HELP[k]}</span>
+    </TooltipContent>
+  );
+}
+
 /** Seven numbered dots in the selector's order. Green = passed, hollow = failed, grey = no data — never green without evidence. */
 function GateDots({ gates }: { gates: GateStrip }) {
   return (
@@ -131,29 +146,39 @@ function GateDots({ gates }: { gates: GateStrip }) {
               : 'border-zinc-300 bg-zinc-200 text-zinc-500 dark:border-zinc-600 dark:bg-zinc-700 dark:text-zinc-300';
         const state = g === true ? 'passed' : g === false ? 'not passed' : 'no data';
         return (
-          <span
-            key={k}
-            title={`${i + 1}. ${GATE_LABEL[k]}: ${state}\n${GATE_HELP[k]}`}
-            className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[8px] leading-none font-semibold tabular-nums ${cls}`}
-          >
-            {i + 1}
-          </span>
+          <Tooltip key={k}>
+            <TooltipTrigger asChild>
+              <span
+                className={`inline-flex h-3 w-3 items-center justify-center rounded-full border text-[7px] leading-none font-semibold tabular-nums ${cls}`}
+              >
+                {i + 1}
+              </span>
+            </TooltipTrigger>
+            <GateTipContent index={i} status={state} />
+          </Tooltip>
         );
       })}
     </span>
   );
 }
 
-/** Key to the numbered dots — label always visible, plain-English definition on hover. */
+/** Key to the numbered dots — label always visible, plain-English definition on hover or focus. */
 function GateLegend() {
   return (
-    <ul className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 border-b border-border px-2 py-1 text-[9px] text-muted-foreground">
+    <ul className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-border px-2 py-0.5 text-[8px] text-muted-foreground">
       {GATE_ORDER.map((k, i) => (
-        <li key={k} title={GATE_HELP[k]} className="inline-flex cursor-help items-center gap-1 hover:text-foreground">
-          <span className="inline-flex h-3 w-3 items-center justify-center rounded-full border border-zinc-300 text-[7px] leading-none font-semibold tabular-nums dark:border-zinc-600">
-            {i + 1}
-          </span>
-          {GATE_LABEL[k]}
+        <li key={k}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" className="inline-flex cursor-help items-center gap-0.5 hover:text-foreground">
+                <span className="inline-flex h-2.5 w-2.5 items-center justify-center rounded-full border border-zinc-300 text-[6px] leading-none font-semibold tabular-nums dark:border-zinc-600">
+                  {i + 1}
+                </span>
+                {GATE_LABEL[k]}
+              </button>
+            </TooltipTrigger>
+            <GateTipContent index={i} />
+          </Tooltip>
         </li>
       ))}
     </ul>
@@ -469,6 +494,7 @@ export function TfRaceCard() {
   const old = data?.boardAgeMin != null && data.boardAgeMin > BOARD_MAX_AGE_MIN;
 
   return (
+    <TooltipProvider delayDuration={100}>
     <section className="flex h-full flex-col rounded-lg border border-border bg-card">
       <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1">
         <Target className="h-3.5 w-3.5 text-violet-500" />
@@ -586,5 +612,6 @@ export function TfRaceCard() {
         )}
       </div>
     </section>
+    </TooltipProvider>
   );
 }
