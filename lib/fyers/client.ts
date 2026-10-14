@@ -232,6 +232,20 @@ export interface FutDepthSnapshot {
   sellQty: number | null;
   /** Futures last traded price → basis vs the equity close. */
   futLtp: number | null;
+  /** Best bid / best ask of the FUTURES book, from the same response (`bids` / `ask`
+   *  levels). The /live liquidity read since Fyers quotes carry no equity book. */
+  futBid: number | null;
+  futAsk: number | null;
+}
+
+/** Best price on one side of a Fyers depth reply (`bids` → highest, `ask` → lowest); null when empty. */
+function bestLevel(levels: unknown, side: 'bid' | 'ask'): number | null {
+  if (!Array.isArray(levels)) return null;
+  const prices = levels
+    .map((l) => (l && typeof l === 'object' ? Number((l as Record<string, unknown>).price) : Number.NaN))
+    .filter((p) => Number.isFinite(p) && p > 0);
+  if (prices.length === 0) return null;
+  return side === 'bid' ? Math.max(...prices) : Math.min(...prices);
 }
 
 /** A positive finite number or null — absent fields are never fabricated. */
@@ -276,5 +290,11 @@ export async function fetchFutDepth(fyersSymbol: string): Promise<FutDepthSnapsh
     buyQty: posOrNull(entry?.totalbuyqty),
     sellQty: posOrNull(entry?.totalsellqty),
     futLtp: posOrNull(entry?.ltp),
+    ...(() => {
+      const bid = bestLevel(entry?.bids, 'bid');
+      const ask = bestLevel(entry?.ask ?? entry?.asks, 'ask');
+      // A crossed or one-sided book is missing evidence, not a spread.
+      return bid != null && ask != null && ask >= bid ? { futBid: bid, futAsk: ask } : { futBid: null, futAsk: null };
+    })(),
   };
 }

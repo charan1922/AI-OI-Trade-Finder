@@ -13,6 +13,10 @@ export interface LiveUrgencyRow {
   bid: number | null;
   ask: number | null;
   spreadPct: number | null;
+  /** Spread of the stock's FUTURES book (% of mid), from the poller's depth call. DISPLAY
+   *  ONLY: the /live table falls back to it when the equity spread is missing (always,
+   *  since the Fyers switch). The scanner never reads it — its gate stays on the equity book. */
+  futSpreadPct?: number | null;
   /** Bid qty ÷ (bid+ask) in [0,1] — order-flow pressure (the real "urgency" proxy). */
   imbalance: number | null;
   /** Live futures OI and its ratio to the 20-session bhavcopy average (conviction). */

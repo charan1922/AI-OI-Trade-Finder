@@ -33,7 +33,7 @@ let tableReady = false;
 /** Depth-derived columns attached to the current FUT bucket (nullable — EQ
  *  rows and pre-recorder buckets stay NULL; values come straight from the
  *  depth response, never derived/fabricated). */
-const DEPTH_COLUMNS = ['pdoi', 'oiPct', 'atp', 'dayVolume', 'buyQty', 'sellQty', 'futLtp', 'nseOiPct'] as const;
+const DEPTH_COLUMNS = ['pdoi', 'oiPct', 'atp', 'dayVolume', 'buyQty', 'sellQty', 'futLtp', 'nseOiPct', 'futBid', 'futAsk'] as const;
 
 /** Lazily create the table + index (idempotent, no migration required). */
 export async function ensureFyersCandlesTable(): Promise<void> {
@@ -58,6 +58,8 @@ export async function ensureFyersCandlesTable(): Promise<void> {
       sellQty    REAL,
       futLtp     REAL,
       nseOiPct   REAL,
+      futBid     REAL,
+      futAsk     REAL,
       updatedAt  TEXT    NOT NULL,
       PRIMARY KEY (symbol, instrument, date, bucketTs)
     )
@@ -133,6 +135,9 @@ export interface FutDepthFields {
   /** NSE's own combined OI %-change (futures + options, oi-spurts feed) —
    *  stored verbatim from NSE so the series matches /nse/movers exactly. */
   nseOiPct: number | null;
+  /** Best bid / ask of the futures book (null when the book was empty or crossed). */
+  futBid?: number | null;
+  futAsk?: number | null;
 }
 
 /**
@@ -153,8 +158,8 @@ export async function attachFutDepth(
   await prisma.$executeRawUnsafe(
     `INSERT INTO fyers_candles
        (symbol, instrument, date, bucketTs, open, high, low, close, volume,
-        oi, pdoi, oiPct, atp, dayVolume, buyQty, sellQty, futLtp, nseOiPct, updatedAt)
-     VALUES (?, 'FUT', ?, ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        oi, pdoi, oiPct, atp, dayVolume, buyQty, sellQty, futLtp, nseOiPct, futBid, futAsk, updatedAt)
+     VALUES (?, 'FUT', ?, ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(symbol, instrument, date, bucketTs) DO UPDATE SET
        oi = excluded.oi,
        pdoi = excluded.pdoi,
@@ -165,6 +170,8 @@ export async function attachFutDepth(
        sellQty = excluded.sellQty,
        futLtp = excluded.futLtp,
        nseOiPct = excluded.nseOiPct,
+       futBid = excluded.futBid,
+       futAsk = excluded.futAsk,
        updatedAt = excluded.updatedAt`,
     symbol,
     date,
@@ -178,6 +185,8 @@ export async function attachFutDepth(
     d.sellQty,
     d.futLtp,
     d.nseOiPct,
+    d.futBid ?? null,
+    d.futAsk ?? null,
     new Date(nowMs).toISOString()
   );
 }
