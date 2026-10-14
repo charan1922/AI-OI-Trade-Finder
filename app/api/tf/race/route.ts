@@ -38,6 +38,7 @@ import { buildRecordedTfContext } from '@/lib/tf-live/context';
 import { getTfLiveCaptureForDate } from '@/lib/tf-live/store';
 import { LIVE_TF_SELECTOR_CONFIG, selectTfCandidates } from '@/lib/tf-live/selector';
 import type { Stretch } from '@/lib/tf-live/stretch';
+import type { TrendShape } from '@/lib/tf-live/trend-shape';
 import type { NseListMembership } from '@/lib/nse/live-lists';
 import { loadVisibleNseLists } from '@/lib/nse/live-lists';
 import { TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK } from '@/lib/trade-suggest/config';
@@ -348,6 +349,8 @@ async function buildBody(today: string, nowMin: number) {
           realSectors(sectorValues),
           side
         ),
+        // ADVISORY 10th dot (lib/tf-live/trend-shape.ts) — never a check, never read by the selector.
+        trendShape: ctx?.trendShape ?? null,
       };
     });
     // Climbers that left the top 20 stay visible (operator, 2026-10-08).
@@ -417,4 +420,6 @@ interface TfBoardRow {
   sector: { name: string; value: number } | null;
   /** Advisory only: how this stock's sector is moving relative to the trade's direction. */
   sectorStrength: SectorStrength | null;
+  /** Advisory only: TradeFinder-style "trend day" chart shape as of the board. */
+  trendShape: TrendShape | null;
 }

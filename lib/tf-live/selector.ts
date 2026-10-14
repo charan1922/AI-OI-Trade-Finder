@@ -55,6 +55,7 @@
 import type { TfRunnerAt } from '@/lib/tf-live/race';
 import type { NseListMembership } from '@/lib/nse/live-lists';
 import type { Stretch } from '@/lib/tf-live/stretch';
+import type { TrendShape } from '@/lib/tf-live/trend-shape';
 
 /** Per-symbol evidence the selector needs but cannot derive from the TF board. */
 export interface TfSymbolContext {
@@ -85,6 +86,9 @@ export interface TfSymbolContext {
    *  (lib/nse/live-lists.ts). Read by check ⑦. REQUIRED so no builder can forget it;
    *  null (lists unavailable or stale) REJECTS as unknown — never as "in neither". */
   nseLists: NseListMembership | null;
+  /** ADVISORY "trend day" chart shape (lib/tf-live/trend-shape.ts) — the /live card's 10th
+   *  dot. The selector NEVER reads it; optional so the live scanner need not build it. */
+  trendShape?: TrendShape | null;
 }
 
 export interface TfSelectorConfig {

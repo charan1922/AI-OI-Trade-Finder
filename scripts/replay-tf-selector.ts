@@ -35,7 +35,8 @@ process.loadEnvFile('.env.local');
 import { prisma } from '@/lib/db';
 import { getTfBoardsForDate, tfCandidatesAtMinute, type TfBoardAt } from '@/lib/tf-live/race';
 import { getTfEligibleSectors } from '@/lib/trade-suggest/candidates';
-import { selectTfCandidates, type TfSymbolContext } from '@/lib/tf-live/selector';
+import { DEFAULT_TF_SELECTOR_CONFIG, selectTfCandidates, type TfSelectorConfig, type TfSymbolContext } from '@/lib/tf-live/selector';
+import { firstNeed, gateStrip, GATE_LABEL, GATE_ORDER } from '@/lib/tf-live/board-view';
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
 import { loadDayBaselines, orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
 import { measureStretch } from '@/lib/tf-live/stretch';
@@ -54,8 +55,24 @@ const q = (sql: string, ...p: unknown[]) =>
 /** 1R in rupees — the per-lot risk ceiling the entry gate enforces. */
 const RISK_RUPEES = DEFAULT_SETTINGS.maxRiskPerLotRupees;
 const SQUARE_OFF_MIN = 15 * 60 + 12;
-const ENTRY_MINUTES = [9 * 60 + 45, 10 * 60, 10 * 60 + 15, 10 * 60 + 30, 10 * 60 + 45, 11 * 60];
-const MAX_TRADES_PER_DAY = DEFAULT_SETTINGS.maxTradesPerDay;
+// ── Variant knobs (env) — measure an alternative WITHOUT editing the live config ──
+//   REPLAY_ENTRY_END=750          last entry minute (IST minute-of-day; default 660 = 11:00)
+//   REPLAY_MAX_RANK=20            TF board rank cap (default TF_RACE_MAX_RANK)
+//   REPLAY_MAX_TRADES=1           trades per day (default the auto-trade setting)
+//   REPLAY_SELECTOR='{"maxSinceEntryPct":99}'   selector threshold overrides (JSON)
+//   REPLAY_MIN_RISK_PCT=1.5        minimum spot stop distance in % (default MIN_RISK_PCT)
+//   REPLAY_TRACE='2026-10-13:HCLTECH,2026-10-12:DABUR'   print every check for these names
+const ENTRY_END = Number(process.env.REPLAY_ENTRY_END ?? 11 * 60);
+const ENTRY_MINUTES: number[] = [];
+for (let m = 9 * 60 + 45; m <= ENTRY_END; m += 15) ENTRY_MINUTES.push(m);
+const MAX_RANK = Number(process.env.REPLAY_MAX_RANK ?? TF_RACE_MAX_RANK);
+const MAX_TRADES_PER_DAY = Number(process.env.REPLAY_MAX_TRADES ?? DEFAULT_SETTINGS.maxTradesPerDay);
+const SELECTOR_CFG: TfSelectorConfig = {
+  ...DEFAULT_TF_SELECTOR_CONFIG,
+  ...(process.env.REPLAY_SELECTOR ? (JSON.parse(process.env.REPLAY_SELECTOR) as Partial<TfSelectorConfig>) : {}),
+};
+const MIN_RISK = Number(process.env.REPLAY_MIN_RISK_PCT ?? MIN_RISK_PCT);
+const TRACE = new Set((process.env.REPLAY_TRACE ?? '').split(',').map((s) => s.trim()).filter(Boolean));
 
 const istMin = (ms: number): number => {
   const p = new Intl.DateTimeFormat('en-IN', {
@@ -156,7 +173,7 @@ async function main(): Promise<void> {
 
     for (const em of ENTRY_MINUTES) {
       if (halted || dayTrades.length >= MAX_TRADES_PER_DAY) break;
-      const race = tfCandidatesAtMinute(boards, em, TF_RACE_MAX_RANK, eligible);
+      const race = tfCandidatesAtMinute(boards, em, MAX_RANK, eligible);
       if (!race.available) continue;
 
       // Per-symbol context, exactly as the live engine assembles it. TF beacons as
@@ -204,7 +221,16 @@ async function main(): Promise<void> {
         });
       }
 
-      const { candidates } = selectTfCandidates(race.runners, context);
+      for (const key of TRACE) {
+        const [td, ts] = key.split(':');
+        if (td !== date) continue;
+        const runner = race.runners.find((r) => r.symbol === ts);
+        if (runner == null) { console.log(`TRACE ${date} ${hhmm(em)} ${ts}: not in TF top ${MAX_RANK} (eligible)`); continue; }
+        const g = gateStrip(runner.deltaR, runner.pctChange, context.get(ts), SELECTOR_CFG);
+        const strip = GATE_ORDER.map((k) => `${g[k] === true ? '✓' : g[k] === false ? '✗' : '?'}${GATE_LABEL[k]}`).join(' ');
+        console.log(`TRACE ${date} ${hhmm(em)} ${ts} #${runner.rankNow} R${runner.rFactorNow.toFixed(2)} ${runner.pctChange?.toFixed(2)}%  ${strip}  needs: ${firstNeed(g, context.get(ts), SELECTOR_CFG) ?? '—'}`);
+      }
+      const { candidates } = selectTfCandidates(race.runners, context, SELECTOR_CFG);
       for (const c of candidates) {
         if (halted || dayTrades.length >= MAX_TRADES_PER_DAY) break;
         if (takenToday.has(c.symbol)) continue;
@@ -215,7 +241,7 @@ async function main(): Promise<void> {
         if (prior.length < 10) continue;
         const entry = sb.find((b) => b.bucketTs === entryTs)!.open;
         if (!(entry > 0)) continue;
-        const plan = buildSpotPlan(c.side, entry, sb, deriveSessionContext(prior), entryTs, { atrMult: 0 });
+        const plan = buildSpotPlan(c.side, entry, sb, deriveSessionContext(prior), entryTs, { atrMult: 0, minRiskPct: MIN_RISK });
         if (plan.slSpot == null) continue;
         const res = walk(c.side, entry, plan.slSpot, sb, entryTs);
         if (res == null) continue;

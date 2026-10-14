@@ -57,6 +57,8 @@ import { isTighterStop, trailedSpotStop } from '@/lib/auto-trade/risk/trailing-s
 import { MIN_RISK_PCT, TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK, TRAIL_R } from '@/lib/trade-suggest/config';
 import { DEFAULT_SETTINGS } from '@/lib/auto-trade/config';
 import { ADR_MAX_STALE_DAYS, dayBaseline, measureStretch } from '@/lib/tf-live/stretch';
+import { describeTrend, TREND_RULE, trendDot, trendShape, type TrendBar } from '@/lib/tf-live/trend-shape';
+import { readFileSync } from 'node:fs';
 import {
   assembleVisibleLists,
   filterToLiveUniverse,
@@ -894,6 +896,49 @@ function main(): void {
       !('sector' in DEFAULT_TF_SELECTOR_CONFIG) &&
         !JSON.stringify(DEFAULT_TF_SELECTOR_CONFIG).toLowerCase().includes('sector')
     );
+  }
+
+  // ── 22. The 10th dot — "trend day" chart shape — is ADVISORY and point-in-time ──
+  {
+    // 5-min bars on an IST session; minute m (IST minute-of-day) → bucket seconds.
+    const ts = (m: number) => Date.UTC(2026, 9, 13, 0, 0) / 1000 + (m - 330) * 60;
+    // A path given as closes from 09:15 every 5 min; high/low hug the close, flat volume.
+    const series = (closes: number[]): TrendBar[] =>
+      closes.map((c, i) => ({ bucketTs: ts(555 + 5 * i), high: c + 0.2, low: c - 0.2, close: c, volume: 1000 }));
+    // 09:15–09:40 ranges 100–101, then a steady climb to 104 by 11:00 (prev close 100.5).
+    const climb = series([100, 100.5, 101, 100.4, 100.8, 100.6, 101.6, 102, 102.2, 102.5, 102.8, 103, 103.1, 103.3, 103.5, 103.6, 103.8, 103.9, 104, 104.1, 104.2]);
+    const up = trendShape(climb, 'CE', 100.5);
+    check('trend: steady climb above VWAP after an OR break → trend', up?.state === 'trend', JSON.stringify(up));
+    check('trend: dot green only for a trend', trendDot(up) === true);
+    check('trend: description states it in plain words', describeTrend(up).startsWith('clean trend day'));
+    // Mirror image for a put.
+    const fall = trendShape(climb.map((b) => ({ ...b, high: 201 - b.low, low: 201 - b.high, close: 201 - b.close })), 'PE', 100.5);
+    check('trend: the mirror-image fall is a trend for a PE', fall?.state === 'trend', JSON.stringify(fall));
+    // Same climb but the wrong side for the trade.
+    check('trend: a rising stock is not a PE trend', trendShape(climb, 'PE', 100.5)?.state === 'not');
+    // Breaks out, then sags back under VWAP for most of the time after 10:00.
+    const sag = series([100, 100.5, 101, 100.4, 100.8, 100.6, 101.6, 102.4, 101.2, 100.9, 100.8, 100.7, 100.8, 100.6, 100.9, 101.0, 101.1, 101.0, 102.3, 102.4, 102.5]);
+    const s = trendShape(sag, 'CE', 100.5);
+    check('trend: below VWAP most of the time → not a trend', s?.state === 'not' && (s.failed ?? '').includes('VWAP'), JSON.stringify(s));
+    check('trend: "not" is hollow, never green', trendDot(s) === false);
+    // Clean climb that then gives back more than the max pullback.
+    const deep = series([100, 100.5, 101, 100.4, 100.8, 100.6, 101.6, 102.5, 103, 103.5, 104, 104.5, 105, 105.5, 106, 106.5, 107, 105.0, 105.2, 105.4, 105.3]);
+    const d = trendShape(deep, 'CE', 100.5);
+    check(`trend: a pullback deeper than ${TREND_RULE.maxPullbackPct}% → not a trend`, d?.state === 'not' && (d.failed ?? '').includes('pulled back'), JSON.stringify(d));
+    // Too small a move from yesterday's close.
+    check('trend: under the minimum move from prev close → not', trendShape(climb, 'CE', 103.8)?.state === 'not');
+    // Missing evidence stays grey.
+    check('trend: no previous close → null (grey), never guessed', trendShape(climb, 'CE', null) === null && trendDot(null) === null);
+    check('trend: nothing after 10:00 yet → null', trendShape(climb.slice(0, 9), 'CE', 100.5) === null);
+    check('trend: opening range incomplete → null', trendShape(climb.slice(0, 3), 'CE', 100.5) === null);
+    // Advisory only: the selector never reads it and it is not one of the checks.
+    const selectorSrc = readFileSync('lib/tf-live/selector.ts', 'utf8');
+    check(
+      'trend: selectTfCandidates never reads trendShape (only the context field declares it)',
+      (selectorSrc.match(/trendShape/g) ?? []).length === 1
+    );
+    check('trend: not in GATE_ORDER — still exactly eight checks', GATE_ORDER.length === 8 && !(GATE_ORDER as readonly string[]).includes('trendShape'));
+    check('trend: no selector config knob for it', !JSON.stringify(DEFAULT_TF_SELECTOR_CONFIG).toLowerCase().includes('trend'));
   }
 
   console.log(`\n${passed} passed, ${failures.length} failed\n`);
