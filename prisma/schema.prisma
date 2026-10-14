@@ -321,6 +321,10 @@ model FyersCandle {
   /// NSE's combined OI %-change (futures + options) from the oi-spurts feed,
   /// stored verbatim — the one non-Fyers column (matches /nse/movers).
   nseOiPct   Float?
+  /// Best bid / ask of the FUTURES book from the same depth call (FUT rows only) —
+  /// the /live liquidity read since Fyers quotes carry no equity order book.
+  futBid     Float?
+  futAsk     Float?
   updatedAt  String
 
   @@id([symbol, instrument, date, bucketTs])

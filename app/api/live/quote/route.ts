@@ -140,9 +140,10 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
     symbol: string; instrument: 'EQ' | 'FUT'; bucketTs: number; open: number; high: number; low: number;
     close: number; volume: number; oi: number; atp: number | null; dayVolume: number | null;
     buyQty: number | null; sellQty: number | null; futLtp: number | null;
+    futBid: number | null; futAsk: number | null;
   }[]>(
     `SELECT c.symbol, c.instrument, c.bucketTs, c.open, c.high, c.low, c.close, c.volume,
-            c.oi, c.atp, c.dayVolume, c.buyQty, c.sellQty, c.futLtp
+            c.oi, c.atp, c.dayVolume, c.buyQty, c.sellQty, c.futLtp, c.futBid, c.futAsk
        FROM fyers_candles c
        JOIN (SELECT symbol, instrument, MAX(bucketTs) AS bucketTs
                FROM fyers_candles WHERE date = ? AND symbol IN (${placeholders})
@@ -254,6 +255,11 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
       bid: null,
       ask: null,
       spreadPct: null,
+      // Display-only liquidity read from the FUTURES book (see LiveUrgencyRow.futSpreadPct).
+      futSpreadPct:
+        futQ?.futBid != null && futQ?.futAsk != null && futQ.futBid > 0 && futQ.futAsk >= futQ.futBid
+          ? Math.round(((futQ.futAsk - futQ.futBid) / ((futQ.futAsk + futQ.futBid) / 2)) * 100 * 1000) / 1000
+          : null,
       imbalance:
         futQ && (futQ.buyQty ?? 0) + (futQ.sellQty ?? 0) > 0
           ? (futQ.buyQty ?? 0) / ((futQ.buyQty ?? 0) + (futQ.sellQty ?? 0))

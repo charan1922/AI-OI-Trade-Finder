@@ -492,7 +492,7 @@ type SortKey =
   | 'nseUnderlyingValue'
   | 'tfRFactor';
 /** `origRank` = the row's 1-based position in the incoming watchlist (= NSE Movers order). */
-type Row = LiveUrgencyRow & { verdict: SetupVerdict; origRank: number };
+type Row = LiveUrgencyRow & { verdict: SetupVerdict; origRank: number; spreadFromFut: boolean };
 
 // ── Sticky-table styling (opaque backgrounds required on sticky cells so scrolled
 //    content never shows through; color-mix keeps zebra/hover states theme-correct
@@ -593,11 +593,16 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
   };
 
   const sorted = useMemo<Row[]>(() => {
-    const withVerdict: Row[] = rows.map((r, i) => ({
-      ...r,
-      verdict: setupScore(r),
-      origRank: i + 1,
-    }));
+    const withVerdict: Row[] = rows.map((r, i) => {
+      // Fyers quotes carry no stock order book, so the equity spread is always empty and
+      // every row read "Illiquid". Fall back to the FUTURES book spread for this table only
+      // (the scanner keeps its own equity-book gate) and say so in the tooltip.
+      const spreadFromFut = r.spreadPct == null && r.futSpreadPct != null;
+      const shown = { ...r, spreadPct: r.spreadPct ?? r.futSpreadPct ?? null };
+      const verdict = setupScore(shown);
+      if (spreadFromFut) verdict.reasons[0] = `${verdict.reasons[0]} — futures order book`;
+      return { ...shown, verdict, origRank: i + 1, spreadFromFut };
+    });
     const dir = sortDir === 'asc' ? 1 : -1;
     return withVerdict.sort((a, b) => {
       const av = sortValue(a, sortKey);
@@ -911,8 +916,11 @@ export function UrgencyTable({ rows, sectors }: { rows: LiveUrgencyRow[]; sector
               <td className="px-1.5 py-0.5 text-right">
                 <SinceEntryCell r={r} />
               </td>
-              <td className={`px-1.5 py-0.5 text-right font-medium tabular-nums ${spreadCls(r.spreadPct)}`}>
-                {r.spreadPct != null ? `${num(r.spreadPct, 3)}%` : '—'}
+              <td
+                className={`px-1.5 py-0.5 text-right font-medium tabular-nums ${spreadCls(r.spreadPct)}`}
+                title={r.spreadFromFut ? "Spread of the stock's futures order book (the stock's own book isn't on this feed)" : undefined}
+              >
+                {r.spreadPct != null ? `${num(r.spreadPct, 3)}%${r.spreadFromFut ? 'ᶠ' : ''}` : '—'}
               </td>
               <td className="px-2 py-1">
                 <Imbalance v={r.imbalance} />
