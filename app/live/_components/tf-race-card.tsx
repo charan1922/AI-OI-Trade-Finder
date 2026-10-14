@@ -27,6 +27,7 @@ import {
 } from '@/lib/tf-live/board-view';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { LIVE_TF_SELECTOR_CONFIG as CFG } from '@/lib/tf-live/selector';
+import { describeTrend, TREND_RULE, trendDot, type TrendShape } from '@/lib/tf-live/trend-shape';
 
 interface TfBoardRow {
   symbol: string;
@@ -60,6 +61,8 @@ interface TfBoardRow {
   sector: { name: string; value: number } | null;
   /** Advisory only (the 9th dot): how this stock's sector moves relative to the trade's direction. */
   sectorStrength: SectorStrength | null;
+  /** Advisory only (the 10th dot): TradeFinder-style "trend day" chart shape. */
+  trendShape: TrendShape | null;
 }
 
 interface DroppedClimber {
@@ -179,8 +182,48 @@ function SectorDot({ sector, side }: { sector: SectorStrength | null; side: 'CE'
   );
 }
 
-/** Eight numbered dots in the selector's order (+ the dashed advisory 9th). Green = passed, hollow = failed, grey = no data — never green without evidence. */
-function GateDots({ gates, sector, side }: { gates: GateStrip; sector: SectorStrength | null; side: 'CE' | 'PE' }) {
+/** What the 10th (advisory) dot means, in plain English. */
+const TREND_HELP = `Trend day — NOT a check; nothing is taken or refused because of it. The chart shape TradeFinder's own trades had: the stock is at least ${TREND_RULE.minMovePct}% from yesterday's close the trade's way, has broken its 09:15–09:45 range, has stayed on the trade's side of VWAP at least ${TREND_RULE.minVwapShare * 100}% of the time since 10:00, and hasn't pulled back more than ${TREND_RULE.maxPullbackPct}%. Green = clean trend; hollow = not (yet); grey = too early to tell. Measured over 20 sessions it beat the average stock by about 0.1R a trade — evidence, not proof.`;
+
+/** The 10th dot: dashed like the 9th so it never reads as a check. */
+function TrendDayDot({ shape }: { shape: TrendShape | null }) {
+  const g = trendDot(shape);
+  const cls =
+    g === true
+      ? 'border-emerald-500 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+      : g === false
+        ? 'border-zinc-400 bg-transparent text-zinc-500 dark:text-zinc-400'
+        : 'border-zinc-300 bg-zinc-200 text-zinc-500 dark:border-zinc-600 dark:bg-zinc-700 dark:text-zinc-300';
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={`ml-0.5 inline-flex h-3 w-3 items-center justify-center rounded-full border border-dashed text-[6px] leading-none font-semibold tabular-nums ${cls}`}
+        >
+          10
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="block max-w-[240px] px-2 py-1 text-[10px] leading-snug">
+        <b>10. trend day — advisory</b>
+        <span className="mt-0.5 block font-normal">{describeTrend(shape)}</span>
+        <span className="mt-0.5 block font-normal opacity-90">{TREND_HELP}</span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Eight numbered dots in the selector's order (+ the dashed advisory 9th and 10th). Green = passed, hollow = failed, grey = no data — never green without evidence. */
+function GateDots({
+  gates,
+  sector,
+  side,
+  trendShape,
+}: {
+  gates: GateStrip;
+  sector: SectorStrength | null;
+  side: 'CE' | 'PE';
+  trendShape: TrendShape | null;
+}) {
   return (
     <span className="inline-flex shrink-0 items-center gap-0.5" aria-label="checks">
       {GATE_ORDER.map((k, i) => {
@@ -206,6 +249,7 @@ function GateDots({ gates, sector, side }: { gates: GateStrip; sector: SectorStr
         );
       })}
       <SectorDot sector={sector} side={side} />
+      <TrendDayDot shape={trendShape} />
     </span>
   );
 }
@@ -242,6 +286,22 @@ function GateLegend() {
           <TooltipContent side="top" className="block max-w-[240px] px-2 py-1 text-[10px] leading-snug">
             <b>9. sector strength — advisory</b>
             <span className="mt-0.5 block font-normal opacity-90">{SECTOR_HELP}</span>
+          </TooltipContent>
+        </Tooltip>
+      </li>
+      <li>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button" className="inline-flex cursor-help items-center gap-0.5 hover:text-foreground">
+              <span className="inline-flex h-2.5 w-2.5 items-center justify-center rounded-full border border-dashed border-zinc-400 text-[6px] leading-none font-semibold tabular-nums">
+                10
+              </span>
+              trend day <i className="not-italic opacity-70">(advisory)</i>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="block max-w-[240px] px-2 py-1 text-[10px] leading-snug">
+            <b>10. trend day — advisory</b>
+            <span className="mt-0.5 block font-normal opacity-90">{TREND_HELP}</span>
           </TooltipContent>
         </Tooltip>
       </li>
@@ -422,7 +482,7 @@ function TakeRow({ r }: { r: TfBoardRow }) {
         </span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] text-muted-foreground">
-        <GateDots gates={r.gates} sector={r.sectorStrength} side={r.side} />
+        <GateDots gates={r.gates} sector={r.sectorStrength} side={r.side} trendShape={r.trendShape} />
         <span>{GATE_ORDER.map((k) => GATE_LABEL[k]).join(' · ')}</span>
         {r.climbingSince != null && <span>· climbing since {hhmm(r.climbingSince)}</span>}
       </div>
@@ -462,7 +522,7 @@ function WatchRow({ r, dim = false }: { r: TfBoardRow; dim?: boolean }) {
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-1">
-          <GateDots gates={r.gates} sector={r.sectorStrength} side={r.side} />
+          <GateDots gates={r.gates} sector={r.sectorStrength} side={r.side} trendShape={r.trendShape} />
           <ChartLink symbol={r.symbol} />
         </span>
       </button>

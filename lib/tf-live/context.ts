@@ -34,6 +34,7 @@ import type { TfBeacon } from '@/lib/tf-live/parse';
 import type { TfSymbolContext } from '@/lib/tf-live/selector';
 import { listMembership, type VisibleNseLists } from '@/lib/nse/live-lists';
 import { dayBaseline, measureStretch, type DailyBar, type DayBaseline, type Stretch } from '@/lib/tf-live/stretch';
+import { trendShape } from '@/lib/tf-live/trend-shape';
 
 /** Minimum bars before the entry bucket for Supertrend(10,3) to mean anything. */
 const MIN_BARS_FOR_TREND = 10;
@@ -226,6 +227,8 @@ export async function buildRecordedTfContext(
       stretch: measureStretch(prior, price, side, baselines.get(symbol) ?? null),
       // The 8th check reads this — the same lists /live shows.
       nseLists: nseLists ? listMembership(nseLists, symbol) : null,
+      // ADVISORY 10th dot — never read by the selector.
+      trendShape: trendShape(prior, side, baselines.get(symbol)?.prevClose ?? null),
     });
   }
 
