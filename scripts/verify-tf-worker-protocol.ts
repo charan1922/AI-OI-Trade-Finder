@@ -1,5 +1,7 @@
 import {
+  CAPTURE_STALL_MS,
   WORKER_LIVENESS_MS,
+  captureStallVerdict,
   WORKER_SECRET_HEADER,
   isWorkerAlive,
   parseIngestPayload,
@@ -84,6 +86,23 @@ function main(): void {
       return 'payload' in parsed && parsed.payload.kind === 'response' && parsed.payload.ok === false;
     })(),
   );
+
+  // ── Capture-stall self-heal (2026-10-16: Chromium wedged at ~97% CPU, zero
+  //    captures, zero errors, green badge all morning). ──
+  const stall = (wantedSinceMs: number | null, lastCaptureAtMs: number | null, lastForwardAtMs: number | null) =>
+    captureStallVerdict({ nowMs: now, wantedSinceMs, lastCaptureAtMs, lastForwardAtMs });
+  const past = now - CAPTURE_STALL_MS - 1;
+  check('stall window is 5 minutes (three missed 90s reloads + launch)', CAPTURE_STALL_MS === 300_000);
+  check('worker not meant to run → never stalled', stall(null, null, null) === 'ok');
+  check('fresh run gets the full window before any restart', stall(now - CAPTURE_STALL_MS, null, null) === 'ok');
+  check('the 2026-10-16 case: running, nothing delivered → browser-stalled', stall(past, null, null) === 'browser-stalled');
+  check('a recent capture keeps an old run healthy', stall(past, now - 60_000, now - 60_000) === 'ok');
+  check('captures that stopped → browser-stalled', stall(past - 600_000, past, past) === 'browser-stalled');
+  check(
+    'forwarding traffic but no tracked feed → feeds-untracked (restart would not help)',
+    stall(past, null, now - 30_000) === 'feeds-untracked',
+  );
+  check('a future run start (clock skew) is not a stall', stall(now + 60_000, null, null) === 'ok');
 }
 
 main();
