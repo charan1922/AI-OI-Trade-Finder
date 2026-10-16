@@ -81,6 +81,11 @@ export function unescapeCmdCaret(raw: string): string {
     .replace(/\^</g, '<')
     .replace(/\^>/g, '>')
     .replace(/\^\|/g, '|')
+    // Chrome's cmd copy also carets ( ) and $ — seen in a real 2026-10-16 paste inside the
+    // deviceInfo (`^(Windows NT…^)`) and _ga (`^$o72^$g1`) cookies, which stayed garbled.
+    .replace(/\^\(/g, '(')
+    .replace(/\^\)/g, ')')
+    .replace(/\^\$/g, '$')
     .replace(/\^\^/g, '^');
 }
 
