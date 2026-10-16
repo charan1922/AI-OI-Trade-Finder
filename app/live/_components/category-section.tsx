@@ -6,6 +6,21 @@ import { useCategoryUrgency } from '../_hooks/use-category-urgency';
 import { useTfRFactorMap } from '../_hooks/use-tf-rfactor-map';
 import type { LiveUrgencyRow, SectorPick, WatchlistSource } from '../_lib/types';
 import { UrgencyTable } from './urgency-table';
+import { todayIST } from '@/lib/ist';
+
+/**
+ * The trading session (IST YYYY-MM-DD) a TF capture belongs to, or null. A capture taken
+ * before 09:15 IST still holds the PREVIOUS session's board (the worker also captures at
+ * night — e.g. 00:59 IST on 2026-10-08), so it belongs to no session we can date by its
+ * calendar day. IST has no DST, so a fixed offset is exact.
+ */
+function tfSessionDateOf(iso: string): string | null {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  const ist = new Date(ms + 330 * 60_000);
+  const minute = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  return minute >= 9 * 60 + 15 ? ist.toISOString().slice(0, 10) : null;
+}
 
 const fmtTime = (iso: string | null): string =>
   iso ? new Date(iso).toLocaleTimeString('en-IN', { hour12: false }) : '—';
@@ -73,13 +88,20 @@ export function CategorySection({
   // TradeFinder's own R-Factor, merged in purely for display — independent
   // fetch, independent poll cadence, never affects the live rows above.
   const tf = useTfRFactorMap();
+  // TF's R-Factor is a per-session counter that restarts every morning, so a capture is only
+  // shown against rows of the SAME trading day: today when live, the snapshot's own date when
+  // the table shows a closing snapshot. A new morning before /tf has captured anything shows
+  // "—", never yesterday's numbers passing for live ones.
+  const rowsDate = snapshot ? snapshotDate : todayIST();
+  const tfDate = tf.capturedAt ? tfSessionDateOf(tf.capturedAt) : null;
+  const tfUsable = tfDate != null && rowsDate != null && tfDate === rowsDate;
   const rowsWithTf = useMemo<LiveUrgencyRow[]>(() => {
-    if (Object.keys(tf.values).length === 0) return rows;
+    if (!tfUsable || Object.keys(tf.values).length === 0) return rows;
     return rows.map((r) => {
       const v = tf.values[r.symbol];
       return v ? { ...r, tfRFactor: v.rFactor, tfPctChange: v.pctChange, tfPreviousClose: v.previousClose } : r;
     });
-  }, [rows, tf.values]);
+  }, [rows, tf.values, tfUsable]);
 
   // Lift market-open / last-update up to the page header. Guarded so it only
   // reports real values (the page de-dupes identical updates).
