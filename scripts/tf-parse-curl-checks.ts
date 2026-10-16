@@ -35,6 +35,9 @@ export function runTfParseCurlChecks(check: CheckFn): void {
   check('parse-curl: unescapes ^" back to a literal "', unescapeCmdCaret('^"hello^"') === '"hello"');
   check('parse-curl: unescapes ^& back to a literal &', unescapeCmdCaret('a^&b') === 'a&b');
   check('parse-curl: a bash-style paste (no carets) passes through unchanged', unescapeCmdCaret('a=1; b=2') === 'a=1; b=2');
+  check('parse-curl: unescapes ^( and ^) (deviceInfo cookie, real 2026-10-16 paste)', unescapeCmdCaret('^(Windows NT 10.0^)') === '(Windows NT 10.0)');
+  check('parse-curl: unescapes ^$ (_ga cookie, real 2026-10-16 paste)', unescapeCmdCaret('s1788^$o72^$g1') === 's1788$o72$g1');
+  check('parse-curl: a literal ^^ still becomes one ^', unescapeCmdCaret('a^^b') === 'a^b');
 
   // ── extraction from the realistic fixture ─────────────────────────────────
   const result = extractCookieHeaderFromCurl(REAL_SHAPED_CURL);
