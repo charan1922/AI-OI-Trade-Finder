@@ -62,7 +62,12 @@
  *
  * Design: docs/superpowers/specs/2026-08-24-tf-browser-remote-worker-design.md
  */
-import { isWorkerAlive, WORKER_LIVENESS_MS } from '@/lib/tf-live/worker-protocol';
+import {
+  captureStallVerdict,
+  type CaptureStallVerdict,
+  isWorkerAlive,
+  WORKER_LIVENESS_MS,
+} from '@/lib/tf-live/worker-protocol';
 
 /**
  * Capture window, IST. Starts at 09:22 — NOT 09:15 — at the user's explicit
@@ -112,6 +117,18 @@ interface BrowserState {
   /** When the REMOTE worker last reached us (config poll, ingest, heartbeat).
    *  Null until it checks in for the first time. */
   lastWorkerSeenAtMs: number | null;
+  /** When the current run started: the first config poll answering
+   *  shouldRun=true after one that did not. Null while the worker is meant to
+   *  be idle. Feeds the capture-stall rule. */
+  wantedSinceMs: number | null;
+  /** Last TRACKED feed response (success or rejection) the worker delivered. */
+  lastCaptureAtMs: number | null;
+  /** Last /api_be/ response of any kind the worker delivered. */
+  lastForwardAtMs: number | null;
+  /** Open stall episode — set on the first auto-restart, cleared by the next
+   *  capture. Lets us alert once per outage and once on recovery, not on
+   *  every restart. */
+  stallEpisode: { startedAtMs: number; restarts: number } | null;
 }
 
 /** State lives on globalThis, not a module `let`: Turbopack HMR re-evaluates
@@ -125,9 +142,17 @@ store.__tfBrowserState ??= {
   manualUntilMs: null,
   restartUntilMs: null,
   lastWorkerSeenAtMs: null,
+  wantedSinceMs: null,
+  lastCaptureAtMs: null,
+  lastForwardAtMs: null,
+  stallEpisode: null,
 };
 store.__tfBrowserState.lastWorkerSeenAtMs ??= null;
 store.__tfBrowserState.restartUntilMs ??= null;
+store.__tfBrowserState.wantedSinceMs ??= null;
+store.__tfBrowserState.lastCaptureAtMs ??= null;
+store.__tfBrowserState.lastForwardAtMs ??= null;
+store.__tfBrowserState.stallEpisode ??= null;
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
 
 /** Every worker request — config poll, ingest, heartbeat — refreshes this. It
@@ -172,6 +197,64 @@ export function noteCaptureSuccess(): void {
   const s = state();
   s.consecutiveFailures = 0;
   s.sawFirstSuccess = true;
+}
+
+/** Every response the worker forwards. `tracked` = it matched a feed we keep.
+ *  Returns the stall episode this delivery ENDS (if any), so the caller can
+ *  announce recovery exactly once. */
+export function noteWorkerForward(tracked: boolean): { startedAtMs: number; restarts: number } | null {
+  const s = state();
+  const now = Date.now();
+  s.lastForwardAtMs = now;
+  if (!tracked) return null;
+  s.lastCaptureAtMs = now;
+  const ended = s.stallEpisode;
+  s.stallEpisode = null;
+  return ended;
+}
+
+/** Called by every config poll with the answer it is about to give, so the
+ *  stall clock starts when a run starts and stops when it stops. */
+export function noteWorkerConfigServed(shouldRun: boolean): void {
+  const s = state();
+  if (!shouldRun) s.wantedSinceMs = null;
+  else s.wantedSinceMs ??= Date.now();
+}
+
+/**
+ * The self-heal step, run on each worker config poll. When the worker has been
+ * told to run for CAPTURE_STALL_MS without delivering a single tracked capture
+ * and is not forwarding anything either, the browser is wedged (2026-10-16:
+ * ~97% CPU from launch, zero responses, green badge) — so force one
+ * closed-browser poll, exactly what /tf's Restart does. The worker obeys this
+ * with the code it already runs; nothing on the worker host changes.
+ *
+ * Returns the verdict plus whether this call OPENED a new episode (alert once).
+ */
+export function checkCaptureStall(): {
+  verdict: CaptureStallVerdict;
+  restarted: boolean;
+  episode: { startedAtMs: number; restarts: number } | null;
+  firstInEpisode: boolean;
+} {
+  const s = state();
+  const now = Date.now();
+  const verdict = captureStallVerdict({
+    nowMs: now,
+    wantedSinceMs: s.wantedSinceMs,
+    lastCaptureAtMs: s.lastCaptureAtMs,
+    lastForwardAtMs: s.lastForwardAtMs,
+  });
+  if (verdict !== 'browser-stalled') {
+    return { verdict, restarted: false, episode: s.stallEpisode, firstInEpisode: false };
+  }
+  const open = s.stallEpisode;
+  const firstInEpisode = open == null;
+  s.stallEpisode = open ? { startedAtMs: open.startedAtMs, restarts: open.restarts + 1 } : { startedAtMs: now, restarts: 1 };
+  s.restartUntilMs = now + REMOTE_RESTART_PAUSE_MS;
+  // The run that follows the pause is a NEW run: its stall clock starts then.
+  s.wantedSinceMs = null;
+  return { verdict, restarted: true, episode: s.stallEpisode, firstInEpisode };
 }
 
 /**

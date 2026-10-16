@@ -13,7 +13,8 @@
  */
 import { NextResponse } from 'next/server';
 
-import { noteCaptureFailure, noteCaptureSuccess, noteWorkerSeen } from '@/lib/tf-live/browser';
+import { sendCriticalAlert } from '@/lib/auto-trade/alerts';
+import { noteCaptureFailure, noteCaptureSuccess, noteWorkerForward, noteWorkerSeen } from '@/lib/tf-live/browser';
 import { classifyTfResponse, endpointTagFor, failureAlarmMessage } from '@/lib/tf-live/ingest';
 import { recordTfBrowserOutcome, recordTfLiveCapture } from '@/lib/tf-live/store';
 import { parseIngestPayload, verifyWorkerSecret, WORKER_SECRET_HEADER } from '@/lib/tf-live/worker-protocol';
@@ -45,6 +46,15 @@ export async function POST(req: Request): Promise<Response> {
 
   const { pathname, status, ok, body } = parsed.payload;
   const tag = endpointTagFor(pathname);
+  // Feeds the capture-stall self-heal (see /api/tf/worker-config). A delivery
+  // that ends an auto-restart episode is announced once, so the operator who
+  // got the "stalled" alert also learns it recovered.
+  const recovered = noteWorkerForward(tag != null);
+  if (recovered) {
+    sendCriticalAlert(
+      `✅ TF worker browser is delivering again after ${recovered.restarts} auto-restart(s), ${Math.round((Date.now() - recovered.startedAtMs) / 60_000)} min after the first.`,
+    );
+  }
   // Not one of the feeds we keep — real TradeFinder traffic nobody reads.
   if (!tag) return NextResponse.json({ success: true, stored: false, reason: 'not-tracked' });
 

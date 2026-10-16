@@ -14,9 +14,16 @@
  */
 import { NextResponse } from 'next/server';
 
-import { noteWorkerSeen, shouldWorkerRun } from '@/lib/tf-live/browser';
+import { sendCriticalAlert } from '@/lib/auto-trade/alerts';
+import {
+  checkCaptureStall,
+  noteWorkerConfigServed,
+  noteWorkerSeen,
+  shouldWorkerRun,
+} from '@/lib/tf-live/browser';
+import { CAPTURE_STALL_MS } from '@/lib/tf-live/worker-protocol';
 import { cookieHeaderToPlaywrightCookies } from '@/lib/tf-live/parse-curl';
-import { getTfBrowserCookies } from '@/lib/tf-live/store';
+import { getTfBrowserCookies, recordTfBrowserOutcome } from '@/lib/tf-live/store';
 import { verifyWorkerSecret, WORKER_SECRET_HEADER } from '@/lib/tf-live/worker-protocol';
 
 export const dynamic = 'force-dynamic';
@@ -45,9 +52,13 @@ export async function GET(req: Request): Promise<Response> {
   noteWorkerSeen();
 
   try {
+    noteWorkerConfigServed(shouldWorkerRun());
+    await healCaptureStall();
+    const shouldRun = shouldWorkerRun();
+    noteWorkerConfigServed(shouldRun);
     const cookieHeader = await getTfBrowserCookies();
     return NextResponse.json({
-      shouldRun: shouldWorkerRun(),
+      shouldRun,
       // Empty rather than an error when nothing is pasted yet — mirrors the old
       // in-process "nothing configured — nothing to do" no-op.
       cookies: cookieHeader ? cookieHeaderToPlaywrightCookies(cookieHeader, SITE_URL) : [],
@@ -56,5 +67,40 @@ export async function GET(req: Request): Promise<Response> {
     });
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+  }
+}
+
+/**
+ * Self-heal for a wedged worker browser (2026-10-16: Chromium at ~97% CPU from
+ * its 09:20 launch, zero captures and zero errors, green badge all morning).
+ * When the worker has been told to run for CAPTURE_STALL_MS with nothing
+ * delivered, answer THIS poll with shouldRun=false so the worker closes
+ * Chromium, then reopens it on the next — the worker already obeys that, so
+ * the fix needs no worker redeploy. The reason goes on /tf (badge turns
+ * "running, not capturing") and the operator is told once per outage.
+ */
+async function healCaptureStall(): Promise<void> {
+  const stall = checkCaptureStall();
+  const minutes = Math.round(CAPTURE_STALL_MS / 60_000);
+  if (stall.verdict === 'feeds-untracked') {
+    // Browser works, but nothing it forwards is a feed we keep — a renamed
+    // TradeFinder path. A restart cannot fix that; say so instead.
+    await recordTfBrowserOutcome(
+      false,
+      `Worker is forwarding TradeFinder traffic but none of it matched a tracked feed for ${minutes}+ min — check endpointTagFor() against TradeFinder's current paths`,
+    );
+    return;
+  }
+  if (!stall.restarted || !stall.episode) return;
+  const n = stall.episode.restarts;
+  const message = `No TradeFinder capture for ${minutes}+ min while the worker was running — auto-restarted its Chromium (attempt ${n})`;
+  console.warn(`[tf_worker] ${message}`);
+  await recordTfBrowserOutcome(false, message);
+  // Once per outage, plus a nudge every 3rd failed attempt (~20 min) so a
+  // restart that keeps not working cannot go quiet.
+  if (stall.firstInEpisode || n % 3 === 0) {
+    sendCriticalAlert(
+      `⚠️ TF capture stalled: ${message}.${n >= 3 ? ' Restarts are not fixing it — check the tf-worker host (CPU/memory) or paste a fresh cURL on /tf.' : ''} No fresh board = no entries.`,
+    );
   }
 }
