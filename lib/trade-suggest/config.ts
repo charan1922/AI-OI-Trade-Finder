@@ -272,10 +272,10 @@ export const TF_BOARD_MAX_AGE_MIN = 10;
  *  Climbed Stocks list, the engine's candidate set and the poller's priority list all read
  *  this ONE constant, so the card and the auto-trader cannot disagree.
  *
- *  OPERATOR RULE 2026-10-12: top 15 (was 20; briefly 10 the same day). Not evidence-backed —
+ *  OPERATOR RULE 2026-10-16: top 10 (was 15 from 2026-10-12; 20 before). Earlier note, kept: top 15 (was 20; briefly 10 the same day). Not evidence-backed —
  *  graded suggestions since 2026-08-13 by TF rank: 1-15 n=34 avg -0.07R, 16-20 n=7 avg -0.08R
  *  (no difference). Top 15 drops JUBLFOOD (#19, +2R) but keeps ITC (#15, won) and drops TCS
  *  (#16, lost). Rank <= 20 had corresponded to TF R ~ 1.4, which keeps the sub-1.0 band
  *  (-0.317R, t=-11.12) structurally unreachable; a smaller N only tightens that. Set back to 20
  *  to restore the earlier behaviour. */
-export const TF_RACE_MAX_RANK = 15;
+export const TF_RACE_MAX_RANK = 10;
