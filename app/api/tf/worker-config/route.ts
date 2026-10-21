@@ -19,6 +19,8 @@ import {
   checkCaptureStall,
   noteWorkerConfigServed,
   noteWorkerSeen,
+  recentUntrackedPaths,
+  shouldAlertUntracked,
   shouldWorkerRun,
 } from '@/lib/tf-live/browser';
 import { CAPTURE_STALL_MS } from '@/lib/tf-live/worker-protocol';
@@ -83,12 +85,26 @@ async function healCaptureStall(): Promise<void> {
   const stall = checkCaptureStall();
   const minutes = Math.round(CAPTURE_STALL_MS / 60_000);
   if (stall.verdict === 'feeds-untracked') {
-    // Browser works, but nothing it forwards is a feed we keep — a renamed
-    // TradeFinder path. A restart cannot fix that; say so instead.
-    await recordTfBrowserOutcome(
-      false,
-      `Worker is forwarding TradeFinder traffic but none of it matched a tracked feed for ${minutes}+ min — check endpointTagFor() against TradeFinder's current paths`,
-    );
+    // The browser works (it forwards TradeFinder traffic) but no market data arrives.
+    // 2026-10-19..21: the cause was a LAPSED TradeFinder login — a logged-out page still
+    // fires servertime / banners / feature-flags / market status, but never the data
+    // calls; the paths themselves were unchanged (re-checked live: market_pulse and
+    // sector_scope still answer SUCCESS when logged in). So name the likely cause first,
+    // and show what WAS forwarded, so a genuinely renamed feed is visible too.
+    // A restart cannot fix either, so none is attempted.
+    const seen = recentUntrackedPaths()
+      .slice(0, 6)
+      .map((p) => p.path.replace(/^\/api_be\//, ''))
+      .join(', ');
+    const message =
+      `No TradeFinder market data for ${minutes}+ min although the worker's page is loading — ` +
+      `the TradeFinder login has most likely expired: paste a fresh cURL from a logged-in marketPulse tab. ` +
+      `Only these calls arrived: ${seen || 'none recorded'}. ` +
+      `(If market data appears there under a new name, endpointTagFor() needs it.)`;
+    await recordTfBrowserOutcome(false, message);
+    if (shouldAlertUntracked()) {
+      sendCriticalAlert(`⚠️ TF capture: ${message} No fresh board = no entries.`);
+    }
     return;
   }
   if (!stall.restarted || !stall.episode) return;

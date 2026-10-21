@@ -49,7 +49,7 @@ export async function POST(req: Request): Promise<Response> {
   // Feeds the capture-stall self-heal (see /api/tf/worker-config). A delivery
   // that ends an auto-restart episode is announced once, so the operator who
   // got the "stalled" alert also learns it recovered.
-  const recovered = noteWorkerForward(tag != null);
+  const recovered = noteWorkerForward(tag != null, pathname);
   if (recovered) {
     sendCriticalAlert(
       `✅ TF worker browser is delivering again after ${recovered.restarts} auto-restart(s), ${Math.round((Date.now() - recovered.startedAtMs) / 60_000)} min after the first.`,

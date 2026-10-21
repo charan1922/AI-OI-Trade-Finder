@@ -2,7 +2,13 @@ import { NextResponse } from 'next/server';
 
 import { adminOnly } from '@/lib/auth/server';
 import { todayIST } from '@/lib/ist';
-import { forceStartTfBrowser, isTfBrowserRunning, restartTfBrowser, stopTfBrowser } from '@/lib/tf-live/browser';
+import {
+  forceStartTfBrowser,
+  isTfBrowserRunning,
+  recentUntrackedPaths,
+  restartTfBrowser,
+  stopTfBrowser,
+} from '@/lib/tf-live/browser';
 import { TF_ENDPOINTS } from '@/lib/tf-live/endpoints';
 import { parseMarketPulse, parseSectorScope } from '@/lib/tf-live/parse';
 import { extractCookieHeaderFromCurl } from '@/lib/tf-live/parse-curl';
@@ -45,7 +51,9 @@ async function statusBody(withData: boolean, at?: string) {
     getTfCaptureCountsForDate(todayIST()),
     withData ? getTodaysData(at) : Promise.resolve(undefined),
   ]);
-  return { success: true, session, running: isTfBrowserRunning(), captures, counts, today };
+  // What the worker forwarded that is NOT a tracked feed — the evidence behind a "no market
+  // data" warning (a logged-out page shows only background calls like servertime/banners).
+  return { success: true, session, running: isTfBrowserRunning(), captures, counts, today, untrackedPaths: recentUntrackedPaths() };
 }
 
 /** `?data=1`: today's (IST) data, parsed — what /tf shows as its data tables.

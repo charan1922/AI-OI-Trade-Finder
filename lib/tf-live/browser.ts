@@ -129,6 +129,13 @@ interface BrowserState {
    *  capture. Lets us alert once per outage and once on recovery, not on
    *  every restart. */
   stallEpisode: { startedAtMs: number; restarts: number } | null;
+  /** The last few /api_be/ paths the worker forwarded that are NOT a tracked feed,
+   *  newest first. Shown on /tf so "nothing captured" can be diagnosed from evidence
+   *  (logged-out page vs renamed feed) instead of guessed. */
+  recentUntracked: { path: string; lastSeenAtMs: number; count: number }[];
+  /** When the "no market data arrived" alert last fired; null = not alerted since the
+   *  last good capture. Throttles it to once an hour while it persists. */
+  untrackedAlertedAtMs: number | null;
 }
 
 /** State lives on globalThis, not a module `let`: Turbopack HMR re-evaluates
@@ -146,6 +153,8 @@ store.__tfBrowserState ??= {
   lastCaptureAtMs: null,
   lastForwardAtMs: null,
   stallEpisode: null,
+  recentUntracked: [],
+  untrackedAlertedAtMs: null,
 };
 store.__tfBrowserState.lastWorkerSeenAtMs ??= null;
 store.__tfBrowserState.restartUntilMs ??= null;
@@ -153,6 +162,8 @@ store.__tfBrowserState.wantedSinceMs ??= null;
 store.__tfBrowserState.lastCaptureAtMs ??= null;
 store.__tfBrowserState.lastForwardAtMs ??= null;
 store.__tfBrowserState.stallEpisode ??= null;
+store.__tfBrowserState.recentUntracked ??= [];
+store.__tfBrowserState.untrackedAlertedAtMs ??= null;
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
 
 /** Every worker request — config poll, ingest, heartbeat — refreshes this. It
@@ -202,15 +213,41 @@ export function noteCaptureSuccess(): void {
 /** Every response the worker forwards. `tracked` = it matched a feed we keep.
  *  Returns the stall episode this delivery ENDS (if any), so the caller can
  *  announce recovery exactly once. */
-export function noteWorkerForward(tracked: boolean): { startedAtMs: number; restarts: number } | null {
+export function noteWorkerForward(tracked: boolean, pathname?: string): { startedAtMs: number; restarts: number } | null {
   const s = state();
   const now = Date.now();
   s.lastForwardAtMs = now;
-  if (!tracked) return null;
+  if (!tracked) {
+    if (pathname) {
+      const existing = s.recentUntracked.find((p) => p.path === pathname);
+      const entry = { path: pathname, lastSeenAtMs: now, count: (existing?.count ?? 0) + 1 };
+      s.recentUntracked = [entry, ...s.recentUntracked.filter((p) => p.path !== pathname)].slice(0, MAX_RECENT_UNTRACKED);
+    }
+    return null;
+  }
   s.lastCaptureAtMs = now;
+  s.untrackedAlertedAtMs = null;
   const ended = s.stallEpisode;
   s.stallEpisode = null;
   return ended;
+}
+
+const MAX_RECENT_UNTRACKED = 12;
+
+/** The untracked /api_be/ paths the worker forwarded most recently, newest first (for /tf). */
+export function recentUntrackedPaths(): { path: string; lastSeenAt: string; count: number }[] {
+  return state().recentUntracked.map((p) => ({ path: p.path, lastSeenAt: new Date(p.lastSeenAtMs).toISOString(), count: p.count }));
+}
+
+const UNTRACKED_ALERT_EVERY_MS = 60 * 60_000;
+
+/** True when the "no market data arrived" alert should fire now: the first time in an
+ *  episode, then at most once an hour. A tracked capture resets it (noteWorkerForward). */
+export function shouldAlertUntracked(nowMs = Date.now()): boolean {
+  const s = state();
+  if (s.untrackedAlertedAtMs != null && nowMs - s.untrackedAlertedAtMs < UNTRACKED_ALERT_EVERY_MS) return false;
+  s.untrackedAlertedAtMs = nowMs;
+  return true;
 }
 
 /** Called by every config poll with the answer it is about to give, so the
