@@ -7,6 +7,7 @@ import {
   parseIngestPayload,
   verifyWorkerSecret,
 } from '@/lib/tf-live/worker-protocol';
+import { noteWorkerForward, recentUntrackedPaths, shouldAlertUntracked } from '@/lib/tf-live/browser';
 
 let failures = 0;
 
@@ -105,6 +106,25 @@ function main(): void {
   check('a future run start (clock skew) is not a stall', stall(now + 60_000, null, null) === 'ok');
 }
 
+
+// ── 2026-10-21: logged-out page = background calls only. Record them; alert at most hourly. ──
+function untrackedChecks(): void {
+  for (const p of ['/api_be/servertime', '/api_be/banners/active', '/api_be/servertime']) noteWorkerForward(false, p);
+  const seen = recentUntrackedPaths();
+  check('untracked: newest first, deduplicated', seen[0]?.path === '/api_be/servertime' && seen[1]?.path === '/api_be/banners/active' && seen.length === 2);
+  check('untracked: repeat paths are counted', seen[0]?.count === 2 && seen[1]?.count === 1);
+  for (let i = 0; i < 20; i++) noteWorkerForward(false, '/api_be/x' + i);
+  check('untracked: list is capped at 12', recentUntrackedPaths().length === 12);
+  check('untracked: a tracked delivery is not recorded as untracked', (noteWorkerForward(true, '/api_be/data/market_pulse'), !recentUntrackedPaths().some((p) => p.path.endsWith('market_pulse'))));
+  const t0 = Date.UTC(2026, 9, 21, 9, 0);
+  check('alert: fires the first time', shouldAlertUntracked(t0) === true);
+  check('alert: silent within the hour', shouldAlertUntracked(t0 + 30 * 60_000) === false);
+  check('alert: fires again after an hour', shouldAlertUntracked(t0 + 61 * 60_000) === true);
+  noteWorkerForward(true, '/api_be/data/sector_scope');
+  check('alert: a good capture re-arms it immediately', shouldAlertUntracked(t0 + 62 * 60_000) === true);
+}
+
 main();
+untrackedChecks();
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
 process.exitCode = failures === 0 ? 0 : 1;

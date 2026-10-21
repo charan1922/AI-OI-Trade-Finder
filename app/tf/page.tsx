@@ -78,6 +78,8 @@ interface TfStatus {
   captures: { endpoint: string; capturedAt: string; status: string; error: string | null }[];
   /** Today's (IST) successes and errors per feed. */
   counts: { endpoint: string; success: number; error: number }[];
+  /** Untracked /api_be/ paths the worker forwarded recently, newest first (diagnosis evidence). */
+  untrackedPaths?: { path: string; lastSeenAt: string; count: number }[];
   today?: {
     date: string;
     /** The picked time (ISO), or null for the latest capture. */
@@ -335,6 +337,20 @@ export default function TfPage() {
       {data?.session.lastError && (
         <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {data.session.lastError}
+        </div>
+      )}
+      {data?.session.lastError && data.untrackedPaths && data.untrackedPaths.length > 0 && (
+        <div className="rounded-md border border-border bg-muted/30 p-2 text-[11px] text-muted-foreground">
+          <p className="mb-1 font-medium text-foreground">
+            What the worker&apos;s TradeFinder page sent recently (not market data)
+          </p>
+          <ul className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono">
+            {data.untrackedPaths.map((p) => (
+              <li key={p.path} title={`last seen ${new Date(p.lastSeenAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`}>
+                {p.path} ×{p.count}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
       {notice && (
