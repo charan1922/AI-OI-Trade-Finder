@@ -575,6 +575,20 @@ model AutoDecision {
   @@map("auto_decisions")
 }
 
+/// Operator chat on /trade-commentary — one append-only thread per IST day that
+/// the page renders and the auto-trader reads. Runtime-created by
+/// lib/operator-chat/store.ts; mirrored here so `db push` keeps it.
+model OperatorChat {
+  id      Int    @id @default(autoincrement())
+  date    String
+  role    String
+  content String
+  at      String
+
+  @@index([date, id], map: "idx_operator_chat_date")
+  @@map("operator_chat")
+}
+
 /// Exact-contract quote history captured while Auto Trade positions are open.
 /// The executable SELL-side bid is retained so future target reviews do not
 /// have to infer fillability from LTP. Writes happen only after the position

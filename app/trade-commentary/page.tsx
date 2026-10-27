@@ -4,6 +4,8 @@ import { Bot, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { RichText } from '@/components/rich-text';
 import { useRole } from '@/lib/auth/use-role';
+import { ChatComposer, ChatItem } from './_components/chat-thread';
+import { type ChatMessage, useOperatorChat } from './_hooks/use-operator-chat';
 
 type ChipTone = 'good' | 'warn' | 'info';
 interface Chip {
@@ -296,6 +298,8 @@ export default function TradeCommentaryPage() {
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const { readOnly } = useRole();
+  // The operator's side of the SAME thread the AI's commentary lands in — viewers never get it.
+  const chat = useOperatorChat(!readOnly);
 
   const load = useCallback(async () => {
     try {
@@ -362,8 +366,10 @@ export default function TradeCommentaryPage() {
   const standalone = timelines.filter((t) => t.commentaryId == null || !rowIds.has(t.commentaryId));
   type StreamItem =
     | { at: string; date: string; kind: 'read'; row: CommentaryRow }
-    | { at: string; date: string; kind: 'cycle'; timeline: CycleTimeline };
+    | { at: string; date: string; kind: 'cycle'; timeline: CycleTimeline }
+    | { at: string; date: string; kind: 'chat'; message: ChatMessage };
   const items: StreamItem[] = [
+    ...(readOnly ? [] : chat.messages).map((message) => ({ at: message.at, date: message.date, kind: 'chat' as const, message })),
     ...rows.map((row) => ({ at: row.createdAt, date: row.date, kind: 'read' as const, row })),
     ...standalone.map((timeline) => ({ at: timeline.startedAt, date: timeline.date, kind: 'cycle' as const, timeline })),
   ].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
@@ -407,13 +413,16 @@ export default function TradeCommentaryPage() {
         </div>
       </div>
 
-      <p className="text-[11px] leading-relaxed text-muted-foreground">
-        A running per-day narration of the deterministic scan picks — each read builds on the day’s earlier ones (what
-        broke out, what held, what’s new); each new day starts fresh. Generated in-process during market hours (per the
-        /config window), so it fills even when the app isn’t open. Standalone reads use <strong>Xiaomi MiMo</strong>;
-        autonomous rows use the configured decision AI and may act only through deterministic trading gates. Each row
-        shows the model that actually produced it. Not financial advice.
-      </p>
+      {/* The chat input lives where the explainer paragraph used to be. Operator-only: the server 403s viewers. */}
+      {!readOnly && (
+        <ChatComposer
+          onSend={chat.send}
+          pending={chat.pending}
+          notices={chat.notices}
+          onDismiss={chat.dismissNotice}
+          configured={chat.configured}
+        />
+      )}
 
       {data?.configured === false && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
@@ -450,6 +459,18 @@ export default function TradeCommentaryPage() {
         <div className="space-y-3">
           {items.map((item, idx) => {
             const showDay = idx === 0 || items[idx - 1].date !== item.date;
+            if (item.kind === 'chat') {
+              return (
+                <Fragment key={`chat-${item.message.id}`}>
+                  {showDay && (
+                    <div className="sticky top-0 z-10 -mx-1 bg-background/85 px-1 py-1 text-xs font-semibold text-muted-foreground backdrop-blur">
+                      {item.date}
+                    </div>
+                  )}
+                  <ChatItem message={item.message} />
+                </Fragment>
+              );
+            }
             if (item.kind === 'cycle') {
               // A 5-min cycle that produced no read — slim, but expandable so
               // the operator can see exactly what it did and where time went.

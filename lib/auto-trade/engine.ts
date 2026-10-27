@@ -17,6 +17,8 @@ import { todayIST } from '@/lib/market-data';
 import { hasAzureConfig } from '@/lib/ai-assistant/azure-client';
 import { buildOpenPositionPicks, buildPicks } from '@/lib/ai-commentary/picks';
 import { getCommentary, insertCommentary } from '@/lib/ai-commentary/store';
+import { attachNewNotes, toTraderNotes } from '@/lib/operator-chat/format';
+import { listOperatorMessages, operatorMessagesSince } from '@/lib/operator-chat/store';
 import { hasMimo } from '@/lib/env';
 import { recordPromptVersion } from '@/lib/prompts/store';
 import { isTelegramConfigured, sendCommentaryToTelegram } from '@/lib/telegram';
@@ -292,11 +294,17 @@ export async function runAutoTradePass(
           initialContext.openPositions.map((position) => position.symbol)
         );
     const systemPrompt = entryEnabled ? AUTO_TRADER_SYSTEM : AUTO_TRADER_MANAGEMENT_SYSTEM;
+    // What the operator typed on /trade-commentary today. A failed read must never block a pass —
+    // the trading gates do not depend on it.
+    const operatorThread = await listOperatorMessages(date).catch(() => []);
+    const operatorNotes = toTraderNotes(operatorThread);
+    let operatorSeenId = operatorThread.reduce((max, m) => Math.max(max, m.id), 0);
     const user = JSON.stringify({
       nowIST: now,
       date,
       contextAlreadyLoaded: initialContext,
       previousRead: modelPreviousRead,
+      ...(operatorNotes.length > 0 ? { operatorChat: operatorNotes } : {}),
       ...(timeContext ? { timeContext } : {}),
       instruction:
         entryEnabled
@@ -313,7 +321,14 @@ export async function runAutoTradePass(
           system: systemPrompt,
           user,
           tools,
-          execute: (name, args) => executeAutoTradeTool(rt, name, args),
+          execute: async (name, args) => {
+            const out = await executeAutoTradeTool(rt, name, args);
+            // The operator may talk WHILE this pass runs — hand anything new to the model at its next step.
+            const fresh = toTraderNotes(await operatorMessagesSince(date, operatorSeenId).catch(() => []));
+            if (fresh.length === 0) return out;
+            operatorSeenId = Math.max(operatorSeenId, ...fresh.map((n) => n.id));
+            return { ...out, result: attachNewNotes(out.result, fresh) };
+          },
         }),
       // Per-call breakdown: WHERE the loop's time went (model vs tools) + cost.
       (r) =>

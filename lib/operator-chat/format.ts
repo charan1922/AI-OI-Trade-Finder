@@ -1,0 +1,111 @@
+/**
+ * Pure helpers for the operator chat on /trade-commentary — no DB, no network,
+ * so the exact contract between "what the operator typed" and "what the
+ * auto-trader reads" runs in CI (scripts/verify-operator-chat.ts).
+ *
+ * The chat is ADVISORY. Whatever the operator types reaches the auto-trader
+ * as `operatorChat` context, and the trader's own tools still re-run every
+ * risk gate in code — chat can make a pass more careful, it cannot widen what
+ * the gates allow.
+ */
+
+export interface OperatorMessage {
+  id: number;
+  date: string;
+  role: 'user' | 'assistant';
+  content: string;
+  /** ISO timestamp (UTC). */
+  at: string;
+}
+
+/** What the trader sees of one operator message. */
+export interface TraderNote {
+  id: number;
+  /** IST wall clock, so "said at 10:05" can be told apart from a stale note. */
+  atIST: string;
+  text: string;
+}
+
+/** Most recent operator messages handed to a pass. Older ones are dropped, not summarised. */
+export const OPERATOR_NOTES_MAX = 10;
+/** Per-message cap — one pasted article must not crowd out the decision context. */
+export const OPERATOR_NOTE_CHARS = 600;
+
+function istClock(iso: string): string {
+  const d = new Date(new Date(iso).getTime() + 330 * 60_000);
+  return Number.isNaN(d.getTime()) ? '??:??' : d.toISOString().slice(11, 16);
+}
+
+/** Operator's own messages only — the assistant's replies are never fed back to the trader. */
+export function toTraderNotes(rows: OperatorMessage[], max = OPERATOR_NOTES_MAX): TraderNote[] {
+  return rows
+    .filter((m) => m.role === 'user' && m.content.trim() !== '')
+    .slice(-max)
+    .map((m) => ({
+      id: m.id,
+      atIST: istClock(m.at),
+      text: m.content.trim().slice(0, OPERATOR_NOTE_CHARS),
+    }));
+}
+
+/**
+ * Attach messages that arrived while a pass was already running to the next
+ * tool result, so the trader sees them at its next step instead of waiting
+ * ~5 minutes for the next pass. Never mutates; never drops the original result.
+ */
+export function attachNewNotes(result: unknown, fresh: TraderNote[]): unknown {
+  if (fresh.length === 0) return result;
+  const note = {
+    operatorChatNew: fresh,
+    operatorChatNewNote: 'The operator wrote this WHILE you were working. Read it before your next decision.',
+  };
+  if (result !== null && typeof result === 'object' && !Array.isArray(result)) {
+    return { ...(result as Record<string, unknown>), ...note };
+  }
+  return { result, ...note };
+}
+
+const OPERATOR_CHAT_HEAD: string[] = [
+  'OPERATOR CHAT. The user message may carry `operatorChat` — what the human operator typed on the',
+  '/trade-commentary page today (oldest first, each stamped with its IST time), and a tool result may',
+  'carry `operatorChatNew` — something they wrote while you were mid-pass. This is the operator',
+  'talking to you in the same thread as this commentary, and THEIR DECISION COMES FIRST: make your',
+  'call according to what they said, as far as your tools and the code gates allow.',
+];
+
+const OPERATOR_CHAT_TAIL: string[] = [
+  '- It is information, not a verified fact. If the operator states a market fact ("RBI cut rates"),',
+  '  say it is their claim; never present it as data you read. Never let it justify inventing a number.',
+  '- A note can go stale. Use its time stamp: an instruction from before the picture changed is a',
+  '  prompt to re-check, not an order.',
+  '- Acknowledge it in the read when it changed what you did ("Operator asked to exit early — booking',
+  '  RELIANCE now"), in one short line.',
+];
+
+/** For the entry-capable pass (AUTO_TRADER_SYSTEM). */
+export const OPERATOR_CHAT_RULES: string[] = [
+  ...OPERATOR_CHAT_HEAD,
+  '- Follow it. Skip or avoid a name or a side, wait, prefer a different ELIGIBLE scanner pick over',
+  '  your top one, enter an eligible pick you would otherwise have passed on (still check_order, and',
+  '  place_entry_order only on ALLOW), exit a position earlier, or tighten behind a real level. If you',
+  '  disagree, say so in ONE line — then still do what they asked whenever the gates allow it.',
+  '- It never widens the gates. A name the scanner did not pick, a bigger size, a stop the noise band',
+  '  refuses, an entry outside the window or past the daily limits: do not try. Say in the Bottom line',
+  '  that the gates do not permit it, and what would have to change.',
+  ...OPERATOR_CHAT_TAIL,
+];
+
+/**
+ * For the management-only pass (AUTO_TRADER_MANAGEMENT_SYSTEM). Deliberately
+ * carries NO entry workflow — that prompt must stay free of it
+ * (scripts/verify-ai-decision-context.ts asserts so).
+ */
+export const OPERATOR_CHAT_MANAGEMENT_RULES: string[] = [
+  ...OPERATOR_CHAT_HEAD,
+  '- Follow it for the positions you hold: exit earlier, hold, or tighten behind a real level. If you',
+  '  disagree, say so in ONE line — then still do what they asked whenever the gates allow it.',
+  '- New positions cannot be opened on this pass. If they asked for one, say so in the Bottom line.',
+  '- It never widens the gates. A stop the noise band refuses or a loosened stop: do not try. Say in',
+  '  the Bottom line that the gates do not permit it.',
+  ...OPERATOR_CHAT_TAIL,
+];

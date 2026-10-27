@@ -95,7 +95,7 @@ WORKDIR /app
 # TypeScript), so scripts/verify-playwright-pin.ts fails CI if this version drifts
 # from the lockfile — a mismatch would install libs for one Chromium and copy a
 # different one in below.
-RUN npx --yes playwright@1.62.1 install-deps chromium \
+RUN npx --yes playwright@1.64.1 install-deps chromium \
   && rm -rf /var/lib/apt/lists/* /root/.npm
 
 # The browser binary itself, lifted from the builder's cached layer rather than

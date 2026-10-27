@@ -252,6 +252,8 @@ export const ADMIN_ONLY_API_PREFIXES: readonly string[] = [
   '/api/prompts',
   '/api/replay-commentary',
   '/api/telegram/setup',
+  // The operator chat steers the auto-trader — reading the thread is as private as writing to it.
+  '/api/trade-commentary/chat',
   '/api/users', // narrowed further to the owner by OWNER_ONLY_API_PREFIXES
 ];
 

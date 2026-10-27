@@ -20,7 +20,7 @@ import type { AssistantResult, ChatMessage, ToolTraceEntry } from './types';
 const MAX_TOOL_STEPS = 8;
 
 /** Real IST session facts for the system prompt (local-getter convention, see todayIST). */
-function sessionInfo(): SessionInfo {
+export function sessionInfo(): SessionInfo {
   const ist = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
   const minuteOfDay = ist.getHours() * 60 + ist.getMinutes();
   const pad = (n: number) => String(n).padStart(2, '0');

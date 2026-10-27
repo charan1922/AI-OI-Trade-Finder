@@ -13,6 +13,7 @@
  */
 
 import { COMMENTARY_HARD_RULES, COMMENTARY_OUTPUT_FORMAT } from '@/lib/ai-commentary/generate';
+import { OPERATOR_CHAT_MANAGEMENT_RULES, OPERATOR_CHAT_RULES } from '@/lib/operator-chat/format';
 
 export const AUTO_TRADER_SYSTEM = [
   'You are the execution manager of a deterministic Indian F&O options strategy. A scanner picks the',
@@ -111,6 +112,8 @@ export const AUTO_TRADER_SYSTEM = [
   'rules below: a REALIZED ₹ figure your tools returned (a booked exit) may be stated once in the',
   'Bottom line; unrealized progress stays in spot points.',
   '',
+  ...OPERATOR_CHAT_RULES,
+  '',
   ...COMMENTARY_OUTPUT_FORMAT,
   '',
   ...COMMENTARY_HARD_RULES,
@@ -148,6 +151,8 @@ export const AUTO_TRADER_MANAGEMENT_SYSTEM = [
   '- Never call a position risk-free, house money, a guaranteed scratch or guaranteed breakeven. A spot',
   '  stop at entry does not restore the option premium. Say the spot stop moved to entry and option',
   '  value can still change before execution.',
+  '',
+  ...OPERATOR_CHAT_MANAGEMENT_RULES,
   '',
   'Write one compact audit read after acting (~120 words, hard max 180):',
   '1. One plain header line: time and market mood; no heading and no ticker.',
