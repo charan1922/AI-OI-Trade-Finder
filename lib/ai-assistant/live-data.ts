@@ -14,6 +14,7 @@ import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import { loadFactorBaselines } from '@/lib/trade-suggest/engine';
+import { internalAuthHeaders } from '@/lib/trade-suggest/candidates';
 import { getSuggestions } from '@/lib/trade-suggest/store';
 
 /** Same-process origin for internal route fetches (dev server on 5001). */
@@ -58,7 +59,10 @@ export async function getMarketPulse(topN = 10): Promise<MarketPulse> {
   const lists: MarketPulse['lists'] = [];
   for (const src of PULSE_SOURCES) {
     try {
-      const res = await fetch(`${SELF_ORIGIN}/api/live/nse-watchlist?source=${src.source}`, { cache: 'no-store' });
+      const res = await fetch(`${SELF_ORIGIN}/api/live/nse-watchlist?source=${src.source}`, {
+        headers: internalAuthHeaders(), // without it every self-call 401s wherever APP_PASSWORD is set (prod)
+        cache: 'no-store',
+      });
       const j = (await res.json()) as SectorLeadersResponse;
       lists.push({
         source: src.source,
@@ -177,7 +181,7 @@ export async function getSymbolSnapshot(symbolRaw: string): Promise<SymbolSnapsh
 
   const res = await fetch(`${SELF_ORIGIN}/api/live/quote`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...internalAuthHeaders() },
     body: JSON.stringify({ symbols: [symbol] }),
     cache: 'no-store',
   });
