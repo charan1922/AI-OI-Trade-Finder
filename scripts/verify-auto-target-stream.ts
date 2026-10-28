@@ -20,11 +20,16 @@ import {
   targetRupeesForPosition,
   topOfBookSizes,
 } from '../lib/auto-trade/backstops';
+import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { fyersDataSocket } from 'fyers-api-v3';
 import {
+  closeAndAwait,
   fyersStreamIsSilent,
   fyersStreamNeedsTokenRotation,
   fyersStreamReconnectDelayMs,
   isStreamTargetExecutable,
+  releaseFyersSocketSingleton,
   STREAM_SILENCE_LIMIT_MS,
 } from '../lib/auto-trade/fyers-pnl-stream';
 
@@ -140,6 +145,112 @@ check('token rotation is detected by fingerprint change', () => {
   assert.equal(fyersStreamNeedsTokenRotation('abc', 'def'), true);
   assert.equal(fyersStreamNeedsTokenRotation(null, 'abc'), true, 'unknown state must rotate once');
 });
+
+// ── SDK singleton: a retired socket must be replaceable (2026-10-28) ─────────
+// fyers-api-v3 (1.9.0 AND 2.4.0) keeps its DataSocket in a static `instance`
+// slot that close() never clears, and its constructor throws while the slot is
+// set — so every token rotation / silence recycle died with "start failed".
+// FakeSdk mirrors that exact contract.
+class FakeSdk {
+  static instance: FakeSdk | null = null;
+  constructor() {
+    if (FakeSdk.instance) throw new Error('Only one instance of DataSocket is allowed. Use getInstance() instead.');
+    FakeSdk.instance = this;
+  }
+}
+
+check('SDK singleton: a second constructor throws until the slot is released', () => {
+  FakeSdk.instance = null;
+  new FakeSdk();
+  assert.throws(() => new FakeSdk(), /Only one instance/, 'this is the production failure being fixed');
+  releaseFyersSocketSingleton(FakeSdk);
+  assert.doesNotThrow(() => new FakeSdk(), 'after release a fresh socket (new token) must construct');
+});
+
+check('REAL fyers-api-v3: release lets a second socket construct (catches an SDK rename in CI, not live)', () => {
+  // Construction does no network I/O (connect() does); a dummy JWT-shaped token is enough.
+  const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const token = (k: string) => `APP-100:${[b64({ alg: 'HS256' }), b64({ hsm_key: k, exp: 4102444800 }), 'sig'].join('.')}`;
+  const dir = tmpdir();
+  releaseFyersSocketSingleton(fyersDataSocket);
+  const first = new fyersDataSocket(token('ONE'), dir, false);
+  assert.throws(() => new fyersDataSocket(token('TWO'), dir, false), /Only one instance/, 'SDK contract changed?');
+  releaseFyersSocketSingleton(fyersDataSocket);
+  const second = new fyersDataSocket(token('TWO'), dir, false);
+  assert.notEqual(first, second, 'a fresh instance (new token) must be built');
+  assert.equal(second.isConnected(), false);
+  releaseFyersSocketSingleton(fyersDataSocket);
+});
+
+check('ensureSocket releases the SDK singleton immediately before constructing', () => {
+  const src = readFileSync(new URL('../lib/auto-trade/fyers-pnl-stream.ts', import.meta.url), 'utf8');
+  const release = src.indexOf('releaseFyersSocketSingleton(fyersDataSocket)');
+  const construct = src.indexOf('new fyersDataSocket(');
+  assert.ok(release > 0 && construct > 0, 'both calls must exist');
+  assert.ok(release < construct, 'the slot must be released BEFORE the constructor runs');
+  assert.equal(src.split('new fyersDataSocket(').length - 1, 1, 'exactly one construction site');
+});
+
+function fakeSocket(connected: boolean, closeDelayMs: number | null) {
+  const calls = { close: 0 };
+  let onClose: (() => void) | null = null;
+  return {
+    calls,
+    isConnected: () => connected,
+    on: (event: string, handler: (m?: unknown) => void) => {
+      if (event === 'close') onClose = () => handler();
+    },
+    close: () => {
+      calls.close += 1;
+      if (connected && closeDelayMs != null) setTimeout(() => onClose?.(), closeDelayMs);
+    },
+  };
+}
+
+await (async () => {
+  const name = 'closeAndAwait waits for a live socket’s close to LAND, then returns';
+  try {
+    const sock = fakeSocket(true, 30);
+    const started = Date.now();
+    await closeAndAwait(sock, 2_000);
+    assert.equal(sock.calls.close, 1);
+    assert.ok(Date.now() - started >= 25, 'must not return before the close event fires');
+    assert.ok(Date.now() - started < 1_000, 'must return as soon as the close lands, not at the timeout');
+    passed += 1;
+  } catch (err) {
+    console.error(`FAIL  ${name}\n      ${(err as Error).message}`);
+    process.exitCode = 1;
+  }
+})();
+
+await (async () => {
+  const name = 'closeAndAwait never hangs: a close that never fires times out';
+  try {
+    const sock = fakeSocket(true, null);
+    const started = Date.now();
+    await closeAndAwait(sock, 50);
+    assert.ok(Date.now() - started >= 45, 'waited the timeout');
+    passed += 1;
+  } catch (err) {
+    console.error(`FAIL  ${name}\n      ${(err as Error).message}`);
+    process.exitCode = 1;
+  }
+})();
+
+await (async () => {
+  const name = 'closeAndAwait on a socket that is not open closes without waiting';
+  try {
+    const sock = fakeSocket(false, null);
+    const started = Date.now();
+    await closeAndAwait(sock, 5_000);
+    assert.equal(sock.calls.close, 1);
+    assert.ok(Date.now() - started < 500);
+    passed += 1;
+  } catch (err) {
+    console.error(`FAIL  ${name}\n      ${(err as Error).message}`);
+    process.exitCode = 1;
+  }
+})();
 
 check('silence watchdog ignores a disconnected or idle stream', () => {
   const now = 1_000_000_000;
@@ -292,3 +403,5 @@ if (process.exitCode === 1) {
 } else {
   console.log(`auto-target/stream verification passed: ${passed} checks`);
 }
+// The real-SDK check constructs fyersDataSocket, which leaves a handle open; exit explicitly so CI never hangs.
+process.exit(process.exitCode ?? 0);
