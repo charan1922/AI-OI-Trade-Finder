@@ -252,10 +252,17 @@ async function main(): Promise<void> {
     'deployed 40k + 30k > 60k'
   );
   check('gates: re-entry blocked', !checkEntryGates({ ...base, symbolTradedToday: true }).allow);
-  check('gates: loss halt blocked', !checkEntryGates({ ...base, dailyRealizedPnl: -5_000 }).allow);
+  // Boundary derived from the setting, never a literal: the halt moved ₹5,000 → ₹2,500 on 2026-08-13
+  // (one full stop ends the day) and a hard-coded −4,999 silently became a FAIL nobody re-read.
+  const lossHalt = base.settings.dailyLossHaltRupees;
+  check(
+    'gates: loss halt blocked at the limit',
+    !checkEntryGates({ ...base, dailyRealizedPnl: -lossHalt }).allow,
+    `halt ₹${lossHalt}`
+  );
   check(
     'gates: loss halt NOT tripped one rupee short of the limit',
-    checkEntryGates({ ...base, dailyRealizedPnl: -4_999 }).allow,
+    checkEntryGates({ ...base, dailyRealizedPnl: -(lossHalt - 1) }).allow,
     'halt is ≤ −dailyLossHaltRupees, not <'
   );
   check('gates: slippage blocked', !checkEntryGates({ ...base, slippagePct: 6 }).allow);
