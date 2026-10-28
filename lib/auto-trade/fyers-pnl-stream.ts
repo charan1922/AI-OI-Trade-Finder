@@ -332,10 +332,54 @@ function clearReconnectTimer(s: StreamState): void {
   s.nextReconnectAt = null;
 }
 
-/** Retire the old SDK singleton before constructing its replacement. Event
- * handlers also verify socket identity, so a late close/message from the old
- * transport cannot mutate or feed the new stream. */
-function retireSocketForTokenRotation(s: StreamState): void {
+/** How long a retiring socket gets to finish closing before we stop waiting. */
+export const SOCKET_CLOSE_WAIT_MS = 3_000;
+
+/**
+ * Close a live socket and wait until its close has actually COMPLETED (or the
+ * wait times out). The SDK's `on()` handlers live in slots shared by every
+ * instance and its close() does not detach the old websocket's onclose — so a
+ * replacement built before the old close lands receives that late close as its
+ * OWN, and the identity guard cannot tell (sandbox-proven on 2.4.0). A socket
+ * that is not open is closed fire-and-forget: close() is a no-op then, and the
+ * next connect() tears down any half-open transport itself.
+ */
+export async function closeAndAwait(
+  socket: Pick<FyersDataSocketInstance, 'isConnected' | 'on' | 'close'>,
+  timeoutMs = SOCKET_CLOSE_WAIT_MS
+): Promise<void> {
+  if (!socket.isConnected()) {
+    socket.close();
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    socket.on('close', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    socket.close();
+  });
+}
+
+/**
+ * Clear the SDK's singleton slot so the next constructor call can take a NEW
+ * token. close() never clears `fyersDataSocket.instance`, so a second `new`
+ * threw "Only one instance of DataSocket is allowed" and every token rotation
+ * and silence recycle left the fast path dead for the session; getInstance()
+ * is no substitute — it returns the old instance and ignores the new token.
+ * The official docs say nothing on this (checked 2026-10-28); if a later SDK
+ * renames the field, the constructor throws into ensureSocket's `start failed`
+ * path, so this fails loud, never silent.
+ */
+export function releaseFyersSocketSingleton(ctor: { instance: unknown }): void {
+  ctor.instance = null;
+}
+
+/** Retire the old socket and wait for its close to land before anything replaces
+ * it. Event handlers also verify socket identity, so a late message from the old
+ * transport cannot feed the new stream. */
+async function retireSocketForTokenRotation(s: StreamState): Promise<void> {
   const oldSocket = s.socket;
   s.socket = null;
   s.socketTokenFingerprint = null;
@@ -348,7 +392,7 @@ function retireSocketForTokenRotation(s: StreamState): void {
   s.reconnectAttempts = 0;
   if (!oldSocket) return;
   try {
-    oldSocket.close();
+    await closeAndAwait(oldSocket);
   } catch (err) {
     console.warn(`${TAG} old socket close during token rotation failed: ${(err as Error).message}`);
   }
@@ -447,7 +491,7 @@ async function ensureSocket(): Promise<void> {
       `${TAG} no market data for ${Math.round(silentForMs / 1000)}s on a connected socket — recycling it`
     );
     s.lastError = `stream silent for ${Math.round(silentForMs / 1000)}s; socket recycled`;
-    retireSocketForTokenRotation(s);
+    await retireSocketForTokenRotation(s);
   }
 
   let token: string;
@@ -464,7 +508,7 @@ async function ensureSocket(): Promise<void> {
   const fingerprint = tokenFingerprint(token);
   if (s.socket && fyersStreamNeedsTokenRotation(s.socketTokenFingerprint, fingerprint)) {
     console.log(`${TAG} FYERS access token changed; replacing the market-data socket`);
-    retireSocketForTokenRotation(s);
+    await retireSocketForTokenRotation(s);
   }
 
   if (s.connected || s.connecting) return;
@@ -474,9 +518,11 @@ async function ensureSocket(): Promise<void> {
   }
   s.connecting = true;
   try {
-    // The SDK has no token setter. Its exported class constructor replaces its
-    // own singleton, so close the old transport first and keep exactly one live
-    // instance while still allowing a fresh morning token to take effect.
+    // The SDK has no token setter and its constructor REFUSES while its singleton
+    // slot is set (close() never clears it). We only get here with no tracked
+    // socket — any SDK instance left is a retired or failed-start orphan — so
+    // release the slot, then construct with the current token.
+    releaseFyersSocketSingleton(fyersDataSocket);
     const socket = new fyersDataSocket(`${fyersAppId()}:${token}`, path.join(process.cwd(), 'data'), false);
     s.socket = socket;
     s.socketTokenFingerprint = fingerprint;

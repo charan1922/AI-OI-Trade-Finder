@@ -69,6 +69,11 @@ declare module 'fyers-api-v3' {
 
   export const fyersDataSocket: {
     new (accessToken: string, logPath?: string, enableLogging?: boolean): FyersDataSocketInstance;
+    /** Returns the EXISTING instance and ignores its arguments — a new token is NOT applied. */
     getInstance(accessToken: string, logPath?: string, enableLogging?: boolean): FyersDataSocketInstance;
+    /** The SDK's singleton slot (public, writable static; same in 1.9.0 and 2.4.0). close() never
+     *  clears it and the constructor throws "Only one instance of DataSocket is allowed" while it
+     *  is set — see releaseFyersSocketSingleton() in lib/auto-trade/fyers-pnl-stream.ts. */
+    instance: FyersDataSocketInstance | null;
   };
 }
