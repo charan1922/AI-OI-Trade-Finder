@@ -1,8 +1,9 @@
 'use client';
 
-import { Loader2, SendHorizontal, Sparkles, X } from 'lucide-react';
+import { Loader2, SendHorizontal, Sparkles, X, Zap } from 'lucide-react';
 import { type KeyboardEvent, useState } from 'react';
 import { RichText } from '@/components/rich-text';
+import { type ActionStatus, type ActionView, isActionExpired } from '@/lib/operator-chat/format';
 import type { ChatMessage, ChatNotice } from '../_hooks/use-operator-chat';
 
 function clock(iso: string): string {
@@ -11,8 +12,75 @@ function clock(iso: string): string {
   return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
 }
 
+const STATUS_STYLE: Record<ActionStatus, string> = {
+  pending: 'bg-amber-100 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300',
+  running: 'bg-sky-100 text-sky-800 dark:bg-sky-500/10 dark:text-sky-300',
+  done: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300',
+  failed: 'bg-red-100 text-red-800 dark:bg-red-500/10 dark:text-red-300',
+  cancelled: 'bg-muted text-muted-foreground',
+};
+
+/**
+ * A proposed action. Nothing has happened until Confirm is tapped; the server
+ * then runs it through the /auto-trade console's own gated code. An expired
+ * card (ACTION_TTL_MS) cannot be confirmed — "exit X" means now, not later.
+ */
+function ActionCard({
+  message,
+  onAct,
+}: {
+  message: ChatMessage;
+  onAct: (id: number, decision: 'confirm' | 'cancel') => Promise<void>;
+}) {
+  const action = message.action as ActionView;
+  const expired = action.status === 'pending' && isActionExpired(message.at);
+  const live = action.status === 'pending' && !expired;
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[92%] rounded-2xl rounded-bl-sm border-2 border-primary/40 bg-card px-3 py-2 shadow-sm">
+        <div className="mb-1 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <Zap className="h-3 w-3 text-primary" />
+          <span className="font-medium text-foreground">Action</span>
+          <span>{clock(message.at)} IST</span>
+          <span className={`ml-auto rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${STATUS_STYLE[action.status]}`}>
+            {expired ? 'expired' : action.status === 'running' ? 'running…' : action.status}
+          </span>
+        </div>
+        <div className="text-[13px] font-medium leading-relaxed text-foreground">{message.content}</div>
+        {action.result && <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{action.result}</div>}
+        {live && (
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => void onAct(message.id, 'confirm')}
+              className="rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground"
+            >
+              Confirm
+            </button>
+            <button
+              type="button"
+              onClick={() => void onAct(message.id, 'cancel')}
+              className="rounded-md border px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+        {expired && <div className="mt-1 text-[11px] text-muted-foreground">Over 10 minutes old — ask again for a fresh card.</div>}
+      </div>
+    </div>
+  );
+}
+
 /** One chat line inside the commentary stream: the operator on the right, the AI's reply on the left. */
-export function ChatItem({ message }: { message: ChatMessage }) {
+export function ChatItem({
+  message,
+  onAct,
+}: {
+  message: ChatMessage;
+  onAct: (id: number, decision: 'confirm' | 'cancel') => Promise<void>;
+}) {
+  if (message.action) return <ActionCard message={message} onAct={onAct} />;
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">

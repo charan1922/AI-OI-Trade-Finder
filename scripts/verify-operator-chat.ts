@@ -7,10 +7,14 @@
  */
 import assert from 'node:assert/strict';
 import { ROLE_PERMISSIONS, requiredPermission } from '../lib/auth/rbac';
+import { readFileSync } from 'node:fs';
+import { CHAT_SETTING_KEYS, describeAction, validateSettingChange } from '../lib/operator-chat/actions';
 import { APP_DATA_SOURCES, appDataPath } from '../lib/operator-chat/app-data';
 import { AUTO_TRADER_MANAGEMENT_SYSTEM, AUTO_TRADER_SYSTEM } from '../lib/auto-trade/decision/system-prompt';
 import {
+  ACTION_TTL_MS,
   attachNewNotes,
+  isActionExpired,
   OPERATOR_CHAT_MANAGEMENT_RULES,
   OPERATOR_CHAT_RULES,
   OPERATOR_NOTE_CHARS,
@@ -165,6 +169,61 @@ check('read_app_data rejects bad params instead of guessing', () => {
   assert.equal(typeof appDataPath({ source: 'tf_eod', date: 'yesterday' }), 'object');
   assert.equal(typeof appDataPath({ source: 'nse_watchlist', section: 'everything' }), 'object');
   assert.equal(appDataPath({ source: 'oi_series', symbol: 'm&m' }), '/api/live/oi-series?symbol=M%26M');
+});
+
+check('chat settings: validated by the SAME registry ranges, stored in canonical form', () => {
+  assert.deepEqual(validateSettingChange('maxRiskPerLotRupees', '6000'), {
+    ok: true,
+    key: 'maxRiskPerLotRupees',
+    value: '6000',
+  });
+  const tooBig = validateSettingChange('maxRiskPerLotRupees', '60000');
+  assert.equal(tooBig.ok, false, 'a fat-finger 60000 must be refused (registry cap 10,000)');
+  assert.equal(validateSettingChange('maxRiskPerLotRupees', 'six thousand').ok, false);
+  assert.equal(validateSettingChange('killSwitch', 'true').ok, true);
+});
+
+check('chat settings: never live mode, never broker, never an unknown key', () => {
+  const live = validateSettingChange('mode', 'live');
+  assert.equal(live.ok, false);
+  assert.match((live as { error: string }).error, /two-key/);
+  assert.equal(validateSettingChange('mode', 'paper').ok, true, 'non-live modes are allowed');
+  assert.equal(validateSettingChange('broker', 'dhan').ok, false);
+  assert.ok(!CHAT_SETTING_KEYS.includes('broker'));
+  assert.equal(validateSettingChange('placeOrderNow', '1').ok, false);
+});
+
+check('action cards expire after 10 minutes — "exit X" means now, not an hour later', () => {
+  const t0 = Date.parse('2026-10-28T05:00:00Z');
+  assert.equal(isActionExpired('2026-10-28T05:00:00Z', t0 + 9 * 60_000), false);
+  assert.equal(isActionExpired('2026-10-28T05:00:00Z', t0 + ACTION_TTL_MS + 1), true);
+  assert.equal(isActionExpired('garbage', t0), true, 'an unreadable timestamp must not be confirmable');
+});
+
+check('every card says what will happen in plain words', () => {
+  assert.match(describeAction({ kind: 'take_trade', symbol: 'APOLLOHOSP' }), /Take APOLLOHOSP now/);
+  assert.match(
+    describeAction({ kind: 'setting', key: 'maxRiskPerLotRupees', from: '5000', value: '6000' }),
+    /5000 → 6000/
+  );
+  assert.match(describeAction({ kind: 'move_stop', symbol: 'X', fromSl: 100, toSl: 101 }), /tighten only/);
+});
+
+check('ADMIN ONLY: a viewer cannot tap Confirm (POST /chat/action)', () => {
+  const need = requiredPermission('POST', '/api/trade-commentary/chat/action', new URLSearchParams());
+  assert.ok(need !== null);
+  assert.equal(ROLE_PERMISSIONS.viewer.has(need), false);
+  assert.equal(ROLE_PERMISSIONS.admin.has(need), true);
+});
+
+check('the chat has NO raw order path — entries only via the trader’s gated pass', () => {
+  const src = readFileSync(new URL('../lib/operator-chat/act.ts', import.meta.url), 'utf8');
+  for (const forbidden of ['place_entry_order', 'placeEntry', 'brokers/', 'placeOrder', 'checkEntryGates']) {
+    assert.ok(!src.includes(forbidden), `act.ts must not reach "${forbidden}"`);
+  }
+  // take_trade must go through runAutoTradePass (the trader + every gate), not around it.
+  assert.match(src, /case 'take_trade'[\s\S]*runPassNow\(\)/);
+  assert.match(src, /runAutoTradePass\(scan\)/);
 });
 
 check('the management-only rules carry NO entry workflow (that pass cannot open positions)', () => {

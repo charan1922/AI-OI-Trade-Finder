@@ -19,8 +19,9 @@ import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import type { NeutralToolDef } from '@/lib/auto-trade/tools/defs';
 import type { AiProvider } from '@/lib/auto-trade/types';
 import { hasMimo } from '@/lib/env';
+import { proposeAction } from './act';
 import { READ_APP_DATA_TOOL, readAppData } from './app-data';
-import type { OperatorMessage } from './format';
+import { ACTION_KINDS, type ChatAction, type OperatorMessage } from './format';
 
 /** Prior turns replayed to the model — enough to follow the thread, not to flood it. */
 const HISTORY_TURNS = 8;
@@ -67,19 +68,45 @@ function transcript(prior: OperatorMessage[], message: string): string {
   ].join('\n');
 }
 
+/** At most this many Confirm cards per reply — a fix + the trade, not a menu. */
+const MAX_PROPOSALS = 3;
+
 export async function replyToOperator(opts: {
   message: string;
   prior: OperatorMessage[];
   framing: string;
-}): Promise<{ text: string; provider: AiProvider; model: string }> {
+}): Promise<{
+  text: string;
+  provider: AiProvider;
+  model: string;
+  proposals: { action: ChatAction; description: string }[];
+}> {
   const { provider, mimoModel } = await chatProvider();
+  const proposals: { action: ChatAction; description: string }[] = [];
   const result = await runToolLoop({
     provider,
     mimoModel,
     system: `${buildSystemPrompt(sessionInfo())}\n\n${opts.framing}`,
     user: transcript(opts.prior, opts.message),
-    tools: CHAT_TOOLS,
+    tools: [...CHAT_TOOLS, PROPOSE_ACTION_TOOL],
     execute: async (name, args) => {
+      if (name === PROPOSE_ACTION_TOOL.name) {
+        if (proposals.length >= MAX_PROPOSALS) {
+          const result = { proposed: false, error: `At most ${MAX_PROPOSALS} actions per reply.` };
+          return { result, trace: { name, args, ok: false, summary: 'proposal cap reached' } };
+        }
+        const p = await proposeAction(args);
+        if (!p.ok) {
+          return { result: { proposed: false, error: p.error }, trace: { name, args, ok: false, summary: p.error } };
+        }
+        proposals.push({ action: p.action, description: p.description });
+        const result = {
+          proposed: true,
+          card: p.description,
+          note: 'NOT done yet. A Confirm card is shown under your reply; it happens only when the operator taps Confirm. Tell them to tap it — never say it is done.',
+        };
+        return { result, trace: { name, args, ok: true, summary: p.description } };
+      }
       if (name === READ_APP_DATA_TOOL.name) {
         const started = Date.now();
         const r = await readAppData(args);
@@ -89,5 +116,30 @@ export async function replyToOperator(opts: {
       return { result: data, trace: { name: trace.name, args: trace.args, ok: trace.ok, summary: trace.summary } };
     },
   });
-  return { text: result.text || '(no reply produced)', provider, model: result.model };
+  return { text: result.text || '(no reply produced)', provider, model: result.model, proposals };
 }
+
+const PROPOSE_ACTION_TOOL: NeutralToolDef = {
+  name: 'propose_action',
+  description: [
+    "Put an action on a Confirm card under your reply. It runs ONLY when the operator taps Confirm, through the same gated code as the /auto-trade console. Use it whenever the operator asks you to DO something — don't send them to another page. kinds:",
+    '- take_trade {symbol}: run the trader NOW with the operator\'s order to enter that stock (it must be an eligible scanner pick; every gate still applies). Use for "take X", "buy X", "enter X".',
+    '- setting {key, value}: change a trader setting (same registry + limits as /auto-trade), e.g. key maxRiskPerLotRupees value 6000, dailyLossHaltRupees, maxTradesPerDay, maxSpreadPct, killSwitch true/false, mode off|paper|approval (never live).',
+    '- exit {symbol}: exit an open position now at market.',
+    '- move_stop {symbol, newSlSpot}: tighten the spot stop (tighten-only; inside the 0.35% noise band is refused).',
+    '- approve / reject {symbol}: decide a pending approval (approve re-checks every gate on a fresh quote).',
+    '- run_pass: run the trader now (fresh scan + full pass) without a specific order.',
+    'If a gate would block what they asked (e.g. the per-lot risk is above maxRiskPerLotRupees), propose the setting fix AND the action in the same reply so one pair of taps gets it done — and say plainly what the fix changes for every future trade.',
+  ].join('\n'),
+  parameters: {
+    type: 'object',
+    properties: {
+      kind: { type: 'string', enum: [...ACTION_KINDS] },
+      symbol: { type: 'string' },
+      key: { type: 'string' },
+      value: { type: 'string' },
+      newSlSpot: { type: 'number' },
+    },
+    required: ['kind'],
+  },
+};

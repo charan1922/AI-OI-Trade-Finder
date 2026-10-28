@@ -9,6 +9,31 @@
  * the gates allow.
  */
 
+/** What the chat can do for the operator — each runs only after they tap Confirm (lib/operator-chat/act.ts). */
+export const ACTION_KINDS = ['take_trade', 'setting', 'exit', 'move_stop', 'approve', 'reject', 'run_pass'] as const;
+export type ActionKind = (typeof ACTION_KINDS)[number];
+export type ActionStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface ChatAction {
+  kind: ActionKind;
+  /** setting */
+  key?: string;
+  value?: string;
+  from?: string | null;
+  /** exit / move_stop / approve / reject */
+  tradeId?: number;
+  symbol?: string;
+  contract?: string;
+  /** move_stop */
+  fromSl?: number | null;
+  toSl?: number;
+}
+
+export interface ActionView extends ChatAction {
+  status: ActionStatus;
+  result: string | null;
+}
+
 export interface OperatorMessage {
   id: number;
   date: string;
@@ -16,6 +41,16 @@ export interface OperatorMessage {
   content: string;
   /** ISO timestamp (UTC). */
   at: string;
+  /** Set on an assistant row that proposes an action (a Confirm card). */
+  action?: ActionView | null;
+}
+
+/** A proposal can only be confirmed while it is fresh — "exit X" means NOW, not an hour later. */
+export const ACTION_TTL_MS = 10 * 60_000;
+
+export function isActionExpired(proposedAtIso: string, nowMs = Date.now()): boolean {
+  const t = new Date(proposedAtIso).getTime();
+  return !Number.isFinite(t) || nowMs - t > ACTION_TTL_MS;
 }
 
 /** What the trader sees of one operator message. */
