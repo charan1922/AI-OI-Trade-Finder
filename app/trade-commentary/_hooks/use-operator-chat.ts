@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ActionView } from '@/lib/operator-chat/format';
 
 export interface ChatMessage {
   id: number;
@@ -9,6 +10,8 @@ export interface ChatMessage {
   content: string;
   /** ISO timestamp (UTC) — the same format as commentary rows, so one thread sorts correctly. */
   at: string;
+  /** A proposed action — rendered as a Confirm card. */
+  action?: ActionView | null;
 }
 
 /** A line that is not stored (model unavailable / not sent). Transient, never part of the thread. */
@@ -91,6 +94,7 @@ export function useOperatorChat(enabled = true) {
           error?: string;
           saved?: ChatMessage;
           reply?: ChatMessage | null;
+          actions?: ChatMessage[];
           notice?: string;
         };
         if (!res.ok) {
@@ -101,7 +105,7 @@ export function useOperatorChat(enabled = true) {
         }
         setMessages((prev) => {
           const next = prev.map((m) => (m.id === tempId && j.saved ? j.saved : m));
-          return j.reply ? [...next, j.reply] : next;
+          return [...next, ...(j.reply ? [j.reply] : []), ...(j.actions ?? [])];
         });
         if (j.notice) addNotice(j.notice);
         return true;
@@ -119,5 +123,32 @@ export function useOperatorChat(enabled = true) {
 
   const dismissNotice = useCallback((key: string) => setNotices((n) => n.filter((x) => x.key !== key)), []);
 
-  return { messages, notices, pending, configured, send, dismissNotice };
+  /** Tap on a Confirm card. The server claims it atomically; the thread is re-read afterwards. */
+  const act = useCallback(
+    async (messageId: number, decision: 'confirm' | 'cancel'): Promise<void> => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId && m.action
+            ? { ...m, action: { ...m.action, status: decision === 'confirm' ? 'running' : 'cancelled' } }
+            : m
+        )
+      );
+      try {
+        const res = await fetch('/api/trade-commentary/chat/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messageId, decision }),
+        });
+        const j = (await res.json()) as { error?: string };
+        if (!res.ok && j.error) addNotice(j.error);
+      } catch (e) {
+        addNotice(`Network error — the action may not have run: ${(e as Error).message}`);
+      } finally {
+        await sync();
+      }
+    },
+    [addNotice, sync]
+  );
+
+  return { messages, notices, pending, configured, send, dismissNotice, act };
 }

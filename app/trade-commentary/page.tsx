@@ -467,7 +467,7 @@ export default function TradeCommentaryPage() {
                       {item.date}
                     </div>
                   )}
-                  <ChatItem message={item.message} />
+                  <ChatItem message={item.message} onAct={chat.act} />
                 </Fragment>
               );
             }

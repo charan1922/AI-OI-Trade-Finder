@@ -2,9 +2,9 @@ import { NextResponse } from 'next/server';
 import { getCommentary } from '@/lib/ai-commentary/store';
 import { todayIST } from '@/lib/ist';
 import { chatProvider, replyToOperator } from '@/lib/operator-chat/reply';
-import { addOperatorMessage, listOperatorMessages } from '@/lib/operator-chat/store';
+import { addOperatorAction, addOperatorMessage, listOperatorMessages } from '@/lib/operator-chat/store';
 
-export const dynamic = 'force-dynamic';
+// No `dynamic` export: route handlers are uncached by default in Next 16.4 (bundled docs, route-handlers.md).
 export const maxDuration = 60; // tool-calling round-trips can take a few seconds
 
 const MAX_CHARS = 2000;
@@ -12,10 +12,10 @@ const MAX_CHARS = 2000;
 const READ_CHARS = 2500;
 
 /**
- * Framing for the chat model. It is the operator's desk analyst, NOT the
- * trader: it cannot place orders, and it must not promise that a message will
- * cause a trade. What the operator types is passed to the auto-trader, which
- * follows it as far as its code gates allow (lib/operator-chat/format.ts).
+ * Framing for the chat model. It can ACT for the operator through
+ * propose_action (Confirm cards, lib/operator-chat/act.ts) but never directly:
+ * nothing happens until the operator taps Confirm, and every action runs
+ * through the same gated code as the /auto-trade console.
  */
 async function chatFraming(date: string): Promise<string> {
   const reads = await getCommentary({ date, limit: 2 }).catch(() => []);
@@ -29,12 +29,19 @@ async function chatFraming(date: string): Promise<string> {
     "anything — the market, today's picks, a stock, a plan, a doubt. Be conversational and direct.",
     "- The auto-trader reads the operator's messages on its next pass (about every 5 minutes) — or at",
     '  its next tool step if it is mid-pass — and makes its call according to them, as far as its code',
-    '  gates and the TradeFinder selector allow. You cannot place, change or cancel an order yourself, and',
-    '  you must never say or imply that you did.',
-    '- When the operator gives an instruction for the trader ("avoid banks", "take the best CE pick"),',
-    '  confirm it has been passed on and will be read next pass — and say plainly if it asks for something',
-    '  the gates would not allow (a stock the scanner did not pick, a bigger size, a bypassed limit).',
+    '  gates and the TradeFinder selector allow.',
+    '- YOU CAN ACT. When the operator asks you to DO something — take a trade, change a setting, exit,',
+    '  tighten a stop, approve/reject, run the trader now — use propose_action. Never tell them to go to',
+    '  another page or "change it on your side". Nothing happens until they tap Confirm, so say "tap',
+    '  Confirm" — never say it is done. "Take X" → propose take_trade X. If you can see a gate that would',
+    '  block it (e.g. the per-lot risk above maxRiskPerLotRupees in the suggestion), propose the setting',
+    '  fix too, in the same reply, and say in one line what that change means for every future trade.',
+    '- Never claim the gates are open or that a trade WILL be taken — only the trader\'s check_order',
+    '  decides. Never invent a setting value; read it (read_app_data auto_trade_today) if you need it.',
+    '- What the chat cannot do: enter a stock the scanner did not pick, or switch mode to live.',
     '- If the operator states a market fact you cannot verify with a tool, call it their claim.',
+    '- In this thread do NOT end with the "no order is placed" line — orders here are placed by the',
+    '  trader, and that sign-off contradicts it.',
     '',
     "Latest commentary reads from the trader today (context only — quote it, don't invent beyond it):",
     latest,
@@ -99,7 +106,17 @@ export async function POST(req: Request) {
     try {
       const result = await replyToOperator({ message, prior, framing: await chatFraming(date) });
       const reply = await addOperatorMessage(date, 'assistant', result.text);
-      return NextResponse.json({ success: true, saved, reply, provider: result.provider, model: result.model });
+      // Each proposal becomes its own Confirm card right under the reply.
+      const actions = [];
+      for (const p of result.proposals) actions.push(await addOperatorAction(date, p.description, p.action));
+      return NextResponse.json({
+        success: true,
+        saved,
+        reply,
+        actions,
+        provider: result.provider,
+        model: result.model,
+      });
     } catch (error) {
       // The operator's message is already stored and WILL reach the trader — say so.
       const msg = error instanceof Error ? error.message : String(error);

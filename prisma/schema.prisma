@@ -584,6 +584,10 @@ model OperatorChat {
   role    String
   content String
   at      String
+  /// A proposed action (Confirm card) on an assistant row; actionStatus pending → running → done | failed | cancelled.
+  actionJson   String?
+  actionStatus String?
+  actionResult String?
 
   @@index([date, id], map: "idx_operator_chat_date")
   @@map("operator_chat")
