@@ -64,3 +64,9 @@ prod.env
 *.env.raw
 
 /python-related-code
+
+# research/kronos — local Python env, model cache and run outputs (never commit)
+research/kronos/.venv/
+research/kronos/out/
+research/kronos/**/__pycache__/
+research/
