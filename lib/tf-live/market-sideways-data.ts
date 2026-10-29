@@ -1,5 +1,5 @@
 /**
- * Server-side inputs for the market-regime gate (lib/tf-live/market-regime.ts).
+ * Server-side inputs for the market-sideways gate (lib/tf-live/market-sideways.ts).
  *
  * - F&O stocks: today's recorded EQ 5-min bars (fyers_candles), ONE query, only
  *   bars COMPLETED before the decision minute (no lookahead); "yesterday's close"
@@ -14,7 +14,7 @@
 
 import { prisma } from '@/lib/db';
 import { fetchHistory5m } from '@/lib/fyers/client';
-import { classifyMarketRegime, type MarketRegime, type RegimeStock } from '@/lib/tf-live/market-regime';
+import { classifyMarketSideways, type MarketSideways, type SidewaysStock } from '@/lib/tf-live/market-sideways';
 
 const NIFTY_SYMBOL = 'NSE:NIFTY50-INDEX';
 
@@ -35,11 +35,11 @@ function openRange(bars: Bar[]): { high: number; low: number } | null {
   return { high: Math.max(...or.map((b) => b.high)), low: Math.min(...or.map((b) => b.low)) };
 }
 
-const g = globalThis as unknown as { __niftyRegimeBars?: { key: string; bars: Bar[] } };
+const g = globalThis as unknown as { __niftySidewaysBars?: { key: string; bars: Bar[] } };
 
 async function niftyBars(date: string, asOfMinute: number): Promise<Bar[]> {
   const key = `${date}|${Math.floor(asOfMinute / 5)}`;
-  if (g.__niftyRegimeBars?.key === key) return g.__niftyRegimeBars.bars;
+  if (g.__niftySidewaysBars?.key === key) return g.__niftySidewaysBars.bars;
   let bars: Bar[] = [];
   try {
     bars = (await fetchHistory5m(NIFTY_SYMBOL, date)).map((b) => ({
@@ -49,14 +49,14 @@ async function niftyBars(date: string, asOfMinute: number): Promise<Bar[]> {
       close: b.close,
     }));
   } catch (error) {
-    console.warn(`[MarketRegime] NIFTY bars unavailable: ${(error as Error).message}`);
+    console.warn(`[MarketSideways] NIFTY bars unavailable: ${(error as Error).message}`);
   }
   // Cache even an empty answer for this bucket: one failed call per 5 min, not one per /live poll.
-  g.__niftyRegimeBars = { key, bars };
+  g.__niftySidewaysBars = { key, bars };
   return bars;
 }
 
-export async function loadMarketRegime(date: string, asOfMinute: number): Promise<MarketRegime> {
+export async function loadMarketSideways(date: string, asOfMinute: number): Promise<MarketSideways> {
   const completed = <T extends { bucketTs: number }>(bars: T[]) => bars.filter((b) => istMin(b.bucketTs) + 5 <= asOfMinute);
   try {
     const rows = (await prisma.$queryRawUnsafe(
@@ -80,7 +80,7 @@ export async function loadMarketRegime(date: string, asOfMinute: number): Promis
       list.push({ bucketTs: Number(r.bucketTs), high: Number(r.high), low: Number(r.low), close: Number(r.close) });
       bySym.set(r.symbol, list);
     }
-    const stocks: RegimeStock[] = [...bySym].map(([symbol, bars]) => {
+    const stocks: SidewaysStock[] = [...bySym].map(([symbol, bars]) => {
       const prior = completed(bars);
       const or = openRange(prior);
       const last = prior[prior.length - 1]?.close ?? null;
@@ -92,13 +92,13 @@ export async function loadMarketRegime(date: string, asOfMinute: number): Promis
     });
 
     const nPrior = completed(await niftyBars(date, asOfMinute));
-    return classifyMarketRegime({
+    return classifyMarketSideways({
       niftyRange: openRange(nPrior),
       niftyLast: nPrior[nPrior.length - 1]?.close ?? null,
       stocks,
     });
   } catch (error) {
-    console.warn(`[MarketRegime] inputs unreadable: ${(error as Error).message}`);
-    return classifyMarketRegime({ niftyRange: null, niftyLast: null, stocks: [] });
+    console.warn(`[MarketSideways] inputs unreadable: ${(error as Error).message}`);
+    return classifyMarketSideways({ niftyRange: null, niftyLast: null, stocks: [] });
   }
 }

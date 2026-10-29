@@ -18,7 +18,9 @@
  * costs no extra broker traffic.
  */
 
+import { todayIST } from '@/lib/ist';
 import { GATE_LABEL, GATE_ORDER } from '@/lib/tf-live/board-view';
+import { loadMarketSideways } from '@/lib/tf-live/market-sideways-data';
 import { internalAuthHeaders, internalOrigin } from '@/lib/trade-suggest/candidates';
 import type { NeutralToolDef } from '@/lib/auto-trade/tools/defs';
 
@@ -77,7 +79,7 @@ export function toScanVerdicts(body: {
   stale?: boolean;
   verdictsLive?: boolean;
   verdictNote?: string | null;
-  marketRegime?: { stuck: boolean | null; reason: string } | null;
+  marketSideways?: { stuck: boolean | null; reason: string } | null;
   board?: RaceRow[];
 }): unknown {
   const hhmm = (m: number | null | undefined) =>
@@ -103,7 +105,7 @@ export function toScanVerdicts(body: {
     verdictsLive: body.verdictsLive ?? null,
     verdictNote: body.verdictNote ?? null,
     // Market-wide gate (2026-10-29): when stuck, names can pass every check and still not be taken.
-    marketRegime: body.marketRegime ?? null,
+    marketSideways: body.marketSideways ?? null,
     checks: GATE_ORDER.map((k) => GATE_LABEL[k]),
     picked: rows.filter((r) => r.verdict === 'PICKED').length,
     rejected: rows.filter((r) => r.verdict === 'REJECTED').length,
@@ -112,6 +114,11 @@ export function toScanVerdicts(body: {
 }
 
 const SOURCES: Record<string, Source> = {
+  check_market_sideways: {
+    description:
+      "Is the WHOLE market sideways right now? NIFTY's 30-min opening-range width and whether NIFTY is still inside it, breadth (share of F&O stocks up), share of stocks still inside their own 30-min range, and stuck true/false/null (true only when all three say sideways: NIFTY inside a < 0.4% range, breadth 40–60%, > 65% inside). Read-only; nothing blocks on it automatically — the trader decides.",
+    path: () => 'in-process: loadMarketSideways(today, now)',
+  },
   scan_verdicts: {
     description:
       "WHY each name on TF's board was PICKED or REJECTED right now — per stock, which of the selector's ten checks failed (e.g. 'move started' = quiet/fading rejected, 'Supertrend with it' = Supertrend veto), which could not be evaluated, and the plain-English reason. Use this to confirm a check is rejecting names, not just warning. Optional args.date YYYY-MM-DD for a past session.",
@@ -355,6 +362,12 @@ export async function readAppData(args: Args): Promise<{ result: unknown; ok: bo
     };
   }
   try {
+    if (source === 'check_market_sideways') {
+      // Same loader and rule the trader's check_market_sideways tool uses — in-process, no HTTP hop.
+      const ist = new Date(Date.now() + 330 * 60_000);
+      const regime = await loadMarketSideways(todayIST(), ist.getUTCHours() * 60 + ist.getUTCMinutes());
+      return { result: regime, ok: true, summary: `check_market_sideways: ${regime.reason}` };
+    }
     if (source === 'live_urgency') {
       const data = await liveUrgency(args);
       return { result: trimmed(data), ok: true, summary: `live_urgency ${String(args.section)}` };

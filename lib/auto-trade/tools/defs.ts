@@ -45,6 +45,18 @@ export const AUTO_TRADE_TOOLS: NeutralToolDef[] = [
     parameters: NO_ARGS,
   },
   {
+    name: 'check_market_sideways',
+    description:
+      'Is the WHOLE market sideways right now? Optional — call it whenever you want a market-wide read. ' +
+      "Returns NIFTY's 30-min opening range width (% of the index) and whether NIFTY is still inside it, " +
+      "the share of F&O stocks up on the day (breadth), the share still inside their own 30-min range, " +
+      'and stuck: true only when all three say sideways (NIFTY inside a < 0.4% range, breadth 40–60%, ' +
+      '> 65% inside their range); null = a read was unavailable. Your call what to do with it: a stuck ' +
+      'market is a reason for caution, not proof a pick fails (measured over 18 sessions, breakouts at ' +
+      '"stuck" moments still averaged slightly positive, just weaker). It never widens any gate.',
+    parameters: NO_ARGS,
+  },
+  {
     name: 'get_account_state',
     description:
       'Refresh the account state already preloaded in the first message: mode, kill switch, entries used ' +

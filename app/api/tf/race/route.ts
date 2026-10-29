@@ -34,8 +34,8 @@ import {
   tfCandidatesAtMinute,
 } from '@/lib/tf-live/race';
 import { getTfEligibleSectors } from '@/lib/trade-suggest/candidates';
-import type { MarketRegime } from '@/lib/tf-live/market-regime';
-import { loadMarketRegime } from '@/lib/tf-live/market-regime-data';
+import type { MarketSideways } from '@/lib/tf-live/market-sideways';
+import { loadMarketSideways } from '@/lib/tf-live/market-sideways-data';
 import { buildRecordedTfContext } from '@/lib/tf-live/context';
 import { getTfLiveCaptureForDate } from '@/lib/tf-live/store';
 import { LIVE_TF_SELECTOR_CONFIG, selectTfCandidates } from '@/lib/tf-live/selector';
@@ -43,7 +43,7 @@ import type { Stretch } from '@/lib/tf-live/stretch';
 import type { TrendShape } from '@/lib/tf-live/trend-shape';
 import type { NseListMembership } from '@/lib/nse/live-lists';
 import { loadVisibleNseLists } from '@/lib/nse/live-lists';
-import { MARKET_REGIME_GATE, TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK } from '@/lib/trade-suggest/config';
+import { MARKET_SIDEWAYS_GATE, TF_BOARD_MAX_AGE_MIN, TF_RACE_MAX_RANK } from '@/lib/trade-suggest/config';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -228,7 +228,7 @@ async function buildBody(today: string, nowMin: number) {
   let boardAgeMin: number | null = null;
   let verdictsLive = false;
   let verdictNote: string | null = null;
-  let marketRegime: MarketRegime | null = null;
+  let marketSideways: MarketSideways | null = null;
   try {
     const boards = await getTfBoardsForDate(date);
     const asOfMinute = boards.length > 0 ? boards[boards.length - 1].minuteIST : 0;
@@ -305,9 +305,9 @@ async function buildBody(today: string, nowMin: number) {
 
     // Market-regime gate — the SAME rule, inputs and minute the scanner uses (engine.ts), so a stuck
     // market reads "no trade" here exactly when the auto-trader stands aside (operator rule 2026-10-29).
-    marketRegime = verdictsLive && MARKET_REGIME_GATE ? await loadMarketRegime(date, nowMin) : null;
-    const regimeBlocks = marketRegime?.stuck === true;
-    if (regimeBlocks && marketRegime) verdictNote = marketRegime.reason;
+    marketSideways = verdictsLive && MARKET_SIDEWAYS_GATE ? await loadMarketSideways(date, nowMin) : null;
+    const sidewaysBlocks = marketSideways?.stuck === true;
+    if (sidewaysBlocks && marketSideways) verdictNote = marketSideways.reason;
 
     board = shown.map((r) => {
       const side: 'CE' | 'PE' = (r.pctChange ?? 0) > 0 ? 'CE' : 'PE';
@@ -315,7 +315,7 @@ async function buildBody(today: string, nowMin: number) {
       // Forced false off a board the engine would refuse. Suppressing it HERE
       // rather than in the card means no consumer of this route can render a
       // stale board as actionable.
-      const tradeable = verdictsLive && !regimeBlocks && picked.has(r.symbol);
+      const tradeable = verdictsLive && !sidewaysBlocks && picked.has(r.symbol);
       const gates = gateStrip(r.deltaR, r.pctChange, ctx, LIVE_TF_SELECTOR_CONFIG);
       const needs = firstNeed(gates, ctx, LIVE_TF_SELECTOR_CONFIG);
       return {
@@ -337,8 +337,8 @@ async function buildBody(today: string, nowMin: number) {
           : picked.has(r.symbol)
             ? stale
               ? `cleared the gates on ${date}, not today`
-              : regimeBlocks
-                ? 'no trade — sideways market (market-regime gate)'
+              : sidewaysBlocks
+                ? 'no trade — sideways market (market-sideways gate)'
                 : 'board too old to act on'
             : (needs ?? 'below the pick limit'),
         premValueCr: ctx?.premValueCr ?? null,
@@ -388,8 +388,8 @@ async function buildBody(today: string, nowMin: number) {
     boardAgeMin,
     verdictsLive,
     verdictNote,
-    // The market-regime read for this verdict (null off a stale/absent board or with the gate off).
-    marketRegime,
+    // The market-sideways read for this verdict (null off a stale/absent board or with the gate off).
+    marketSideways,
     sessionOpenedToday,
     dropped,
     climbed,

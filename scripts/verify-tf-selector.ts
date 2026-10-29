@@ -59,7 +59,9 @@ import { DEFAULT_SETTINGS } from '@/lib/auto-trade/config';
 import { ADR_MAX_STALE_DAYS, dayBaseline, measureStretch } from '@/lib/tf-live/stretch';
 import { describeTrend, TREND_RULE, trendDot, trendShape, type TrendBar } from '@/lib/tf-live/trend-shape';
 import { readFileSync } from 'node:fs';
-import { classifyMarketRegime, DEFAULT_MARKET_REGIME_RULE } from '@/lib/tf-live/market-regime';
+import { classifyMarketSideways, DEFAULT_MARKET_SIDEWAYS_RULE } from '@/lib/tf-live/market-sideways';
+import { MARKET_SIDEWAYS_GATE } from '@/lib/trade-suggest/config';
+import { AUTO_TRADE_MANAGEMENT_TOOLS, AUTO_TRADE_TOOLS } from '@/lib/auto-trade/tools/defs';
 import {
   assembleVisibleLists,
   filterToLiveUniverse,
@@ -1001,48 +1003,61 @@ function main(): void {
         insideOwnRange: i < Math.round(n * insideShare),
       }));
     const narrowIn = { niftyRange: { high: 24060, low: 24000 }, niftyLast: 24030 }; // 0.25% wide, inside
-    const stuck = classifyMarketRegime({ ...narrowIn, stocks: stocks(160, 0.5, 0.8) });
+    const stuck = classifyMarketSideways({ ...narrowIn, stocks: stocks(160, 0.5, 0.8) });
     check('regime: all three stuck → NO TRADE', stuck.stuck === true && /no trade — sideways market/.test(stuck.reason), stuck.reason);
     check(
       'regime: a trending day is NOT blocked (breadth 75% up)',
-      classifyMarketRegime({ ...narrowIn, stocks: stocks(160, 0.75, 0.8) }).stuck === false
+      classifyMarketSideways({ ...narrowIn, stocks: stocks(160, 0.75, 0.8) }).stuck === false
     );
     check(
       'regime: stocks breaking out is NOT blocked (only 50% inside their range)',
-      classifyMarketRegime({ ...narrowIn, stocks: stocks(160, 0.5, 0.5) }).stuck === false
+      classifyMarketSideways({ ...narrowIn, stocks: stocks(160, 0.5, 0.5) }).stuck === false
     );
     check(
       'regime: NIFTY outside its range is NOT blocked',
-      classifyMarketRegime({ niftyRange: narrowIn.niftyRange, niftyLast: 24100, stocks: stocks(160, 0.5, 0.8) }).stuck === false
+      classifyMarketSideways({ niftyRange: narrowIn.niftyRange, niftyLast: 24100, stocks: stocks(160, 0.5, 0.8) }).stuck === false
     );
     check(
       'regime: a WIDE NIFTY range (0.8%) is NOT blocked',
-      classifyMarketRegime({ niftyRange: { high: 24190, low: 24000 }, niftyLast: 24100, stocks: stocks(160, 0.5, 0.8) }).stuck === false
+      classifyMarketSideways({ niftyRange: { high: 24190, low: 24000 }, niftyLast: 24100, stocks: stocks(160, 0.5, 0.8) }).stuck === false
     );
-    const noNifty = classifyMarketRegime({ niftyRange: null, niftyLast: null, stocks: stocks(160, 0.5, 0.8) });
+    const noNifty = classifyMarketSideways({ niftyRange: null, niftyLast: null, stocks: stocks(160, 0.5, 0.8) });
     check('regime: NIFTY unavailable is UNKNOWN and never blocks', noNifty.stuck === null && /not blocking/.test(noNifty.reason));
     check(
       'regime: too few readable stocks is UNKNOWN, not computed on a sliver',
-      classifyMarketRegime({ ...narrowIn, stocks: stocks(20, 0.5, 0.8) }).stuck === null
+      classifyMarketSideways({ ...narrowIn, stocks: stocks(20, 0.5, 0.8) }).stuck === null
     );
     check(
       'regime: thresholds are MiMo’s (0.4% / 40–60% / 65%)',
-      DEFAULT_MARKET_REGIME_RULE.niftyMaxRangePct === 0.4 &&
-        DEFAULT_MARKET_REGIME_RULE.breadthLow === 0.4 &&
-        DEFAULT_MARKET_REGIME_RULE.breadthHigh === 0.6 &&
-        DEFAULT_MARKET_REGIME_RULE.minInsideShare === 0.65
+      DEFAULT_MARKET_SIDEWAYS_RULE.niftyMaxRangePct === 0.4 &&
+        DEFAULT_MARKET_SIDEWAYS_RULE.breadthLow === 0.4 &&
+        DEFAULT_MARKET_SIDEWAYS_RULE.breadthHigh === 0.6 &&
+        DEFAULT_MARKET_SIDEWAYS_RULE.minInsideShare === 0.65
     );
     const engineSrc = readFileSync('lib/trade-suggest/engine.ts', 'utf8');
     check(
       'regime: the scanner stands aside ONLY when stuck === true, as a real scan (tradeable stays true)',
       /if \(regime\.stuck === true\)[\s\S]{0,200}tradeable: true,\s*candidates: \[\]/.test(engineSrc)
     );
+    // Operator decision 2026-10-29 (same day): no automatic gate — the AI decides when to look.
+    check('regime: the AUTOMATIC gate is OFF (the AI chooses when to check)', MARKET_SIDEWAYS_GATE === false);
+    check(
+      'regime: the trader has check_market_sideways on ENTRY passes — and not on management passes',
+      AUTO_TRADE_TOOLS.some((t) => t.name === 'check_market_sideways') &&
+        !AUTO_TRADE_MANAGEMENT_TOOLS.some((t) => t.name === 'check_market_sideways')
+    );
+    check(
+      'regime: BOTH AIs are told the skill exists (trader prompt + chat framing name check_market_sideways)',
+      readFileSync('lib/auto-trade/decision/system-prompt.ts', 'utf8').includes('check_market_sideways') &&
+        readFileSync('app/api/trade-commentary/chat/route.ts', 'utf8').includes('source') &&
+        readFileSync('app/api/trade-commentary/chat/route.ts', 'utf8').includes('check_market_sideways')
+    );
     const raceSrc = readFileSync('app/api/tf/race/route.ts', 'utf8');
     check(
       'regime: the /live card withholds TAKE under the same gate (card = auto-trader)',
-      /const tradeable = verdictsLive && !regimeBlocks && picked\.has/.test(raceSrc) &&
-        /loadMarketRegime\(date, nowMin\)/.test(raceSrc) &&
-        /loadMarketRegime\(date, nowMin\)/.test(engineSrc)
+      /const tradeable = verdictsLive && !sidewaysBlocks && picked\.has/.test(raceSrc) &&
+        /loadMarketSideways\(date, nowMin\)/.test(raceSrc) &&
+        /loadMarketSideways\(date, nowMin\)/.test(engineSrc)
     );
   }
 
