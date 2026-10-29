@@ -341,17 +341,22 @@ async function liveUrgency(a: Args): Promise<unknown> {
   });
 }
 
-function trimmed(data: unknown): unknown {
+function trimmed(data: unknown, max = MAX_RESPONSE_CHARS): unknown {
   const text = JSON.stringify(data);
-  if (text.length <= MAX_RESPONSE_CHARS) return data;
+  if (text.length <= max) return data;
   return {
     truncated: true,
-    note: `Response was ${text.length.toLocaleString('en-IN')} chars; only the first ${MAX_RESPONSE_CHARS.toLocaleString('en-IN')} are shown. Never guess the rest — narrow the request (a date, a section, a symbol) if you need more.`,
-    partialJson: text.slice(0, MAX_RESPONSE_CHARS),
+    note: `Response was ${text.length.toLocaleString('en-IN')} chars; only the first ${max.toLocaleString('en-IN')} are shown. Never guess the rest — narrow the request (a date, a section, a symbol) if you need more.`,
+    partialJson: text.slice(0, max),
   };
 }
 
-export async function readAppData(args: Args): Promise<{ result: unknown; ok: boolean; summary: string }> {
+/** `maxChars` lets Commentary v2 keep each read smaller — every later model call re-sends it (token cost). */
+export async function readAppData(
+  args: Args,
+  opts: { maxChars?: number } = {}
+): Promise<{ result: unknown; ok: boolean; summary: string }> {
+  const max = opts.maxChars ?? MAX_RESPONSE_CHARS;
   const source = typeof args.source === 'string' ? args.source : '';
   const spec = SOURCES[source];
   if (!spec) {
@@ -370,15 +375,15 @@ export async function readAppData(args: Args): Promise<{ result: unknown; ok: bo
     }
     if (source === 'live_urgency') {
       const data = await liveUrgency(args);
-      return { result: trimmed(data), ok: true, summary: `live_urgency ${String(args.section)}` };
+      return { result: trimmed(data, max), ok: true, summary: `live_urgency ${String(args.section)}` };
     }
     const path = appDataPath(args);
     if (typeof path !== 'string') return { result: path, ok: false, summary: `${source}: ${path.error}` };
     const data = await getJson(path);
     if (source === 'scan_verdicts') {
-      return { result: trimmed(toScanVerdicts(data as Parameters<typeof toScanVerdicts>[0])), ok: true, summary: `${source} ${path}` };
+      return { result: trimmed(toScanVerdicts(data as Parameters<typeof toScanVerdicts>[0]), max), ok: true, summary: `${source} ${path}` };
     }
-    return { result: trimmed(data), ok: true, summary: `${source} ${path}` };
+    return { result: trimmed(data, max), ok: true, summary: `${source} ${path}` };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { result: { error: msg }, ok: false, summary: `${source} failed: ${msg.slice(0, 120)}` };

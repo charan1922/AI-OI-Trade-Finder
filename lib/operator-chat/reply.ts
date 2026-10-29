@@ -12,16 +12,27 @@
 
 import { sessionInfo } from '@/lib/ai-assistant/assistant';
 import { hasAzureConfig } from '@/lib/ai-assistant/azure-client';
-import { buildSystemPrompt } from '@/lib/ai-assistant/system-prompt';
+import { buildSystemPrompt, sessionBlock } from '@/lib/ai-assistant/system-prompt';
 import { executeTool, TOOL_DEFS } from '@/lib/ai-assistant/tools';
-import { runToolLoop } from '@/lib/auto-trade/decision/providers';
+import { type LoopStepEvent, runToolLoop } from '@/lib/auto-trade/decision/providers';
 import { getAutoTradeSettings } from '@/lib/auto-trade/settings';
 import type { NeutralToolDef } from '@/lib/auto-trade/tools/defs';
 import type { AiProvider } from '@/lib/auto-trade/types';
 import { hasMimo } from '@/lib/env';
 import { proposeAction } from './act';
 import { READ_APP_DATA_TOOL, readAppData } from './app-data';
-import { ACTION_KINDS, type ChatAction, type ChatToolUse, describeToolUse, type OperatorMessage } from './format';
+import { BACKGROUND_TOOL_DEFS, BACKGROUND_TOOL_NAMES, executeBackgroundTool } from './background-tools';
+import { AGENT_TOOL_DEFS, AGENT_TOOL_NAMES, type AgentTurnState, agentFraming, executeAgentTool, memoryBlock } from './skills';
+import { type ChatMemory, savedMemories } from './background-store';
+import { finishTurn, noteStep, recordStep, startTurn } from './progress';
+import {
+  ACTION_KINDS,
+  type ChatAction,
+  type ChatToolUse,
+  describeToolUse,
+  type OperatorMessage,
+  type ReplyMeta,
+} from './format';
 
 /** Prior turns replayed to the model — enough to follow the thread, not to flood it. */
 const HISTORY_TURNS = 8;
@@ -75,6 +86,23 @@ export async function replyToOperator(opts: {
   message: string;
   prior: OperatorMessage[];
   framing: string;
+  /** Commentary v2 Background ON: adds the watch/notebook tools for this IST date. Absent = today's tools. */
+  background?: { date: string };
+  /** A woken turn has no operator message — it passes its own user prompt instead of the transcript. */
+  userOverride?: string;
+  /** Commentary v2: skills, plan, follow-up questions, memory, thinking + self-healing. Absent = v1's chat exactly. */
+  agentic?: boolean;
+  /** Screenshots the operator attached to THIS message (data URLs). Sent to MiMo only. */
+  images?: string[];
+  /** Commentary v2 answers with its own MiMo model (lib/operator-chat/background-store.ts getChatModel). */
+  model?: { provider: AiProvider; mimoModel: string };
+  /** Commentary v2: live progress id the page polls (lib/operator-chat/progress.ts). */
+  turnId?: string;
+  /** Commentary v2 "Think" switch — false skips the thinking attempt (cheaper, faster). Default on. */
+  thinking?: boolean;
+  /** Commentary v2: the per-message part of the framing (latest read, watches, notebook). Placed LAST in the
+   *  system prompt so everything before it is an identical, cacheable prefix. */
+  context?: string;
 }): Promise<{
   text: string;
   provider: AiProvider;
@@ -82,16 +110,106 @@ export async function replyToOperator(opts: {
   proposals: { action: ChatAction; description: string }[];
   /** What the AI checked — from the loop's own trace (no extra model call); stored as the audit record, not shown. */
   tools: ChatToolUse[];
+  /** Timing + token usage (audit record; shown on Commentary v2). */
+  meta: ReplyMeta;
 }> {
-  const { provider, mimoModel } = await chatProvider();
+  const { provider, mimoModel } = opts.model ?? (await chatProvider());
+  const started = Date.now();
+  const agentic = opts.agentic === true;
+  const turnId = opts.turnId;
+  if (turnId) startTurn(turnId);
+  const memories = agentic ? await savedMemories() : [];
+
+  // Self-healing (v2 only): thinking ON first; if that call fails, retry with thinking OFF; if THAT fails on
+  // Pro, retry once on Flash. Each recovery is recorded and shown on the reply. v1 makes exactly one attempt.
+  const think = opts.thinking !== false;
+  const attempts: { thinking: boolean; mimoModel: string; why?: string }[] = agentic && provider === 'mimo'
+    ? [
+        ...(think ? [{ thinking: true, mimoModel }] : []),
+        { thinking: false, mimoModel, ...(think ? { why: 'thinking off' } : {}) },
+        ...(mimoModel !== FALLBACK_CHAT_MODEL ? [{ thinking: false, mimoModel: FALLBACK_CHAT_MODEL, why: `fell back to ${FALLBACK_CHAT_MODEL}` }] : []),
+      ]
+    : [{ thinking: false, mimoModel }];
+  const recovered: string[] = [];
+  let lastError: unknown = null;
+  try {
+    for (const attempt of attempts) {
+      if (attempt.why && turnId) noteStep(turnId, `Self-healing: retrying with ${attempt.why}`, 'running');
+      try {
+        const out = await runOnce(opts, { provider, agentic, memories, turnId, ...attempt });
+        out.meta.ms = Date.now() - started;
+        if (recovered.length) out.meta.recovered = recovered;
+        return out;
+      } catch (err) {
+        lastError = err;
+        const msg = (err as Error).message.slice(0, 160);
+        recovered.push(`${attempt.thinking ? 'thinking on' : 'thinking off'} · ${attempt.mimoModel} failed: ${msg}`);
+        if (turnId) noteStep(turnId, `Attempt failed: ${msg}`, 'error');
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  } finally {
+    if (turnId) finishTurn(turnId);
+  }
+}
+
+/** The lower-cost tier v2 falls back to when its model keeps failing. */
+const FALLBACK_CHAT_MODEL = 'mimo-v2.6-flash';
+
+/** Compact IN of a tool call for the page (never the raw result). */
+function compactArgs(args: Record<string, unknown>): string | null {
+  const keys = Object.keys(args);
+  if (keys.length === 0) return null;
+  const s = JSON.stringify(args);
+  return s.length > 200 ? `${s.slice(0, 197)}…` : s;
+}
+
+async function runOnce(
+  opts: Parameters<typeof replyToOperator>[0],
+  run: { provider: AiProvider; mimoModel: string; thinking: boolean; agentic: boolean; memories: ChatMemory[]; turnId?: string }
+) {
+  const { provider, agentic } = run;
+  const background = opts.background;
+  const images = opts.images ?? [];
+  const canSee = provider === 'mimo';
   const proposals: { action: ChatAction; description: string }[] = [];
+  const turn: AgentTurnState = { plan: null, question: null, memories: [] };
+  // Prompt order (v2): everything identical across calls FIRST, then the live context — MiMo caches an
+  // identical prefix automatically (~50× cheaper input on a hit). v1 keeps its original single block.
+  const system = agentic
+    ? [
+        buildSystemPrompt(sessionInfo(), { sessionLast: true }),
+        opts.framing,
+        agentFraming(),
+        '## Live context (changes every message — kept last so everything above is cacheable)',
+        sessionBlock(sessionInfo()),
+        memoryBlock(run.memories),
+        ...(opts.context ? [opts.context] : []),
+        ...(images.length ? [imageRules(images.length, canSee)] : []),
+      ].join('\n\n')
+    : [
+        `${buildSystemPrompt(sessionInfo())}\n\n${opts.framing}${opts.context ? `\n\n${opts.context}` : ''}`,
+        ...(images.length ? [imageRules(images.length, canSee)] : []),
+      ].join('\n\n');
   const result = await runToolLoop({
     provider,
-    mimoModel,
-    system: `${buildSystemPrompt(sessionInfo())}\n\n${opts.framing}`,
-    user: transcript(opts.prior, opts.message),
-    tools: [...CHAT_TOOLS, PROPOSE_ACTION_TOOL],
+    mimoModel: run.mimoModel,
+    system,
+    user: opts.userOverride ?? transcript(opts.prior, opts.message),
+    tools: [
+      ...CHAT_TOOLS,
+      PROPOSE_ACTION_TOOL,
+      ...(background ? BACKGROUND_TOOL_DEFS : []),
+      ...(agentic ? AGENT_TOOL_DEFS : []),
+    ],
+    ...(agentic ? { maxSteps: AGENTIC_MAX_STEPS } : {}),
+    ...(canSee && images.length ? { images } : {}),
+    // Think on the planning round only: real reasoning, without paying 10–20s of thinking on every later round.
+    ...(run.thinking ? { thinking: 'first' as const } : {}),
+    ...(run.turnId ? { onStep: (e: LoopStepEvent) => recordStep(run.turnId as string, e) } : {}),
     execute: async (name, args) => {
+      if (background && BACKGROUND_TOOL_NAMES.has(name)) return executeBackgroundTool(background.date, name, args);
+      if (agentic && AGENT_TOOL_NAMES.has(name)) return executeAgentTool(name, args, turn);
       if (name === PROPOSE_ACTION_TOOL.name) {
         if (proposals.length >= MAX_PROPOSALS) {
           const result = { proposed: false, error: `At most ${MAX_PROPOSALS} actions per reply.` };
@@ -111,15 +229,60 @@ export async function replyToOperator(opts: {
       }
       if (name === READ_APP_DATA_TOOL.name) {
         const started = Date.now();
-        const r = await readAppData(args);
+        const r = await readAppData(args, agentic ? { maxChars: AGENTIC_READ_CHARS } : {});
         return { result: r.result, trace: { name, args, ok: r.ok, summary: r.summary, ms: Date.now() - started } };
       }
       const { result: data, trace } = await executeTool(name, args);
       return { result: data, trace: { name: trace.name, args: trace.args, ok: trace.ok, summary: trace.summary } };
     },
   });
-  const tools = result.trace.map((t) => describeToolUse(t.name, t.args ?? {}, t.ok, t.summary));
-  return { text: result.text || '(no reply produced)', provider, model: result.model, proposals, tools };
+  const tools = result.trace.map((t) => ({
+    ...describeToolUse(t.name, t.args ?? {}, t.ok, t.summary),
+    ...(agentic ? { input: compactArgs(t.args ?? {}) } : {}),
+  }));
+  const meta: ReplyMeta = {
+    ms: 0,
+    spans: result.spans.map((s) => ({ name: s.name, ms: s.ms })),
+    promptTokens: result.promptTokens,
+    completionTokens: result.completionTokens,
+    ...(agentic
+      ? {
+          plan: turn.plan,
+          skills: [
+            ...new Set(
+              result.trace.filter((t) => t.name === 'use_skill' && t.ok).map((t) => String((t.args ?? {}).name))
+            ),
+          ],
+          question: turn.question,
+          memories: turn.memories,
+          thinking: run.thinking,
+          ...(result.reasoning?.length ? { reasoning: result.reasoning } : {}),
+          ...(result.reasoningTokens != null ? { reasoningTokens: result.reasoningTokens } : {}),
+          ...(result.cachedTokens != null ? { cachedTokens: result.cachedTokens } : {}),
+        }
+      : {}),
+  };
+  return { text: result.text || '(no reply produced)', provider, model: result.model, proposals, tools, meta };
+}
+
+/** An agentic turn loads a skill, keeps a plan and reads several sources — more room than a v1 reply,
+ *  but every round re-sends the whole conversation, so the cap is also a token cap. */
+const AGENTIC_MAX_STEPS = 12;
+/** v2 reads are capped smaller than v1's 16k: each read is re-sent on every later round of the turn. */
+const AGENTIC_READ_CHARS = 8_000;
+
+/** What the model is told when the operator attached screenshots: no reading-in, no stale numbers as live. */
+function imageRules(n: number, canSee: boolean): string {
+  if (!canSee) {
+    return `The operator attached ${n} image(s), but this provider cannot receive images. Say plainly that you cannot see them and ask what they show. Never guess.`;
+  }
+  return [
+    `## The operator attached ${n} screenshot(s) to this message`,
+    '- Describe only what is actually visible. If something is cut off, blurry or unreadable, say so; never fill it in.',
+    '- Numbers in a screenshot are THAT screenshot\'s, from when it was taken: say "in your screenshot" and check the live',
+    '  value with a tool before advising on it. If the tool disagrees, say so and trust the live read.',
+    '- Never claim a screenshot shows a stock, level or position you cannot point to in it.',
+  ].join('\n');
 }
 
 const PROPOSE_ACTION_TOOL: NeutralToolDef = {

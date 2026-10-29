@@ -15,7 +15,7 @@
  */
 
 import { prisma } from '@/lib/db';
-import type { ActionStatus, ChatAction, ChatToolUse, OperatorMessage } from './format';
+import type { ActionStatus, ChatAction, ChatToolUse, OperatorMessage, ReplyMeta, WakeInfo } from './format';
 
 let tableReady = false;
 
@@ -33,13 +33,13 @@ async function ensureTable(): Promise<void> {
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_operator_chat_date ON operator_chat(date, id)`);
   const cols = (await prisma.$queryRawUnsafe(`PRAGMA table_info(operator_chat)`)) as { name: string }[];
   const have = new Set(cols.map((c) => c.name));
-  for (const col of ['actionJson TEXT', 'actionStatus TEXT', 'actionResult TEXT', 'toolsJson TEXT', 'model TEXT']) {
+  for (const col of ['actionJson TEXT', 'actionStatus TEXT', 'actionResult TEXT', 'toolsJson TEXT', 'model TEXT', 'wakeJson TEXT', 'metaJson TEXT', 'imagesJson TEXT']) {
     if (!have.has(col.split(' ')[0])) await prisma.$executeRawUnsafe(`ALTER TABLE operator_chat ADD COLUMN ${col}`);
   }
   tableReady = true;
 }
 
-const COLS = 'id, date, role, content, at, actionJson, actionStatus, actionResult, toolsJson, model';
+const COLS = 'id, date, role, content, at, actionJson, actionStatus, actionResult, toolsJson, model, wakeJson, metaJson, imagesJson';
 
 interface Row {
   id: number | bigint;
@@ -52,6 +52,18 @@ interface Row {
   actionResult: string | null;
   toolsJson: string | null;
   model: string | null;
+  wakeJson: string | null;
+  metaJson: string | null;
+  imagesJson: string | null;
+}
+
+function parseJson<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
 }
 
 function toMessage(r: Row): OperatorMessage {
@@ -84,6 +96,9 @@ function toMessage(r: Row): OperatorMessage {
     action,
     tools,
     model: r.model,
+    wake: parseJson<WakeInfo>(r.wakeJson),
+    meta: parseJson<ReplyMeta>(r.metaJson),
+    images: parseJson<string[]>(r.imagesJson),
   };
 }
 
@@ -124,6 +139,34 @@ export function addOperatorMessage(
   model: string | null = null
 ): Promise<OperatorMessage> {
   return insertRow(date, role, content, null, tools, model);
+}
+
+/**
+ * A message the AI posted on its OWN because background watches fired (Commentary v2). `wake` says
+ * which watches woke it; it is shown on v2 and never replayed to the model.
+ */
+export async function addWakeMessage(
+  date: string,
+  content: string,
+  wake: WakeInfo,
+  model: string | null,
+  tools: ChatToolUse[] | null = null
+): Promise<OperatorMessage> {
+  const row = await insertRow(date, 'assistant', content, null, tools, model);
+  await prisma.$executeRawUnsafe(`UPDATE operator_chat SET wakeJson = ? WHERE id = ?`, JSON.stringify(wake), row.id);
+  return { ...row, wake };
+}
+
+/** File names (data/chat-images/) of screenshots the operator attached to a message (Commentary v2). */
+export async function setMessageImages(id: number, names: string[]): Promise<void> {
+  await ensureTable();
+  await prisma.$executeRawUnsafe(`UPDATE operator_chat SET imagesJson = ? WHERE id = ?`, JSON.stringify(names), id);
+}
+
+/** Timing + token usage of a reply (audit record, shown on v2 as Reasoning / Context). Never replayed. */
+export async function setMessageMeta(id: number, meta: ReplyMeta): Promise<void> {
+  await ensureTable();
+  await prisma.$executeRawUnsafe(`UPDATE operator_chat SET metaJson = ? WHERE id = ?`, JSON.stringify(meta), id);
 }
 
 /** An assistant row carrying a proposed action — rendered as a Confirm card. */
