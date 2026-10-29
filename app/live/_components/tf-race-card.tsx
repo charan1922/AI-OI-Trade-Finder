@@ -8,7 +8,7 @@
  * (TAKE), what is close and exactly which check it still needs (WATCH), what has
  * stalled, and what climbed earlier but left the top 20 (DROPPED — never just
  * vanishes). Every verdict comes from /api/tf/race, which runs the SAME selector
- * the auto-trader uses; the eight dots are that selector's checks in its own order.
+ * the auto-trader uses; the ten dots are that selector's checks in its own order.
  *
  * Still participation evidence, not a standalone buy signal: the route withholds
  * every verdict off a stale or other-day board, and this card never re-derives one.
@@ -137,6 +137,10 @@ const GATE_HELP: Record<(typeof GATE_ORDER)[number], string> = {
   inNseList:
     "The stock also shows in /live's F&O OI Build-up list or its Most Active list below — fresh positions being built, or heavy trading, on NSE's own ranking. In either list, or both, is fine. If NSE's lists can't be read, the check stays grey and the stock is not taken.",
   notChasing: `We're not late to the party. The 09:15 candle was less than ${CFG.maxFirstCandleAdr}× a normal day's range, and the stock is less than ${CFG.maxFromPrevCloseAdr}× a normal day's range away from yesterday's close.`,
+  supertrend:
+    "Supertrend (10,3) on the 5-minute chart is not pointing against the trade. If it points the other way, the stock is skipped. Before about 10:15 it hasn't formed yet, so it can't block anything.",
+  fresh:
+    "The move has actually started and isn't reversing: the stock has moved the trade's way since 09:45 (not flat, which means nothing has started yet) and isn't falling back against the trade (buying into the unwind).",
 };
 
 /** Small tooltip body shared by the dots and the legend: heading (+ optional status), then the plain-English definition. */
@@ -156,7 +160,7 @@ function GateTipContent({ index, status }: { index: number; status?: string }) {
 /** What the 9th (advisory) dot means, in plain English. */
 const SECTOR_HELP = `Sector strength — NOT a check; a stock climbs and is taken without it. Is this stock's sector one of the top ${SECTOR_TOP_N} movers in the trade's direction (up for a Call, down for a Put)? Uses TradeFinder's own sector reading, for direction and rank only. Green = the sector is strong and with the trade; hollow = not (weaker, flat, or against); grey = no sector reading.`;
 
-/** The 9th dot: dashed so it never reads as one of the eight checks. */
+/** The advisory dot: dashed so it never reads as one of the ten checks. */
 function SectorDot({ sector, side }: { sector: SectorStrength | null; side: 'CE' | 'PE' }) {
   const g = sectorDot(sector);
   const cls =
@@ -335,7 +339,7 @@ function RPath({ path }: { path: TfBoardRow['rPath'] }) {
   );
 }
 
-/** TF's own evidence — shown, and (beacon) also one of the eight checks. */
+/** TF's own evidence — shown, and (beacon) also one of the ten checks. */
 function Chips({ r }: { r: TfBoardRow }) {
   return (
     <>
@@ -664,7 +668,7 @@ export function TfRaceCard() {
       </header>
       <p className="border-b border-border px-2 py-1 text-[10px] leading-snug text-muted-foreground">
         TF Intraday Boost top {data?.rankLimit ?? TF_RACE_MAX_RANK}. A name is <b className="text-emerald-700 dark:text-emerald-300">TAKE</b> when it passes all
-        eight checks — the same ones the auto-trader uses. Participation evidence, not a buy signal by itself.
+        ten checks — the same ones the auto-trader uses. Participation evidence, not a buy signal by itself.
       </p>
       <GateLegend />
       <div className="flex-1 px-2 py-1.5">
@@ -712,7 +716,7 @@ export function TfRaceCard() {
               </div>
             ) : (
               <p className="rounded border border-dashed border-border px-2 py-1.5 text-center text-[10px] text-muted-foreground">
-                Nothing passes all eight checks right now.{watch.length > 0 ? ' Closest names below.' : ''}
+                Nothing passes all ten checks right now.{watch.length > 0 ? ' Closest names below.' : ''}
               </p>
             )}
 

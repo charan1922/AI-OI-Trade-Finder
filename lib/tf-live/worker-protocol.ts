@@ -147,3 +147,38 @@ export function captureStallVerdict(input: {
   const forwarding = lastForwardAtMs != null && nowMs - lastForwardAtMs <= CAPTURE_STALL_MS;
   return forwarding ? 'feeds-untracked' : 'browser-stalled';
 }
+
+/** Why Chromium is held CLOSED inside the capture window — see tfLoginHold(). */
+export type TfLoginHold = 'login-expired' | 'logged-out';
+
+/**
+ * Whether the worker must keep Chromium CLOSED because the TradeFinder login
+ * cannot work. Every time is epoch ms; null = unknown/never.
+ *
+ * Why (2026-10-16 and 2026-10-29): a signed-out TradeFinder page pegs the
+ * worker host at ~97% CPU. On 10-29 it starved the worker so badly that a fresh
+ * paste was never applied, and only a manual reboot recovered capture. A closed
+ * browser cannot wedge, and an idle worker applies the next paste within one
+ * poll — so the rule is: never run Chromium on a login that cannot work.
+ *
+ * - `logged-out`: the page was parked by the stall rule (`feeds-untracked` —
+ *   traffic, but never market data) on cookie version `parkedCookieVersion`.
+ *   It stays closed until a new paste changes `cookieVersion`.
+ * - `login-expired`: the paste's own JWT `exp` has passed AND nothing has
+ *   succeeded within CAPTURE_STALL_MS. The second half matters: TradeFinder's
+ *   page revalidates its token in-browser, so a browser that is still capturing
+ *   past the stored `exp` is working and must not be closed.
+ */
+export function tfLoginHold(input: {
+  nowMs: number;
+  loginExpiresAtMs: number | null;
+  lastSuccessAtMs: number | null;
+  parkedCookieVersion: string | null;
+  cookieVersion: string | null;
+}): TfLoginHold | null {
+  const { nowMs, loginExpiresAtMs, lastSuccessAtMs, parkedCookieVersion, cookieVersion } = input;
+  if (parkedCookieVersion != null && parkedCookieVersion === cookieVersion) return 'logged-out';
+  if (loginExpiresAtMs == null || !Number.isFinite(loginExpiresAtMs) || nowMs < loginExpiresAtMs) return null;
+  const capturing = lastSuccessAtMs != null && nowMs - lastSuccessAtMs <= CAPTURE_STALL_MS;
+  return capturing ? null : 'login-expired';
+}

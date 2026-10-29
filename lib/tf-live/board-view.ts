@@ -2,12 +2,12 @@
  * What the /live TF Climbers cockpit shows per name — pure, so CI can pin it.
  * Spec: docs/superpowers/specs/2026-10-08-tf-climbers-cockpit-design.md.
  *
- * gateStrip() mirrors selectTfCandidates() check for check: all eight true ⇔ the
+ * gateStrip() mirrors selectTfCandidates() check for check: all ten true ⇔ the
  * selector picks the name (verify-tf-selector.ts proves it), so the card can
  * never disagree with the auto-trader. Missing evidence is null (grey), never true.
  */
 import type { TfBoardAt } from '@/lib/tf-live/race';
-import type { TfSelectorConfig, TfSymbolContext } from '@/lib/tf-live/selector';
+import { type TfSelectorConfig, type TfSymbolContext, tfMoveFreshness } from '@/lib/tf-live/selector';
 
 export type Gate = boolean | null;
 
@@ -22,10 +22,25 @@ export interface GateStrip {
   notChasing: Gate;
   /** In /live's visible F&O OI Build-up or Most Active list (operator rule 2026-10-12). */
   inNseList: Gate;
+  /** ⑧ Supertrend(10,3) does not point against the trade (operator rule 2026-10-29). */
+  supertrend: Gate;
+  /** ⑨ The move has started and is not reversing — not 'quiet', not 'fading' (2026-10-29). */
+  fresh: Gate;
 }
 
 /** The selector's own order. */
-export const GATE_ORDER = ['climbing', 'moving', 'orb', 'beacon', 'pool', 'notExtended', 'notChasing', 'inNseList'] as const;
+export const GATE_ORDER = [
+  'climbing',
+  'moving',
+  'orb',
+  'beacon',
+  'pool',
+  'notExtended',
+  'notChasing',
+  'inNseList',
+  'supertrend',
+  'fresh',
+] as const;
 
 export const GATE_LABEL: Record<keyof GateStrip, string> = {
   climbing: 'climbing',
@@ -36,6 +51,8 @@ export const GATE_LABEL: Record<keyof GateStrip, string> = {
   notExtended: 'not extended',
   notChasing: 'not chasing',
   inNseList: 'in OI / active list',
+  supertrend: 'Supertrend with it',
+  fresh: 'move started',
 };
 
 export function gateStrip(
@@ -78,6 +95,10 @@ export function gateStrip(
           : ctx.nseLists.complete
             ? false
             : null,
+    // ⑧ A veto: only a KNOWN disagreement fails. Not-formed passes, exactly as the selector does.
+    supertrend: !cfg.rejectSupertrendAgainst ? true : ctx == null ? null : ctx.supertrendAligned !== false,
+    // ⑨ Same classification the selector uses (tfMoveFreshness); 'spent'/'unknown' pass.
+    fresh: ctx == null ? null : !cfg.rejectMoveProfiles.includes(tfMoveFreshness(ctx).profile),
   };
 }
 
@@ -112,6 +133,15 @@ export function firstNeed(g: GateStrip, ctx: TfSymbolContext | undefined, cfg: T
         return missing
           ? "NSE's live OI Build-up and Most Active lists (unavailable or stale)"
           : "a spot in /live's F&O OI Build-up or Most Active list (it is in neither right now)";
+      case 'supertrend':
+        return missing ? 'price data for Supertrend' : 'Supertrend(10,3) to turn with the trade (it points against it now)';
+      case 'fresh': {
+        if (missing || ctx == null) return 'price data since 09:45';
+        const f = tfMoveFreshness(ctx);
+        return f.profile === 'fading'
+          ? `the move to stop reversing — ${Math.abs(f.sinceEntryDirectional ?? 0).toFixed(2)}% against the trade since 09:45`
+          : 'the move to start — flat since 09:45 (nothing has started yet)';
+      }
       case 'notChasing': {
         const st = ctx?.stretch;
         if (missing || st == null || st.firstCandle == null) return 'a normal-day range and the 09:15 candle (daily data)';

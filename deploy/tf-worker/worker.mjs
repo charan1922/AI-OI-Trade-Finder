@@ -30,6 +30,12 @@ if (!MAIN_APP_URL || !SECRET) {
 /** How often we re-read config. Also the heartbeat cadence, so the main app's
  *  3-minute liveness window sees us even while TradeFinder is silent. */
 const POLL_MS = 60_000;
+/** One main-app call may take this long before it is abandoned and retried. */
+const CALL_TIMEOUT_MS = 20_000;
+/** `browser.close()` has no timeout of its own (Playwright docs). */
+const CLOSE_TIMEOUT_MS = 15_000;
+/** No completed poll for this long → exit and let systemd restart us. */
+const LOOP_STALL_MS = 5 * 60_000;
 const REALISTIC_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
 
@@ -68,6 +74,8 @@ async function callMain(path, init = {}, attempts = 3) {
       const response = await fetch(`${MAIN_APP_URL}${path}`, {
         ...init,
         headers: { 'X-TF-Worker-Secret': SECRET, ...(init.headers ?? {}) },
+        // fetch has no deadline of its own; a hung call must not hang the poll loop.
+        signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return await response.json();
@@ -168,8 +176,20 @@ async function closeBrowser() {
   state.configSignature = null;
   if (browser) {
     console.log('[tf_worker] closing Chromium');
-    await browser.close().catch(() => undefined);
+    const closed = await Promise.race([
+      browser.close().then(() => true, () => true),
+      sleep(CLOSE_TIMEOUT_MS).then(() => false),
+    ]);
+    // A Chromium too wedged to close would hold this loop forever. Exit instead:
+    // systemd restarts us, and its default KillMode=control-group kills the
+    // leftover Chromium processes with the unit.
+    if (!closed) exitForRestart(`Chromium did not close within ${CLOSE_TIMEOUT_MS / 1000}s`);
   }
+}
+
+function exitForRestart(reason) {
+  console.error(`[tf_worker] ${reason} — exiting so systemd restarts the worker`);
+  process.exit(1);
 }
 
 function browserConfigSignature(config) {
@@ -220,8 +240,24 @@ async function tick() {
 process.on('SIGTERM', () => void closeBrowser().then(() => process.exit(0)));
 process.on('SIGINT', () => void closeBrowser().then(() => process.exit(0)));
 
+/**
+ * Loop watchdog (2026-10-29): a signed-out TradeFinder page pegged this host at
+ * ~97% CPU from the 09:20 launch, and the fresh cURL pasted at 09:40 was never
+ * applied — the old page kept reloading on its own timer while this loop never
+ * got to reopen it, until a manual reboot. Whatever stalls the loop (a launch,
+ * a close, a call), a loop that has not completed a poll in LOOP_STALL_MS is
+ * broken; restarting the process is the one recovery that always works.
+ */
+let lastTickDoneAt = Date.now();
+setInterval(() => {
+  if (Date.now() - lastTickDoneAt > LOOP_STALL_MS) {
+    exitForRestart(`no completed config poll for ${Math.round((Date.now() - lastTickDoneAt) / 1000)}s`);
+  }
+}, 30_000);
+
 console.log(`[tf_worker] started — polling ${MAIN_APP_URL} every ${POLL_MS / 1000}s`);
 for (;;) {
   await tick();
+  lastTickDoneAt = Date.now();
   await sleep(POLL_MS);
 }

@@ -15,17 +15,28 @@
 import { NextResponse } from 'next/server';
 
 import { sendCriticalAlert } from '@/lib/auto-trade/alerts';
+import { todayIST } from '@/lib/ist';
 import {
   checkCaptureStall,
+  LOGIN_REMINDER_START_MIN,
+  loginParkedFor,
   noteWorkerConfigServed,
   noteWorkerSeen,
+  parkUntilFreshLogin,
   recentUntrackedPaths,
+  shouldAlertLoginHold,
   shouldAlertUntracked,
   shouldWorkerRun,
+  withinCaptureWindow,
 } from '@/lib/tf-live/browser';
-import { CAPTURE_STALL_MS } from '@/lib/tf-live/worker-protocol';
-import { cookieHeaderToPlaywrightCookies } from '@/lib/tf-live/parse-curl';
-import { getTfBrowserCookies, recordTfBrowserOutcome } from '@/lib/tf-live/store';
+import { CAPTURE_STALL_MS, tfLoginHold, type TfLoginHold } from '@/lib/tf-live/worker-protocol';
+import { cookieHeaderToPlaywrightCookies, tfLoginExpiresAtMs } from '@/lib/tf-live/parse-curl';
+import {
+  getLastTfSuccessAt,
+  getTfBrowserCookies,
+  getTfBrowserSessionStatus,
+  recordTfBrowserOutcome,
+} from '@/lib/tf-live/store';
 import { verifyWorkerSecret, WORKER_SECRET_HEADER } from '@/lib/tf-live/worker-protocol';
 
 export const dynamic = 'force-dynamic';
@@ -54,11 +65,28 @@ export async function GET(req: Request): Promise<Response> {
   noteWorkerSeen();
 
   try {
-    noteWorkerConfigServed(shouldWorkerRun());
-    await healCaptureStall();
-    const shouldRun = shouldWorkerRun();
+    const [cookieHeader, session, lastSuccessAt] = await Promise.all([
+      getTfBrowserCookies(),
+      getTfBrowserSessionStatus(),
+      getLastTfSuccessAt(),
+    ]);
+    // The paste's identity: a new Save rewrites it, which is what lifts a park.
+    const cookieVersion = session.updatedAt;
+    const loginExpiresAtMs = tfLoginExpiresAtMs(cookieHeader);
+    const loginHold = () =>
+      tfLoginHold({
+        nowMs: Date.now(),
+        loginExpiresAtMs,
+        lastSuccessAtMs: lastSuccessAt ? Date.parse(lastSuccessAt) : null,
+        parkedCookieVersion: loginParkedFor(),
+        cookieVersion,
+      });
+    noteWorkerConfigServed(shouldWorkerRun() && loginHold() == null);
+    await healCaptureStall(cookieVersion);
+    const hold = loginHold();
+    if (hold) await reportLoginHold(hold, loginExpiresAtMs, cookieVersion);
+    const shouldRun = shouldWorkerRun() && hold == null;
     noteWorkerConfigServed(shouldRun);
-    const cookieHeader = await getTfBrowserCookies();
     return NextResponse.json({
       shouldRun,
       // Empty rather than an error when nothing is pasted yet — mirrors the old
@@ -81,7 +109,7 @@ export async function GET(req: Request): Promise<Response> {
  * the fix needs no worker redeploy. The reason goes on /tf (badge turns
  * "running, not capturing") and the operator is told once per outage.
  */
-async function healCaptureStall(): Promise<void> {
+async function healCaptureStall(cookieVersion: string | null): Promise<void> {
   const stall = checkCaptureStall();
   const minutes = Math.round(CAPTURE_STALL_MS / 60_000);
   if (stall.verdict === 'feeds-untracked') {
@@ -91,7 +119,12 @@ async function healCaptureStall(): Promise<void> {
     // calls; the paths themselves were unchanged (re-checked live: market_pulse and
     // sector_scope still answer SUCCESS when logged in). So name the likely cause first,
     // and show what WAS forwarded, so a genuinely renamed feed is visible too.
-    // A restart cannot fix either, so none is attempted.
+    // A restart cannot fix either. Leaving the page open is worse than useless: on
+    // 2026-10-29 a signed-out page pegged the worker at ~97% CPU and starved it so
+    // badly that the operator's fresh paste was never applied. So PARK it — Chromium
+    // stays closed until a new paste (tfLoginHold), which an idle worker picks up
+    // within one poll.
+    parkUntilFreshLogin(cookieVersion);
     const seen = recentUntrackedPaths()
       .slice(0, 6)
       .map((p) => p.path.replace(/^\/api_be\//, ''))
@@ -99,6 +132,7 @@ async function healCaptureStall(): Promise<void> {
     const message =
       `No TradeFinder market data for ${minutes}+ min although the worker's page is loading — ` +
       `the TradeFinder login has most likely expired: paste a fresh cURL from a logged-in marketPulse tab. ` +
+      `The worker's Chromium stays closed until you do (a signed-out page wedges it). ` +
       `Only these calls arrived: ${seen || 'none recorded'}. ` +
       `(If market data appears there under a new name, endpointTagFor() needs it.)`;
     await recordTfBrowserOutcome(false, message);
@@ -118,5 +152,33 @@ async function healCaptureStall(): Promise<void> {
     sendCriticalAlert(
       `⚠️ TF capture stalled: ${message}.${n >= 3 ? ' Restarts are not fixing it — check the tf-worker host (CPU/memory) or paste a fresh cURL on /tf.' : ''} No fresh board = no entries.`,
     );
+  }
+}
+
+/**
+ * Say why Chromium is held closed: on /tf on every poll from 09:00, and on
+ * Telegram once per paste and day — early enough that a paste made on the alert
+ * lands before capture starts at 09:22. `logged-out` needs nothing here:
+ * healCaptureStall wrote its evidence-bearing message when it parked.
+ */
+async function reportLoginHold(hold: TfLoginHold, loginExpiresAtMs: number | null, cookieVersion: string | null): Promise<void> {
+  if (hold === 'logged-out') return;
+  if (!shouldWorkerRun() && !withinCaptureWindow(new Date(), LOGIN_REMINDER_START_MIN)) return;
+  const expiredAt = loginExpiresAtMs
+    ? new Date(loginExpiresAtMs).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      })
+    : 'an unknown time';
+  const message =
+    `TradeFinder login expired (${expiredAt} IST) — paste a fresh cURL from a logged-in marketPulse tab. ` +
+    `The worker's Chromium stays closed until you do: launching on an expired login wedged it on 16 and 29 Oct.`;
+  await recordTfBrowserOutcome(false, message);
+  if (shouldAlertLoginHold(`${hold}|${cookieVersion}|${todayIST()}`)) {
+    sendCriticalAlert(`⚠️ TF capture: ${message} No fresh board = no entries.`);
   }
 }
