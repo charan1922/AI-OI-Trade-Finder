@@ -408,7 +408,7 @@ interface TfBoardRow {
   nseLists: NseListMembership | null;
   supertrendAligned: boolean | null;
   breakout: boolean | null;
-  /** The eight selector checks, in its order — all true ⇔ the selector picks it. */
+  /** The ten selector checks, in its order — all true ⇔ the selector picks it. */
   gates: GateStrip;
   /** Plain English for the first check not passed, or null. */
   needs: string | null;

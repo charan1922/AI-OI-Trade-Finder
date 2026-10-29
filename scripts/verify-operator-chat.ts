@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { ROLE_PERMISSIONS, requiredPermission } from '../lib/auth/rbac';
 import { readFileSync } from 'node:fs';
 import { CHAT_SETTING_KEYS, describeAction, validateSettingChange } from '../lib/operator-chat/actions';
-import { APP_DATA_SOURCES, appDataPath } from '../lib/operator-chat/app-data';
+import { GATE_ORDER } from '../lib/tf-live/board-view';
+import { APP_DATA_SOURCES, appDataPath, toScanVerdicts } from '../lib/operator-chat/app-data';
 import { AUTO_TRADER_MANAGEMENT_SYSTEM, AUTO_TRADER_SYSTEM } from '../lib/auto-trade/decision/system-prompt';
 import {
   ACTION_TTL_MS,
@@ -162,6 +163,63 @@ check('read_app_data never reaches an excluded route, never runs a scan, whateve
     }
   }
   assert.equal(typeof appDataPath({ source: 'logs' }), 'object', 'an unlisted source must be refused');
+});
+
+check('scan_verdicts: names WHICH check rejected each stock (proof a fix is gating, not warning)', () => {
+  const allTrue = Object.fromEntries(GATE_ORDER.map((k) => [k, true])) as Record<string, boolean | null>;
+  const out = toScanVerdicts({
+    date: '2026-10-29',
+    boardMinuteIST: 10 * 60 + 40,
+    stale: false,
+    verdictsLive: true,
+    board: [
+      { symbol: 'KOTAKBANK', side: 'CE', rankNow: 1, tradeable: true, blockedBy: null, needs: null, gates: allTrue },
+      {
+        symbol: 'OFSS',
+        side: 'PE',
+        rankNow: 4,
+        tradeable: false,
+        blockedBy: null,
+        needs: 'the move to stop reversing — 0.90% against the trade since 09:45',
+        gates: { ...allTrue, fresh: false },
+      },
+      {
+        symbol: 'M&M',
+        side: 'CE',
+        rankNow: 6,
+        tradeable: false,
+        blockedBy: 'Supertrend(10,3) to turn with the trade',
+        needs: null,
+        gates: { ...allTrue, supertrend: false, pool: null },
+      },
+    ],
+  }) as {
+    boardAtIST: string;
+    picked: number;
+    rejected: number;
+    checks: string[];
+    names: { symbol: string; verdict: string; failedChecks: string[]; notEvaluable: string[]; why: string | null }[];
+  };
+  assert.equal(out.boardAtIST, '10:40');
+  assert.equal(out.picked, 1);
+  assert.equal(out.rejected, 2);
+  assert.equal(out.checks.length, 10, 'the ten selector checks are listed by name');
+  const by = new Map(out.names.map((n) => [n.symbol, n]));
+  assert.equal(by.get('KOTAKBANK')?.verdict, 'PICKED');
+  assert.equal(by.get('KOTAKBANK')?.why, null);
+  assert.deepEqual(by.get('OFSS')?.failedChecks, ['move started'], 'a fading move is REJECTED by check ⑨');
+  assert.match(by.get('OFSS')?.why ?? '', /^needs the move to stop reversing/);
+  assert.deepEqual(by.get('M&M')?.failedChecks, ['Supertrend with it']);
+  assert.deepEqual(by.get('M&M')?.notEvaluable, ['options pool'], 'missing evidence is reported apart from a failure');
+});
+
+check('chat length: up to ~300 words for multi-pick/multi-trade, 120–200 for one topic — chat thread only', () => {
+  const route = readFileSync(new URL('../app/api/trade-commentary/chat/route.ts', import.meta.url), 'utf8');
+  assert.match(route, /one topic → 120–200 words/);
+  assert.match(route, /2\+ picks or compares 2\+ trades → up to ~300 words, hard max 350/);
+  // The shared /trade-assistant prompt keeps its own limit — the override lives only in the chat framing.
+  const shared = readFileSync(new URL('../lib/ai-assistant/system-prompt.ts', import.meta.url), 'utf8');
+  assert.match(shared, /about 120–200 words/);
 });
 
 check('read_app_data rejects bad params instead of guessing', () => {

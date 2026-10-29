@@ -18,6 +18,7 @@
  * costs no extra broker traffic.
  */
 
+import { GATE_LABEL, GATE_ORDER } from '@/lib/tf-live/board-view';
 import { internalAuthHeaders, internalOrigin } from '@/lib/trade-suggest/candidates';
 import type { NeutralToolDef } from '@/lib/auto-trade/tools/defs';
 
@@ -52,7 +53,67 @@ interface Source {
   path: (a: Args) => string | { error: string };
 }
 
+/** One race-board row as /api/tf/race returns it — only the fields scan_verdicts reads. */
+interface RaceRow {
+  symbol: string;
+  side: 'CE' | 'PE';
+  rankNow: number;
+  tradeable: boolean;
+  blockedBy: string | null;
+  needs: string | null;
+  gates: Record<string, boolean | null>;
+}
+
+/**
+ * Pure: every name on TF's board with WHY it was picked or rejected — the
+ * selector's own ten checks (gateStrip mirrors selectTfCandidates check for
+ * check; verify-tf-selector proves all-green ⇔ picked). This is how the chat can
+ * confirm a check like "move started" (quiet/fading) or the Supertrend veto is
+ * REJECTING names, not just warning.
+ */
+export function toScanVerdicts(body: {
+  date?: string;
+  boardMinuteIST?: number | null;
+  stale?: boolean;
+  verdictsLive?: boolean;
+  verdictNote?: string | null;
+  board?: RaceRow[];
+}): unknown {
+  const hhmm = (m: number | null | undefined) =>
+    m == null ? null : `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const rows = (body.board ?? []).map((r) => {
+    const entries = Object.entries(r.gates ?? {});
+    const failed = entries.filter(([, v]) => v === false).map(([k]) => GATE_LABEL[k as keyof typeof GATE_LABEL] ?? k);
+    const unknown = entries.filter(([, v]) => v == null).map(([k]) => GATE_LABEL[k as keyof typeof GATE_LABEL] ?? k);
+    return {
+      symbol: r.symbol,
+      side: r.side,
+      tfRank: r.rankNow,
+      verdict: r.tradeable ? 'PICKED' : 'REJECTED',
+      failedChecks: failed,
+      notEvaluable: unknown,
+      why: r.tradeable ? null : (r.blockedBy ?? (r.needs ? `needs ${r.needs}` : null)),
+    };
+  });
+  return {
+    date: body.date ?? null,
+    boardAtIST: hhmm(body.boardMinuteIST),
+    stale: body.stale ?? null,
+    verdictsLive: body.verdictsLive ?? null,
+    verdictNote: body.verdictNote ?? null,
+    checks: GATE_ORDER.map((k) => GATE_LABEL[k]),
+    picked: rows.filter((r) => r.verdict === 'PICKED').length,
+    rejected: rows.filter((r) => r.verdict === 'REJECTED').length,
+    names: rows,
+  };
+}
+
 const SOURCES: Record<string, Source> = {
+  scan_verdicts: {
+    description:
+      "WHY each name on TF's board was PICKED or REJECTED right now — per stock, which of the selector's ten checks failed (e.g. 'move started' = quiet/fading rejected, 'Supertrend with it' = Supertrend veto), which could not be evaluated, and the plain-English reason. Use this to confirm a check is rejecting names, not just warning. Optional args.date YYYY-MM-DD for a past session.",
+    path: (a) => (a.date == null ? '/api/tf/race' : isDate(a.date) ? `/api/tf/race${qs({ date: a.date })}` : { error: 'date must be YYYY-MM-DD' }),
+  },
   live_urgency: {
     description:
       'The /live Live Urgency board for one section (args.section: nse-oi = F&O OI build-up, nse-active-value / nse-active-volume = Most Active, nse-gainers, nse-losers): per-stock price, OI, urgency, R-Factor rows exactly as /live shows them. Post-market it is the recorded closing snapshot.',
@@ -297,7 +358,11 @@ export async function readAppData(args: Args): Promise<{ result: unknown; ok: bo
     }
     const path = appDataPath(args);
     if (typeof path !== 'string') return { result: path, ok: false, summary: `${source}: ${path.error}` };
-    return { result: trimmed(await getJson(path)), ok: true, summary: `${source} ${path}` };
+    const data = await getJson(path);
+    if (source === 'scan_verdicts') {
+      return { result: trimmed(toScanVerdicts(data as Parameters<typeof toScanVerdicts>[0])), ok: true, summary: `${source} ${path}` };
+    }
+    return { result: trimmed(data), ok: true, summary: `${source} ${path}` };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { result: { error: msg }, ok: false, summary: `${source} failed: ${msg.slice(0, 120)}` };
