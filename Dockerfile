@@ -13,11 +13,11 @@
 # Still the FULL node_modules, NOT `output: standalone`, on purpose: standalone's
 # file tracing drops the native modules (kept external via serverExternalPackages)
 # and the runtime fs reads of lib/data/*.json. Both stages share the SAME base
-# (node:26-trixie-slim), so the compiled native binaries copied across are
+# (node:24-trixie-slim), so the compiled native binaries copied across are
 # ABI/arch-compatible — the one rule that makes copying node_modules safe.
 
 # ---- Stage 1: builder — has the compiler; produces node_modules + .next -------
-FROM node:26-trixie-slim AS builder
+FROM node:24-trixie-slim AS builder
 
 # Build toolchain for native modules, in case a prebuilt binary isn't published
 # for this platform. openssl is Prisma's dependency.
@@ -69,11 +69,13 @@ RUN pnpm exec playwright install chromium
 # Source + build. No secrets are needed at build time — lib/env.ts treats every
 # var as optional, and the pages are client-rendered.
 COPY . .
+# NEXT_SKIP_BUILD_TYPECHECK: types are checked by CI's validate job (see
+# next.config.ts), so the image build skips that duplicate ~30s step.
 RUN pnpm prisma generate --config prisma/prisma.config.ts \
-  && pnpm build
+  && NEXT_SKIP_BUILD_TYPECHECK=1 pnpm build
 
 # ---- Stage 2: runtime — no compiler; just runs the built app ------------------
-FROM node:26-trixie-slim AS runtime
+FROM node:24-trixie-slim AS runtime
 
 # Runtime needs ONLY openssl (Prisma query engine) + ca-certificates + pnpm (the
 # start command below uses `pnpm prisma db push` / `pnpm exec next start`). The

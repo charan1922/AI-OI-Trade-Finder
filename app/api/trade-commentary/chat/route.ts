@@ -38,7 +38,10 @@ async function chatFraming(date: string): Promise<string> {
     '  fix too, in the same reply, and say in one line what that change means for every future trade.',
     '- Never claim the gates are open or that a trade WILL be taken — only the trader\'s check_order',
     '  decides. Never invent a setting value; read it (read_app_data auto_trade_today) if you need it.',
-    '- What the chat cannot do: enter a stock the scanner did not pick, or switch mode to live.',
+    '- What the chat cannot do: enter a stock the scanner did not pick, or switch mode to live. Only the',
+    '  propose_action kinds exist — anything else (turning the market-sideways check into an automatic',
+    '  gate, changing a selector check or threshold) is a CODE change: say so plainly and never offer a',
+    '  Confirm card or ask "want me to…" for it.',
     "- To see WHY a name was rejected (which of the selector's ten checks failed — e.g. 'move started' for",
     "  quiet/fading, 'Supertrend with it' for the Supertrend veto), read_app_data source scan_verdicts. Quote",
     '  it; never infer per-name reasons from totals.',
@@ -115,7 +118,7 @@ export async function POST(req: Request) {
 
     try {
       const result = await replyToOperator({ message, prior, framing: await chatFraming(date) });
-      const reply = await addOperatorMessage(date, 'assistant', result.text, result.tools);
+      const reply = await addOperatorMessage(date, 'assistant', result.text, result.tools, `${result.provider}/${result.model}`);
       // Each proposal becomes its own Confirm card right under the reply.
       const actions = [];
       for (const p of result.proposals) actions.push(await addOperatorAction(date, p.description, p.action));

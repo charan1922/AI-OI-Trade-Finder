@@ -52,8 +52,10 @@ export interface OperatorMessage {
   at: string;
   /** Set on an assistant row that proposes an action (a Confirm card). */
   action?: ActionView | null;
-  /** On an assistant reply: what it checked to produce the answer. */
+  /** On an assistant reply: what it checked to produce the answer (audit record — stored, not shown). */
   tools?: ChatToolUse[] | null;
+  /** On an assistant reply: `provider/model` that wrote it (audit record). */
+  model?: string | null;
 }
 
 const SOURCE_LABELS: Record<string, string> = {

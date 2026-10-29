@@ -80,7 +80,7 @@ export async function replyToOperator(opts: {
   provider: AiProvider;
   model: string;
   proposals: { action: ChatAction; description: string }[];
-  /** What the AI checked — from the loop's own trace (no extra model call); display-only. */
+  /** What the AI checked — from the loop's own trace (no extra model call); stored as the audit record, not shown. */
   tools: ChatToolUse[];
 }> {
   const { provider, mimoModel } = await chatProvider();

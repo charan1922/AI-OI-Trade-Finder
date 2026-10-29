@@ -1,9 +1,9 @@
 'use client';
 
-import { Loader2, Search, SendHorizontal, Sparkles, X, Zap } from 'lucide-react';
+import { Loader2, SendHorizontal, Sparkles, X, Zap } from 'lucide-react';
 import { type KeyboardEvent, useState } from 'react';
 import { RichText } from '@/components/rich-text';
-import { type ActionStatus, type ActionView, type ChatToolUse, isActionExpired } from '@/lib/operator-chat/format';
+import { type ActionStatus, type ActionView, isActionExpired } from '@/lib/operator-chat/format';
 import type { ChatMessage, ChatNotice } from '../_hooks/use-operator-chat';
 
 function clock(iso: string): string {
@@ -100,38 +100,8 @@ export function ChatItem({
           <span>{clock(message.at)} IST</span>
         </div>
         <RichText content={message.content} />
-        {message.tools && message.tools.length > 0 && <CheckedList tools={message.tools} />}
       </div>
     </div>
-  );
-}
-
-/** "What the AI checked" — the tools this reply actually called (display-only; never fed back to the model). */
-function CheckedList({ tools }: { tools: ChatToolUse[] }) {
-  const failed = tools.filter((t) => !t.ok).length;
-  return (
-    <details className="mt-1.5 border-t border-border/40 pt-1">
-      <summary className="cursor-pointer list-none text-[10px] text-muted-foreground [&::-webkit-details-marker]:hidden">
-        <span className="inline-flex items-center gap-1">
-          <Search className="h-3 w-3" />
-          Checked {tools.length} {tools.length === 1 ? 'thing' : 'things'}
-          {failed > 0 && <span className="text-amber-700 dark:text-amber-300">· {failed} unavailable</span>}
-        </span>
-      </summary>
-      <ul className="mt-1 space-y-0.5">
-        {tools.map((t, i) => (
-          <li key={`${t.label}-${i}`} className="flex gap-1.5 text-[10.5px] leading-snug">
-            <span className={t.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
-              {t.ok ? '✓' : '!'}
-            </span>
-            <span>
-              <span className="font-medium text-foreground">{t.label}</span>
-              {t.summary && <span className="text-muted-foreground"> — {t.summary}</span>}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </details>
   );
 }
 
