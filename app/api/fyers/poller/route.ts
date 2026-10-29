@@ -8,6 +8,7 @@ import {
   setFyersPollerPaused,
   startFyersPoller,
 } from '@/lib/fyers/poller';
+import { getFnoUniverseSyncReport } from '@/lib/fyers/universe-sync';
 import { adminOnly } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
@@ -26,7 +27,7 @@ export async function GET(req: Request) {
   const status = getFyersPollerStatus();
   const withCoverage = new URL(req.url).searchParams.get('coverage') === '1';
   const coverage = withCoverage ? await getFyersCoverage(todayIST()) : undefined;
-  return NextResponse.json({ success: true, ...status, coverage });
+  return NextResponse.json({ success: true, ...status, coverage, universeSync: getFnoUniverseSyncReport() });
 }
 
 /**

@@ -21,19 +21,44 @@ const TAG = '[FyersSymbols]';
 const MONTH_CODES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
 /** Bump when the seeding source changes — invalidates the day cache across hot reloads. */
-const SEED_VERSION = 2;
+const SEED_VERSION = 3;
 
 const g = globalThis as unknown as {
   __fyersUniverse?: { date: string; seedVersion?: number; symbols: Set<string> };
   __fyersFutCache?: { date: string; map: Map<string, string | null> };
 };
 
-/** All non-index, non-'avoid' F&O underlyings — the tradeable universe on /fno-lots. */
+/**
+ * All non-index, non-'avoid' F&O underlyings WITH A LIVE STOCK FUTURE — the same
+ * test getTfEligibleSectors and /live apply. Without it a name that left F&O or
+ * was renamed stayed in the download list forever: ICICIPRULI (renamed ICICILIFE
+ * 2026-10-23) failed every cycle with "Fyers returned no usable EQ candles".
+ * An EMPTY master table (never-synced DB) skips the filter rather than recording
+ * nothing at all.
+ */
 async function loadFnoUniverseSymbols(): Promise<string[]> {
   const rows = await prisma.$queryRawUnsafe<{ symbol: string }[]>(
-    `SELECT symbol FROM fno_stocks WHERE isIndex = 0 AND tradeBand != 'avoid'`,
+    `SELECT symbol FROM fno_stocks f
+      WHERE f.isIndex = 0 AND f.tradeBand != 'avoid'
+        AND (
+          NOT EXISTS (SELECT 1 FROM master_contracts WHERE instrument = 'FUTSTK')
+          OR EXISTS (
+            SELECT 1 FROM master_contracts m
+             WHERE m.underlying = f.symbol
+               AND m.instrument = 'FUTSTK'
+               AND m.segment = 'NSE_FNO'
+               AND m.expiryDate >= date('now')
+          )
+        )`,
   );
   return rows.map((r) => r.symbol).filter(Boolean);
+}
+
+/** Drop today's cached universe so the next read reseeds — called after
+ *  lib/fyers/universe-sync.ts changes fno_stocks. Symbols enrolled today via
+ *  addToUniverse survive only if they were recorded (as on a restart). */
+export function resetTrackedUniverse(): void {
+  g.__fyersUniverse = undefined;
 }
 
 /** Day-scoped universe set: all tradeable F&O names + today's recorded extras. */

@@ -2,6 +2,11 @@
  * Seed/refresh the fno_stocks table from "Dhan - Nse Fno Lot Size.csv".
  * Re-runnable: upserts by symbol. Run with:  node scripts/seed-fno-stocks.mjs
  *
+ * LOTS GO STALE HERE: since 2026-10-29 lib/fyers/universe-sync.ts refreshes lot
+ * sizes, lot months and lot-based bands from the daily master contracts. This
+ * CSV's lots are a 2026-06 snapshot, so re-running this script puts old lots and
+ * bands back until the server restarts or the next IST day's sync runs.
+ *
  * Sectors mirror TradeFinder's Sector Scope. lib/data/fno_sectors.json is a
  * GENERATED artifact — run scripts/generate-sector-map.mjs after changing
  * lib/data/sector_scope_groups.json, never hand-edit it.

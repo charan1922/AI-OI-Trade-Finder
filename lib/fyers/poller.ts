@@ -191,6 +191,18 @@ function getState(): PollerState {
   return g.__fyersPoller;
 }
 
+/** fno_stocks follows the exchange once a day, and only off a snapshot that just
+ *  passed its freshness proof — see lib/fyers/universe-plan.ts. Never throws. */
+async function syncFnoUniverseFromMaster(date: string): Promise<void> {
+  try {
+    const { syncFnoUniverseOnce } = await import('@/lib/fyers/universe-sync');
+    await syncFnoUniverseOnce(date);
+  } catch (error) {
+    // A universe-sync failure must never read as a master-contract failure.
+    console.error(`${TAG} fno universe sync unavailable: ${(error as Error).message}`);
+  }
+}
+
 /**
  * Prove today's Dhan master snapshot before the live decision path can use it.
  * The sync itself owns a dedicated cross-process lease in master-contracts.ts,
@@ -209,6 +221,7 @@ export async function catchUpMasterContractsForToday(forceAttempt = false): Prom
     const before = await getMasterContractFreshness(date);
     if (before.acceptable) {
       state.lastMasterContractsDate = date;
+      await syncFnoUniverseFromMaster(date);
       return true;
     }
     if (
@@ -226,6 +239,7 @@ export async function catchUpMasterContractsForToday(forceAttempt = false): Prom
     state.lastMasterContractsDate = date;
     state.lastMasterContractsAttemptMs = null;
     console.log(`${TAG} master-contracts catch-up completed: ${count} rows in ${elapsed}`);
+    await syncFnoUniverseFromMaster(date);
     if (state.lastMasterContractsAlertDate === date) {
       state.lastMasterContractsAlertDate = null;
       const { sendCriticalAlert } = await import('@/lib/auto-trade/alerts');
