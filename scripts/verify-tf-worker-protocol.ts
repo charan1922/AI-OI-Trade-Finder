@@ -5,9 +5,19 @@ import {
   WORKER_SECRET_HEADER,
   isWorkerAlive,
   parseIngestPayload,
+  tfLoginHold,
   verifyWorkerSecret,
 } from '@/lib/tf-live/worker-protocol';
-import { noteWorkerForward, recentUntrackedPaths, shouldAlertUntracked } from '@/lib/tf-live/browser';
+import {
+  forceStartTfBrowser,
+  loginParkedFor,
+  noteWorkerForward,
+  parkUntilFreshLogin,
+  recentUntrackedPaths,
+  restartTfBrowser,
+  shouldAlertLoginHold,
+  shouldAlertUntracked,
+} from '@/lib/tf-live/browser';
 
 let failures = 0;
 
@@ -124,7 +134,47 @@ function untrackedChecks(): void {
   check('alert: a good capture re-arms it immediately', shouldAlertUntracked(t0 + 62 * 60_000) === true);
 }
 
+/** Chromium must never run on a login that cannot work (2026-10-16, 2026-10-29:
+ *  a signed-out page pegged the worker host and a fresh paste was never applied). */
+async function loginHoldChecks(): Promise<void> {
+  const now = Date.UTC(2026, 9, 29, 3, 50);
+  const hold = (over: Partial<Parameters<typeof tfLoginHold>[0]>) =>
+    tfLoginHold({ nowMs: now, loginExpiresAtMs: null, lastSuccessAtMs: null, parkedCookieVersion: null, cookieVersion: 'v1', ...over });
+  check('hold: unknown expiry, nothing parked → run', hold({}) === null);
+  check('hold: login still valid → run', hold({ loginExpiresAtMs: now + 60_000 }) === null);
+  check(
+    "hold: the 2026-10-29 morning — yesterday's login, nothing captured today → login-expired",
+    hold({ loginExpiresAtMs: now - 18 * 3600_000, lastSuccessAtMs: now - 18 * 3600_000 }) === 'login-expired'
+  );
+  check('hold: expired at exactly now → login-expired', hold({ loginExpiresAtMs: now }) === 'login-expired');
+  check(
+    'hold: past exp but STILL capturing (page revalidated its token) → keep running',
+    hold({ loginExpiresAtMs: now - 3600_000, lastSuccessAtMs: now - 60_000 }) === null
+  );
+  check(
+    'hold: past exp and captures stopped over 5 min ago → login-expired',
+    hold({ loginExpiresAtMs: now - 3600_000, lastSuccessAtMs: now - CAPTURE_STALL_MS - 1 }) === 'login-expired'
+  );
+  check('hold: parked on THIS paste → logged-out', hold({ parkedCookieVersion: 'v1', loginExpiresAtMs: now + 3600_000 }) === 'logged-out');
+  check('hold: a NEW paste lifts the park', hold({ parkedCookieVersion: 'v1', cookieVersion: 'v2', loginExpiresAtMs: now + 3600_000 }) === null);
+  check('hold: nothing pasted never matches a park', hold({ parkedCookieVersion: 'v1', cookieVersion: null }) === null);
+  check('hold: non-finite expiry is unknown, not expired', hold({ loginExpiresAtMs: Number.NaN }) === null);
+
+  parkUntilFreshLogin('v1');
+  check('park: records the paste it parked on', loginParkedFor() === 'v1');
+  await restartTfBrowser();
+  check('park: /tf Restart lifts it (operator asked to retry)', loginParkedFor() === null);
+  parkUntilFreshLogin('v1');
+  await forceStartTfBrowser();
+  check('park: Start / a cookie save lifts it', loginParkedFor() === null);
+
+  check('login alert: fires once per key', shouldAlertLoginHold('login-expired|v1|2026-10-29') === true);
+  check('login alert: silent on the next poll', shouldAlertLoginHold('login-expired|v1|2026-10-29') === false);
+  check('login alert: an unanswered expiry is announced again the next day', shouldAlertLoginHold('login-expired|v1|2026-10-30') === true);
+}
+
 main();
 untrackedChecks();
+await loginHoldChecks();
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
 process.exitCode = failures === 0 ? 0 : 1;

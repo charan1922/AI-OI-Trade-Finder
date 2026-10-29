@@ -77,9 +77,13 @@ import {
  */
 export const CAPTURE_START_MIN = 9 * 60 + 22; // 09:22 IST
 export const CAPTURE_END_MIN = 15 * 60 + 30; // 15:30 IST
+/** From here an expired TradeFinder login is announced, so a fresh paste can
+ *  land before capture starts at 09:22 instead of after it. */
+export const LOGIN_REMINDER_START_MIN = 9 * 60; // 09:00 IST
 
-/** True inside the capture window on a weekday. `now` is injectable for tests. */
-export function withinCaptureWindow(now = new Date()): boolean {
+/** True inside the capture window on a weekday (from `startMin`, default the
+ *  capture start). `now` is injectable for tests. */
+export function withinCaptureWindow(now = new Date(), startMin = CAPTURE_START_MIN): boolean {
   const parts = new Intl.DateTimeFormat('en-IN', {
     timeZone: 'Asia/Kolkata',
     weekday: 'short',
@@ -90,7 +94,7 @@ export function withinCaptureWindow(now = new Date()): boolean {
   const value = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
   const day = parts.find((part) => part.type === 'weekday')?.value;
   const minutes = value('hour') * 60 + value('minute');
-  return day !== 'Sat' && day !== 'Sun' && minutes >= CAPTURE_START_MIN && minutes <= CAPTURE_END_MIN;
+  return day !== 'Sat' && day !== 'Sun' && minutes >= startMin && minutes <= CAPTURE_END_MIN;
 }
 
 /** A manual "Start now" (or a fresh cookie save) outside market hours used to
@@ -136,6 +140,12 @@ interface BrowserState {
   /** When the "no market data arrived" alert last fired; null = not alerted since the
    *  last good capture. Throttles it to once an hour while it persists. */
   untrackedAlertedAtMs: number | null;
+  /** Cookie version (tf_browser_session.updatedAt) the browser was parked on
+   *  after its page proved signed out. Chromium stays closed until a new paste
+   *  changes the version — see tfLoginHold(). */
+  loginParkedFor: string | null;
+  /** Key of the last "login cannot work" alert, so each paste/reason/day alerts once. */
+  loginHoldAlertKey: string | null;
 }
 
 /** State lives on globalThis, not a module `let`: Turbopack HMR re-evaluates
@@ -155,6 +165,8 @@ store.__tfBrowserState ??= {
   stallEpisode: null,
   recentUntracked: [],
   untrackedAlertedAtMs: null,
+  loginParkedFor: null,
+  loginHoldAlertKey: null,
 };
 store.__tfBrowserState.lastWorkerSeenAtMs ??= null;
 store.__tfBrowserState.restartUntilMs ??= null;
@@ -164,6 +176,8 @@ store.__tfBrowserState.lastForwardAtMs ??= null;
 store.__tfBrowserState.stallEpisode ??= null;
 store.__tfBrowserState.recentUntracked ??= [];
 store.__tfBrowserState.untrackedAlertedAtMs ??= null;
+store.__tfBrowserState.loginParkedFor ??= null;
+store.__tfBrowserState.loginHoldAlertKey ??= null;
 const state = (): BrowserState => store.__tfBrowserState as BrowserState;
 
 /** Every worker request — config poll, ingest, heartbeat — refreshes this. It
@@ -250,6 +264,26 @@ export function shouldAlertUntracked(nowMs = Date.now()): boolean {
   return true;
 }
 
+/** Keep Chromium closed on this cookie version: its page loads signed out, and a
+ *  signed-out page is what wedged the worker host (2026-10-16, 2026-10-29). */
+export function parkUntilFreshLogin(cookieVersion: string | null): void {
+  state().loginParkedFor = cookieVersion;
+}
+
+/** The cookie version currently parked, or null. */
+export function loginParkedFor(): string | null {
+  return state().loginParkedFor;
+}
+
+/** True once per key — the caller builds it from reason + paste + IST date, so
+ *  an unanswered expiry is announced again the next morning, not every poll. */
+export function shouldAlertLoginHold(key: string): boolean {
+  const s = state();
+  if (s.loginHoldAlertKey === key) return false;
+  s.loginHoldAlertKey = key;
+  return true;
+}
+
 /** Called by every config poll with the answer it is about to give, so the
  *  stall clock starts when a run starts and stops when it stops. */
 export function noteWorkerConfigServed(shouldRun: boolean): void {
@@ -325,7 +359,10 @@ export function startTfBrowserWatchdog(): void {
  *  no local process, so expect up to one worker poll of delay rather than an
  *  instant start. */
 export async function forceStartTfBrowser(): Promise<void> {
-  state().manualUntilMs = Date.now() + MANUAL_TEST_DURATION_MS;
+  const s = state();
+  s.manualUntilMs = Date.now() + MANUAL_TEST_DURATION_MS;
+  // An explicit start is the operator asking to try again — lift the park.
+  s.loginParkedFor = null;
 }
 
 /** /tf's "Stop" — clears the manual override. Inside the capture window
@@ -338,5 +375,7 @@ export async function stopTfBrowser(): Promise<void> {
 /** Force the remote worker through one closed-browser poll, then let its normal
  * schedule reopen every configured page with the latest stored cookies. */
 export async function restartTfBrowser(): Promise<void> {
-  state().restartUntilMs = Date.now() + REMOTE_RESTART_PAUSE_MS;
+  const s = state();
+  s.restartUntilMs = Date.now() + REMOTE_RESTART_PAUSE_MS;
+  s.loginParkedFor = null;
 }

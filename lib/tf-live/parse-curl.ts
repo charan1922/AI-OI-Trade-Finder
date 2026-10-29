@@ -129,6 +129,40 @@ export function hasSessionCookie(cookieHeader: string): boolean {
   );
 }
 
+/** The SESSION_COOKIE_NAMES entries that are readable JWTs. The legacy next-auth
+ *  cookie is encrypted, so its expiry cannot be read from outside. */
+const JWT_SESSION_COOKIE_NAMES = ['tradefinder_token', 'lt'];
+
+/**
+ * When the pasted login stops working, as epoch ms: the latest `exp` among the
+ * login JWTs in the cookie header (see SESSION_COOKIE_NAMES — any one is enough,
+ * so the latest wins). Null when none decodes: unknown is NOT expired.
+ *
+ * Why this exists (2026-10-29): the token lives 6 hours, so by the next morning
+ * the stored paste has ALWAYS expired. The worker launched Chromium on it at
+ * 09:20, TradeFinder served a signed-out page, and that page pegged the worker
+ * host at ~97% CPU — starved badly enough that the fresh paste at 09:40 was
+ * never applied, until a manual reboot. Same signature as 2026-10-16. Reading
+ * the expiry lets the main app refuse to launch on a login that cannot work.
+ */
+export function tfLoginExpiresAtMs(cookieHeader: string | null): number | null {
+  if (!cookieHeader) return null;
+  let latest: number | null = null;
+  for (const pair of cookieHeader.split(';')) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0 || !JWT_SESSION_COOKIE_NAMES.includes(pair.slice(0, eq).trim())) continue;
+    const segments = pair.slice(eq + 1).trim().split('.');
+    if (segments.length !== 3) continue;
+    try {
+      const exp = (JSON.parse(Buffer.from(segments[1], 'base64url').toString('utf8')) as { exp?: unknown }).exp;
+      if (typeof exp === 'number' && Number.isFinite(exp)) latest = Math.max(latest ?? 0, exp * 1000);
+    } catch {
+      // Not a JWT after all — leave it to the other cookie, or to "unknown".
+    }
+  }
+  return latest;
+}
+
 export interface PlaywrightCookie {
   name: string;
   value: string;

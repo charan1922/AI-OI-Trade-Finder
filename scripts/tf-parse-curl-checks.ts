@@ -12,6 +12,7 @@ import {
   extractCookieHeaderFromCurl,
   hasSessionCookie,
   SESSION_COOKIE_NAME,
+  tfLoginExpiresAtMs,
   unescapeCmdCaret,
 } from '../lib/tf-live/parse-curl';
 
@@ -139,4 +140,24 @@ export function runTfParseCurlChecks(check: CheckFn): void {
     cookieHeaderToPlaywrightCookies(' x = y ; z=w', SITE_URL)[0]?.name === 'x'
   );
   check('playwright cookies: an empty header yields an empty list, never a crash', cookieHeaderToPlaywrightCookies('', SITE_URL).length === 0);
+
+  // ── login expiry, read from the pasted JWT (2026-10-29 wedge) ─────────────
+  const jwt = (claims: object) => `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.sig`;
+  // The real 2026-10-29 paste: iat 09:38:58 IST, exp exactly 6h later, plus the
+  // separate subscription `expires_at` (2027), which must NOT be read as the login's.
+  const real = jwt({ expires_at: 1817231400, exp: 1793268538, iat: 1793246938 });
+  check(
+    'login expiry: reads exp (not expires_at) from tradefinder_token',
+    tfLoginExpiresAtMs(`_ga=1; tradefinder_token=${real}; servertime=1`) === 1793268538000
+  );
+  check('login expiry: lt alone is enough', tfLoginExpiresAtMs(`lt=${real}`) === 1793268538000);
+  check(
+    'login expiry: the LATER of two tokens wins (any one login cookie is enough)',
+    tfLoginExpiresAtMs(`lt=${jwt({ exp: 100 })}; tradefinder_token=${jwt({ exp: 200 })}`) === 200_000
+  );
+  check('login expiry: a non-login cookie holding a JWT is ignored', tfLoginExpiresAtMs(`alt=${real}`) === null);
+  check('login expiry: an undecodable token is unknown, not expired', tfLoginExpiresAtMs('lt=eyJhbGciOiJIUzI1NiJ9.payload.sig') === null);
+  check('login expiry: a token without exp is unknown', tfLoginExpiresAtMs(`lt=${jwt({ iat: 1 })}`) === null);
+  check('login expiry: the legacy next-auth cookie alone is unknown', tfLoginExpiresAtMs('__Secure-next-auth.session-token=abc') === null);
+  check('login expiry: nothing stored is unknown', tfLoginExpiresAtMs(null) === null);
 }

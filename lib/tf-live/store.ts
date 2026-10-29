@@ -210,6 +210,17 @@ export async function getLatestTfLiveCaptures(): Promise<
   `)) as { endpoint: string; capturedAt: string; status: string; error: string | null }[];
 }
 
+/** When TradeFinder last served data (any tracked feed), or null. Read by every
+ *  worker config poll, so it walks the capturedAt index newest-first and stops
+ *  at the first success. */
+export async function getLastTfSuccessAt(): Promise<string | null> {
+  await ensureTables();
+  const rows = (await prisma.$queryRawUnsafe(
+    `SELECT capturedAt FROM tf_live_captures WHERE status = 'success' ORDER BY capturedAt DESC LIMIT 1`
+  )) as { capturedAt: string }[];
+  return rows[0]?.capturedAt ?? null;
+}
+
 /** Successes and errors per feed on one IST calendar date — the counts on /tf. */
 export async function getTfCaptureCountsForDate(
   date: string
