@@ -104,6 +104,11 @@ jobs:
       # incident: 263 failures behind a green badge). This bench's first run
       # caught market_pulse having never been captured at all (2026-08-26).
       - run: pnpm exec tsx scripts/verify-tf-ingest.ts
+      # DB-free checks for the daily fno_stocks ↔ exchange sync: a rename carries
+      # its sector (ICICIPRULI → ICICILIFE, 2026-10-23), a name with no known
+      # sector is reported and never added on a guess, manual band overrides
+      # beat the lot-based band, and an empty master plans no writes.
+      - run: pnpm exec tsx scripts/verify-fno-universe-sync.ts
       - run: pnpm lint
       # DB-free pure checks: quant-shadow math (re-anchor, observed-baseline
       # MFE/MAE, entry-candle exclusion, chgOpen bucketing, sector-rate rank) AND

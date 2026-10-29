@@ -83,6 +83,18 @@ interface PollerStatus {
   /** Latest pre-open token warm-up (08:40–09:15 IST). Optional so an older
    *  server payload still renders. */
   lastWarmup?: { date: string; at: number; fyers: string; dhan: string } | null;
+  /** Daily fno_stocks ↔ exchange sync (lib/fyers/universe-sync.ts). Optional so
+   *  an older server payload still renders. */
+  universeSync?: {
+    date: string;
+    at: string;
+    added: string[];
+    bandMoves: string[];
+    lotUpdates: number;
+    exited: { symbol: string; renamedTo: string | null }[];
+    unclassified: { symbol: string; lotSize: number }[];
+    error: string | null;
+  } | null;
 }
 
 const POLL_MS = 10_000;
@@ -112,6 +124,42 @@ function Badge({ ok, okLabel, badLabel }: { ok: boolean; okLabel: string; badLab
     >
       {ok ? okLabel : badLabel}
     </span>
+  );
+}
+
+/** The daily universe sync: what it changed, and what still needs the operator —
+ *  a new F&O name with no known sector is never added on a guess. */
+function UniverseSyncNote({ report }: { report: NonNullable<PollerStatus['universeSync']> }) {
+  const needsAction = report.error != null || report.unclassified.length > 0;
+  return (
+    <div
+      className={`mt-2 rounded border px-2 py-1.5 text-[10px] ${
+        needsAction ? 'border-amber-300/60 bg-amber-50/60 dark:bg-amber-950/20' : 'border-border/50 bg-muted/30'
+      } text-muted-foreground`}
+    >
+      <b className="font-semibold text-foreground">universe vs exchange</b> · synced {report.date}
+      {report.error ? (
+        <span className="text-red-600 dark:text-red-400"> · sync failed, universe unchanged: {report.error}</span>
+      ) : (
+        <>
+          {' '}· {report.lotUpdates} lot updates
+          {report.bandMoves.length > 0 && <> · band moves: {report.bandMoves.join(', ')}</>}
+          {report.added.length > 0 && <> · added: {report.added.join(', ')}</>}
+        </>
+      )}
+      {report.exited.length > 0 && (
+        <div className="mt-0.5">
+          no live future, so not downloaded:{' '}
+          {report.exited.map((e) => (e.renamedTo ? `${e.symbol} (renamed ${e.renamedTo})` : e.symbol)).join(', ')}
+        </div>
+      )}
+      {report.unclassified.length > 0 && (
+        <div className="mt-0.5 text-amber-700 dark:text-amber-400">
+          new F&O names NOT tracked until given a sector (lib/data/fno_sectors.json):{' '}
+          {report.unclassified.map((u) => `${u.symbol} (lot ${u.lotSize})`).join(', ')}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -423,6 +471,7 @@ export default function FyersPage() {
                 )}
               </>
             )}
+            {status.universeSync && <UniverseSyncNote report={status.universeSync} />}
             {status.lastCapture && (
               <div className="mt-2 rounded border border-border/50 bg-muted/30 px-2 py-1.5 text-[10px] text-muted-foreground">
                 latest capture{' '}
