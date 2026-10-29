@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 26 # match the Dockerfile base (node:26-trixie-slim) — Node 26 LTS "Lithium" since 2026-10-28
+          node-version: 24 # match the Dockerfile base (node:24-trixie-slim). Not 26 yet: Prisma 7.10.1 supports Node ^20.19, ^22.12, ^24.0 only (prisma.io system requirements) — move with Prisma 8
       # Provide pnpm exactly as the Docker image does (npm global install of the
       # same major). Avoids pnpm/action-setup, whose Node 20 runtime GitHub is
       # deprecating, and keeps CI on the pnpm major the lockfile + image use.
@@ -161,6 +161,13 @@ jobs:
       # before those columns existed, size round-tripping, batched multi-row
       # param counts, and 20-session retention (PR#16 review).
       - run: pnpm exec tsx scripts/verify-auto-trade-store.ts
+      # MPP (SEBI retail-algo framework, since 2026-04-01): brokers turn API market
+      # orders into limits at LTP ± a band, so an order can REST unfilled. Drives the
+      # real exitTrade/placeEntryOrder against isolated SQLite + a scripted broker:
+      # resting exits are cancelled and re-placed only on a confirmed zero-fill
+      # cancel (bounded), never after a fill or an unconfirmed cancel; a resting
+      # entry is cancelled instead of filling hours later.
+      - run: pnpm exec tsx scripts/verify-mpp-resting-orders.ts
       # Invalid MiMo model configuration must not disable risk settings or the
       # deterministic guard. Runs against isolated SQLite with no stored model.
       - run: pnpm exec tsx scripts/verify-auto-trade-settings-safety.ts

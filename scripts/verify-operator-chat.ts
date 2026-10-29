@@ -233,12 +233,25 @@ check('"what the AI checked": tool calls become plain English, capped, never raw
   assert.equal(describeToolUse('mystery_tool', {}, true).label, 'mystery_tool', 'an unknown tool still shows by name');
 });
 
-check('"what the AI checked" adds NO model tokens — the replayed history is message text only', () => {
+check('audit record (tools + model) adds NO model tokens — the replayed history is message text only', () => {
   const reply = readFileSync(new URL('../lib/operator-chat/reply.ts', import.meta.url), 'utf8');
   const transcriptFn = reply.slice(reply.indexOf('function transcript'), reply.indexOf('export async function replyToOperator'));
   assert.ok(transcriptFn.length > 0, 'transcript() must exist');
   assert.match(transcriptFn, /m\.content/);
-  assert.doesNotMatch(transcriptFn, /tools|toolsJson|action/, 'tool lists / actions must never be replayed to the model');
+  assert.doesNotMatch(transcriptFn, /tools|toolsJson|action|model/, 'tool lists / actions / model must never be replayed to the model');
+});
+
+check('every chat reply is stored with the provider/model that wrote it, and the thread does not list tools', () => {
+  const route = readFileSync(new URL('../app/api/trade-commentary/chat/route.ts', import.meta.url), 'utf8');
+  assert.match(route, /addOperatorMessage\(date, 'assistant', result\.text, result\.tools, `\$\{result\.provider\}\/\$\{result\.model\}`\)/);
+  // Operator 2026-10-29: the "Checked N things" list only repeated the reply's own numbers — stored, not shown.
+  const thread = readFileSync(new URL('../app/trade-commentary/_components/chat-thread.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(thread, /message\.tools/);
+});
+
+check('the chat never offers a Confirm card for a code change', () => {
+  const route = readFileSync(new URL('../app/api/trade-commentary/chat/route.ts', import.meta.url), 'utf8');
+  assert.match(route, /is a CODE change: say so plainly and never offer a/);
 });
 
 check('read_app_data rejects bad params instead of guessing', () => {

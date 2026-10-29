@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ActionView, ChatToolUse } from '@/lib/operator-chat/format';
+import type { ActionView } from '@/lib/operator-chat/format';
 
 export interface ChatMessage {
   id: number;
@@ -12,8 +12,6 @@ export interface ChatMessage {
   at: string;
   /** A proposed action — rendered as a Confirm card. */
   action?: ActionView | null;
-  /** On an AI reply: what it checked (display-only). */
-  tools?: ChatToolUse[] | null;
 }
 
 /** A line that is not stored (model unavailable / not sent). Transient, never part of the thread. */

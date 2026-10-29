@@ -33,13 +33,13 @@ async function ensureTable(): Promise<void> {
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_operator_chat_date ON operator_chat(date, id)`);
   const cols = (await prisma.$queryRawUnsafe(`PRAGMA table_info(operator_chat)`)) as { name: string }[];
   const have = new Set(cols.map((c) => c.name));
-  for (const col of ['actionJson TEXT', 'actionStatus TEXT', 'actionResult TEXT', 'toolsJson TEXT']) {
+  for (const col of ['actionJson TEXT', 'actionStatus TEXT', 'actionResult TEXT', 'toolsJson TEXT', 'model TEXT']) {
     if (!have.has(col.split(' ')[0])) await prisma.$executeRawUnsafe(`ALTER TABLE operator_chat ADD COLUMN ${col}`);
   }
   tableReady = true;
 }
 
-const COLS = 'id, date, role, content, at, actionJson, actionStatus, actionResult, toolsJson';
+const COLS = 'id, date, role, content, at, actionJson, actionStatus, actionResult, toolsJson, model';
 
 interface Row {
   id: number | bigint;
@@ -51,6 +51,7 @@ interface Row {
   actionStatus: string | null;
   actionResult: string | null;
   toolsJson: string | null;
+  model: string | null;
 }
 
 function toMessage(r: Row): OperatorMessage {
@@ -82,6 +83,7 @@ function toMessage(r: Row): OperatorMessage {
     at: r.at,
     action,
     tools,
+    model: r.model,
   };
 }
 
@@ -90,32 +92,38 @@ async function insertRow(
   role: 'user' | 'assistant',
   content: string,
   action: ChatAction | null,
-  tools: ChatToolUse[] | null = null
+  tools: ChatToolUse[] | null = null,
+  model: string | null = null
 ): Promise<OperatorMessage> {
   await ensureTable();
   // RETURNING gives back THIS row — a read-back of "the newest row" could return a concurrent insert.
   const rows = (await prisma.$queryRawUnsafe(
-    `INSERT INTO operator_chat (date, role, content, at, actionJson, actionStatus, toolsJson)
-     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ${COLS}`,
+    `INSERT INTO operator_chat (date, role, content, at, actionJson, actionStatus, toolsJson, model)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${COLS}`,
     date,
     role,
     content,
     new Date().toISOString(),
     action ? JSON.stringify(action) : null,
     action ? 'pending' : null,
-    tools && tools.length > 0 ? JSON.stringify(tools) : null
+    tools && tools.length > 0 ? JSON.stringify(tools) : null,
+    model
   )) as Row[];
   return toMessage(rows[0]);
 }
 
-/** `tools` (assistant replies only) is DISPLAY-only: what it checked. It is never replayed to the model. */
+/**
+ * `tools` and `model` (assistant replies only) are the AUDIT record: what the AI read and which
+ * provider/model wrote the reply. Stored, not shown in the thread, never replayed to the model.
+ */
 export function addOperatorMessage(
   date: string,
   role: 'user' | 'assistant',
   content: string,
-  tools: ChatToolUse[] | null = null
+  tools: ChatToolUse[] | null = null,
+  model: string | null = null
 ): Promise<OperatorMessage> {
-  return insertRow(date, role, content, null, tools);
+  return insertRow(date, role, content, null, tools, model);
 }
 
 /** An assistant row carrying a proposed action — rendered as a Confirm card. */

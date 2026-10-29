@@ -102,6 +102,24 @@ function partialFillUnits(state: OrderState): number {
   return Number.isFinite(units) && units > 0 ? units : 0;
 }
 
+/**
+ * MPP — SEBI's retail-algo framework (live since 2026-04-01): Fyers and Dhan turn every API MARKET
+ * order into a LIMIT at LTP ± a protection band (Fyers stock options: 10% above ₹20, 15% for ₹10–20,
+ * ₹1.5 at or below ₹10). If the price runs past that band the order RESTS at the stale limit until
+ * the close; neither broker re-prices it. So an order still unfilled after polling is cancelled here
+ * and its state read back FROM THE BROKER — the caller acts only on what the broker then reports.
+ * A failed cancel is not an error: the order may have just filled, which the read-back shows.
+ */
+async function cancelRestingOrder(adapter: BrokerAdapter, brokerOrderId: string): Promise<OrderState> {
+  try {
+    await adapter.cancelOrder(brokerOrderId);
+  } catch (err) {
+    console.warn(`${TAG} cancel of resting order ${brokerOrderId} failed (it may have just filled): ${(err as Error).message}`);
+  }
+  await sleep(FILL_POLL_DELAY_MS);
+  return adapter.getOrderState(brokerOrderId);
+}
+
 async function applyEntryFill(orderId: number, trade: AutoTrade, fill: number): Promise<void> {
   // targetPremium was calculated from the runtime policy BEFORE placement.
   // Recover that snapshotted cash amount and re-anchor it to the actual fill,
@@ -539,6 +557,17 @@ export async function placeEntryOrder(
     alerts.manualReconciliation(trade.symbol, 'BUY', placed.brokerOrderId, detail);
     return { ok: true, state: 'unknown', message: detail };
   }
+  // A BUY resting at a stale MPP limit could fill hours later on a plan that no longer holds — cancel
+  // it. Confirmed cancel with nothing filled → the trade fails cleanly; a fill → it opens as usual.
+  const afterCancel = await cancelRestingOrder(adapter, placed.brokerOrderId);
+  const cancelled = await applyEntryState(orderId, trade, afterCancel, true, placed.brokerOrderId);
+  if (cancelled) return cancelled;
+  alerts.manualReconciliation(
+    trade.symbol,
+    'BUY',
+    placed.brokerOrderId,
+    'entry resting unfilled (MPP limit?) and the cancel is not confirmed — check the broker'
+  );
   console.warn(`${TAG} entry order ${placed.brokerOrderId} unresolved after polling — reconcile will follow up`);
   return {
     ok: true,
@@ -552,7 +581,14 @@ export async function placeEntryOrder(
  * order is in flight is refused by the idempotency key. PnL is booked only
  * when both fills are known — never estimated.
  */
-export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: string): Promise<ExecOutcome> {
+export function exitTrade(trade: AutoTrade, reason: string, aiReason?: string): Promise<ExecOutcome> {
+  return exitTradeAttempt(trade, reason, aiReason, 0);
+}
+
+/** Fresh exits placed within ONE exitTrade call after a resting one was cancelled (see cancelRestingOrder). */
+const MAX_EXIT_REPRICES = 2;
+
+async function exitTradeAttempt(trade: AutoTrade, reason: string, aiReason: string | undefined, reprice: number): Promise<ExecOutcome> {
   if (trade.status !== 'open')
     return {
       ok: false,
@@ -717,6 +753,33 @@ export async function exitTrade(trade: AutoTrade, reason: string, aiReason?: str
     alerts.manualReconciliation(trade.symbol, 'SELL', placed.brokerOrderId, detail);
     return { ok: true, state: 'unknown', message: detail };
   }
+  // An exit resting at a stale MPP limit blocks every new exit claim (one open SELL per trade) while
+  // the premium keeps moving. Cancel it; only a broker-CONFIRMED cancel with nothing filled frees the
+  // claim, and then a fresh exit goes out at once — its MPP limit anchored to the price NOW. Any fill
+  // or an unclear state falls through to applyExitState's existing never-oversell rules.
+  const afterCancel = await cancelRestingOrder(adapter, placed.brokerOrderId);
+  const cancelled = await applyExitState(orderId, exitingTrade, afterCancel, true, placed.brokerOrderId, sellQtyUnits);
+  if (cancelled) {
+    if (afterCancel.status === 'cancelled' && cancelled.state === 'rejected') {
+      if (reprice < MAX_EXIT_REPRICES) {
+        console.warn(`${TAG} exit ${placed.brokerOrderId} rested unfilled (MPP limit?) — cancelled, re-placing (${reprice + 1}/${MAX_EXIT_REPRICES})`);
+        return exitTradeAttempt(trade, reason, aiReason, reprice + 1);
+      }
+      alerts.manualReconciliation(
+        trade.symbol,
+        'SELL',
+        placed.brokerOrderId,
+        `exit rested unfilled ${MAX_EXIT_REPRICES + 1} times (price running past the MPP band) — the next pass retries; watch it at the broker`
+      );
+    }
+    return cancelled;
+  }
+  alerts.manualReconciliation(
+    trade.symbol,
+    'SELL',
+    placed.brokerOrderId,
+    `exit resting unfilled (MPP limit?) and the cancel is not confirmed — check ${trade.symbol} at the broker NOW`
+  );
   console.warn(`${TAG} exit order ${placed.brokerOrderId} unresolved after polling — reconcile will follow up`);
   return {
     ok: true,

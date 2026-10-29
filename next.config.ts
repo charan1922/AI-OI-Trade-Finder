@@ -21,6 +21,14 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: projectRoot,
   },
+  // The Docker image build sets NEXT_SKIP_BUILD_TYPECHECK=1: CI's validate job
+  // already ran `pnpm typecheck` (next typegen + tsc, so route types included)
+  // and `promote` only publishes after validate passes. Re-checking inside
+  // `next build` cost ~32s of a 47s build on the deploy's critical path.
+  // Everywhere else (local `pnpm build`) the check still runs.
+  typescript: {
+    ignoreBuildErrors: process.env.NEXT_SKIP_BUILD_TYPECHECK === "1",
+  },
 }
 
 export default nextConfig
