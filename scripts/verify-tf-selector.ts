@@ -96,6 +96,8 @@ function board(minuteIST: number, rows: [string, number, number][]): TfBoardAt {
 
 const ok = (over: Partial<TfSymbolContext> = {}): TfSymbolContext => ({
   supertrendAligned: true,
+  // +1.0% on the day with +0.8% since 09:45 → a 'fresh' move (passes check ⑨, 2026-10-29).
+  dayMovePct: 1.0,
   breakout: true,
   breakout15: true,
   tfBeacon: 'BULL',
@@ -206,12 +208,52 @@ function main(): void {
       const r = selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok(over ?? {})]]));
       check(`rejects: ${label}`, r.candidates.length === 0 && r.rejected[key] === 1, `n=${r.candidates.length}`);
     }
-    for (const supertrendAligned of [null, false]) {
-      const r = selectTfCandidates(
-        [{ symbol: 'X', ...base }],
-        new Map([['X', ok({ supertrendAligned })]])
+    // ⑧ Supertrend is a VETO since 2026-10-29 (operator): a known disagreement rejects,
+    //    a not-yet-formed reading (< 12 bars, before ~10:15) passes and says so.
+    {
+      const against = selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok({ supertrendAligned: false })]]));
+      check('⑧ Supertrend disagreement REJECTS', against.candidates.length === 0 && against.rejected.supertrendAgainst === 1);
+      const notFormed = selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok({ supertrendAligned: null })]]));
+      check('⑧ Supertrend not formed yet PASSES (no 09:45–10:15 blackout)', notFormed.candidates.length === 1);
+      check(
+        '⑧ the reasons say it was not formed — never implied as agreeing',
+        /not formed yet/.test(notFormed.candidates[0]?.reasons.join(' | ') ?? '')
       );
-      check(`Supertrend ${supertrendAligned === null ? 'unknown' : 'disagreement'} is ignored`, r.candidates.length === 1);
+      const off = selectTfCandidates(
+        [{ symbol: 'X', ...base }],
+        new Map([['X', ok({ supertrendAligned: false })]]),
+        { ...DEFAULT_TF_SELECTOR_CONFIG, rejectSupertrendAgainst: false }
+      );
+      check('⑧ switching the veto off restores the old behaviour', off.candidates.length === 1);
+    }
+    // ⑨ The move must have started and must not be reversing (operator 2026-10-29).
+    {
+      const pick = (over: Partial<TfSymbolContext>) =>
+        selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok(over)]]));
+      const quiet = pick({ sinceEntryPct: 0.1, dayMovePct: 0.4 });
+      check('⑨ quiet (flat since 09:45, small day) REJECTS', quiet.candidates.length === 0 && quiet.rejected.quietMove === 1);
+      const fading = pick({ sinceEntryPct: -0.9, dayMovePct: 2.0 });
+      check('⑨ fading (against the trade since 09:45) REJECTS', fading.candidates.length === 0 && fading.rejected.fadingMove === 1);
+      check('⑨ spent (gap-and-flat) stays a warning — passes', pick({ sinceEntryPct: 0.1, dayMovePct: 2.4 }).candidates.length === 1);
+      check('⑨ unknown (no 09:45 bar) passes, as check ⑤ does', pick({ sinceEntryPct: null, dayMovePct: 1.0 }).candidates.length === 1);
+      check('⑨ fresh passes', pick({ sinceEntryPct: 0.8, dayMovePct: 1.0 }).candidates.length === 1);
+      // Direction-aware: a PE whose stock FELL since 09:45 is fresh, not fading.
+      const pe = selectTfCandidates(
+        [{ symbol: 'X', ...base, pctChange: -1.2 }],
+        new Map([['X', ok({ tfBeacon: 'BEAR', sinceEntryPct: 0.8, dayMovePct: 1.0 })]])
+      );
+      check('⑨ inputs are direction-aware (a PE moving its way is fresh)', pe.candidates.length === 1);
+      check(
+        '⑨ the summary names the new reasons',
+        /nothing has started yet/.test(describeRejections(quiet.rejected, 1)) &&
+          /buying into the unwind/.test(describeRejections(fading.rejected, 1)) &&
+          /Supertrend/.test(
+            describeRejections(
+              selectTfCandidates([{ symbol: 'X', ...base }], new Map([['X', ok({ supertrendAligned: false })]])).rejected,
+              1
+            )
+          )
+      );
     }
     // The GATE is the 30-min ORB (operator, 2026-10-09: "make ORB 30 mins");
     // the 15-min result is a recorded shadow that never decides.
@@ -393,6 +435,14 @@ function main(): void {
       ok({ nseLists: null }),
       ok({ nseLists: { oiBuildupRank: null, mostActiveRank: null, complete: false } }),
       ok({ nseLists: { oiBuildupRank: null, mostActiveRank: 7, complete: true } }),
+      // ⑧ Supertrend veto and ⑨ freshness (2026-10-29): against / not formed; quiet, fading, spent, unknown.
+      ok({ supertrendAligned: false }),
+      ok({ supertrendAligned: null }),
+      ok({ sinceEntryPct: 0.1, dayMovePct: 0.4 }),
+      ok({ sinceEntryPct: -0.9, dayMovePct: 2.0 }),
+      ok({ sinceEntryPct: 0.1, dayMovePct: 2.4 }),
+      ok({ sinceEntryPct: null, dayMovePct: null }),
+      ok({ sinceEntryPct: 0.5, dayMovePct: null }),
     ];
     const runner = { symbol: 'X', rankNow: 3, rankAtBaseline: 9, climb: 6, rFactorNow: 2.5, rFactorAgo: 2.0, deltaR: 0.5, pctChange: 1.2 };
     let agree = 0;
@@ -407,7 +457,7 @@ function main(): void {
         }
       }
     }
-    check('all eight dots green ⇔ the selector picks it (every combination)', agree === total, `${agree}/${total}`);
+    check('all ten dots green ⇔ the selector picks it (every combination)', agree === total, `${agree}/${total}`);
     const none = gateStrip(0.5, 1.2, undefined, cfg);
     check('no evidence is grey, never green', none.orb === null && none.pool === null);
     check(
@@ -822,16 +872,16 @@ function main(): void {
     check('sector: rising day, CE on IT is #2 of 5 → top', sectorStrength({ name: 'NIFTY IT', value: 3.82 }, rising, 'CE')?.rank === 2);
     check('sector: rising day, every PE is against its sector', rising.every((x) => sectorStrength(x, rising, 'PE')?.state === 'against'));
 
-    // NEVER a check: not one of the eight, and the strip's verdict ignores it.
-    check('sector: the advisory dot is not in GATE_ORDER (still exactly eight checks)', GATE_ORDER.length === 8 && !(GATE_ORDER as readonly string[]).includes('sectorStrength'));
+    // NEVER a check: not one of the ten, and the strip's verdict ignores it.
+    check('sector: the advisory dot is not in GATE_ORDER (exactly ten checks)', GATE_ORDER.length === 10 && !(GATE_ORDER as readonly string[]).includes('sectorStrength'));
     const strip = gateStrip(0.5, 1.2, ok(), DEFAULT_TF_SELECTOR_CONFIG);
-    check('sector: all eight checks green is TAKE whatever the sector says', allPass(strip) && sectorDot(energyCe) === false);
-    check('sector: passedCount can never exceed eight', passedCount(strip) === 8);
+    check('sector: all ten checks green is TAKE whatever the sector says', allPass(strip) && sectorDot(energyCe) === false);
+    check('sector: passedCount can never exceed ten', passedCount(strip) === 10);
   }
 
   // ── 18. Missing price data is described as missing, not as a failed range ──
   {
-    const none = { noBoard: 0, frozenR: 0, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 3, noTfBeacon: 0, thinPremium: 0, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0, listsUnknown: 0, notInNseLists: 0 };
+    const none = { noBoard: 0, frozenR: 0, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 3, noTfBeacon: 0, thinPremium: 0, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0, listsUnknown: 0, notInNseLists: 0, supertrendAgainst: 0, quietMove: 0, fadingMove: 0 };
     const text = describeRejections(none, 3);
     check('rejections: unknown breakout reads as missing price data', /no price data/.test(text) && !/not cleared/.test(text), text);
   }
@@ -880,7 +930,7 @@ function main(): void {
   // ── 21. The summary never says "none tradeable" when something was picked ──
   // Found replaying 2026-10-08 10:25: 3 picks, summary "13 runners, none tradeable".
   {
-    const r = { noBoard: 0, frozenR: 2, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 0, noTfBeacon: 0, thinPremium: 4, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0, listsUnknown: 0, notInNseLists: 0 };
+    const r = { noBoard: 0, frozenR: 2, unknownDeltaR: 0, flatPrice: 0, noBreakout: 0, breakoutUnknown: 0, noTfBeacon: 0, thinPremium: 4, premiumUnknown: 0, moveExhausted: 0, stretchUnknown: 0, chasing: 0, listsUnknown: 0, notInNseLists: 0, supertrendAgainst: 0, quietMove: 0, fadingMove: 0 };
     const withPicks = describeRejections(r, 9, 3);
     check('summary: picks are stated, not "none tradeable"', /3 picked/.test(withPicks) && !/none tradeable/.test(withPicks), withPicks);
     check('summary: still "none tradeable" when nothing was picked', /none tradeable/.test(describeRejections(r, 6, 0)));
@@ -937,8 +987,9 @@ function main(): void {
       'trend: selectTfCandidates never reads trendShape (only the context field declares it)',
       (selectorSrc.match(/trendShape/g) ?? []).length === 1
     );
-    check('trend: not in GATE_ORDER — still exactly eight checks', GATE_ORDER.length === 8 && !(GATE_ORDER as readonly string[]).includes('trendShape'));
-    check('trend: no selector config knob for it', !JSON.stringify(DEFAULT_TF_SELECTOR_CONFIG).toLowerCase().includes('trend'));
+    check('trend: not in GATE_ORDER — exactly ten checks', GATE_ORDER.length === 10 && !(GATE_ORDER as readonly string[]).includes('trendShape'));
+    // 'trendshape' / 'trendday' specifically — Supertrend's own veto knob (rejectSupertrendAgainst) is a different signal.
+    check('trend: no selector config knob for it', !/trendshape|trendday|trend_shape/.test(JSON.stringify(DEFAULT_TF_SELECTOR_CONFIG).toLowerCase()));
   }
 
   console.log(`\n${passed} passed, ${failures.length} failed\n`);

@@ -38,7 +38,8 @@ import { getTfEligibleSectors } from '@/lib/trade-suggest/candidates';
 import { DEFAULT_TF_SELECTOR_CONFIG, selectTfCandidates, type TfSelectorConfig, type TfSymbolContext } from '@/lib/tf-live/selector';
 import { firstNeed, gateStrip, GATE_LABEL, GATE_ORDER } from '@/lib/tf-live/board-view';
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
-import { loadDayBaselines, orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
+import { dayMoveFromBars, loadDayBaselines, MIN_BARS_FOR_TREND, orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
+import { supertrend } from '@/lib/signals/indicators';
 import { measureStretch } from '@/lib/tf-live/stretch';
 import { OI_DISPLAY } from '@/lib/nse/live-lists';
 import type { TfBeacon } from '@/lib/tf-live/parse';
@@ -203,14 +204,17 @@ async function main(): Promise<void> {
       for (const runner of race.runners) {
         const sb = (bySym.get(runner.symbol) ?? []).filter((b) => b.high > 0);
         const entryTs = sb.find((b) => istMin(b.bucketTs * 1000) >= em)?.bucketTs;
-        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, breakout: null, breakout15: null, tfBeacon: beacons.get(runner.symbol)?.dir ?? null, premValueCr: null, sinceEntryPct: null, stretch: null, nseLists: nseListsAt(runner.symbol) }); continue; }
+        if (entryTs == null) { context.set(runner.symbol, { supertrendAligned: null, dayMovePct: null, breakout: null, breakout15: null, tfBeacon: beacons.get(runner.symbol)?.dir ?? null, premValueCr: null, sinceEntryPct: null, stretch: null, nseLists: nseListsAt(runner.symbol) }); continue; }
         const prior = sb.filter((b) => b.bucketTs < entryTs);
         const entry = sb.find((b) => b.bucketTs === entryTs)!.open;
         const side: 'CE' | 'PE' = (runner.pctChange ?? 0) > 0 ? 'CE' : 'PE';
         const sc = deriveSessionContext(prior);
         const prem = [...(oiBy.get(runner.symbol) ?? [])].reverse().find((r) => r.bucketTs <= entryTs)?.premValueCr ?? null;
+        // Check ⑧ — Supertrend on bars strictly BEFORE the decision bar (no lookahead), as live.
+        const st = prior.length >= MIN_BARS_FOR_TREND ? supertrend(prior) : null;
         context.set(runner.symbol, {
-          supertrendAligned: null,
+          supertrendAligned: st == null ? null : side === 'CE' ? st.direction === 'up' : st.direction === 'down',
+          dayMovePct: dayMoveFromBars(sb, entry, side),
           breakout: orbBreak(side, entry, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
           breakout15: orbBreak(side, entry, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
           tfBeacon: beacons.get(runner.symbol)?.dir ?? null,

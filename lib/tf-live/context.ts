@@ -37,7 +37,8 @@ import { dayBaseline, measureStretch, type DailyBar, type DayBaseline, type Stre
 import { trendShape } from '@/lib/tf-live/trend-shape';
 
 /** Minimum bars before the entry bucket for Supertrend(10,3) to mean anything. */
-const MIN_BARS_FOR_TREND = 10;
+/** Supertrend(10,3) needs this many completed 5-min bars; fewer = null (check ⑧ passes). */
+export const MIN_BARS_FOR_TREND = 10;
 
 /** IST minute-of-day for a 5-min bucket timestamp (seconds). */
 function bucketMinuteIST(bucketTs: number): number {
@@ -69,6 +70,19 @@ export function sinceEntryFromBars(
   const at945 = bars.find((b) => b.open > 0 && bucketMinuteIST(b.bucketTs) >= 9 * 60 + 45);
   if (!at945) return null;
   const raw = ((price - at945.open) / at945.open) * 100;
+  return side === 'CE' ? raw : -raw;
+}
+
+/** Direction-aware move from the day's first (09:15) open to `price` (%), positive = the trade's way. */
+export function dayMoveFromBars(
+  bars: { bucketTs: number; open: number }[],
+  price: number | null,
+  side: 'CE' | 'PE'
+): number | null {
+  if (price == null || !(price > 0)) return null;
+  const first = bars.find((b) => b.open > 0);
+  if (!first) return null;
+  const raw = ((price - first.open) / first.open) * 100;
   return side === 'CE' ? raw : -raw;
 }
 
@@ -182,6 +196,7 @@ export async function buildRecordedTfContext(
   for (const { symbol, side } of entries) {
     const empty: TfSymbolContext = {
       supertrendAligned: null,
+      dayMovePct: null,
       breakout: null,
       breakout15: null,
       tfBeacon: beacons.get(symbol)?.dir ?? null,
@@ -215,7 +230,10 @@ export async function buildRecordedTfContext(
     const st = prior.length >= MIN_BARS_FOR_TREND ? supertrend(prior) : null;
 
     out.set(symbol, {
+      // Check ⑧ (veto) reads this; null until MIN_BARS_FOR_TREND completed bars exist.
       supertrendAligned: st == null ? null : side === 'CE' ? st.direction === 'up' : st.direction === 'down',
+      // Check ⑨ reads this with sinceEntryPct — same measurement as the live engine.
+      dayMovePct: dayMoveFromBars(usable, price, side),
       // The GATE is the 30-min range (operator, 2026-10-09); 15-min is a recorded shadow.
       breakout: orbBreak(side, price, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
       breakout15: orbBreak(side, price, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),

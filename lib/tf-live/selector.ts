@@ -40,8 +40,13 @@
  * TF's R-Factor is DIRECTIONLESS — it says "big money is here", never "this is
  * going up". CROMPTON topped TF's own board on 2026-08-07 while trading −6.39%.
  * Direction therefore comes from TF's own % change and the required opening-
- * range breakout. Supertrend was removed from the Auto Trade / Commentary path
- * by operator instruction; it may still render as descriptive UI evidence.
+ * range breakout. Supertrend was removed from this path on 2026-08-14 and brought
+ * BACK as a veto on 2026-10-29 (operator: "do as the MiMo said"): check ⑧ rejects
+ * a pick whose Supertrend(10,3) points AGAINST the trade. It never admits or ranks.
+ * Recorded caveat: on the 47 graded TF-era suggestions (2026-08-13..10-13) the 9
+ * Supertrend-disagree picks averaged +0.21R vs 0.00R for the 37 agreeing ones — the
+ * local data did not support this veto; MiMo cited 14..28 Oct (not held locally).
+ * Re-measure on graded outcomes before keeping or removing it (rejected.supertrendAgainst).
  *
  * ── PURITY ──────────────────────────────────────────────────────────────────
  *
@@ -56,11 +61,19 @@ import type { TfRunnerAt } from '@/lib/tf-live/race';
 import type { NseListMembership } from '@/lib/nse/live-lists';
 import type { Stretch } from '@/lib/tf-live/stretch';
 import type { TrendShape } from '@/lib/tf-live/trend-shape';
+import { classifyMoveFreshness, type MoveFreshness, type MoveProfile } from '@/lib/trade-suggest/move-freshness';
 
 /** Per-symbol evidence the selector needs but cannot derive from the TF board. */
 export interface TfSymbolContext {
-  /** Optional display evidence. The selector deliberately ignores Supertrend. */
+  /** Supertrend(10,3) on today's completed 5-min bars agrees with the trade side. Check ⑧:
+   *  `false` REJECTS (operator 2026-10-29). `null` = not formed yet (supertrend() needs 12
+   *  completed 5-min bars, i.e. ~10:15) and PASSES — failing closed would forbid every entry 09:45–10:15, which
+   *  was never asked for; the reason line says it was not formed. */
   supertrendAligned: boolean | null;
+  /** Direction-aware move from today's 09:15 open (%), positive = our way. With
+   *  sinceEntryPct it classifies the move (lib/trade-suggest/move-freshness.ts) for
+   *  check ⑨ — quiet vs spent depends on it. REQUIRED so no builder forgets it. */
+  dayMovePct: number | null;
   /** True when price has cleared the 30-MIN opening range (09:15–09:45) in the
    *  trade's direction. Back to 30 min on 2026-10-09 (operator: "make ORB 30
    *  mins") after a one-day switch to 15. Null = range not complete → REJECTED. */
@@ -112,6 +125,11 @@ export interface TfSelectorConfig {
   requireNseList: boolean;
   /** Rank cut-off WITHIN each visible list (e.g. 10 = top 10). Null = the whole visible list. */
   maxNseListRank: number | null;
+  /** ⑧ Reject when Supertrend(10,3) points against the trade (operator 2026-10-29). */
+  rejectSupertrendAgainst: boolean;
+  /** ⑨ Move-freshness profiles that REJECT (operator 2026-10-29: 'quiet' = nothing has started
+   *  since 09:45, 'fading' = buying into the unwind). 'spent' and 'unknown' stay warnings. */
+  rejectMoveProfiles: readonly MoveProfile[];
   /** Cap on returned candidates. */
   maxCandidates: number;
 }
@@ -155,6 +173,12 @@ export interface TfSelectorRejections {
   listsUnknown: number;
   /** Every list was read and the stock is in none of them. */
   notInNseLists: number;
+  /** ⑧ Supertrend(10,3) points against the trade. */
+  supertrendAgainst: number;
+  /** ⑨ Flat since 09:45 with no big day move — nothing has started yet. */
+  quietMove: number;
+  /** ⑨ Moving AGAINST the trade since 09:45 — buying into the unwind. */
+  fadingMove: number;
 }
 
 export interface TfSelectorResult {
@@ -179,7 +203,23 @@ const emptyRejections = (): TfSelectorRejections => ({
   chasing: 0,
   listsUnknown: 0,
   notInNseLists: 0,
+  supertrendAgainst: 0,
+  quietMove: 0,
+  fadingMove: 0,
 });
+
+/**
+ * Check ⑨'s classification. Both inputs are already direction-aware (positive =
+ * our way), so they are handed to classifyMoveFreshness as a 'bullish' move —
+ * the same thresholds the trader's evidence uses, never a second definition.
+ */
+export function tfMoveFreshness(ctx: Pick<TfSymbolContext, 'sinceEntryPct' | 'dayMovePct'>): MoveFreshness {
+  return classifyMoveFreshness({
+    sinceEntryPct: ctx.sinceEntryPct,
+    changePctOpen: ctx.dayMovePct,
+    direction: 'bullish',
+  });
+}
 
 /**
  * Defaults measured over 2026-08-10..12. TREAT AS FITTED — roughly 100 variants
@@ -210,6 +250,12 @@ export const DEFAULT_TF_SELECTOR_CONFIG: TfSelectorConfig = {
   // blocks EICHERMOT and TCS (losers) and RELIANCE (a winner), passes the 8-Oct trend trades.
   requireNseList: true,
   maxNseListRank: null,
+  // Operator rule 2026-10-29 ("do as the MiMo said"). MiMo's case: 15 Oct M&M, BHARTIARTL, OFSS,
+  // NESTLEIND (Supertrend disagreeing, two flat-line, OFSS "buying into the unwind") all missed.
+  // Local graded data (2026-08-13..10-13): quiet+fading 3 trades, all lost; Supertrend-disagree
+  // 9 trades averaged BETTER than agree. Judge forward via the rejection counts.
+  rejectSupertrendAgainst: true,
+  rejectMoveProfiles: ['quiet', 'fading'],
   maxCandidates: 7,
 };
 
@@ -226,7 +272,9 @@ export const LIVE_TF_SELECTOR_CONFIG: TfSelectorConfig = {
  * best N" is TF's own ranking rather than a re-derived one.
  *
  * REQUIRED MISSING EVIDENCE IS A REJECTION. A null breakout or premium pool
- * drops the name. Supertrend is explicitly not required or inspected. This module never treats "we could
+ * drops the name. Supertrend (⑧) and freshness (⑨) are VETOES, not requirements: a
+ * known disagreement / quiet / fading move rejects, a not-yet-formed reading passes
+ * (stated in the reasons). This module never treats "we could
  * not check" as "it passed", which is the same fail-closed rule the risk gates
  * keep.
  */
@@ -264,7 +312,7 @@ export function selectTfCandidates(
       continue;
     }
 
-    // ③ Breakout. Supertrend is intentionally ignored.
+    // ③ Breakout. (Supertrend is check ⑧, a veto — see below.)
     if (cfg.requireBreakout && ctx.breakout !== true) {
       if (ctx.breakout == null) rejected.breakoutUnknown++;
       else rejected.noBreakout++;
@@ -329,6 +377,22 @@ export function selectTfCandidates(
       }
     }
 
+    // ⑧ Supertrend veto (operator rule 2026-10-29). Only a KNOWN disagreement rejects;
+    //    a not-yet-formed Supertrend (< 12 completed bars, before ~10:15) passes — see TfSymbolContext.
+    if (cfg.rejectSupertrendAgainst && ctx.supertrendAligned === false) {
+      rejected.supertrendAgainst++;
+      continue;
+    }
+
+    // ⑨ The move must have STARTED and must not be reversing (operator rule 2026-10-29):
+    //    'quiet' = flat since 09:45 with no big day move; 'fading' = against the trade since 09:45.
+    const fresh = tfMoveFreshness(ctx);
+    if (cfg.rejectMoveProfiles.includes(fresh.profile)) {
+      if (fresh.profile === 'fading') rejected.fadingMove++;
+      else rejected.quietMove++;
+      continue;
+    }
+
     candidates.push({
       symbol: runner.symbol,
       side,
@@ -361,6 +425,10 @@ export function selectTfCandidates(
               .filter(Boolean)
               .join(' · ') || 'none (check switched off)'}`,
         `not chasing: 09:15 candle ${ctx.stretch.firstCandle.toFixed(2)}× a normal day, ${ctx.stretch.fromPrevCloseAdr.toFixed(2)}× from yesterday's close`,
+        ctx.supertrendAligned == null
+          ? 'Supertrend(10,3) not formed yet (needs 12 five-min bars, ~10:15) — no veto'
+          : 'Supertrend(10,3) agrees with the trade',
+        `move ${fresh.profile}: ${fresh.detail}`,
       ],
     });
 
@@ -388,6 +456,9 @@ export function describeRejections(r: TfSelectorRejections, considered: number, 
     [r.chasing, "move already made (long opening candle or 2+ normal days from yesterday's close)"],
     [r.notInNseLists, "not in /live's F&O OI Build-up or Most Active list"],
     [r.listsUnknown, "NSE's OI Build-up / Most Active lists unavailable or stale"],
+    [r.supertrendAgainst, 'Supertrend(10,3) points against the trade'],
+    [r.quietMove, 'flat since 09:45 — nothing has started yet'],
+    [r.fadingMove, 'reversing against the trade since 09:45 (buying into the unwind)'],
   ];
   const said = parts
     .filter(([n]) => n > 0)

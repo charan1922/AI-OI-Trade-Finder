@@ -63,7 +63,13 @@ import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
 import { fetchFyersDepth, spreadFromDepth } from '@/lib/fyers/market-feed';
 import { toEqSymbol } from '@/lib/fyers/symbols';
-import { loadDayBaselines, orbBreak, sinceEntryFromBars } from '@/lib/tf-live/context';
+import {
+  dayMoveFromBars,
+  loadDayBaselines,
+  MIN_BARS_FOR_TREND,
+  orbBreak,
+  sinceEntryFromBars,
+} from '@/lib/tf-live/context';
 import { measureStretch } from '@/lib/tf-live/stretch';
 import { listMembership, loadVisibleNseLists } from '@/lib/nse/live-lists';
 import type { TfBeacon } from '@/lib/tf-live/parse';
@@ -615,9 +621,9 @@ export async function runTradeSuggest(
     // must not silently change the tested candidate set.
     const chaosRatio = chaoticOpenRatio(bars);
 
-    // Move freshness is evidence, not a second selector. The TF selector owns
-    // the measured 0–2% since-09:45 chase band; its ablation found a separate
-    // freshness hard gate slightly harmful.
+    // Move freshness here is EVIDENCE for the read. The gate lives in the TF
+    // selector (check ⑨, operator rule 2026-10-29: 'quiet' and 'fading' reject),
+    // so a pick that reaches this point has already passed it — never a second gate.
     const moveFreshness = classifyMoveFreshness({
       sinceEntryPct: row.sinceEntryPct ?? null,
       changePctOpen: row.changePctOpen ?? null,
@@ -1120,10 +1126,15 @@ async function buildTfSelection(
     const bars = await getFyersCandles(runner.symbol, date, 'EQ').catch(() => [] as StoredFyersBar[]);
     const sc = deriveSessionContext(bars);
     const ltp = row?.ltp ?? null;
+    // Supertrend on COMPLETED bars only (the forming bucket excluded, as for consolidation) —
+    // the same reading the /live card builds in tf-live/context.ts. Null until it has formed.
+    const completed = bars.filter((b) => b.high > 0 && b.bucketTs < fyersBucketFor(Date.now()));
+    const st = completed.length >= MIN_BARS_FOR_TREND ? supertrend(completed) : null;
     context.set(runner.symbol, {
-      // Kept in the shared context shape for /live display compatibility. The
-      // Auto Trade / Commentary selector explicitly ignores Supertrend.
-      supertrendAligned: null,
+      // Check ⑧ — a VETO since 2026-10-29 (operator): a known disagreement rejects.
+      supertrendAligned: st == null ? null : side === 'CE' ? st.direction === 'up' : st.direction === 'down',
+      // Check ⑨ — with sinceEntryPct, classifies the move (quiet / fading reject).
+      dayMovePct: dayMoveFromBars(bars, ltp, side),
       // The GATE is the 30-min range (operator, 2026-10-09); 15-min is a recorded shadow.
       breakout: orbBreak(side, ltp, sc.openRangeComplete, sc.openRangeHigh, sc.openRangeLow),
       breakout15: orbBreak(side, ltp, sc.openRange15Complete, sc.openRange15High, sc.openRange15Low),
