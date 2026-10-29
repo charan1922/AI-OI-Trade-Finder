@@ -15,7 +15,7 @@
  */
 
 import { prisma } from '@/lib/db';
-import type { ActionStatus, ChatAction, OperatorMessage } from './format';
+import type { ActionStatus, ChatAction, ChatToolUse, OperatorMessage } from './format';
 
 let tableReady = false;
 
@@ -33,13 +33,13 @@ async function ensureTable(): Promise<void> {
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_operator_chat_date ON operator_chat(date, id)`);
   const cols = (await prisma.$queryRawUnsafe(`PRAGMA table_info(operator_chat)`)) as { name: string }[];
   const have = new Set(cols.map((c) => c.name));
-  for (const col of ['actionJson TEXT', 'actionStatus TEXT', 'actionResult TEXT']) {
+  for (const col of ['actionJson TEXT', 'actionStatus TEXT', 'actionResult TEXT', 'toolsJson TEXT']) {
     if (!have.has(col.split(' ')[0])) await prisma.$executeRawUnsafe(`ALTER TABLE operator_chat ADD COLUMN ${col}`);
   }
   tableReady = true;
 }
 
-const COLS = 'id, date, role, content, at, actionJson, actionStatus, actionResult';
+const COLS = 'id, date, role, content, at, actionJson, actionStatus, actionResult, toolsJson';
 
 interface Row {
   id: number | bigint;
@@ -50,6 +50,7 @@ interface Row {
   actionJson: string | null;
   actionStatus: string | null;
   actionResult: string | null;
+  toolsJson: string | null;
 }
 
 function toMessage(r: Row): OperatorMessage {
@@ -65,6 +66,14 @@ function toMessage(r: Row): OperatorMessage {
       action = null;
     }
   }
+  let tools: ChatToolUse[] | null = null;
+  if (r.toolsJson) {
+    try {
+      tools = JSON.parse(r.toolsJson) as ChatToolUse[];
+    } catch {
+      tools = null;
+    }
+  }
   return {
     id: Number(r.id),
     date: r.date,
@@ -72,6 +81,7 @@ function toMessage(r: Row): OperatorMessage {
     content: r.content,
     at: r.at,
     action,
+    tools,
   };
 }
 
@@ -79,25 +89,33 @@ async function insertRow(
   date: string,
   role: 'user' | 'assistant',
   content: string,
-  action: ChatAction | null
+  action: ChatAction | null,
+  tools: ChatToolUse[] | null = null
 ): Promise<OperatorMessage> {
   await ensureTable();
   // RETURNING gives back THIS row — a read-back of "the newest row" could return a concurrent insert.
   const rows = (await prisma.$queryRawUnsafe(
-    `INSERT INTO operator_chat (date, role, content, at, actionJson, actionStatus)
-     VALUES (?, ?, ?, ?, ?, ?) RETURNING ${COLS}`,
+    `INSERT INTO operator_chat (date, role, content, at, actionJson, actionStatus, toolsJson)
+     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ${COLS}`,
     date,
     role,
     content,
     new Date().toISOString(),
     action ? JSON.stringify(action) : null,
-    action ? 'pending' : null
+    action ? 'pending' : null,
+    tools && tools.length > 0 ? JSON.stringify(tools) : null
   )) as Row[];
   return toMessage(rows[0]);
 }
 
-export function addOperatorMessage(date: string, role: 'user' | 'assistant', content: string): Promise<OperatorMessage> {
-  return insertRow(date, role, content, null);
+/** `tools` (assistant replies only) is DISPLAY-only: what it checked. It is never replayed to the model. */
+export function addOperatorMessage(
+  date: string,
+  role: 'user' | 'assistant',
+  content: string,
+  tools: ChatToolUse[] | null = null
+): Promise<OperatorMessage> {
+  return insertRow(date, role, content, null, tools);
 }
 
 /** An assistant row carrying a proposed action — rendered as a Confirm card. */

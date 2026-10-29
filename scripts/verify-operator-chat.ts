@@ -15,6 +15,7 @@ import { AUTO_TRADER_MANAGEMENT_SYSTEM, AUTO_TRADER_SYSTEM } from '../lib/auto-t
 import {
   ACTION_TTL_MS,
   attachNewNotes,
+  describeToolUse,
   isActionExpired,
   OPERATOR_CHAT_MANAGEMENT_RULES,
   OPERATOR_CHAT_RULES,
@@ -220,6 +221,24 @@ check('chat length: up to ~300 words for multi-pick/multi-trade, 120–200 for o
   // The shared /trade-assistant prompt keeps its own limit — the override lives only in the chat framing.
   const shared = readFileSync(new URL('../lib/ai-assistant/system-prompt.ts', import.meta.url), 'utf8');
   assert.match(shared, /about 120–200 words/);
+});
+
+check('"what the AI checked": tool calls become plain English, capped, never raw data', () => {
+  const live = describeToolUse('read_app_data', { source: 'live_urgency', section: 'nse-oi' }, true, 'live_urgency nse-oi');
+  assert.equal(live.label, 'Live Urgency (nse-oi)');
+  assert.equal(describeToolUse('read_app_data', { source: 'check_market_sideways' }, true).label, 'market sideways check');
+  assert.equal(describeToolUse('get_symbol_snapshot', { symbol: 'RELIANCE' }, false, 'x').label, 'stock snapshot (RELIANCE)');
+  assert.equal(describeToolUse('get_symbol_snapshot', {}, false).ok, false);
+  assert.ok((describeToolUse('read_app_data', { source: 'tf_race' }, true, 'y'.repeat(900)).summary ?? '').length <= 160);
+  assert.equal(describeToolUse('mystery_tool', {}, true).label, 'mystery_tool', 'an unknown tool still shows by name');
+});
+
+check('"what the AI checked" adds NO model tokens — the replayed history is message text only', () => {
+  const reply = readFileSync(new URL('../lib/operator-chat/reply.ts', import.meta.url), 'utf8');
+  const transcriptFn = reply.slice(reply.indexOf('function transcript'), reply.indexOf('export async function replyToOperator'));
+  assert.ok(transcriptFn.length > 0, 'transcript() must exist');
+  assert.match(transcriptFn, /m\.content/);
+  assert.doesNotMatch(transcriptFn, /tools|toolsJson|action/, 'tool lists / actions must never be replayed to the model');
 });
 
 check('read_app_data rejects bad params instead of guessing', () => {

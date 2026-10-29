@@ -588,6 +588,8 @@ model OperatorChat {
   actionJson   String?
   actionStatus String?
   actionResult String?
+  /// Assistant replies only: "what the AI checked" (display-only; never replayed to the model).
+  toolsJson    String?
 
   @@index([date, id], map: "idx_operator_chat_date")
   @@map("operator_chat")

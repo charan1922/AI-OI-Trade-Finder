@@ -34,6 +34,15 @@ export interface ActionView extends ChatAction {
   result: string | null;
 }
 
+/** One thing the AI read or did while answering — shown as "what the AI checked". Never the raw data. */
+export interface ChatToolUse {
+  /** Plain-English label, e.g. "Live Urgency (nse-oi)", "market sideways check". */
+  label: string;
+  ok: boolean;
+  /** One line from the tool's own summary (≤ 160 chars). */
+  summary: string | null;
+}
+
 export interface OperatorMessage {
   id: number;
   date: string;
@@ -43,6 +52,60 @@ export interface OperatorMessage {
   at: string;
   /** Set on an assistant row that proposes an action (a Confirm card). */
   action?: ActionView | null;
+  /** On an assistant reply: what it checked to produce the answer. */
+  tools?: ChatToolUse[] | null;
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  check_market_sideways: 'market sideways check',
+  scan_verdicts: 'why each name was picked / rejected',
+  live_urgency: 'Live Urgency',
+  nse_watchlist: 'NSE list',
+  tf_race: 'TF Running Race',
+  tf_rfactor_map: 'TF R-Factor board',
+  tf_eod: 'TF end-of-day board',
+  sector_scope: 'sector scope',
+  sector_leaders: 'sector leaders',
+  nifty_context: 'NIFTY context',
+  oi_series: 'OI series',
+  urgency_history: 'end-of-day Live Urgency',
+  movers_history: 'end-of-day movers',
+  heatmap: 'sector heatmap',
+  nse_indices: 'NSE indices',
+  auto_trade_today: 'your trades & P&L today',
+  auto_trade_history: 'past auto-trades',
+  commentary: 'earlier commentary',
+  suggestion_history: 'suggestion history',
+  suggestion_leaderboard: 'suggestion leaderboard',
+  bhavcopy_status: 'end-of-day data freshness',
+};
+
+const TOOL_LABELS: Record<string, string> = {
+  get_live_suggestions: 'live scan',
+  get_market_pulse: 'NSE market pulse',
+  get_symbol_snapshot: 'stock snapshot',
+  get_suggestion_performance: 'suggestion performance',
+  get_eod_leaderboard: 'end-of-day leaderboard',
+  get_trade_context: 'TradeFinder trade context',
+  rank_trades: 'TradeFinder trade ranking',
+  list_trades: 'TradeFinder trade log',
+  propose_action: 'prepared an action card',
+};
+
+/** Pure: a tool call as plain English for the "what the AI checked" line. */
+export function describeToolUse(name: string, args: Record<string, unknown>, ok: boolean, summary?: string | null): ChatToolUse {
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  let label: string;
+  if (name === 'read_app_data') {
+    const source = str(args.source) ?? 'app data';
+    const detail = str(args.section) ?? str(args.symbol) ?? str(args.date);
+    label = `${SOURCE_LABELS[source] ?? source}${detail ? ` (${detail})` : ''}`;
+  } else {
+    const detail = str(args.symbol) ?? str(args.kind);
+    label = `${TOOL_LABELS[name] ?? name}${detail ? ` (${detail})` : ''}`;
+  }
+  const s = summary == null ? null : String(summary).replace(/\s+/g, ' ').trim().slice(0, 160) || null;
+  return { label, ok, summary: s };
 }
 
 /** A proposal can only be confirmed while it is fresh — "exit X" means NOW, not an hour later. */
