@@ -115,7 +115,7 @@ export async function POST(req: Request) {
 
     try {
       const result = await replyToOperator({ message, prior, framing: await chatFraming(date) });
-      const reply = await addOperatorMessage(date, 'assistant', result.text);
+      const reply = await addOperatorMessage(date, 'assistant', result.text, result.tools);
       // Each proposal becomes its own Confirm card right under the reply.
       const actions = [];
       for (const p of result.proposals) actions.push(await addOperatorAction(date, p.description, p.action));

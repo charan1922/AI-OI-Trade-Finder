@@ -21,7 +21,7 @@ import type { AiProvider } from '@/lib/auto-trade/types';
 import { hasMimo } from '@/lib/env';
 import { proposeAction } from './act';
 import { READ_APP_DATA_TOOL, readAppData } from './app-data';
-import { ACTION_KINDS, type ChatAction, type OperatorMessage } from './format';
+import { ACTION_KINDS, type ChatAction, type ChatToolUse, describeToolUse, type OperatorMessage } from './format';
 
 /** Prior turns replayed to the model — enough to follow the thread, not to flood it. */
 const HISTORY_TURNS = 8;
@@ -80,6 +80,8 @@ export async function replyToOperator(opts: {
   provider: AiProvider;
   model: string;
   proposals: { action: ChatAction; description: string }[];
+  /** What the AI checked — from the loop's own trace (no extra model call); display-only. */
+  tools: ChatToolUse[];
 }> {
   const { provider, mimoModel } = await chatProvider();
   const proposals: { action: ChatAction; description: string }[] = [];
@@ -116,7 +118,8 @@ export async function replyToOperator(opts: {
       return { result: data, trace: { name: trace.name, args: trace.args, ok: trace.ok, summary: trace.summary } };
     },
   });
-  return { text: result.text || '(no reply produced)', provider, model: result.model, proposals };
+  const tools = result.trace.map((t) => describeToolUse(t.name, t.args ?? {}, t.ok, t.summary));
+  return { text: result.text || '(no reply produced)', provider, model: result.model, proposals, tools };
 }
 
 const PROPOSE_ACTION_TOOL: NeutralToolDef = {

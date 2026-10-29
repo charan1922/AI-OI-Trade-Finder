@@ -13,25 +13,25 @@
 # Still the FULL node_modules, NOT `output: standalone`, on purpose: standalone's
 # file tracing drops the native modules (kept external via serverExternalPackages)
 # and the runtime fs reads of lib/data/*.json. Both stages share the SAME base
-# (node:24-bookworm-slim), so the compiled native binaries copied across are
+# (node:26-trixie-slim), so the compiled native binaries copied across are
 # ABI/arch-compatible — the one rule that makes copying node_modules safe.
 
 # ---- Stage 1: builder — has the compiler; produces node_modules + .next -------
-FROM node:24-bookworm-slim AS builder
+FROM node:26-trixie-slim AS builder
 
 # Build toolchain for native modules, in case a prebuilt binary isn't published
 # for this platform. openssl is Prisma's dependency.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ ca-certificates openssl \
   && rm -rf /var/lib/apt/lists/* \
-  && npm i -g pnpm@10
+  && npm i -g pnpm@12
 
 ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
 
 # Deps first for layer caching. pnpm-workspace.yaml carries the `allowBuilds`
 # allowlist that lets better-sqlite3 / @duckdb/node-api / prisma run their
-# native build scripts (pnpm 10 blocks them otherwise).
+# native build scripts (pnpm 10+ blocks them otherwise).
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
@@ -73,7 +73,7 @@ RUN pnpm prisma generate --config prisma/prisma.config.ts \
   && pnpm build
 
 # ---- Stage 2: runtime — no compiler; just runs the built app ------------------
-FROM node:24-bookworm-slim AS runtime
+FROM node:26-trixie-slim AS runtime
 
 # Runtime needs ONLY openssl (Prisma query engine) + ca-certificates + pnpm (the
 # start command below uses `pnpm prisma db push` / `pnpm exec next start`). The
@@ -81,7 +81,7 @@ FROM node:24-bookworm-slim AS runtime
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates openssl \
   && rm -rf /var/lib/apt/lists/* \
-  && npm i -g pnpm@10
+  && npm i -g pnpm@12
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
