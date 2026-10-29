@@ -19,10 +19,10 @@
  * silently stop every entry; the reason says what was missing.
  *
  * PURE (no I/O, no clock) — the live scanner, the /live card and
- * scripts/measure-market-regime.ts all call this one definition.
+ * scripts/measure-market-sideways.ts all call this one definition.
  */
 
-export interface MarketRegimeRule {
+export interface MarketSidewaysRule {
   /** NIFTY's 30-min range, as % of the index, below which it counts as narrow. */
   niftyMaxRangePct: number;
   /** Gainer share (0–1) inside [breadthLow, breadthHigh] = no side in charge. */
@@ -34,8 +34,8 @@ export interface MarketRegimeRule {
   minStocks: number;
 }
 
-/** MiMo's starting thresholds (2026-10-29), not fitted — re-check with scripts/measure-market-regime.ts. */
-export const DEFAULT_MARKET_REGIME_RULE: MarketRegimeRule = {
+/** MiMo's starting thresholds (2026-10-29), not fitted — re-check with scripts/measure-market-sideways.ts. */
+export const DEFAULT_MARKET_SIDEWAYS_RULE: MarketSidewaysRule = {
   niftyMaxRangePct: 0.4,
   breadthLow: 0.4,
   breadthHigh: 0.6,
@@ -43,14 +43,14 @@ export const DEFAULT_MARKET_REGIME_RULE: MarketRegimeRule = {
   minStocks: 50,
 };
 
-export interface RegimeStock {
+export interface SidewaysStock {
   /** Last completed close inside the stock's own 30-min opening range. Null = range/price unknown. */
   insideOwnRange: boolean | null;
   /** % change vs yesterday's close at the last completed bar. Null = unknown. */
   dayChangePct: number | null;
 }
 
-export interface MarketRegime {
+export interface MarketSideways {
   /** true = all three say stuck (block entries); false = at least one says not; null = cannot tell. */
   stuck: boolean | null;
   niftyRangePct: number | null;
@@ -61,14 +61,14 @@ export interface MarketRegime {
   reason: string;
 }
 
-export function classifyMarketRegime(
+export function classifyMarketSideways(
   input: {
     niftyRange: { high: number; low: number } | null;
     niftyLast: number | null;
-    stocks: RegimeStock[];
+    stocks: SidewaysStock[];
   },
-  rule: MarketRegimeRule = DEFAULT_MARKET_REGIME_RULE
-): MarketRegime {
+  rule: MarketSidewaysRule = DEFAULT_MARKET_SIDEWAYS_RULE
+): MarketSideways {
   const { niftyRange, niftyLast } = input;
   const niftyRangePct =
     niftyRange && niftyLast != null && niftyLast > 0 && niftyRange.high >= niftyRange.low

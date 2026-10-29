@@ -33,6 +33,7 @@ import { backstopsFromFill, exitTrade, placeEntryOrder, targetRupeesForPosition,
 import { fetchLiveSpot, fetchOptionQuote, fetchOptionQuotes, latestSpot, type OptionQuote } from '../quotes';
 import { backstopStopPct } from '../risk/option-model';
 import { measureEntryStretch } from '@/lib/tf-live/context';
+import { loadMarketSideways } from '@/lib/tf-live/market-sideways-data';
 import { checkEntryGates, checkStopMove, type EntryGateInput } from '../risk/gates';
 import { getRiskLatch } from '../risk/latch';
 import { getAutoTradeSettings } from '../settings';
@@ -418,6 +419,15 @@ export async function executeAutoTradeTool(
             ? `TF board ${result.total} names, ${result.ageMinutes ?? '?'} min old · ${result.hasRace ? `${result.climbers.length} climbing` : 'no race yet'}`
             : 'no TradeFinder data today',
         },
+      };
+    }
+
+    if (name === 'check_market_sideways') {
+      // Read-only and AI-chosen (operator 2026-10-29): the AI decides when to look; nothing blocks on it.
+      const regime = await loadMarketSideways(rt.date, minuteOfDayIST());
+      return {
+        result: regime,
+        trace: { name, args, ok: true, summary: regime.reason },
       };
     }
 

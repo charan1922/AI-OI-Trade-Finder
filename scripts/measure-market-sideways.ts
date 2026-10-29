@@ -12,7 +12,7 @@
  * path-dependent gradeSpotPath (the scorer real suggestions get). Then stuck vs not-stuck is compared.
  *
  * Needs the local DB (fyers_candles) and a Fyers token (NIFTY index bars come from Fyers history —
- * they are not recorded). Not a CI script. Run: pnpm exec tsx scripts/measure-market-regime.ts
+ * they are not recorded). Not a CI script. Run: pnpm exec tsx scripts/measure-market-sideways.ts
  */
 process.loadEnvFile('.env.local');
 
@@ -20,15 +20,15 @@ import { fetchHistory5m } from '../lib/fyers/client';
 import { prisma } from '../lib/db';
 import { gradeSpotPath } from '../lib/trade-suggest/grade';
 import { MIN_RISK_PCT } from '../lib/trade-suggest/config';
-import { classifyMarketRegime, DEFAULT_MARKET_REGIME_RULE, type RegimeStock } from '../lib/tf-live/market-regime';
+import { classifyMarketSideways, DEFAULT_MARKET_SIDEWAYS_RULE, type SidewaysStock } from '../lib/tf-live/market-sideways';
 
 const NIFTY = 'NSE:NIFTY50-INDEX';
-const DECISION_MINUTES = (process.env.REGIME_MINUTES ?? '600,630')
+const DECISION_MINUTES = (process.env.SIDEWAYS_MINUTES ?? '600,630')
   .split(',')
   .map((s) => Number(s.trim()))
   .filter((n) => Number.isFinite(n)); // 10:00, 10:30 IST
 const LAST_BUCKET_MIN = 15 * 60 + 25;
-const SKIP_NIFTY = process.env.REGIME_SKIP_NIFTY === '1';
+const SKIP_NIFTY = process.env.SIDEWAYS_SKIP_NIFTY === '1';
 
 interface Bar {
   bucketTs: number;
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     )) as { date: string }[]
   ).map((r) => r.date);
   console.log(`\nMarket-regime gate (MiMo, 2026-10-29) — ${dates.length} sessions ${dates[0]}..${dates[dates.length - 1]}`);
-  console.log(`rule: ${JSON.stringify(DEFAULT_MARKET_REGIME_RULE)}  decision minutes: ${DECISION_MINUTES.map(hhmm).join(', ')}\n`);
+  console.log(`rule: ${JSON.stringify(DEFAULT_MARKET_SIDEWAYS_RULE)}  decision minutes: ${DECISION_MINUTES.map(hhmm).join(', ')}\n`);
 
   const stuckR: number[] = [];
   const freeR: number[] = [];
@@ -86,7 +86,7 @@ async function main(): Promise<void> {
     }
 
     for (const M of DECISION_MINUTES) {
-      // No NIFTY bars (e.g. a network that blocks the broker API): REGIME_SKIP_NIFTY=1 measures conditions
+      // No NIFTY bars (e.g. a network that blocks the broker API): SIDEWAYS_SKIP_NIFTY=1 measures conditions
       // 2+3 only. The full gate ALSO needs NIFTY stuck, so it blocks a SUBSET of these days — if 2+3 show
       // no edge, the full gate cannot either.
       if (prevClose.size === 0) break;
@@ -94,7 +94,7 @@ async function main(): Promise<void> {
       const before = (bars: Bar[]) => bars.filter((b) => istMin(b.bucketTs) + 5 <= M); // COMPLETED before M
       const nPrior = before(nifty);
       const nOr = orOf(nPrior);
-      const stocks: RegimeStock[] = [];
+      const stocks: SidewaysStock[] = [];
       for (const [sym, bars] of bySym) {
         const prior = before(bars);
         const or = orOf(prior);
@@ -105,7 +105,7 @@ async function main(): Promise<void> {
           dayChangePct: pc == null || last == null ? null : ((last - pc) / pc) * 100,
         });
       }
-      const regime = classifyMarketRegime({
+      const regime = classifyMarketSideways({
         niftyRange: nOr,
         niftyLast: nPrior[nPrior.length - 1]?.close ?? null,
         stocks,
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
         );
         if (g?.outcomeR != null) dayR.push(g.outcomeR);
       }
-      const r = DEFAULT_MARKET_REGIME_RULE;
+      const r = DEFAULT_MARKET_SIDEWAYS_RULE;
       const stuckHere = SKIP_NIFTY
         ? regime.gainerShare != null &&
           regime.insideShare != null &&

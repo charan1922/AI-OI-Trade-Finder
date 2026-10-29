@@ -40,7 +40,7 @@ import {
   MIN_NSE_OI_PCT,
   MIN_OI_LEVEL,
   TF_BOARD_MAX_AGE_MIN,
-  MARKET_REGIME_GATE,
+  MARKET_SIDEWAYS_GATE,
   TF_RACE_MAX_RANK,
   PICK_OVERSAMPLE,
   SL_ATR_MULT,
@@ -64,7 +64,7 @@ import { corroborateWithTf, getTfSnapshot, type TfSnapshot } from '@/lib/tf-live
 import { getTfBeaconsAt } from '@/lib/tf-live/beacon';
 import { fetchFyersDepth, spreadFromDepth } from '@/lib/fyers/market-feed';
 import { toEqSymbol } from '@/lib/fyers/symbols';
-import { loadMarketRegime } from '@/lib/tf-live/market-regime-data';
+import { loadMarketSideways } from '@/lib/tf-live/market-sideways-data';
 import {
   dayMoveFromBars,
   loadDayBaselines,
@@ -1111,8 +1111,8 @@ async function buildTfSelection(
   // Market-regime gate (operator rule 2026-10-29): a STUCK market means no new entries this
   // scan. Still a real, executed scan with zero picks (tradeable stays true), so commentary
   // narrates "no trade — sideways market" instead of the scan disappearing. Unknown never blocks.
-  if (MARKET_REGIME_GATE) {
-    const regime = await loadMarketRegime(date, nowMin);
+  if (MARKET_SIDEWAYS_GATE) {
+    const regime = await loadMarketSideways(date, nowMin);
     if (regime.stuck === true) {
       console.log(`${TAG} market regime: ${regime.reason}`);
       return {

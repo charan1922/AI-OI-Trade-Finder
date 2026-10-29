@@ -87,7 +87,7 @@ interface TfRaceResponse {
   verdictsLive?: boolean;
   verdictNote?: string | null;
   /** Market-regime gate read (2026-10-29); null off a stale board or with the gate off. */
-  marketRegime?: { stuck: boolean | null; reason: string } | null;
+  marketSideways?: { stuck: boolean | null; reason: string } | null;
   sessionOpenedToday?: boolean;
   windowStartMin?: number;
   windowEndMin?: number;
@@ -707,10 +707,10 @@ export function TfRaceCard() {
               <p className="rounded border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[10px] leading-snug text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
                 <b>No picks from this board.</b> {data.verdictNote}
               </p>
-            ) : data.marketRegime?.stuck === true ? (
+            ) : data.marketSideways?.stuck === true ? (
               // Market-regime gate (2026-10-29): names may pass all ten checks and still not be taken.
               <p className="rounded border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[10px] leading-snug text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
-                <b>No trade — the whole market is sideways right now.</b> {data.marketRegime.reason}. Re-checked
+                <b>No trade — the whole market is sideways right now.</b> {data.marketSideways.reason}. Re-checked
                 every scan.
               </p>
             ) : take.length > 0 ? (

@@ -269,17 +269,20 @@ export const EXTENDED_SCORE_MULT = 0.6;
 export const TF_BOARD_MAX_AGE_MIN = 10;
 
 /**
- * Market-regime gate (operator rule 2026-10-29, MiMo: "if the market is stuck, don't trade").
- * When ALL THREE say stuck at the scan — NIFTY inside a narrow (< 0.4%) 30-min opening range,
- * F&O breadth split 40–60%, > 65% of F&O stocks still inside their own opening range — the
- * scan picks nothing and says "no trade — sideways market". Any unknown input never blocks.
- * Rule: lib/tf-live/market-regime.ts. Set false to switch it off.
- * Measured BEFORE shipping (scripts/measure-market-regime.ts, 18 sessions, breadth+chop only —
+ * Market-regime AUTOMATIC gate — OFF (operator decision 2026-10-29, same day it shipped as v1.70.0:
+ * "give the AI the choice to check whenever it wants, just give the capability"). The read itself
+ * is now a TOOL: `check_market_sideways` for the auto-trader (entry passes) and `check_market_sideways` in the
+ * chat's read_app_data; the AI decides when to look and what to do with it, and nothing blocks
+ * automatically. Set true to restore the hard gate: when ALL THREE say stuck at the scan — NIFTY
+ * inside a narrow (< 0.4%) 30-min opening range, breadth split 40–60%, > 65% of F&O stocks inside
+ * their own range — the scan picks nothing ("no trade — sideways market"); unknown never blocks.
+ * Rule: lib/tf-live/market-sideways.ts.
+ * Measured BEFORE shipping (scripts/measure-market-sideways.ts, 18 sessions, breadth+chop only —
  * NIFTY unreachable from the dev network): breakouts at "stuck" moments +0.07R ±0.07 (n=216) vs
- * +0.18R ±0.03 otherwise — weaker but still positive, so the gate likely costs a little; kept by
- * operator decision. Re-measure on the box (NIFTY reachable) before tuning or removing it.
+ * +0.18R ±0.03 otherwise — weaker but still positive, so an automatic gate likely costs a little —
+ * consistent with leaving the call to the AI. Re-measure on the box (NIFTY reachable) before turning it back on.
  */
-export const MARKET_REGIME_GATE = true;
+export const MARKET_SIDEWAYS_GATE = false;
 
 /** Only names inside TF's own top-N count as "on the board" — the TF Climbers card, the
  *  Climbed Stocks list, the engine's candidate set and the poller's priority list all read
