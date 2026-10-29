@@ -141,3 +141,20 @@
 }
 .ta-rise { animation: ta-rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both; }
 .ta-blink { animation: ta-blink 1.2s ease-in-out infinite; }
+/* AI Elements shimmer (components/ai-elements/shimmer.tsx, used by /trade-commentary-v2) */
+@keyframes ai-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+.ai-shimmer {
+  background-image: linear-gradient(90deg, var(--muted-foreground) 35%, var(--foreground) 50%, var(--muted-foreground) 65%);
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: ai-shimmer 2s linear infinite;
+}
+
+/* Commentary v2 accent — the warm orange used by the thinking spinner and active steps. */
+:root { --ai-accent: #d97757; }
+.dark { --ai-accent: #e08a6d; }

@@ -42,4 +42,7 @@ export async function register(): Promise<void> {
   // capture-window / manual-override state it polls (lib/tf-live/browser.ts).
   const { startTfBrowserWatchdog } = await import('./lib/tf-live/browser');
   startTfBrowserWatchdog();
+  // Commentary v2 background watches — idle unless the operator turns Background ON on /trade-commentary-v2.
+  const { startWatchLoop } = await import('./lib/operator-chat/watch-loop');
+  startWatchLoop();
 }

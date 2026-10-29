@@ -41,6 +41,8 @@ export interface ChatToolUse {
   ok: boolean;
   /** One line from the tool's own summary (≤ 160 chars). */
   summary: string | null;
+  /** Commentary v2: what the AI asked the tool for (compact args, ≤ 200 chars) — the IN of IN/OUT. */
+  input?: string | null;
 }
 
 export interface OperatorMessage {
@@ -56,6 +58,46 @@ export interface OperatorMessage {
   tools?: ChatToolUse[] | null;
   /** On an assistant reply: `provider/model` that wrote it (audit record). */
   model?: string | null;
+  /** Commentary v2: set when the AI posted on its own because background watches fired. */
+  wake?: WakeInfo | null;
+  /** Commentary v2: how long the reply took, per model call / tool, and its token usage (audit record). */
+  meta?: ReplyMeta | null;
+  /** Commentary v2: screenshots the operator attached (file names served by /api/trade-commentary/chat/image). */
+  images?: string[] | null;
+}
+
+/** Which background watches woke the AI (Commentary v2). */
+export interface WakeInfo {
+  watches: { id: number; label: string; note: string }[];
+  /** 'ai' = the AI wrote the message; 'fallback' = it failed and code wrote it; 'capped' = over the daily cap. */
+  outcome: 'ai' | 'fallback' | 'capped';
+}
+
+export interface ReplyMeta {
+  /** Wall-clock duration of the whole reply. */
+  ms: number;
+  /** The loop's timed sub-actions in order — model calls and tool executions. */
+  spans: { name: string; ms: number }[];
+  promptTokens: number | null;
+  completionTokens: number | null;
+  /** Agentic replies (v2): the AI's own step plan as it last left it (update_plan). */
+  plan?: { title: string; status: 'pending' | 'in_progress' | 'done' }[] | null;
+  /** Agentic replies (v2): skills the AI loaded (use_skill). */
+  skills?: string[];
+  /** v2: whether this reply was REQUESTED with thinking on (so the page never guesses). */
+  thinking?: boolean;
+  /** v2 thinking runs: MiMo's own reasoning text per model call (real, never paraphrased). */
+  reasoning?: string[];
+  /** v2 thinking runs: reasoning tokens as MiMo counted them (part of the reply tokens). */
+  reasoningTokens?: number;
+  /** Prompt tokens MiMo served from its cache (billed ~50× cheaper on Flash) — part of promptTokens. */
+  cachedTokens?: number;
+  /** v2 self-healing: what failed and how the reply recovered (e.g. "thinking off after: 400 …"). */
+  recovered?: string[];
+  /** v2: a follow-up question the AI asked instead of guessing (ask_operator). */
+  question?: { text: string; options: string[] } | null;
+  /** v2: ids of long-term memories the AI proposed in this reply (operator approves on the page). */
+  memories?: number[];
 }
 
 const SOURCE_LABELS: Record<string, string> = {

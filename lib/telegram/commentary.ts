@@ -241,7 +241,7 @@ export async function sendCommentaryToTelegram(
       failedRecipients: 0,
     };
   }
-  const html = `📊 <b>Trade Commentary</b>\n\n${markdownToTelegramHtml(text)}`;
+  const html = `📊 <b>AI Analysis</b>\n\n${markdownToTelegramHtml(text)}`;
   const recipientOk = new Map<string, boolean>();
   for (const chunk of chunkForTelegram(html)) {
     // Broadcast: operator chat + TELEGRAM_VIEWER_CHAT_IDS — commentary is the

@@ -105,15 +105,6 @@ export function ChatItem({
   );
 }
 
-/** One-tap questions. They send exactly as if typed — same thread, same rules, same Confirm cards. */
-const SUGGESTIONS = [
-  'Is the market sideways right now?',
-  'Why no trade so far today?',
-  "How's my open position?",
-  'What is on TF’s board right now?',
-  'Take the top pick',
-];
-
 /**
  * The input for the thread. It sits at the top of the stream (newest first), so
  * what you type lands right under it, between the AI's commentary reads. It is
@@ -172,18 +163,6 @@ export function ChatComposer({
           >
             <SendHorizontal className="h-4 w-4" />
           </button>
-        </div>
-        <div className="mt-1.5 flex gap-1.5 overflow-x-auto pb-0.5">
-          {SUGGESTIONS.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => void onSend(s)}
-              className="shrink-0 rounded-full border bg-background px-2.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary/50 hover:text-foreground"
-            >
-              {s}
-            </button>
-          ))}
         </div>
         <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
           <span>Same thread as the commentary below — you can keep talking while it generates.</span>

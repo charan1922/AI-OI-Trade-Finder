@@ -592,9 +592,85 @@ model OperatorChat {
   /// what the AI checked, and the `provider/model` that wrote the reply.
   toolsJson    String?
   model        String?
+  /// Commentary v2: which background watches woke the AI (set on messages it posted on its own).
+  wakeJson     String?
+  /// Commentary v2: reply timing (model calls / tools) + token usage — audit record, never replayed.
+  metaJson     String?
+  /// Commentary v2: operator-attached screenshots — file names under data/chat-images/.
+  imagesJson   String?
 
   @@index([date, id], map: "idx_operator_chat_date")
   @@map("operator_chat")
+}
+
+/// Commentary v2 Background switch (single row, id = 1). Default OFF — v1 behaves as before.
+/// Runtime-created in lib/operator-chat/background-store.ts; mirrored here so `db push` keeps it.
+model ChatBackground {
+  id        Int    @id
+  enabled   Int    @default(0)
+  updatedAt String
+  /// MiMo model v2's chat + wake-ups answer with; null → mimo-v2.6-flash (lower-cost default).
+  chatModel String?
+
+  @@map("chat_background")
+}
+
+/// Commentary v2 background watches — typed conditions the watch loop checks every 60s.
+/// status: watching → fired | cancelled | expired (all expire 15:30 IST).
+model ChatWatch {
+  id            Int     @id @default(autoincrement())
+  date          String
+  kind          String
+  paramsJson    String
+  label         String
+  createdBy     String
+  status        String
+  createdAt     String
+  firedAt       String?
+  firedDetail   String?
+  lastCheckedAt String?
+  lastCheckNote String?
+
+  @@index([date, id], map: "idx_chat_watches_date")
+  @@map("chat_watches")
+}
+
+/// Commentary v2 — the chat AI's own day notebook (≤ 300 chars per note).
+model ChatNotebook {
+  id   Int    @id @default(autoincrement())
+  date String
+  at   String
+  text String
+
+  @@index([date, id], map: "idx_chat_notebook_date")
+  @@map("chat_notebook")
+}
+
+/// Commentary v2 wake-up log — outcome ai | fallback | capped; the durable "already answered" record.
+model ChatWakeup {
+  id           Int     @id @default(autoincrement())
+  date         String
+  at           String
+  watchIdsJson String
+  outcome      String
+  messageId    Int?
+  detail       String?
+
+  @@index([date, id], map: "idx_chat_wakeups_date")
+  @@map("chat_wakeups")
+}
+
+/// Commentary v2 long-term memory — lessons/preferences the AI PROPOSES and the operator approves.
+/// status: pending → saved | rejected; saved → deleted. Saved rows load into every v2 turn, across days.
+model ChatMemory {
+  id        Int     @id @default(autoincrement())
+  kind      String
+  text      String
+  status    String
+  createdAt String
+  decidedAt String?
+
+  @@map("chat_memory")
 }
 
 /// Exact-contract quote history captured while Auto Trade positions are open.

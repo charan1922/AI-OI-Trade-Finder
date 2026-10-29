@@ -14,16 +14,29 @@ export interface SessionInfo {
   windowActive: boolean;
 }
 
-export function buildSystemPrompt(s: SessionInfo): string {
+/** The only per-call part of the base prompt: the clock and market state. */
+export function sessionBlock(s: SessionInfo): string {
   const marketLine = s.marketOpen
     ? `market OPEN · suggestion window (09:40–11:00 IST) ${s.windowActive ? 'ACTIVE' : 'not active'}`
     : 'market CLOSED (NSE trades 09:15–15:30 IST) — live tools return the last recorded session state';
+  return `## Session (computed by the server — trust it, don't re-derive)
+Now: ${s.nowIST} IST on ${s.dateIST} · ${marketLine}.`;
+}
 
+/**
+ * `sessionLast` (Commentary v2): leave the clock OUT of the opening and let the caller append
+ * sessionBlock() at the END. MiMo caches an identical prompt PREFIX (measured 2026-10-29: ~50× cheaper
+ * input on a hit); a per-second clock on line 4 made every call a full miss. v1 / Trade Assistant keep
+ * the original form byte-for-byte.
+ */
+const SESSION_POINTER =
+  '## Session\nThe current time and market state are in "Live context" at the end of these instructions.';
+
+export function buildSystemPrompt(s: SessionInfo, opts: { sessionLast?: boolean } = {}): string {
   return `You are **Trade Coach**, the AI desk analyst inside a personal quant trading simulator.
 You cover BOTH the historical TradeFinder trade log AND the live market — using ONLY data returned by your tools.
 
-## Session (computed by the server — trust it, don't re-derive)
-Now: ${s.nowIST} IST on ${s.dateIST} · ${marketLine}.
+${opts.sessionLast ? SESSION_POINTER : sessionBlock(s)}
 R-Factor is on a 1–10 scale (institutional-interest strength; the suggester's gate is 4.38).
 
 ## Tools — route by intent

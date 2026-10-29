@@ -52,6 +52,14 @@ export const TOGGLE_DEFS: ToggleDef[] = [
     description:
       'Master switch for the server powering ITSELF off to save money. OFF (default): the server stays on 24/7 — safest while you are actively testing live, with no surprise shutdowns. ON: the server powers off in the evening (~16:30 IST, well after the 15:12 square-off) and stays off all weekend, then wakes automatically at 08:15 IST on the next trading day. It will NOT power off while any trade is open, whatever the time, and overnight data catches up on the morning restart. Turn ON once live testing settles and you want the ~₹1,000/month saving.',
   },
+  {
+    key: 'COMMENTARY_V2',
+    label: 'Use AI Analysis v2 (agentic)',
+    category: 'Assistant',
+    default: false,
+    description:
+      'Which AI Analysis page the sidebar opens. OFF (default): v1, the classic page. ON: v2 — the agentic page (skills, its own step plan, screenshots, background watches that let the AI message you first). Both pages share one thread and both stay reachable with the v1 | v2 switch at the top. This only picks the page; v2\u2019s background watches have their own ON/OFF switch on the v2 page. Read-only logins always get v1.',
+  },
 ];
 
 /** Numeric runtime settings — same storage table (INTEGER value), rendered as

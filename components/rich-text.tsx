@@ -80,7 +80,8 @@ function MdTable({ rows, k }: { rows: string[]; k: string }) {
 
 /** Render AI-written markdown text as formatted blocks. `className` overrides the
  *  wrapper styling (default matches the commentary read). */
-export function RichText({ content, className }: { content: string; className?: string }) {
+/** `headingClass` lets a dense page (Commentary v2) shrink headings; default is unchanged for every other page. */
+export function RichText({ content, className, headingClass }: { content: string; className?: string; headingClass?: string }) {
   const lines = content.split('\n');
   const out: ReactNode[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -108,7 +109,7 @@ export function RichText({ content, className }: { content: string; className?: 
     }
     if (/^#{1,4}\s+/.test(t)) {
       out.push(
-        <div key={i} className="pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <div key={i} className={headingClass ?? 'pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground'}>
           {renderInline(t.replace(/^#{1,4}\s+/, ''), `h${i}`)}
         </div>
       );

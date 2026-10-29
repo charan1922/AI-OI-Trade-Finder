@@ -19,7 +19,7 @@ interface VersionMeta {
 }
 
 const KEY_LABELS: Record<string, string> = {
-  'trade-commentary': 'Trade Commentary (battle-tested narrator)',
+  'trade-commentary': 'AI Analysis (battle-tested narrator)',
   'auto-trader': 'Auto Trader (execution doctrine)',
 };
 

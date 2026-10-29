@@ -16,6 +16,7 @@ import { ThemeHotkey } from "@/components/theme-hotkey"
 import { OWNER_HEADER, ROLE_HEADER, type Role } from "@/lib/auth/rbac"
 import { USERNAME_COOKIE } from "@/lib/auth/session"
 import { recordUserSeen } from "@/lib/auth/users"
+import { getToggle } from "@/lib/config/feature-toggles"
 import { cn } from "@/lib/utils"
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" })
@@ -79,6 +80,8 @@ export default async function RootLayout({
   children: React.ReactNode
 }>) {
   const roleInfo = await resolveRoleInfo()
+  // Which Trade Commentary the sidebar opens (/config → Assistant). getToggle never throws; viewers get v1.
+  const commentaryV2 = !roleInfo.readOnly && (await getToggle("COMMENTARY_V2", false))
 
   return (
     <html
@@ -95,7 +98,7 @@ export default async function RootLayout({
         >
           <RoleProvider value={roleInfo}>
             <ThemeHotkey />
-            <LayoutShell>{children}</LayoutShell>
+            <LayoutShell commentaryV2={commentaryV2}>{children}</LayoutShell>
           </RoleProvider>
         </ThemeProvider>
       </body>
