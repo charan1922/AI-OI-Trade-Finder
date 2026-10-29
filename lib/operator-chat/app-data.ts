@@ -77,6 +77,7 @@ export function toScanVerdicts(body: {
   stale?: boolean;
   verdictsLive?: boolean;
   verdictNote?: string | null;
+  marketRegime?: { stuck: boolean | null; reason: string } | null;
   board?: RaceRow[];
 }): unknown {
   const hhmm = (m: number | null | undefined) =>
@@ -101,6 +102,8 @@ export function toScanVerdicts(body: {
     stale: body.stale ?? null,
     verdictsLive: body.verdictsLive ?? null,
     verdictNote: body.verdictNote ?? null,
+    // Market-wide gate (2026-10-29): when stuck, names can pass every check and still not be taken.
+    marketRegime: body.marketRegime ?? null,
     checks: GATE_ORDER.map((k) => GATE_LABEL[k]),
     picked: rows.filter((r) => r.verdict === 'PICKED').length,
     rejected: rows.filter((r) => r.verdict === 'REJECTED').length,
