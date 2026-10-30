@@ -66,6 +66,8 @@ export interface WatchView {
 
 export interface BackgroundState {
   enabled: boolean;
+  /** /config selects v2 (COMMENTARY_V2). False → v2's background work is paused (one version at a time). */
+  v2Selected: boolean;
   loop: {
     startedAt: string | null;
     autonomous: boolean;
@@ -76,13 +78,24 @@ export interface BackgroundState {
   budget: { used: number; nextAtMs: number | null };
   watches: WatchView[];
   notes: { id: number; at: string; text: string }[];
-  wakeups: { id: number; at: string; watchIds: number[]; outcome: 'ai' | 'fallback' | 'capped'; messageId: number | null; detail: string | null }[];
+  wakeups: {
+    id: number;
+    at: string;
+    kind: 'watch' | 'heartbeat';
+    watchIds: number[];
+    outcome: 'ai' | 'fallback' | 'capped' | 'quiet';
+    messageId: number | null;
+    detail: string | null;
+  }[];
+  heartbeat: { nextCheckAt: string | null; due: boolean; today: number; max: number };
   /** The code's own session times (never typed into the page). */
   session: { raceStartMin: number; squareOffMin: number; watchExpiryMin: number };
   /** v2's own chat model (default Flash) — separate from the auto-trader's. */
   model: { mimoModel: string; defaultModel: string; options: string[] };
   skills: string[];
   memories: { id: number; kind: 'lesson' | 'preference'; text: string; status: 'pending' | 'saved'; createdAt: string }[];
+  /** Per action kind: true = the AI does it by itself, false = Confirm card. */
+  autoActions: Record<string, boolean>;
 }
 
 export interface ProgressStep {

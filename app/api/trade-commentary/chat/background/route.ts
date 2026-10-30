@@ -7,16 +7,22 @@ import {
   closeWatch,
   DEFAULT_CHAT_MODEL,
   decideMemory,
+  getAutoActions,
   getChatModel,
+  getNextCheckAt,
   isBackgroundEnabled,
+  isV2Selected,
   listMemories,
   listNotes,
   listWakeups,
   listWatches,
+  setAutoAction,
   setBackgroundEnabled,
   setChatModel,
 } from '@/lib/operator-chat/background-store';
 import { startWatch } from '@/lib/operator-chat/background-tools';
+import type { ActionKind } from '@/lib/operator-chat/format';
+import { MAX_HEARTBEATS_PER_DAY } from '@/lib/operator-chat/heartbeat';
 import { SKILL_NAMES } from '@/lib/operator-chat/skills';
 import { getWatchLoopStatus } from '@/lib/operator-chat/watch-loop';
 import { RACE_WINDOW_START_MIN } from '@/lib/tf-live/race';
@@ -31,7 +37,7 @@ import { cadenceOf, MAX_ACTIVE_WATCHES, wakeBudget, WAKE_CAP_PER_DAY, WATCH_EXPI
 export async function GET() {
   try {
     const date = todayIST();
-    const [enabled, watches, notes, wakeups, settings, chatModel, memories] = await Promise.all([
+    const [enabled, watches, notes, wakeups, settings, chatModel, memories, v2Selected] = await Promise.all([
       isBackgroundEnabled(),
       listWatches(date),
       listNotes(date),
@@ -39,12 +45,16 @@ export async function GET() {
       getAutoTradeSettings(),
       getChatModel(),
       listMemories(),
+      isV2Selected(),
     ]);
+    const [autoActions, nextCheckAt] = await Promise.all([getAutoActions(), getNextCheckAt()]);
     const budget = wakeBudget(wakeups, Date.now());
     return NextResponse.json({
       success: true,
       date,
       enabled,
+      // /config's COMMENTARY_V2: with v1 selected, v2's background work is paused whatever `enabled` says.
+      v2Selected,
       loop: getWatchLoopStatus(),
       limits: { maxActiveWatches: MAX_ACTIVE_WATCHES, wakeCapPerDay: WAKE_CAP_PER_DAY },
       budget: { used: budget.used, nextAtMs: budget.nextAtMs },
@@ -62,6 +72,16 @@ export async function GET() {
       skills: SKILL_NAMES,
       // Long-term memory: pending ones wait for the operator's Save; saved ones load into every v2 turn.
       memories,
+      // Per-action switches: true = the AI does it by itself; false = Confirm card.
+      autoActions,
+      // The AI's self-paced check-in: when it chose to look next, and how many it made today (cap in heartbeat.ts).
+      heartbeat: {
+        nextCheckAt,
+        // Computed here (the server's clock), so the page never calls Date.now() while rendering.
+        due: !nextCheckAt || new Date(nextCheckAt).getTime() <= Date.now(),
+        today: wakeups.filter((w) => w.kind === 'heartbeat').length,
+        max: MAX_HEARTBEATS_PER_DAY,
+      },
     });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
@@ -82,6 +102,10 @@ export async function POST(req: Request) {
       const to = body.action === 'memory_save' ? 'saved' : body.action === 'memory_discard' ? 'rejected' : 'deleted';
       const ok = await decideMemory(Number(body.id), to);
       return ok ? NextResponse.json({ success: true }) : NextResponse.json({ error: 'That memory already changed.' }, { status: 409 });
+    }
+    if (body.action === 'set_auto_action') {
+      const next = await setAutoAction(body.kind as ActionKind, body.auto === true);
+      return NextResponse.json({ success: true, autoActions: next });
     }
     if (body.action === 'set_model') {
       await setChatModel(String(body.model ?? ''));

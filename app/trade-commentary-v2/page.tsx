@@ -109,6 +109,7 @@ export default function CommentaryV2Page() {
               onCancelWatch={(id) => void data.cancelWatch(id)}
               onDecide={(id, a) => void data.decideApproval(id, a)}
               onMemory={(id, a) => void data.decideMemory(id, a)}
+              onAutoAction={(kind, auto) => void data.setAutoAction(kind, auto)}
             />
           </aside>
         </div>

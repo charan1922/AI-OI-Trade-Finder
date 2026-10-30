@@ -9,6 +9,8 @@
 
 import { isAllowedMimoModel, MIMO_MODELS } from '@/lib/ai-commentary/client';
 import { prisma } from '@/lib/db';
+import { type AutoActions, DEFAULT_AUTO_ACTIONS, normaliseAutoActions } from './auto-act';
+import { ACTION_KINDS, type ActionKind } from './format';
 import type { WatchKind, WatchParams, WatchStatus } from './watches';
 
 /** v2's chat answers with the LOWER-COST MiMo tier by default (operator 2026-10-29). Separate from the
@@ -30,6 +32,12 @@ async function ensureTables(): Promise<void> {
   const bgCols = (await prisma.$queryRawUnsafe(`PRAGMA table_info(chat_background)`)) as { name: string }[];
   if (!bgCols.some((c) => c.name === 'chatModel')) {
     await prisma.$executeRawUnsafe(`ALTER TABLE chat_background ADD COLUMN chatModel TEXT`);
+  }
+  if (!bgCols.some((c) => c.name === 'autoActionsJson')) {
+    await prisma.$executeRawUnsafe(`ALTER TABLE chat_background ADD COLUMN autoActionsJson TEXT`);
+  }
+  if (!bgCols.some((c) => c.name === 'nextCheckAt')) {
+    await prisma.$executeRawUnsafe(`ALTER TABLE chat_background ADD COLUMN nextCheckAt TEXT`);
   }
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS chat_watches (
@@ -69,6 +77,10 @@ async function ensureTables(): Promise<void> {
     )
   `);
   await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_chat_wakeups_date ON chat_wakeups(date, id)`);
+  const wkCols = (await prisma.$queryRawUnsafe(`PRAGMA table_info(chat_wakeups)`)) as { name: string }[];
+  if (!wkCols.some((c) => c.name === 'kind')) {
+    await prisma.$executeRawUnsafe(`ALTER TABLE chat_wakeups ADD COLUMN kind TEXT NOT NULL DEFAULT 'watch'`);
+  }
   tablesReady = true;
 }
 
@@ -87,6 +99,20 @@ export async function isBackgroundEnabled(): Promise<boolean> {
   }
 }
 
+/**
+ * ONE version at a time (operator 2026-10-30): v2's background work runs only while /config selects v2
+ * (COMMENTARY_V2) AND v2's own Background switch is ON. With v1 selected, nothing of v2 runs — no watch
+ * checks, no wake-ups, no watch tools in the chat — whatever v2's switch says.
+ */
+export async function isV2Selected(): Promise<boolean> {
+  const { getToggle } = await import('@/lib/config/feature-toggles');
+  return getToggle('COMMENTARY_V2', false);
+}
+
+export async function isBackgroundActive(): Promise<boolean> {
+  return (await isV2Selected()) && (await isBackgroundEnabled());
+}
+
 export async function setBackgroundEnabled(enabled: boolean): Promise<void> {
   await ensureTables();
   await prisma.$executeRawUnsafe(
@@ -94,6 +120,57 @@ export async function setBackgroundEnabled(enabled: boolean): Promise<void> {
      ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, updatedAt = excluded.updatedAt`,
     enabled ? 1 : 0,
     new Date().toISOString()
+  );
+}
+
+/** Which action kinds v2 runs by itself (auto) vs as a Confirm card (ask) — operator switches on the v2 page. */
+export async function getAutoActions(): Promise<AutoActions> {
+  try {
+    await ensureTables();
+    const rows = (await prisma.$queryRawUnsafe(`SELECT autoActionsJson FROM chat_background WHERE id = 1`)) as {
+      autoActionsJson: string | null;
+    }[];
+    const raw = rows[0]?.autoActionsJson;
+    return normaliseAutoActions(raw ? JSON.parse(raw) : null);
+  } catch {
+    // A read failure must never make MORE things automatic: fall back to the defaults.
+    return { ...DEFAULT_AUTO_ACTIONS };
+  }
+}
+
+export async function setAutoAction(kind: ActionKind, auto: boolean): Promise<AutoActions> {
+  if (!ACTION_KINDS.includes(kind)) throw new Error(`unknown action kind ${String(kind)}`);
+  const next = { ...(await getAutoActions()), [kind]: auto };
+  await ensureTables();
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO chat_background (id, enabled, updatedAt, autoActionsJson) VALUES (1, 0, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET autoActionsJson = excluded.autoActionsJson, updatedAt = excluded.updatedAt`,
+    new Date().toISOString(),
+    JSON.stringify(next)
+  );
+  return next;
+}
+
+/** When the AI's self-paced check-in is next due (it picks 5–30 min each time). Null = due now. */
+export async function getNextCheckAt(): Promise<string | null> {
+  try {
+    await ensureTables();
+    const rows = (await prisma.$queryRawUnsafe(`SELECT nextCheckAt FROM chat_background WHERE id = 1`)) as {
+      nextCheckAt: string | null;
+    }[];
+    return rows[0]?.nextCheckAt ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setNextCheckAt(iso: string): Promise<void> {
+  await ensureTables();
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO chat_background (id, enabled, updatedAt, nextCheckAt) VALUES (1, 0, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET nextCheckAt = excluded.nextCheckAt`,
+    new Date().toISOString(),
+    iso
   );
 }
 
@@ -290,14 +367,18 @@ export async function listNotes(date: string, limit = 50): Promise<NotebookNote[
 export interface WakeupRow {
   id: number;
   at: string;
+  /** 'watch' = a fired watch woke it; 'heartbeat' = its own self-paced check-in. */
+  kind: 'watch' | 'heartbeat';
   watchIds: number[];
-  outcome: 'ai' | 'fallback' | 'capped';
+  /** quiet = a check-in that found nothing worth posting (logged, not posted). */
+  outcome: 'ai' | 'fallback' | 'capped' | 'quiet';
   messageId: number | null;
   detail: string | null;
 }
 
 export async function recordWakeup(w: {
   date: string;
+  kind?: WakeupRow['kind'];
   watchIds: number[];
   outcome: WakeupRow['outcome'];
   messageId: number | null;
@@ -305,20 +386,21 @@ export async function recordWakeup(w: {
 }): Promise<void> {
   await ensureTables();
   await prisma.$executeRawUnsafe(
-    `INSERT INTO chat_wakeups (date, at, watchIdsJson, outcome, messageId, detail) VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO chat_wakeups (date, at, watchIdsJson, outcome, messageId, detail, kind) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     w.date,
     new Date().toISOString(),
     JSON.stringify(w.watchIds),
     w.outcome,
     w.messageId,
-    w.detail?.slice(0, 500) ?? null
+    w.detail?.slice(0, 500) ?? null,
+    w.kind ?? 'watch'
   );
 }
 
 export async function listWakeups(date: string): Promise<WakeupRow[]> {
   await ensureTables();
   const rows = (await prisma.$queryRawUnsafe(
-    `SELECT id, at, watchIdsJson, outcome, messageId, detail FROM chat_wakeups WHERE date = ? ORDER BY id ASC`,
+    `SELECT id, at, watchIdsJson, outcome, messageId, detail, kind FROM chat_wakeups WHERE date = ? ORDER BY id ASC`,
     date
   )) as {
     id: number | bigint;
@@ -327,6 +409,7 @@ export async function listWakeups(date: string): Promise<WakeupRow[]> {
     outcome: string;
     messageId: number | bigint | null;
     detail: string | null;
+    kind: string | null;
   }[];
   return rows.map((r) => {
     let watchIds: number[] = [];
@@ -338,6 +421,7 @@ export async function listWakeups(date: string): Promise<WakeupRow[]> {
     return {
       id: Number(r.id),
       at: r.at,
+      kind: r.kind === 'heartbeat' ? 'heartbeat' : 'watch',
       watchIds,
       outcome: r.outcome as WakeupRow['outcome'],
       messageId: r.messageId == null ? null : Number(r.messageId),

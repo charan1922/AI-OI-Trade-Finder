@@ -68,6 +68,10 @@ export interface OperatorMessage {
 
 /** Which background watches woke the AI (Commentary v2). */
 export interface WakeInfo {
+  /** 'heartbeat' = the AI's own self-paced check-in (no watch fired). Absent on older rows = 'watch'. */
+  kind?: 'watch' | 'heartbeat';
+  /** Heartbeat: why it chose its next check time. */
+  reason?: string;
   watches: { id: number; label: string; note: string }[];
   /** 'ai' = the AI wrote the message; 'fallback' = it failed and code wrote it; 'capped' = over the daily cap. */
   outcome: 'ai' | 'fallback' | 'capped';

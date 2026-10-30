@@ -66,7 +66,7 @@ function ReplySteps({ msg }: { msg: V2Message }) {
   const wake = msg.wake;
   const skills = msg.meta?.skills ?? [];
   if (!wake && tools.length === 0) return null;
-  const header = `${wake ? 'Woke on its own · ' : ''}Read ${tools.length} source${tools.length === 1 ? '' : 's'}${skills.length ? ` · using ${skills.map((s) => s.replace(/_/g, ' ')).join(', ')}` : ''}`;
+  const header = `${wake ? (wake.kind === 'heartbeat' ? 'Checked in on its own · ' : 'Woke on its own · ') : ''}Read ${tools.length} source${tools.length === 1 ? '' : 's'}${skills.length ? ` · using ${skills.map((s) => s.replace(/_/g, ' ')).join(', ')}` : ''}`;
   return (
     <ChainOfThought defaultOpen={tools.length <= 4}>
       <ChainOfThoughtHeader>{header}</ChainOfThoughtHeader>
@@ -184,7 +184,7 @@ function ChatRow({
       <MessageContent>
         <MessageHeader
           icon={msg.wake ? <Zap className="size-3 text-[var(--ai-accent)]" /> : <Bot className="size-3" />}
-          name={msg.wake ? 'AI · woke on its own' : 'AI'}
+          name={msg.wake ? (msg.wake.kind === 'heartbeat' ? 'AI · checked in on its own' : 'AI · woke on its own') : 'AI'}
           time={hhmm(msg.at)}
         >
           {msg.model && <span className="rounded bg-muted px-1">{msg.model}</span>}
