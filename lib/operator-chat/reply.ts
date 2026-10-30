@@ -21,6 +21,8 @@ import type { AiProvider } from '@/lib/auto-trade/types';
 import { hasMimo } from '@/lib/env';
 import { proposeAction } from './act';
 import { READ_APP_DATA_TOOL, readAppData } from './app-data';
+import type { AutoActions } from './auto-act';
+import { executeHeartbeatTool, HEARTBEAT_TOOL_DEFS, HEARTBEAT_TOOL_NAMES, type HeartbeatDecision } from './heartbeat';
 import { BACKGROUND_TOOL_DEFS, BACKGROUND_TOOL_NAMES, executeBackgroundTool } from './background-tools';
 import { AGENT_TOOL_DEFS, AGENT_TOOL_NAMES, type AgentTurnState, agentFraming, executeAgentTool, memoryBlock } from './skills';
 import { type ChatMemory, savedMemories } from './background-store';
@@ -103,6 +105,10 @@ export async function replyToOperator(opts: {
   /** Commentary v2: the per-message part of the framing (latest read, watches, notebook). Placed LAST in the
    *  system prompt so everything before it is an identical, cacheable prefix. */
   context?: string;
+  /** Commentary v2: action kinds that run by themselves after the reply (lib/operator-chat/auto-act.ts). */
+  autoActions?: AutoActions;
+  /** Commentary v2 self-paced check-in: adds stay_quiet / schedule_next_check, which fill this decision. */
+  heartbeat?: HeartbeatDecision;
 }): Promise<{
   text: string;
   provider: AiProvider;
@@ -201,6 +207,7 @@ async function runOnce(
       PROPOSE_ACTION_TOOL,
       ...(background ? BACKGROUND_TOOL_DEFS : []),
       ...(agentic ? AGENT_TOOL_DEFS : []),
+      ...(opts.heartbeat ? HEARTBEAT_TOOL_DEFS : []),
     ],
     ...(agentic ? { maxSteps: AGENTIC_MAX_STEPS } : {}),
     ...(canSee && images.length ? { images } : {}),
@@ -210,6 +217,7 @@ async function runOnce(
     execute: async (name, args) => {
       if (background && BACKGROUND_TOOL_NAMES.has(name)) return executeBackgroundTool(background.date, name, args);
       if (agentic && AGENT_TOOL_NAMES.has(name)) return executeAgentTool(name, args, turn);
+      if (opts.heartbeat && HEARTBEAT_TOOL_NAMES.has(name)) return executeHeartbeatTool(name, args, opts.heartbeat);
       if (name === PROPOSE_ACTION_TOOL.name) {
         if (proposals.length >= MAX_PROPOSALS) {
           const result = { proposed: false, error: `At most ${MAX_PROPOSALS} actions per reply.` };
@@ -220,10 +228,13 @@ async function runOnce(
           return { result: { proposed: false, error: p.error }, trace: { name, args, ok: false, summary: p.error } };
         }
         proposals.push({ action: p.action, description: p.description });
+        const runsByItself = opts.autoActions?.[p.action.kind] === true;
         const result = {
           proposed: true,
           card: p.description,
-          note: 'NOT done yet. A Confirm card is shown under your reply; it happens only when the operator taps Confirm. Tell them to tap it — never say it is done.',
+          note: runsByItself
+            ? 'AUTO: this runs by itself right after your reply, through every risk gate; its outcome is posted below your reply. Say you are doing it now — never say it is done, never ask for a Confirm tap.'
+            : 'NOT done yet. A Confirm card is shown under your reply; it happens only when the operator taps Confirm. Tell them to tap it — never say it is done.',
         };
         return { result, trace: { name, args, ok: true, summary: p.description } };
       }

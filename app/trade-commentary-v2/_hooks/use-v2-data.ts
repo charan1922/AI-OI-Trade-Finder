@@ -163,6 +163,16 @@ export function useV2Data(admin: boolean) {
     [loadFast]
   );
 
+  /** Per-action switch: let the AI do this kind by itself, or ask first. */
+  const setAutoAction = useCallback(
+    async (kind: string, auto: boolean) => {
+      const { ok, json } = await postJson('/api/trade-commentary/chat/background', { action: 'set_auto_action', kind, auto });
+      if (!ok) setNotice(String(json.error ?? 'Not changed.'));
+      await loadFast();
+    },
+    [loadFast]
+  );
+
   /** Long-term memory: the operator's Save / Discard / Delete. */
   const decideMemory = useCallback(
     async (id: number, action: 'memory_save' | 'memory_discard' | 'memory_delete') => {
@@ -212,6 +222,7 @@ export function useV2Data(admin: boolean) {
     decideApproval,
     setModel,
     decideMemory,
+    setAutoAction,
     live,
   };
 }

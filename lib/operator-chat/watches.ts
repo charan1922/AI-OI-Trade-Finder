@@ -269,10 +269,11 @@ export const needsSideways = (kinds: readonly WatchKind[]) => kinds.includes('ma
  * 'capped' notes cost nothing. Pure.
  */
 export function wakeBudget(
-  wakeups: readonly { at: string; outcome: 'ai' | 'fallback' | 'capped' }[],
+  wakeups: readonly { at: string; outcome: 'ai' | 'fallback' | 'capped' | 'quiet'; kind?: 'watch' | 'heartbeat' }[],
   nowMs: number
 ): { allowed: boolean; used: number; reason: string | null; nextAtMs: number | null } {
-  const called = wakeups.filter((w) => w.outcome !== 'capped');
+  // Watch wake-ups only — the self-paced check-ins have their own cap (heartbeat.ts).
+  const called = wakeups.filter((w) => (w.kind ?? 'watch') === 'watch' && (w.outcome === 'ai' || w.outcome === 'fallback'));
   const used = called.length;
   if (used >= WAKE_CAP_PER_DAY) return { allowed: false, used, reason: `daily cap of ${WAKE_CAP_PER_DAY} reached`, nextAtMs: null };
   const last = called.reduce((m, w) => Math.max(m, new Date(w.at).getTime() || 0), 0);

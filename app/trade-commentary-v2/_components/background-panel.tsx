@@ -52,6 +52,17 @@ const MODE_LABEL: Record<string, string> = {
   live: 'live — real orders, autonomous',
 };
 
+/** The chat's action kinds, in risk order, with a caution on the two not recommended for auto. */
+const ACTION_ROWS: { kind: string; label: string; caution?: string }[] = [
+  { kind: 'exit', label: 'Exit a position' },
+  { kind: 'move_stop', label: 'Tighten a stop' },
+  { kind: 'reject', label: 'Reject a pending order' },
+  { kind: 'run_pass', label: 'Run the trader now' },
+  { kind: 'take_trade', label: 'Take a scanner pick' },
+  { kind: 'approve', label: 'Approve a pending order', caution: 'Not recommended on auto: in approval mode your tap is the second key for a real order.' },
+  { kind: 'setting', label: 'Change a trader setting', caution: 'Not recommended on auto: it can loosen risk limits (live mode stays blocked).' },
+];
+
 const LOOP_STATUS: Record<string, { status: AgentStatus; label: string }> = {
   checked: { status: 'running', label: 'watching' },
   idle: { status: 'idle', label: 'idle — no watches' },
@@ -59,6 +70,7 @@ const LOOP_STATUS: Record<string, { status: AgentStatus; label: string }> = {
   'waiting-for-trader': { status: 'waiting', label: 'waiting for the trader' },
   spacing: { status: 'waiting', label: 'spacing wake-ups' },
   off: { status: 'off', label: 'Background OFF' },
+  'v1-selected': { status: 'off', label: 'paused — v1 selected' },
   'market-closed': { status: 'off', label: 'market closed' },
   'not-leader': { status: 'idle', label: 'another process leads' },
   'not-autonomous-server': { status: 'off', label: 'not on this server' },
@@ -77,6 +89,7 @@ export function BackgroundPanel({
   onCancelWatch,
   onDecide,
   onMemory,
+  onAutoAction,
 }: {
   background: BackgroundState | null;
   autoTrade: AutoTradeState | null;
@@ -89,11 +102,14 @@ export function BackgroundPanel({
   onCancelWatch: (id: number) => void;
   onDecide: (tradeId: number, action: 'approve' | 'reject') => void;
   onMemory: (id: number, action: 'memory_save' | 'memory_discard' | 'memory_delete') => void;
+  onAutoAction: (kind: string, auto: boolean) => void;
 }) {
   const nowMin = istMinuteNow();
   const watches = background?.watches ?? [];
   const active = watches.filter((w) => w.status === 'watching');
   const covered = new Set((background?.wakeups ?? []).flatMap((w) => w.watchIds));
+  const watchWakeups = (background?.wakeups ?? []).filter((w) => w.kind !== 'heartbeat');
+  const checkIns = (background?.wakeups ?? []).filter((w) => w.kind === 'heartbeat');
   const waiting = watches.filter((w) => w.status === 'fired' && !covered.has(w.id));
   const watchLabel = new Map(watches.map((w) => [w.id, w.label]));
   const loopInfo = background?.loop.lastTick ? (LOOP_STATUS[background.loop.lastTick.status] ?? { status: 'idle' as const, label: background.loop.lastTick.status }) : null;
@@ -126,9 +142,11 @@ export function BackgroundPanel({
         }
       >
         <p className="text-[10px] leading-snug text-muted-foreground">
-          {background?.enabled
-            ? 'ON — watches are checked every 60s on the trading server (prices update every 5 min). When one fires the AI posts here first.'
-            : 'OFF — no watches are checked and the AI only answers when you ask.'}
+          {background && !background.v2Selected
+            ? 'Paused — v1 is the selected AI Analysis page in Settings (Assistant). Only one version runs at a time; select v2 there to run watches.'
+            : background?.enabled
+              ? 'ON — the AI checks in by itself (every 5–30 min, its choice) and posts only when something matters; watches are checked every 60s on the trading server (prices update every 5 min).'
+              : 'OFF — no watches are checked and the AI only answers when you ask.'}
         </p>
         <div className="mt-1.5 grid gap-1.5">
           <Agent>
@@ -162,6 +180,14 @@ export function BackgroundPanel({
               <span>
                 {active.length} active watch{active.length === 1 ? '' : 'es'} · wake-ups {background?.budget.used ?? 0}/{background?.limits.wakeCapPerDay ?? 20}
               </span>
+              {background?.enabled && background.v2Selected && (
+                <span>
+                  Self-paced check-ins {background.heartbeat.today}/{background.heartbeat.max} today
+                  {background.heartbeat.nextCheckAt && !background.heartbeat.due
+                    ? ` · next ${hhmm(background.heartbeat.nextCheckAt)} (the AI chose it)`
+                    : ' · next: due (from 09:20, when the trader is idle)'}
+                </span>
+              )}
               {background?.loop.lastTick && (
                 <span>
                   Last check {hhmm(background.loop.lastTick.at)}
@@ -172,6 +198,35 @@ export function BackgroundPanel({
             </AgentContent>
           </Agent>
         </div>
+      </Section>
+
+      <Section id="bg-actions" title="Actions the AI may do by itself">
+        <ul className="flex flex-col gap-1 text-[10px]">
+          {ACTION_ROWS.map((r) => {
+            const on = background?.autoActions?.[r.kind] === true;
+            return (
+              <li key={r.kind} className="flex items-start gap-2">
+                <Switch.Root
+                  checked={on}
+                  disabled={readOnly || !background}
+                  onCheckedChange={(v) => onAutoAction(r.kind, v)}
+                  className="relative mt-0.5 h-3.5 w-6 shrink-0 rounded-full bg-muted data-[state=checked]:bg-emerald-500 disabled:opacity-50"
+                  aria-label={`${r.label}: ${on ? 'auto' : 'ask first'}`}
+                >
+                  <Switch.Thumb className="block size-2.5 translate-x-0.5 rounded-full bg-background shadow transition-transform data-[state=checked]:translate-x-3" />
+                </Switch.Root>
+                <span className="min-w-0">
+                  <span className="font-medium">{r.label}</span>
+                  <span className="text-muted-foreground"> · {on ? 'auto' : 'asks first (Confirm card)'}</span>
+                  {r.caution && <span className="block text-amber-700 dark:text-amber-400">{r.caution}</span>}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          Auto actions run through the same gated code as a Confirm tap: every risk gate re-checks, stops only tighten, and the mode can never become live from chat.
+        </p>
       </Section>
 
       <Section id="bg-plan" title="Today's plan">
@@ -249,13 +304,24 @@ export function BackgroundPanel({
               <QueueItem key={w.id} status="pending" title={w.label} description="fired — AI wakes when the trader is idle and spacing allows" time={w.firedAt ? hhmm(w.firedAt) : undefined} />
             ))}
           </QueueSection>
-          <QueueSection label="Done today" count={background?.wakeups.length ?? 0}>
-            {[...(background?.wakeups ?? [])].reverse().map((w) => (
+          <QueueSection label="Watch wake-ups today" count={watchWakeups.length}>
+            {[...watchWakeups].reverse().map((w) => (
               <QueueItem
                 key={w.id}
-                status={w.outcome === 'ai' ? 'done' : w.outcome}
+                status={w.outcome === 'ai' ? 'done' : w.outcome === 'quiet' ? 'capped' : w.outcome}
                 title={w.watchIds.map((id) => watchLabel.get(id) ?? `#${id}`).join(' · ')}
                 description={w.outcome === 'ai' ? 'AI messaged you' : w.detail}
+                time={hhmm(w.at)}
+              />
+            ))}
+          </QueueSection>
+          <QueueSection label="Self-paced check-ins today" count={checkIns.length}>
+            {[...checkIns].reverse().slice(0, 12).map((w) => (
+              <QueueItem
+                key={w.id}
+                status={w.outcome === 'ai' ? 'done' : w.outcome === 'quiet' ? 'capped' : 'fallback'}
+                title={w.outcome === 'ai' ? 'Posted a message' : w.outcome === 'quiet' ? 'Quiet — nothing worth raising' : 'Check-in failed'}
+                description={w.detail}
                 time={hhmm(w.at)}
               />
             ))}

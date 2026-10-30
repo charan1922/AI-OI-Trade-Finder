@@ -17,19 +17,34 @@ import { isAutoTradePassRunning } from '@/lib/auto-trade/engine';
 import { minuteOfDayIST } from '@/lib/ist';
 import { isMarketHours, todayIST } from '@/lib/market-data';
 import { tryAcquireRuntimeLease } from '@/lib/runtime/lease';
-import { closeWatch, isBackgroundEnabled, listWakeups, listWatches, noteWatchCheck } from './background-store';
+import {
+  closeWatch,
+  isBackgroundEnabled,
+  isV2Selected,
+  listWakeups,
+  listWatches,
+  getNextCheckAt,
+  noteWatchCheck,
+  recordWakeup,
+  type WakeupRow,
+} from './background-store';
 import { loadWatchInputs } from './watch-inputs';
 import { evaluateWatch, wakeBudget, WATCH_EXPIRY_MIN } from './watches';
-import { runWakeTurn } from './wake';
+import { HEARTBEAT_START_MIN, MAX_HEARTBEATS_PER_DAY } from './heartbeat';
+import { runHeartbeatTurn, runWakeTurn } from './wake';
 
 const TAG = '[chat-watch]';
 export const WATCH_TICK_MS = 60_000;
 const LEASE = 'chat-watch-loop';
+/** A fired watch that waited longer than this (v2 paused, trader busy) is skipped — no AI call: the moment
+ *  has passed, and narrating an old event is not worth the tokens. Recorded, so the panel shows why. */
+const STALE_WAKE_MS = 15 * 60_000;
 
 export type WatchLoopStatus =
   | 'starting'
   | 'not-autonomous-server'
   | 'off'
+  | 'v1-selected'
   | 'market-closed'
   | 'not-leader'
   | 'idle'
@@ -37,6 +52,7 @@ export type WatchLoopStatus =
   | 'waiting-for-trader'
   | 'spacing'
   | 'woke'
+  | 'checked-in'
   | 'error';
 
 interface LoopState {
@@ -78,6 +94,8 @@ async function tick(): Promise<{ status: WatchLoopStatus; detail: string | null 
     for (const w of open) await closeWatch(w.id, 'expired', 'market closed (15:30 IST)');
     return { status: 'market-closed', detail: open.length ? `expired ${open.length}` : null };
   }
+  // One version at a time: with v1 selected in /config, v2's watcher does nothing at all.
+  if (!(await isV2Selected())) return { status: 'v1-selected', detail: 'v1 is the selected AI Analysis page' };
   if (!(await isBackgroundEnabled())) return { status: 'off', detail: null };
   if (!isMarketHours()) return { status: 'market-closed', detail: null };
   if (!(await tryAcquireRuntimeLease(LEASE, 2 * WATCH_TICK_MS))) return { status: 'not-leader', detail: null };
@@ -111,8 +129,23 @@ async function tick(): Promise<{ status: WatchLoopStatus; detail: string | null 
   // Durable queue: fired watches no wake-up has covered yet (re-read — some just fired).
   const wakeups = await listWakeups(date);
   const covered = new Set(wakeups.flatMap((w) => w.watchIds));
-  const pending = (await listWatches(date)).filter((w) => w.status === 'fired' && !covered.has(w.id));
+  const fired = (await listWatches(date)).filter((w) => w.status === 'fired' && !covered.has(w.id));
+  const now = Date.now();
+  const stale = fired.filter((w) => w.firedAt != null && now - new Date(w.firedAt).getTime() > STALE_WAKE_MS);
+  if (stale.length > 0) {
+    await recordWakeup({
+      date,
+      watchIds: stale.map((w) => w.id),
+      outcome: 'capped',
+      messageId: null,
+      detail: 'fired over 15 min ago (v2 paused or trader busy) — skipped, no AI call',
+    });
+  }
+  const pending = fired.filter((w) => !stale.includes(w));
   if (pending.length === 0) {
+    // No watch to answer — is the AI's own self-paced check-in due?
+    const hb = await maybeHeartbeat(date, nowMin, wakeups);
+    if (hb) return hb;
     return { status: active.length ? 'checked' : 'idle', detail: `${active.length} active` };
   }
   if (await traderBusy()) return { status: 'waiting-for-trader', detail: `${pending.length} fired, waiting` };
@@ -128,6 +161,25 @@ async function tick(): Promise<{ status: WatchLoopStatus; detail: string | null 
   return { status: 'woke', detail: `${pending.length} watch(es)${firedNow ? `, ${firedNow} just fired` : ''}` };
 }
 
+/**
+ * The self-paced check-in (heartbeat.ts): due when the time the AI chose has passed (or none is set), from
+ * HEARTBEAT_START_MIN, at most MAX_HEARTBEATS_PER_DAY a day, never while the trader runs. Null = not now.
+ */
+async function maybeHeartbeat(
+  date: string,
+  nowMin: number,
+  wakeups: readonly WakeupRow[]
+): Promise<{ status: WatchLoopStatus; detail: string | null } | null> {
+  if (nowMin < HEARTBEAT_START_MIN) return null;
+  const done = wakeups.filter((w) => w.kind === 'heartbeat').length;
+  if (done >= MAX_HEARTBEATS_PER_DAY) return null;
+  const next = await getNextCheckAt();
+  if (next && new Date(next).getTime() > Date.now()) return null;
+  if (await traderBusy()) return { status: 'waiting-for-trader', detail: 'check-in due, waiting for the trader' };
+  const outcome = await runHeartbeatTurn(date);
+  return { status: 'checked-in', detail: `check-in #${done + 1}: ${outcome}` };
+}
+
 async function loop(): Promise<void> {
   const s = state();
   if (s.running) return;
@@ -137,7 +189,7 @@ async function loop(): Promise<void> {
   let detail: string | null = null;
   try {
     ({ status, detail } = await tick());
-    if (status === 'woke') console.log(`${TAG} woke the chat AI — ${detail}`);
+    if (status === 'woke' || status === 'checked-in') console.log(`${TAG} ${status === 'woke' ? 'woke the chat AI' : 'self-paced check-in'} — ${detail}`);
   } catch (err) {
     detail = (err as Error).message;
     console.warn(`${TAG} tick failed: ${detail}`);

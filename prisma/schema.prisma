@@ -611,6 +611,10 @@ model ChatBackground {
   updatedAt String
   /// MiMo model v2's chat + wake-ups answer with; null → mimo-v2.6-flash (lower-cost default).
   chatModel String?
+  /// Per action kind → true = the v2 AI does it by itself, false = Confirm card (lib/operator-chat/auto-act.ts).
+  autoActionsJson String?
+  /// When the v2 AI's self-paced check-in is next due (it picks 5–30 min each time).
+  nextCheckAt String?
 
   @@map("chat_background")
 }
@@ -655,6 +659,8 @@ model ChatWakeup {
   outcome      String
   messageId    Int?
   detail       String?
+  /// 'watch' = a fired watch woke the AI; 'heartbeat' = its own self-paced check-in. outcome may be 'quiet'.
+  kind         String  @default("watch")
 
   @@index([date, id], map: "idx_chat_wakeups_date")
   @@map("chat_wakeups")

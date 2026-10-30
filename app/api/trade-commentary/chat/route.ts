@@ -2,9 +2,10 @@ import { NextResponse } from 'next/server';
 import { getCommentary } from '@/lib/ai-commentary/store';
 import { todayIST } from '@/lib/ist';
 import { hasMimo } from '@/lib/env';
-import { getChatModel, isBackgroundEnabled } from '@/lib/operator-chat/background-store';
+import { actionModeBlock, applyProposals } from '@/lib/operator-chat/auto-act';
+import { getAutoActions, getChatModel, isBackgroundActive } from '@/lib/operator-chat/background-store';
 import { parseImages, saveImages } from '@/lib/operator-chat/images';
-import { isTurnId } from '@/lib/operator-chat/progress';
+import { isTurnId, noteStep } from '@/lib/operator-chat/progress';
 import { backgroundFraming } from '@/lib/operator-chat/background-tools';
 import { chatProvider, replyToOperator } from '@/lib/operator-chat/reply';
 import {
@@ -157,14 +158,21 @@ export async function POST(req: Request) {
     try {
       // Commentary v2: with Background ON the chat also gets its watch/notebook tools + notebook context.
       // OFF (the default) leaves the tools and framing exactly as v1 always had them.
-      const background = await isBackgroundEnabled();
+      // v2's watch tools exist only on v2 messages, and only while v2 is the selected page with Background
+      // ON — one version at a time. v1 messages never get them.
+      const background = v2 && (await isBackgroundActive());
       // v2 sends ONE shortened trader read (it can fetch more with read_app_data source commentary). MiMo caches
       // an identical prompt PREFIX automatically (measured 2026-10-29), so v2 keeps the rules identical and puts
       // everything that changes per message — reads, watches, notebook, clock — at the END.
       const framing = v2 ? await chatFraming(date, undefined, true) : await chatFraming(date);
       // v2: the per-message part goes LAST (cache-friendly); v1 keeps one block with the watch state appended.
+      const autoActions = v2 ? await getAutoActions() : undefined;
       const context = v2
-        ? [...(background ? [await backgroundFraming(date)] : []), await readsBlock(date, { reads: 1, chars: 1200 })].join('\n\n')
+        ? [
+            actionModeBlock(autoActions!),
+            ...(background ? [await backgroundFraming(date)] : []),
+            await readsBlock(date, { reads: 1, chars: 1200 }),
+          ].join('\n\n')
         : background
           ? await backgroundFraming(date)
           : undefined;
@@ -173,6 +181,7 @@ export async function POST(req: Request) {
         prior,
         framing,
         ...(context ? { context } : {}),
+        ...(autoActions ? { autoActions } : {}),
         ...(background ? { background: { date } } : {}),
         ...(v2
           ? {
@@ -186,9 +195,17 @@ export async function POST(req: Request) {
       });
       const reply = await addOperatorMessage(date, 'assistant', result.text, result.tools, `${result.provider}/${result.model}`);
       await setMessageMeta(reply.id, result.meta).catch(() => undefined);
-      // Each proposal becomes its own Confirm card right under the reply.
+      // v1: each proposal becomes its own Confirm card. v2: per the operator's per-action switches, an AUTO kind
+      // runs right now through the same gated code as a Confirm tap; an ASK kind stays a Confirm card.
+      const turnId = v2 && isTurnId(body.turnId) ? body.turnId : null;
       const actions = [];
-      for (const p of result.proposals) actions.push(await addOperatorAction(date, p.description, p.action));
+      if (autoActions) {
+        actions.push(
+          ...(await applyProposals(date, result.proposals, autoActions, turnId ? (label, state) => noteStep(turnId, label, state) : undefined))
+        );
+      } else {
+        for (const p of result.proposals) actions.push(await addOperatorAction(date, p.description, p.action));
+      }
       return NextResponse.json({
         success: true,
         saved,
