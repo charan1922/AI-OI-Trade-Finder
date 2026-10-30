@@ -14,12 +14,13 @@
  */
 
 import { getCommentary } from '@/lib/ai-commentary/store';
+import { getOpenTrades } from '@/lib/auto-trade/store';
 import { hasMimo } from '@/lib/env';
 import { actionModeBlock, applyProposals } from './auto-act';
 import { getAutoActions, getChatModel, listNotes, listWakeups, recordWakeup, setNextCheckAt } from './background-store';
 import { backgroundFraming } from './background-tools';
 import type { WakeInfo } from './format';
-import { HEARTBEAT_DEFAULT_MIN, type HeartbeatDecision, heartbeatPrompt } from './heartbeat';
+import { HEARTBEAT_DEFAULT_MIN, HEARTBEAT_MIN_MIN, type HeartbeatDecision, heartbeatPrompt } from './heartbeat';
 import { replyToOperator } from './reply';
 import { addWakeMessage, listOperatorMessages, setMessageMeta } from './store';
 
@@ -75,6 +76,15 @@ async function liveContext(date: string): Promise<string> {
     await backgroundFraming(date),
     `Latest trader read (context only):\n${latest}`,
   ].join('\n\n');
+}
+
+/** Today's open auto-trade positions (symbols). A read failure → none (the check-in still runs, just unclamped). */
+export async function openPositionSymbols(date: string): Promise<string[]> {
+  try {
+    return (await getOpenTrades()).filter((t) => t.date === date).map((t) => t.symbol);
+  } catch {
+    return [];
+  }
 }
 
 async function threadLines(date: string): Promise<string[]> {
@@ -148,11 +158,12 @@ export async function runHeartbeatTurn(date: string): Promise<'posted' | 'quiet'
     listWakeups(date),
   ]);
   const lastQuiet = [...wakeups].reverse().find((w) => w.kind === 'heartbeat' && w.outcome === 'quiet')?.detail ?? null;
+  const openSymbols = await openPositionSymbols(date);
   try {
     const thread = await threadLines(date);
     const user = [
       ...(thread.length ? ['The thread so far today (oldest first):', ...thread, ''] : []),
-      heartbeatPrompt(notes.map((n) => n.text), lastQuiet),
+      heartbeatPrompt(notes.map((n) => n.text), lastQuiet, openSymbols),
     ].join('\n');
     const result = await replyToOperator({
       message: '',
@@ -166,6 +177,8 @@ export async function runHeartbeatTurn(date: string): Promise<'posted' | 'quiet'
       heartbeat: decision,
       userOverride: user,
     });
+    // A position is open → back in 5 min, whatever the AI chose (code, not prompt).
+    if ((await openPositionSymbols(date)).length > 0) decision.nextMinutes = HEARTBEAT_MIN_MIN;
     await scheduleNext();
     // Quiet unless the AI explicitly chose to notify (or proposed an action, which must be visible).
     if (!decision.notify && result.proposals.length === 0) {

@@ -17,6 +17,9 @@ interface Turn {
   startedAt: number;
   steps: ProgressStep[];
   done: boolean;
+  /** The operator's Stop button aborts this — the in-flight model call stops at once. */
+  abort: AbortController;
+  cancelled: boolean;
 }
 
 const TURN_TTL_MS = 10 * 60_000;
@@ -35,7 +38,25 @@ export function startTurn(id: string): void {
   const s = store();
   const now = Date.now();
   for (const [k, t] of s) if (now - t.startedAt > TURN_TTL_MS) s.delete(k);
-  s.set(id, { startedAt: now, steps: [], done: false });
+  s.set(id, { startedAt: now, steps: [], done: false, abort: new AbortController(), cancelled: false });
+}
+
+export function turnSignal(id: string): AbortSignal | undefined {
+  return store().get(id)?.abort.signal;
+}
+
+/** The operator pressed Stop. True when there was a running turn to stop. */
+export function cancelTurn(id: string): boolean {
+  const t = store().get(id);
+  if (!t || t.done) return false;
+  t.cancelled = true;
+  t.steps.push({ label: 'Stopped by you', state: 'error', detail: null, ms: null });
+  t.abort.abort();
+  return true;
+}
+
+export function isTurnCancelled(id: string): boolean {
+  return store().get(id)?.cancelled === true;
 }
 
 const toolLabel = (name: string, args: Record<string, unknown>) => {
@@ -78,7 +99,7 @@ export function finishTurn(id: string): void {
   if (t) t.done = true;
 }
 
-export function getTurn(id: string): { steps: ProgressStep[]; done: boolean; elapsedMs: number } | null {
+export function getTurn(id: string): { steps: ProgressStep[]; done: boolean; elapsedMs: number; cancelled: boolean } | null {
   const t = store().get(id);
-  return t ? { steps: t.steps, done: t.done, elapsedMs: Date.now() - t.startedAt } : null;
+  return t ? { steps: t.steps, done: t.done, elapsedMs: Date.now() - t.startedAt, cancelled: t.cancelled } : null;
 }

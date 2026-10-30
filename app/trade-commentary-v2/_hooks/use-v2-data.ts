@@ -53,6 +53,8 @@ export function useV2Data(admin: boolean) {
   const [notice, setNotice] = useState<string | null>(null);
   const [live, setLive] = useState<LiveTurn | null>(null);
   const pendingRef = useRef(0);
+  /** The reply in flight (one at a time from this page) — what Stop cancels. */
+  const turnRef = useRef<string | null>(null);
 
   const loadFast = useCallback(async () => {
     if (!admin) return;
@@ -109,6 +111,7 @@ export function useV2Data(admin: boolean) {
       setPending(pendingRef.current);
       const tempId = -Date.now();
       const turnId = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+      turnRef.current = turnId;
       setLive({ steps: [], done: false, elapsedMs: 0 });
       const poll = setInterval(() => {
         void getJson<{ turn?: LiveTurn | null }>(`/api/trade-commentary/chat/progress?turn=${turnId}`).then((j) => {
@@ -127,6 +130,7 @@ export function useV2Data(admin: boolean) {
         return true;
       } finally {
         clearInterval(poll);
+        if (turnRef.current === turnId) turnRef.current = null;
         setLive(null);
         pendingRef.current -= 1;
         setPending(pendingRef.current);
@@ -162,6 +166,21 @@ export function useV2Data(admin: boolean) {
     },
     [loadFast]
   );
+
+  /** Make v2 the active AI Analysis (Settings' COMMENTARY_V2) so its background work runs. */
+  const selectV2 = useCallback(async () => {
+    const { ok, json } = await postJson('/api/trade-commentary/chat/background', { action: 'select_v2' });
+    setNotice(ok ? 'v2 is now the active AI Analysis — check-ins and watches run from the next minute.' : String(json.error ?? 'Not changed.'));
+    await loadFast();
+  }, [loadFast]);
+
+  /** Stop: the server aborts the running reply (and its model call); the POST then returns "Stopped". */
+  const stop = useCallback(async () => {
+    const turn = turnRef.current;
+    if (!turn) return;
+    const { ok, json } = await postJson('/api/trade-commentary/chat/progress', { turn });
+    if (!ok) setNotice(String(json.error ?? 'Could not stop.'));
+  }, []);
 
   /** Per-action switch: let the AI do this kind by itself, or ask first. */
   const setAutoAction = useCallback(
@@ -223,6 +242,8 @@ export function useV2Data(admin: boolean) {
     setModel,
     decideMemory,
     setAutoAction,
+    selectV2,
+    stop,
     live,
   };
 }

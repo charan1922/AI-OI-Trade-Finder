@@ -50,6 +50,20 @@ export default function CommentaryV2Page() {
         {!data.configured && <span className="hidden truncate text-[11px] text-amber-600 md:inline">chat AI not configured on this server</span>}
       </PageHeaderPortal>
       <div className="-m-1 flex h-[calc(100dvh-4.5rem)] flex-col overflow-hidden rounded-lg border border-border bg-background sm:-m-3">
+        {!readOnly && data.background && !data.background.v2Selected && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+            <span className="flex-1">
+              v2 is not the active AI Analysis (Settings still selects v1) — its check-ins, watches and auto actions are paused.
+            </span>
+            <button
+              type="button"
+              onClick={() => void data.selectV2()}
+              className="rounded-md bg-amber-600 px-2 py-0.5 font-medium text-white hover:bg-amber-700"
+            >
+              Make v2 active
+            </button>
+          </div>
+        )}
         {data.notice && (
           <div className="flex items-start gap-2 border-b border-border bg-muted/40 px-3 py-1 text-[11px]">
             <span className="flex-1">{data.notice}</span>
@@ -93,6 +107,7 @@ export default function CommentaryV2Page() {
                 onSend={data.send}
                 onModel={(m) => void data.setModel(m)}
                 onError={data.showNotice}
+                onStop={() => void data.stop()}
               />
             )}
           </div>

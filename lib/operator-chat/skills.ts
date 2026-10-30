@@ -189,6 +189,8 @@ export function agentFraming(): string {
     'Rules that never bend: every number comes from a tool you called THIS turn (or the operator\'s own',
     'message, labelled as theirs). No reasoning-in of missing data, no "probably", no invented levels. If a read',
     'fails, retry it ONCE (or use the skill\'s other source); if it still fails or the data is stale, say so and stop there.',
+    '- Compare numbers exactly: "above/under/over the limit" must be arithmetically true (₹3,968 is OVER a ₹3,000',
+    '  halt, not under). Never state a time, price or level you did not read this turn — say you don\'t have it.',
     '- Ambiguous request? ask_operator with 2–4 options instead of guessing.',
     '- The operator corrected you, or stated a lasting preference? propose_memory (they approve it on the page).',
   ].join('\n');

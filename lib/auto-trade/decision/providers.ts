@@ -35,6 +35,8 @@ export interface ToolLoopRequest {
   thinking?: boolean | 'first';
   /** Commentary v2 only: live progress — called as each model call / tool starts and ends. Never awaited. */
   onStep?: (e: LoopStepEvent) => void;
+  /** Commentary v2 only: the operator's Stop — aborts the in-flight model call and the loop at once. */
+  signal?: AbortSignal;
   execute: (name: string, args: Record<string, unknown>) => Promise<{ result: unknown; trace: ToolTraceEntry }>;
 }
 
@@ -241,7 +243,11 @@ export async function runMimoLoopWithClient(
             // the actual calls and final audit read rather than hidden reasoning.
             max_tokens: 6000,
           }),
-      { timeout: 90_000, signal },
+      // A thinking round is capped at THINKING_CALL_TIMEOUT_MS (a live reply once thought for 163s); on timeout
+      // the v2 caller self-heals with thinking off. Every other call keeps the 90s per-call timeout.
+      // maxRetries 0 on the thinking round: the client's default retry would double the cap (45s x 2); the real
+      // recovery is the caller's thinking-off retry.
+      thinkNow ? { timeout: THINKING_CALL_TIMEOUT_MS, signal, maxRetries: 0 } : { timeout: 90_000, signal },
     );
     const modelMs = Date.now() - modelT0;
     spans.push({ name: `model call #${step + 1}`, ms: modelMs });
@@ -301,12 +307,18 @@ async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<T
   return runMimoLoopWithClient(req, getMimoClient(), getMimoModel(req.mimoModel), signal);
 }
 
+/** v2 thinking rounds only — past this, the round is abandoned and the reply retries with thinking off. */
+const THINKING_CALL_TIMEOUT_MS = 45_000;
+
 export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
-  const signal = AbortSignal.timeout(AI_PASS_DEADLINE_MS);
+  const deadline = AbortSignal.timeout(AI_PASS_DEADLINE_MS);
+  // The operator's Stop (v2) joins the hard deadline; the trader never passes one, so its signal is unchanged.
+  const signal = req.signal ? AbortSignal.any([deadline, req.signal]) : deadline;
   try {
     return await (req.provider === 'mimo' ? runMimoLoop(req, signal) : runAzureLoop(req, signal));
   } catch (err) {
-    if (signal.aborted) {
+    if (req.signal?.aborted) throw new Error('Stopped by the operator.');
+    if (deadline.aborted) {
       throw new Error(
         `AI pass exceeded the ${Math.round(AI_PASS_DEADLINE_MS / 60_000)}-min hard deadline and was aborted (provider ${req.provider})`
       );

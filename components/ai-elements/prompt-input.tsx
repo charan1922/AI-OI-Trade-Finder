@@ -2,7 +2,7 @@
 
 /** AI Elements — Prompt Input: the composer. Enter sends, Shift+Enter adds a line. */
 
-import { ArrowUp, Loader2 } from 'lucide-react';
+import { ArrowUp, Square } from 'lucide-react';
 import type { ComponentProps, FormEvent, KeyboardEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -55,10 +55,18 @@ export function PromptInputTools({ className, ...props }: ComponentProps<'div'>)
   return <div className={cn('flex min-w-0 flex-wrap items-center gap-1', className)} {...props} />;
 }
 
-export function PromptInputSubmit({ busy, disabled }: { busy?: boolean; disabled?: boolean }) {
+/** Send, or — while a reply is running — Stop (like Claude's): cancels the reply, including the model call. */
+export function PromptInputSubmit({ busy, disabled, onStop }: { busy?: boolean; disabled?: boolean; onStop?: () => void }) {
+  if (busy && onStop) {
+    return (
+      <Button type="button" size="icon-xs" variant="outline" className="rounded-full" onClick={onStop} aria-label="Stop" title="Stop">
+        <Square className="fill-current" />
+      </Button>
+    );
+  }
   return (
     <Button type="submit" size="icon-xs" className="rounded-full" disabled={disabled} aria-label="Send">
-      {busy ? <Loader2 className="animate-spin" /> : <ArrowUp />}
+      <ArrowUp />
     </Button>
   );
 }

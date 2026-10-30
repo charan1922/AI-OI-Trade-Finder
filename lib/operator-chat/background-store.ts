@@ -39,6 +39,11 @@ async function ensureTables(): Promise<void> {
   if (!bgCols.some((c) => c.name === 'nextCheckAt')) {
     await prisma.$executeRawUnsafe(`ALTER TABLE chat_background ADD COLUMN nextCheckAt TEXT`);
   }
+  // NULL = the operator never touched the Background switch → default ON (operator 2026-10-30: "let AI on").
+  // Needed because other setters create the row with enabled = 0 as a side effect.
+  if (!bgCols.some((c) => c.name === 'backgroundSet')) {
+    await prisma.$executeRawUnsafe(`ALTER TABLE chat_background ADD COLUMN backgroundSet INTEGER`);
+  }
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS chat_watches (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,12 +94,15 @@ async function ensureTables(): Promise<void> {
 export async function isBackgroundEnabled(): Promise<boolean> {
   try {
     await ensureTables();
-    const rows = (await prisma.$queryRawUnsafe(`SELECT enabled FROM chat_background WHERE id = 1`)) as {
+    const rows = (await prisma.$queryRawUnsafe(`SELECT enabled, backgroundSet FROM chat_background WHERE id = 1`)) as {
       enabled: number | bigint;
+      backgroundSet: number | bigint | null;
     }[];
-    return Number(rows[0]?.enabled ?? 0) === 1;
+    // Default ON until the operator turns it OFF. v1 is still fully protected: everything also requires
+    // v2 to be the selected page (isBackgroundActive / isV2Selected).
+    if (!rows[0] || rows[0].backgroundSet == null) return true;
+    return Number(rows[0].enabled) === 1;
   } catch {
-    // A DB hiccup must never switch background behaviour ON for v1.
     return false;
   }
 }
@@ -113,11 +121,32 @@ export async function isBackgroundActive(): Promise<boolean> {
   return (await isV2Selected()) && (await isBackgroundEnabled());
 }
 
+/** Make v2 the active AI Analysis (the same /config toggle the sidebar reads). */
+export async function selectV2(): Promise<void> {
+  const { setToggle } = await import('@/lib/config/feature-toggles');
+  await setToggle('COMMENTARY_V2', true);
+}
+
+/**
+ * The AI's OWN status, told to it on every v2 turn — so it never guesses. On 2026-10-30 it told the operator
+ * "I have no background loop" while its check-ins were merely PAUSED (Settings still selected v1).
+ */
+export async function backgroundStatusBlock(): Promise<string> {
+  const [v2, on] = await Promise.all([isV2Selected(), isBackgroundEnabled()]);
+  if (!v2) {
+    return 'YOUR BACKGROUND STATUS: PAUSED — Settings → Assistant still selects v1, so your self-paced check-ins, watches and auto actions are NOT running. If asked, say exactly that and tell the operator to tap "Make v2 active" on this page. Never say you have no background loop.';
+  }
+  if (!on) {
+    return 'YOUR BACKGROUND STATUS: OFF — the operator switched Background off on this page, so you only answer when asked. If asked, say so and that turning Background ON starts your check-ins.';
+  }
+  return 'YOUR BACKGROUND STATUS: ACTIVE — in market hours you check in by yourself (every 5 min while a position is open, otherwise 5–30 min, your choice), review open positions on the thesis, and act on the operator\'s Auto actions. Watches are checked every 60s.';
+}
+
 export async function setBackgroundEnabled(enabled: boolean): Promise<void> {
   await ensureTables();
   await prisma.$executeRawUnsafe(
-    `INSERT INTO chat_background (id, enabled, updatedAt) VALUES (1, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, updatedAt = excluded.updatedAt`,
+    `INSERT INTO chat_background (id, enabled, updatedAt, backgroundSet) VALUES (1, ?, ?, 1)
+     ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, updatedAt = excluded.updatedAt, backgroundSet = 1`,
     enabled ? 1 : 0,
     new Date().toISOString()
   );

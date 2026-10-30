@@ -26,7 +26,7 @@ import { executeHeartbeatTool, HEARTBEAT_TOOL_DEFS, HEARTBEAT_TOOL_NAMES, type H
 import { BACKGROUND_TOOL_DEFS, BACKGROUND_TOOL_NAMES, executeBackgroundTool } from './background-tools';
 import { AGENT_TOOL_DEFS, AGENT_TOOL_NAMES, type AgentTurnState, agentFraming, executeAgentTool, memoryBlock } from './skills';
 import { type ChatMemory, savedMemories } from './background-store';
-import { finishTurn, noteStep, recordStep, startTurn } from './progress';
+import { finishTurn, isTurnCancelled, noteStep, recordStep, startTurn, turnSignal } from './progress';
 import {
   ACTION_KINDS,
   type ChatAction,
@@ -148,6 +148,8 @@ export async function replyToOperator(opts: {
         return out;
       } catch (err) {
         lastError = err;
+        // The operator pressed Stop — do not "heal" that by trying again.
+        if (turnId && isTurnCancelled(turnId)) throw new Error('Stopped by the operator.');
         const msg = (err as Error).message.slice(0, 160);
         recovered.push(`${attempt.thinking ? 'thinking on' : 'thinking off'} · ${attempt.mimoModel} failed: ${msg}`);
         if (turnId) noteStep(turnId, `Attempt failed: ${msg}`, 'error');
@@ -214,6 +216,7 @@ async function runOnce(
     // Think on the planning round only: real reasoning, without paying 10–20s of thinking on every later round.
     ...(run.thinking ? { thinking: 'first' as const } : {}),
     ...(run.turnId ? { onStep: (e: LoopStepEvent) => recordStep(run.turnId as string, e) } : {}),
+    ...(run.turnId && turnSignal(run.turnId) ? { signal: turnSignal(run.turnId) } : {}),
     execute: async (name, args) => {
       if (background && BACKGROUND_TOOL_NAMES.has(name)) return executeBackgroundTool(background.date, name, args);
       if (agentic && AGENT_TOOL_NAMES.has(name)) return executeAgentTool(name, args, turn);

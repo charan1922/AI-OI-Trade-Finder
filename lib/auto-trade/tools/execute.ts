@@ -244,6 +244,11 @@ export async function buildOpenPositionsContext(
         liveSpot: spot,
         spotPointsFromEntry: spot != null ? Math.round((spot - trade.entrySpot) * 100) / 100 : null,
         openedAt: trade.openedAt,
+        // Finished value for the model: the raw field is UTC ISO, and a model converting it itself told the
+        // operator "opened 09:40 IST" for a 10:10 IST fill (2026-10-30). Quote THIS one.
+        openedAtIST: trade.openedAt
+          ? new Date(trade.openedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' })
+          : null,
         entryReason: trade.aiReasonEntry,
       };
     })

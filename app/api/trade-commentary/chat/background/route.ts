@@ -16,6 +16,7 @@ import {
   listNotes,
   listWakeups,
   listWatches,
+  selectV2,
   setAutoAction,
   setBackgroundEnabled,
   setChatModel,
@@ -96,7 +97,13 @@ export async function POST(req: Request) {
     const date = todayIST();
     if (body.action === 'toggle') {
       await setBackgroundEnabled(body.enabled === true);
+      // Turning Background ON means "run v2" — make it the active version too (one switch, not two).
+      if (body.enabled === true) await selectV2();
       return NextResponse.json({ success: true, enabled: body.enabled === true });
+    }
+    if (body.action === 'select_v2') {
+      await selectV2();
+      return NextResponse.json({ success: true });
     }
     if (body.action === 'memory_save' || body.action === 'memory_discard' || body.action === 'memory_delete') {
       const to = body.action === 'memory_save' ? 'saved' : body.action === 'memory_discard' ? 'rejected' : 'deleted';

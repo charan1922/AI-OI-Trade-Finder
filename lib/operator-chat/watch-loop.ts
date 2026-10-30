@@ -30,8 +30,8 @@ import {
 } from './background-store';
 import { loadWatchInputs } from './watch-inputs';
 import { evaluateWatch, wakeBudget, WATCH_EXPIRY_MIN } from './watches';
-import { HEARTBEAT_START_MIN, MAX_HEARTBEATS_PER_DAY } from './heartbeat';
-import { runHeartbeatTurn, runWakeTurn } from './wake';
+import { HEARTBEAT_MIN_MIN, HEARTBEAT_START_MIN, MAX_HEARTBEATS_PER_DAY } from './heartbeat';
+import { openPositionSymbols, runHeartbeatTurn, runWakeTurn } from './wake';
 
 const TAG = '[chat-watch]';
 export const WATCH_TICK_MS = 60_000;
@@ -174,7 +174,13 @@ async function maybeHeartbeat(
   const done = wakeups.filter((w) => w.kind === 'heartbeat').length;
   if (done >= MAX_HEARTBEATS_PER_DAY) return null;
   const next = await getNextCheckAt();
-  if (next && new Date(next).getTime() > Date.now()) return null;
+  const lastAt = [...wakeups].reverse().find((w) => w.kind === 'heartbeat')?.at;
+  const sinceLastMs = lastAt ? Date.now() - new Date(lastAt).getTime() : Infinity;
+  // An open position overrides the AI's chosen time: it is reviewed every HEARTBEAT_MIN_MIN minutes.
+  const positionOpen = (await openPositionSymbols(date)).length > 0;
+  const dueByPosition = positionOpen && sinceLastMs >= HEARTBEAT_MIN_MIN * 60_000;
+  if (!dueByPosition && next && new Date(next).getTime() > Date.now()) return null;
+  if (sinceLastMs < HEARTBEAT_MIN_MIN * 60_000) return null; // never closer than 5 min
   if (await traderBusy()) return { status: 'waiting-for-trader', detail: 'check-in due, waiting for the trader' };
   const outcome = await runHeartbeatTurn(date);
   return { status: 'checked-in', detail: `check-in #${done + 1}: ${outcome}` };
