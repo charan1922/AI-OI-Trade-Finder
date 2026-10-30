@@ -71,9 +71,20 @@ export function executeHeartbeatTool(
 }
 
 /** The check-in prompt (user turn). */
-export function heartbeatPrompt(lastNotes: readonly string[], lastQuiet: string | null): string {
+export function heartbeatPrompt(lastNotes: readonly string[], lastQuiet: string | null, openSymbols: readonly string[] = []): string {
   return [
     'CHECK-IN (no watch fired — this is your regular self-paced look at the market).',
+    ...(openSymbols.length
+      ? [
+          `OPEN POSITION(S): ${openSymbols.join(', ')}. You MUST use_skill review_position for each and decide HOLD /`,
+          'TIGHTEN / EXIT on the THESIS, not only on the stop: is the breakout still intact (price vs the level it broke —',
+          'back inside the opening range means it failed)? R-Factor now vs at entry? Supertrend with or against? Has the',
+          'move gone nowhere since entry? The guard only exits at the stop or target — judging the idea is YOUR job. If',
+          'the thesis is broken, propose the exit (it runs by itself when exit is on Auto) and notify_operator with why.',
+          'If it holds, stay quiet unless something changed.',
+          '',
+        ]
+      : []),
     'Decide whether anything deserves the operator\'s attention RIGHT NOW. Look with your tools (ground truth, not memory):',
     '- open positions: distance to stop, R, anything breaking;',
     "- TF board / today's picks: new picks, a pick rejected, the board stale;",

@@ -56,6 +56,7 @@ export function Composer({
   onSend,
   onModel,
   onError,
+  onStop,
 }: {
   autoTrade: AutoTradeState | null;
   background: BackgroundState | null;
@@ -67,6 +68,7 @@ export function Composer({
   onSend: (text: string, images: string[], think: boolean) => Promise<boolean>;
   onModel: (mimoModel: string) => void;
   onError: (msg: string) => void;
+  onStop: () => void;
 }) {
   const [text, setText] = useState('');
   const [attached, setAttached] = useState<AttachmentItem[]>([]);
@@ -231,7 +233,7 @@ export function Composer({
               />
             )}
           </PromptInputTools>
-          <PromptInputSubmit busy={pending > 0} disabled={readOnly || !text.trim()} />
+          <PromptInputSubmit busy={pending > 0} disabled={readOnly || !text.trim()} onStop={onStop} />
         </PromptInputToolbar>
       </PromptInput>
     </div>

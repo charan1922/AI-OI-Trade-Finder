@@ -3,7 +3,7 @@ import { getCommentary } from '@/lib/ai-commentary/store';
 import { todayIST } from '@/lib/ist';
 import { hasMimo } from '@/lib/env';
 import { actionModeBlock, applyProposals } from '@/lib/operator-chat/auto-act';
-import { getAutoActions, getChatModel, isBackgroundActive } from '@/lib/operator-chat/background-store';
+import { backgroundStatusBlock, getAutoActions, getChatModel, isBackgroundActive } from '@/lib/operator-chat/background-store';
 import { parseImages, saveImages } from '@/lib/operator-chat/images';
 import { isTurnId, noteStep } from '@/lib/operator-chat/progress';
 import { backgroundFraming } from '@/lib/operator-chat/background-tools';
@@ -169,6 +169,7 @@ export async function POST(req: Request) {
       const autoActions = v2 ? await getAutoActions() : undefined;
       const context = v2
         ? [
+            await backgroundStatusBlock(),
             actionModeBlock(autoActions!),
             ...(background ? [await backgroundFraming(date)] : []),
             await readsBlock(date, { reads: 1, chars: 1200 }),
@@ -217,6 +218,9 @@ export async function POST(req: Request) {
     } catch (error) {
       // The operator's message is already stored and WILL reach the trader — say so.
       const msg = error instanceof Error ? error.message : String(error);
+      if (msg === 'Stopped by the operator.') {
+        return NextResponse.json({ success: true, saved, reply: null, notice: 'Stopped. Your message is saved; nothing was posted.' });
+      }
       console.error('[operator-chat] model error:', msg);
       return NextResponse.json({
         success: true,
