@@ -25,18 +25,6 @@ export interface ToolLoopRequest {
   system: string;
   user: string;
   tools: NeutralToolDef[];
-  /** Operator chat only (Commentary v2): screenshots as data URLs, sent with the user turn. MiMo only —
-   *  the auto-trader never sets this. */
-  images?: string[];
-  /** Operator chat (Commentary v2, agentic) may take more steps than a trading pass; default MAX_TOOL_STEPS. */
-  maxSteps?: number;
-  /** Commentary v2 only, MiMo only: run WITH thinking and replay each step's reasoning_content (MiMo's rule —
-   *  dropping it is a 400). The auto-trader never sets this; its calls stay thinking-disabled. */
-  thinking?: boolean | 'first';
-  /** Commentary v2 only: live progress — called as each model call / tool starts and ends. Never awaited. */
-  onStep?: (e: LoopStepEvent) => void;
-  /** Commentary v2 only: the operator's Stop — aborts the in-flight model call and the loop at once. */
-  signal?: AbortSignal;
   execute: (name: string, args: Record<string, unknown>) => Promise<{ result: unknown; trace: ToolTraceEntry }>;
 }
 
@@ -47,11 +35,6 @@ export interface LoopSpan {
   ms: number;
 }
 
-/** One live progress event of the loop (Commentary v2 shows these as they happen). */
-export type LoopStepEvent =
-  | { kind: 'model'; phase: 'start' | 'end'; step: number; ms?: number }
-  | { kind: 'tool'; phase: 'start' | 'end'; name: string; args: Record<string, unknown>; ok?: boolean; summary?: string; ms?: number };
-
 export interface ToolLoopResult {
   text: string;
   model: string;
@@ -59,12 +42,6 @@ export interface ToolLoopResult {
   promptTokens: number | null;
   completionTokens: number | null;
   spans: LoopSpan[];
-  /** Thinking runs only (req.thinking): the model's own reasoning text, one entry per model call that had any. */
-  reasoning?: string[];
-  /** Thinking runs only: MiMo's own count of reasoning tokens (usage.completion_tokens_details.reasoning_tokens). */
-  reasoningTokens?: number;
-  /** MiMo: prompt tokens served from its prompt cache (usage.prompt_tokens_details.cached_tokens), summed. */
-  cachedTokens?: number;
 }
 
 function parseArgs(raw: string | null | undefined): Record<string, unknown> {
@@ -103,7 +80,7 @@ async function runAzureLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<
   let promptTokens = 0;
   let completionTokens = 0;
 
-  for (let step = 0; step < (req.maxSteps ?? MAX_TOOL_STEPS); step++) {
+  for (let step = 0; step < MAX_TOOL_STEPS; step++) {
     const modelT0 = Date.now();
     const res = await client.responses.create(
       {
@@ -189,101 +166,44 @@ export async function runMimoLoopWithClient(
   const spans: LoopSpan[] = [];
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: req.system },
-    {
-      role: 'user',
-      content: req.images?.length
-        ? [
-            { type: 'text', text: req.user },
-            ...req.images.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
-          ]
-        : req.user,
-    },
+    { role: 'user', content: req.user },
   ];
   let promptTokens = 0;
   let completionTokens = 0;
-  const reasoning: string[] = [];
-  let reasoningTokens = 0;
-  let cachedTokens = 0;
-  const emit = (e: LoopStepEvent) => {
-    try {
-      req.onStep?.(e);
-    } catch {
-      // progress is display-only — never let it break the loop
-    }
-  };
-  const done = (text: string): ToolLoopResult => ({
-    text,
-    model,
-    trace,
-    promptTokens,
-    completionTokens,
-    spans,
-    ...(req.thinking ? { reasoning, reasoningTokens } : {}),
-    cachedTokens,
-  });
 
-  for (let step = 0; step < (req.maxSteps ?? MAX_TOOL_STEPS); step++) {
+  for (let step = 0; step < MAX_TOOL_STEPS; step++) {
     const modelT0 = Date.now();
-    emit({ kind: 'model', phase: 'start', step: step + 1 });
-    // 'first' = think only on the planning round; later rounds (reading tool results, writing) run thinking
-    // OFF — much faster. Earlier rounds' reasoning_content is still replayed as MiMo requires.
-    const thinkNow = req.thinking === true || (req.thinking === 'first' && step === 0);
     const res = await client.chat.completions.create(
-      thinkNow
-        ? // Thinking ON (v2 chat only): MiMo ignores temperature in thinking mode; the budget covers the
-          // reasoning AND the call/answer, so it is larger than the thinking-off budget below.
-          ({ model, messages, tools, tool_choice: 'auto', max_tokens: 12000, thinking: { type: 'enabled' } } as never)
-        : disableMimoThinking({
-            model,
-            messages,
-            tools,
-            tool_choice: 'auto',
-            temperature: 0.2,
-            // Tool calls run with thinking disabled, so this budget is available to
-            // the actual calls and final audit read rather than hidden reasoning.
-            max_tokens: 6000,
-          }),
-      // A thinking round is capped at THINKING_CALL_TIMEOUT_MS (a live reply once thought for 163s); on timeout
-      // the v2 caller self-heals with thinking off. Every other call keeps the 90s per-call timeout.
-      // maxRetries 0 on the thinking round: the client's default retry would double the cap (45s x 2); the real
-      // recovery is the caller's thinking-off retry.
-      thinkNow ? { timeout: THINKING_CALL_TIMEOUT_MS, signal, maxRetries: 0 } : { timeout: 90_000, signal },
+      disableMimoThinking({
+        model,
+        messages,
+        tools,
+        tool_choice: 'auto',
+        temperature: 0.2,
+        // Tool calls run with thinking disabled, so this budget is available to
+        // the actual calls and final audit read rather than hidden reasoning.
+        max_tokens: 6000,
+      }),
+      { timeout: 90_000, signal },
     );
-    const modelMs = Date.now() - modelT0;
-    spans.push({ name: `model call #${step + 1}`, ms: modelMs });
-    emit({ kind: 'model', phase: 'end', step: step + 1, ms: modelMs });
+    spans.push({ name: `model call #${step + 1}`, ms: Date.now() - modelT0 });
     promptTokens += res.usage?.prompt_tokens ?? 0;
     completionTokens += res.usage?.completion_tokens ?? 0;
-    reasoningTokens += res.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
-    cachedTokens += res.usage?.prompt_tokens_details?.cached_tokens ?? 0;
     const msg = res.choices?.[0]?.message;
     if (!msg) throw new Error('MiMo returned no message');
-    // MiMo's provider extension: present only when thinking is on.
-    const thought = thinkNow ? ((msg as { reasoning_content?: string | null }).reasoning_content ?? '').trim() : '';
-    if (thought) reasoning.push(thought);
 
     const calls = msg.tool_calls ?? [];
     if (calls.length === 0) {
       const text = (msg.content ?? '').trim();
       if (!text) throw new Error('MiMo returned empty content (reasoning may have consumed the token budget).');
-      return done(text);
+      return { text, model, trace, promptTokens, completionTokens, spans };
     }
-    // MiMo rule (thinking mode): an assistant message with tool calls must be replayed WITH its
-    // reasoning_content on every later request, or the API answers 400.
-    messages.push({
-      role: 'assistant',
-      content: msg.content ?? '',
-      tool_calls: calls,
-      ...(req.thinking && thought ? { reasoning_content: thought } : {}),
-    } as OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam);
+    messages.push({ role: 'assistant', content: msg.content ?? '', tool_calls: calls });
     for (const call of calls) {
       if (call.type !== 'function') continue;
       const toolT0 = Date.now();
-      const args = parseArgs(call.function.arguments);
-      emit({ kind: 'tool', phase: 'start', name: call.function.name, args });
-      const { result, trace: t } = await req.execute(call.function.name, args);
+      const { result, trace: t } = await req.execute(call.function.name, parseArgs(call.function.arguments));
       t.ms = Date.now() - toolT0;
-      emit({ kind: 'tool', phase: 'end', name: call.function.name, args, ok: t.ok, summary: t.summary, ms: t.ms });
       spans.push({ name: `tool ${call.function.name}`, ms: t.ms });
       trace.push(t);
       messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
@@ -300,25 +220,19 @@ export async function runMimoLoopWithClient(
   promptTokens += final.usage?.prompt_tokens ?? 0;
   completionTokens += final.usage?.completion_tokens ?? 0;
   const text = (final.choices?.[0]?.message?.content ?? '').trim();
-  return done(text || '(no summary produced)');
+  return { text: text || '(no summary produced)', model, trace, promptTokens, completionTokens, spans };
 }
 
 async function runMimoLoop(req: ToolLoopRequest, signal: AbortSignal): Promise<ToolLoopResult> {
   return runMimoLoopWithClient(req, getMimoClient(), getMimoModel(req.mimoModel), signal);
 }
 
-/** v2 thinking rounds only — past this, the round is abandoned and the reply retries with thinking off. */
-const THINKING_CALL_TIMEOUT_MS = 45_000;
-
 export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
-  const deadline = AbortSignal.timeout(AI_PASS_DEADLINE_MS);
-  // The operator's Stop (v2) joins the hard deadline; the trader never passes one, so its signal is unchanged.
-  const signal = req.signal ? AbortSignal.any([deadline, req.signal]) : deadline;
+  const signal = AbortSignal.timeout(AI_PASS_DEADLINE_MS);
   try {
     return await (req.provider === 'mimo' ? runMimoLoop(req, signal) : runAzureLoop(req, signal));
   } catch (err) {
-    if (req.signal?.aborted) throw new Error('Stopped by the operator.');
-    if (deadline.aborted) {
+    if (signal.aborted) {
       throw new Error(
         `AI pass exceeded the ${Math.round(AI_PASS_DEADLINE_MS / 60_000)}-min hard deadline and was aborted (provider ${req.provider})`
       );

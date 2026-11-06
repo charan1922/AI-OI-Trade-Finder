@@ -9,16 +9,16 @@ import { PAGE_HEADER_SLOT_ID } from "@/components/page-header-portal"
 import { UserMenu } from "@/components/user-menu"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 
-export function LayoutShell({ children, commentaryV2 }: { children: React.ReactNode; commentaryV2: boolean }) {
+export function LayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
 
   // The login screen renders full-bleed — no sidebar, header, or reminders.
   if (pathname === "/login") return <>{children}</>
 
   return (
-    // Collapsed by default (operator 2026-10-29) — pages like /trade-commentary-v2 need the width; ☰ opens it.
+    // Collapsed by default (operator 2026-10-29) — dense pages need the width; ☰ opens it.
     <SidebarProvider defaultOpen={false}>
-      <AppSidebar commentaryV2={commentaryV2} />
+      <AppSidebar />
       <SidebarInset>
         <BhavcopyReminder />
         <header className="flex h-12 items-center gap-2 border-b border-border px-4">

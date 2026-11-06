@@ -14,3 +14,12 @@ allowBuilds:
   # tsx's transpiler (pinned devDep for the CI `pnpm exec tsx` checks); its build
   # fetches the platform esbuild binary — required for tsx to run (PR#6 review).
   esbuild: true
+
+# @langchain/langgraph 1.5.2's "~1.12.6" let pnpm pick a 2-day-old SDK (1.12.10, which also wants a newer
+# @langchain/core). Pin to a release at least two weeks old; the app never calls the SDK (LangGraph Cloud client).
+overrides:
+  '@langchain/langgraph-sdk': 1.12.7
+  # Same rule for @langchain/core 1.3.0's caret ranges (they resolved 2-3-day-old releases on 2026-11-06).
+  langsmith: 0.11.1
+  '@cfworker/json-schema': 4.1.1
+  '@langchain/langgraph-checkpoint': 1.2.1
