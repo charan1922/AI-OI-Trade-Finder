@@ -21,6 +21,7 @@ import {
   KeyRound,
   LayoutGrid,
   type LucideIcon,
+  Radar,
   Radio,
   ScrollText,
   ScanSearch,
@@ -77,8 +78,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Assistant',
     icon: Bot,
     children: [
-      // One entry: /config → "Use Commentary v2" decides which page it opens (see AppSidebar).
-      { title: 'AI Analysis', href: '/trade-commentary', icon: Sparkles },
+      { title: 'Trade Commentary', href: '/trade-commentary', icon: Sparkles },
+      { title: 'AI Analysis v2', href: '/ai-analysis-v2', icon: Radar },
       { title: 'Auto Trade', href: '/auto-trade', icon: Zap },
       { title: 'Server Logs', href: '/logs', icon: ScrollText },
       { title: 'Trade Assistant', href: '/trade-assistant', icon: Bot },
@@ -154,8 +155,7 @@ function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: strin
       {open && (
         <SidebarMenu className="mt-1">
           {group.children.map((item) => {
-            // Exact or a sub-path — a bare prefix would light /trade-commentary on /trade-commentary-v2 too.
-            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const active = pathname.startsWith(item.href);
             return (
               <SidebarMenuItem key={item.href}>
                 <SidebarMenuButton asChild isActive={active} tooltip={item.title} className="text-xs">
@@ -173,7 +173,7 @@ function NavGroupSection({ group, pathname }: { group: NavGroup; pathname: strin
   );
 }
 
-export function AppSidebar({ commentaryV2 }: { commentaryV2: boolean }) {
+export function AppSidebar() {
   const pathname = usePathname();
   const { readOnly, isOwner } = useRole();
 
@@ -182,9 +182,9 @@ export function AppSidebar({ commentaryV2 }: { commentaryV2: boolean }) {
   // enforces, this hiding is the UX half. Groups left empty vanish.
   const groups = NAV_GROUPS.map((g) => ({
     ...g,
-    children: g.children
-      .filter((c) => (!readOnly || !isAdminOnlyPage(c.href)) && (isOwner || !isOwnerOnlyPath(c.href)))
-      .map((c) => (commentaryV2 && c.href === '/trade-commentary' ? { ...c, href: '/trade-commentary-v2' } : c)),
+    children: g.children.filter(
+      (c) => (!readOnly || !isAdminOnlyPage(c.href)) && (isOwner || !isOwnerOnlyPath(c.href))
+    ),
   })).filter((g) => g.children.length > 0);
 
   return (

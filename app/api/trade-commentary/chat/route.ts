@@ -1,20 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getCommentary } from '@/lib/ai-commentary/store';
 import { todayIST } from '@/lib/ist';
-import { hasMimo } from '@/lib/env';
-import { actionModeBlock, applyProposals } from '@/lib/operator-chat/auto-act';
-import { backgroundStatusBlock, getAutoActions, getChatModel, isBackgroundActive } from '@/lib/operator-chat/background-store';
-import { parseImages, saveImages } from '@/lib/operator-chat/images';
-import { isTurnId, noteStep } from '@/lib/operator-chat/progress';
-import { backgroundFraming } from '@/lib/operator-chat/background-tools';
 import { chatProvider, replyToOperator } from '@/lib/operator-chat/reply';
-import {
-  addOperatorAction,
-  addOperatorMessage,
-  listOperatorMessages,
-  setMessageImages,
-  setMessageMeta,
-} from '@/lib/operator-chat/store';
+import { addOperatorAction, addOperatorMessage, listOperatorMessages } from '@/lib/operator-chat/store';
 
 // No `dynamic` export: route handlers are uncached by default in Next 16.4 (bundled docs, route-handlers.md).
 export const maxDuration = 60; // tool-calling round-trips can take a few seconds
@@ -29,22 +17,12 @@ const READ_CHARS = 2500;
  * nothing happens until the operator taps Confirm, and every action runs
  * through the same gated code as the /auto-trade console.
  */
-/** The trader's latest reads — per-message context (v2 places it LAST so the rules above stay cacheable). */
-async function readsBlock(date: string, size: { reads: number; chars: number }): Promise<string> {
-  const reads = await getCommentary({ date, limit: size.reads }).catch(() => []);
+async function chatFraming(date: string): Promise<string> {
+  const reads = await getCommentary({ date, limit: 2 }).catch(() => []);
   const latest = reads.length
-    ? reads.map((r) => `--- read at ${r.asOf} IST (${r.model}) ---\n${r.text.slice(0, size.chars)}`).join('\n\n')
+    ? reads.map((r) => `--- read at ${r.asOf} IST (${r.model}) ---\n${r.text.slice(0, READ_CHARS)}`).join('\n\n')
     : '(no commentary read has been stored yet today)';
-  return ["Latest commentary reads from the trader today (context only — quote it, don't invent beyond it):", latest].join('\n');
-}
-
-/** v1: rules + reads in one block, exactly as before. v2 (`rulesOnly`): the rules alone — identical every call. */
-async function chatFraming(
-  date: string,
-  size: { reads: number; chars: number } = { reads: 2, chars: READ_CHARS },
-  rulesOnly = false
-): Promise<string> {
-  const rules = [
+  return [
     '## Operator chat (this conversation)',
     'You are talking with the operator in the SAME thread as the live /trade-commentary reads — your',
     "replies and the trader's commentary appear together, in order. They can talk to you about",
@@ -77,8 +55,10 @@ async function chatFraming(
     '- LENGTH (overrides "about 120–200 words" above, in this thread only): one topic → 120–200 words;',
     '  an answer that covers 2+ picks or compares 2+ trades → up to ~300 words, hard max 350, so each',
     '  pick keeps its real numbers instead of vague compression. Never pad to fill the room.',
+    '',
+    "Latest commentary reads from the trader today (context only — quote it, don't invent beyond it):",
+    latest,
   ].join('\n');
-  return rulesOnly ? rules : `${rules}\n\n${await readsBlock(date, size)}`;
 }
 
 /** GET /api/trade-commentary/chat?date=YYYY-MM-DD — the day's thread, oldest first. */
@@ -109,19 +89,8 @@ export async function GET(req: Request) {
  */
 export async function POST(req: Request) {
   try {
-    const body = (await req.json().catch(() => ({}))) as {
-      message?: string;
-      surface?: string;
-      images?: unknown;
-      turnId?: unknown;
-      think?: unknown;
-    };
+    const body = (await req.json().catch(() => ({}))) as { message?: string };
     const message = (body.message ?? '').trim();
-    // Commentary v2 sends surface 'v2' (agentic: skills + plan) and may attach screenshots. v1 sends neither.
-    const v2 = body.surface === 'v2';
-    const parsedImages = parseImages(v2 ? body.images : null);
-    if (!parsedImages.ok) return NextResponse.json({ error: parsedImages.error }, { status: 400 });
-    const images = parsedImages.images;
     if (!message) return NextResponse.json({ error: 'Empty message.' }, { status: 400 });
     if (message.length > MAX_CHARS) {
       return NextResponse.json(
@@ -134,16 +103,8 @@ export async function POST(req: Request) {
     // History is what was said BEFORE this message; read it first so the new one isn't doubled.
     const prior = await listOperatorMessages(date, 16);
     const saved = await addOperatorMessage(date, 'user', message);
-    if (images.length > 0) {
-      const names = await saveImages(saved.id, images);
-      await setMessageImages(saved.id, names);
-      saved.images = names;
-    }
 
-    // v2 always answers with MiMo on its own chat model (default Flash); v1 keeps the trader's provider.
-    const chat = v2
-      ? { provider: 'mimo' as const, mimoModel: await getChatModel(), configured: hasMimo() }
-      : await chatProvider();
+    const chat = await chatProvider();
     if (!chat.configured) {
       return NextResponse.json({
         success: true,
@@ -156,57 +117,11 @@ export async function POST(req: Request) {
     }
 
     try {
-      // Commentary v2: with Background ON the chat also gets its watch/notebook tools + notebook context.
-      // OFF (the default) leaves the tools and framing exactly as v1 always had them.
-      // v2's watch tools exist only on v2 messages, and only while v2 is the selected page with Background
-      // ON — one version at a time. v1 messages never get them.
-      const background = v2 && (await isBackgroundActive());
-      // v2 sends ONE shortened trader read (it can fetch more with read_app_data source commentary). MiMo caches
-      // an identical prompt PREFIX automatically (measured 2026-10-29), so v2 keeps the rules identical and puts
-      // everything that changes per message — reads, watches, notebook, clock — at the END.
-      const framing = v2 ? await chatFraming(date, undefined, true) : await chatFraming(date);
-      // v2: the per-message part goes LAST (cache-friendly); v1 keeps one block with the watch state appended.
-      const autoActions = v2 ? await getAutoActions() : undefined;
-      const context = v2
-        ? [
-            await backgroundStatusBlock(),
-            actionModeBlock(autoActions!),
-            ...(background ? [await backgroundFraming(date)] : []),
-            await readsBlock(date, { reads: 1, chars: 1200 }),
-          ].join('\n\n')
-        : background
-          ? await backgroundFraming(date)
-          : undefined;
-      const result = await replyToOperator({
-        message,
-        prior,
-        framing,
-        ...(context ? { context } : {}),
-        ...(autoActions ? { autoActions } : {}),
-        ...(background ? { background: { date } } : {}),
-        ...(v2
-          ? {
-              agentic: true,
-              images,
-              model: { provider: chat.provider, mimoModel: chat.mimoModel },
-              ...(isTurnId(body.turnId) ? { turnId: body.turnId } : {}),
-              thinking: body.think !== false,
-            }
-          : {}),
-      });
+      const result = await replyToOperator({ message, prior, framing: await chatFraming(date) });
       const reply = await addOperatorMessage(date, 'assistant', result.text, result.tools, `${result.provider}/${result.model}`);
-      await setMessageMeta(reply.id, result.meta).catch(() => undefined);
-      // v1: each proposal becomes its own Confirm card. v2: per the operator's per-action switches, an AUTO kind
-      // runs right now through the same gated code as a Confirm tap; an ASK kind stays a Confirm card.
-      const turnId = v2 && isTurnId(body.turnId) ? body.turnId : null;
+      // Each proposal becomes its own Confirm card right under the reply.
       const actions = [];
-      if (autoActions) {
-        actions.push(
-          ...(await applyProposals(date, result.proposals, autoActions, turnId ? (label, state) => noteStep(turnId, label, state) : undefined))
-        );
-      } else {
-        for (const p of result.proposals) actions.push(await addOperatorAction(date, p.description, p.action));
-      }
+      for (const p of result.proposals) actions.push(await addOperatorAction(date, p.description, p.action));
       return NextResponse.json({
         success: true,
         saved,
@@ -218,9 +133,6 @@ export async function POST(req: Request) {
     } catch (error) {
       // The operator's message is already stored and WILL reach the trader — say so.
       const msg = error instanceof Error ? error.message : String(error);
-      if (msg === 'Stopped by the operator.') {
-        return NextResponse.json({ success: true, saved, reply: null, notice: 'Stopped. Your message is saved; nothing was posted.' });
-      }
       console.error('[operator-chat] model error:', msg);
       return NextResponse.json({
         success: true,

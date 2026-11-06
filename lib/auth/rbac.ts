@@ -226,6 +226,8 @@ export const ADMIN_ONLY_PAGES: ReadonlySet<string> = new Set([
   '/trade-viewer',
   '/replay-commentary',
   '/trade-assistant',
+  // AI Analysis v2 — the operator's own agent chat (it can act on positions), like the v1 chat API below.
+  '/ai-analysis-v2',
   // Also OWNER-only (OWNER_ONLY_PAGES) — listed here too so the viewer
   // machinery (proxy policy + sidebar hiding) covers it without a special case.
   '/users',
@@ -254,6 +256,8 @@ export const ADMIN_ONLY_API_PREFIXES: readonly string[] = [
   '/api/telegram/setup',
   // The operator chat steers the auto-trader — reading the thread is as private as writing to it.
   '/api/trade-commentary/chat',
+  // AI Analysis v2's agent, thread, watches and actions — operator-only.
+  '/api/ai-analysis-v2',
   '/api/users', // narrowed further to the owner by OWNER_ONLY_API_PREFIXES
 ];
 

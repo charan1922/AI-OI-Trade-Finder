@@ -4,7 +4,6 @@ import { Bot, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { RichText } from '@/components/rich-text';
 import { useRole } from '@/lib/auth/use-role';
-import { CommentaryVersionSwitch } from '../trade-commentary-v2/_components/version-switch';
 import { ChatComposer, ChatItem } from './_components/chat-thread';
 import { type ChatMessage, useOperatorChat } from './_hooks/use-operator-chat';
 
@@ -379,8 +378,7 @@ export default function TradeCommentaryPage() {
     <div className="mx-auto max-w-5xl space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Bot className="h-5 w-5 shrink-0 text-primary" />
-        <h1 className="text-base font-bold text-foreground sm:text-lg">AI Analysis</h1>
-        <CommentaryVersionSwitch current="v1" />
+        <h1 className="text-base font-bold text-foreground sm:text-lg">Trade Commentary</h1>
         <span
           className="rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary"
           title="Model used when standalone narration runs. Autonomous decision rows may use the configured decision AI instead."

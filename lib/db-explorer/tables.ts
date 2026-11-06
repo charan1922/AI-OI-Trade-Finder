@@ -98,7 +98,7 @@ export const TABLE_META: Record<string, { label: string; description: string }> 
     description: 'AI prompt version history (read-only audit).',
   },
   trade_commentary: {
-    label: 'AI Analysis',
+    label: 'Trade Commentary',
     description: 'AI-generated end-of-day trade commentary rows.',
   },
   live_urgency_eod: {

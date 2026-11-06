@@ -30,6 +30,8 @@
     "box:status": "node scripts/box.mjs status"
   },
   "dependencies": {
+    "@langchain/core": "1.3.0",
+    "@langchain/langgraph": "1.5.2",
     "@prisma/adapter-better-sqlite3": "^7.10.1",
     "@prisma/client": "^7.10.1",
     "@radix-ui/react-popover": "^1.3.1",

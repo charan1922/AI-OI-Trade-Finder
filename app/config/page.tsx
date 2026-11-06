@@ -1,6 +1,5 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { Loader2, RotateCcw, Settings2 } from 'lucide-react';
 
@@ -82,7 +81,6 @@ const AT_CLOCK_DEFS = [
 ] as const;
 
 export default function ConfigPage() {
-  const router = useRouter();
   const [toggles, setToggles] = useState<ToggleState[]>([]);
   const [numbers, setNumbers] = useState<NumberState[]>([]);
   const [atNumbers, setAtNumbers] = useState<NumberState[]>([]);
@@ -142,8 +140,6 @@ export default function ConfigPage() {
       if (d.success) {
         setToggles(d.data);
         setNumbers(d.numbers ?? []);
-        // The root layout reads some toggles (e.g. COMMENTARY_V2 → which commentary the sidebar opens).
-        router.refresh();
       } else {
         setError(d.error ?? 'Failed to save');
         revert();
