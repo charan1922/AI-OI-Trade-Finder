@@ -1,5 +1,5 @@
 /**
- * Fast position-guard loop — the 5-second safety net BETWEEN the poller's
+ * Fast position-guard loop — the 15-second safety net BETWEEN the poller's
  * 5-minute passes. Fully headless: started once per server boot from
  * instrumentation.ts (same pattern as the Fyers poller), no page ever needs
  * to be open.
@@ -8,7 +8,8 @@
  * only at the start of each 5-min engine pass — an open position could sit
  * through its premium stop for up to ~5 minutes before code reacted. This
  * loop re-runs THE SAME guard every FAST_GUARD_TICK_MS whenever positions are
- * open. The timer targets a 5-second cadence, but process scheduling, quote
+ * open. The timer targets a 15-second cadence (5s until 2026-11-17 — see
+ * FAST_GUARD_TICK_MS for the Fyers budget reason), but process scheduling, quote
  * latency and restarts can add drift; heartbeat state records reality.
  *
  * WHAT IT DOES NOT CHANGE:

@@ -1,32 +1,43 @@
 /**
  * Pure checks for the Fyers data budget (lib/market-data/provider.ts).
  *
- * Official limits — FyersDev/fyers-skills references/rate-limits.md (Fyers' own
- * GitHub org, read 2026-10-08): 10/sec, 200/min, 100,000/day, NO per-plan
- * difference; breaching the per-minute cap more than 3 times in a day blocks the
- * account for the rest of the day. The code used to assume an invented
- * "standard plan" of 5/sec, 50/min, 5,000/day and capped the poller at 16
- * symbols a cycle, which left prices frozen for 40+ minutes (ADANIGREEN stuck at
- * 1318.3 from 09:22 to 10:05 on 2026-10-08) and fed a wrong 09:45 anchor to
- * the trade selector.
+ * Fyers' STANDARD-plan Data-API limits: 5/sec, 50/min, 5,000/day (enforced on
+ * this account since 2026-11-16 — the day's budget ran out at 11:45 on both
+ * 16 and 17 Nov, with the poller recording all ~165 names every cycle). Until
+ * then every account had 10/sec, 200/min, 100,000/day. Operator decision
+ * 2026-11-17: stay on Standard. These checks pin a day that FITS: the poller's
+ * share plus the open-trade guard plus the small callers stays under the gate.
  */
-import { fyersDataLimits, FYERS_OFFICIAL_LIMITS, symbolsPerCycle } from '../lib/market-data/provider';
+import { FAST_GUARD_TICK_MS } from '../lib/auto-trade/config';
+import { fyersDataLimits, FYERS_OFFICIAL_LIMITS, pollerDataLimits, symbolsPerCycle } from '../lib/market-data/provider';
 import { spreadFromDepth } from '../lib/fyers/market-feed';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
 export function runFyersBudgetChecks(check: CheckFn): void {
   const l = fyersDataLimits();
-  check('fyers budget: per-second stays under the official 10', l.perSecond < FYERS_OFFICIAL_LIMITS.perSecond, String(l.perSecond));
-  // Headroom for the broker adapter's own gate (orders/positions count too).
-  check('fyers budget: per-minute leaves ≥ 40/min headroom under the official 200', l.perMinute <= FYERS_OFFICIAL_LIMITS.perMinute - 40, String(l.perMinute));
-  check('fyers budget: per-day stays under the official 100,000', l.perDay < FYERS_OFFICIAL_LIMITS.perDay, String(l.perDay));
-  const full = symbolsPerCycle(l, 166);
-  check('fyers budget: the whole 166-symbol universe is recorded every cycle', full === 166, String(full));
-  // 3 calls per symbol must finish inside one 5-minute cycle at the per-minute cap.
-  check('fyers budget: a full cycle fits in 5 minutes at the per-minute cap', (166 * 3) / l.perMinute < 5, `${((166 * 3) / l.perMinute).toFixed(2)} min`);
-  check('fyers budget: a smaller daily budget caps the cycle instead of overrunning it', symbolsPerCycle({ ...l, perDay: 2_400 }, 166) === 10);
+  check('fyers budget: official limits are the Standard plan (5/s, 50/min, 5,000/day)',
+    FYERS_OFFICIAL_LIMITS.perSecond === 5 && FYERS_OFFICIAL_LIMITS.perMinute === 50 && FYERS_OFFICIAL_LIMITS.perDay === 5_000);
+  check('fyers budget: per-second stays under the official 5', l.perSecond < FYERS_OFFICIAL_LIMITS.perSecond, String(l.perSecond));
+  check('fyers budget: per-minute leaves ≥ 10/min headroom under the official 50', l.perMinute <= FYERS_OFFICIAL_LIMITS.perMinute - 10, String(l.perMinute));
+  check('fyers budget: per-day leaves ≥ 500 headroom under the official 5,000', l.perDay <= FYERS_OFFICIAL_LIMITS.perDay - 500, String(l.perDay));
+
+  const perCycle = symbolsPerCycle(pollerDataLimits(), 166);
+  check('fyers budget: the poller records 10 symbols a cycle', perCycle === 10, String(perCycle));
+  // 3 calls per symbol must finish well inside one 5-minute cycle at the per-minute cap.
+  check('fyers budget: a poller cycle fits in 5 minutes at the per-minute cap', (perCycle * 3) / l.perMinute < 5, `${((perCycle * 3) / l.perMinute).toFixed(2)} min`);
   check('fyers budget: never more symbols than the universe has', symbolsPerCycle(l, 12) === 12);
+
+  // One full trading day, the worst normal case: 75 poller cycles at the cap,
+  // one trade open 09:45–15:12 polled by the guard, plus scanner premiums and
+  // NIFTY candles (generous allowance). Must stay under the gate's daily cap,
+  // or the guard loses prices before the 15:12 square-off.
+  const poller = perCycle * 3 * 75;
+  const guard = Math.ceil(((15 * 60 + 12 - (9 * 60 + 45)) * 60_000) / FAST_GUARD_TICK_MS);
+  const others = 400;
+  const day = poller + guard + others;
+  check('fyers budget: a full day with one open trade fits under the daily cap', day <= l.perDay, `${poller} poller + ${guard} guard + ${others} other = ${day} / ${l.perDay}`);
+  check('fyers budget: guard re-checks at 15s (5s overspent the Standard plan)', FAST_GUARD_TICK_MS === 15_000, String(FAST_GUARD_TICK_MS));
 }
 
 /**
