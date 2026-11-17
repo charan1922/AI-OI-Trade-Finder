@@ -1,8 +1,9 @@
 /**
  * Shared client for NSE's public web APIs (nseindia.com/api/*).
  *
- * NSE blocks server-side calls that arrive without a session cookie, so we warm
- * up by visiting nseindia.com first. The cookie is cached in-process (3 min) so
+ * Calls go WITHOUT a cookie first (see nseApiGet — since 2026-11 NSE hangs
+ * calls that carry one). The warm-up below (visit nseindia.com for a session
+ * cookie) is now only the fallback. The cookie is cached in-process (3 min) so
  * every NSE-backed route (heatmap, market-movers, market-status) shares ONE
  * warm-up instead of hammering NSE — which is what got us throttled while
  * exploring. A 401/403 invalidates the cookie and retries once with a fresh one.
@@ -96,7 +97,16 @@ async function getCookie(force = false): Promise<string> {
   return cookiePromise;
 }
 
-/** GET an NSE /api/* JSON endpoint. Throws on a non-OK / non-JSON response. */
+/**
+ * GET an NSE /api/* JSON endpoint. Throws on a non-OK / non-JSON response.
+ *
+ * Tries WITHOUT a cookie first. From ~2026-11-13 NSE's Akamai edge HANGS any
+ * request carrying the homepage cookies (AKA_A2/ak_bmsc/bm_mi) — measured from
+ * the prod container 2026-11-17: oi-spurts / most-active / marketStatus answer
+ * in 40–84ms with no cookie and time out (10s) with one, which emptied every
+ * /live NSE list and so failed selector check ⑧ closed. The warm-up cookie is
+ * kept only as the fallback (attempts 2–3) in case NSE flips the rule back.
+ */
 export async function nseApiGet<T = unknown>(
   path: string,
   opts: { referer?: string; timeoutMs?: number } = {},
@@ -105,23 +115,32 @@ export async function nseApiGet<T = unknown>(
   const timeoutMs = opts.timeoutMs ?? 9000;
 
   let lastErr = '';
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const cookie = await getCookie(attempt > 0);
-    const res = await fetchWithTimeout(
-      `https://www.nseindia.com${path}`,
-      {
-        headers: {
-          'User-Agent': UA,
-          Accept: 'application/json',
-          'Accept-Language': 'en-US,en;q=0.9',
-          Referer: referer,
-          ...(cookie ? { Cookie: cookie } : {}),
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const cookie = attempt === 0 ? '' : await getCookie(attempt > 1);
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(
+        `https://www.nseindia.com${path}`,
+        {
+          headers: {
+            'User-Agent': UA,
+            Accept: 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+            Referer: referer,
+            ...(cookie ? { Cookie: cookie } : {}),
+          },
         },
-      },
-      timeoutMs,
-    );
+        timeoutMs,
+      );
+    } catch (err) {
+      // The cookie-less try failing (timeout/network) falls through to the
+      // cookie; a failure on a cookie attempt stays fatal, as before.
+      if (attempt > 0) throw err;
+      lastErr = (err as Error).name === 'AbortError' ? 'timeout' : (err as Error).message;
+      continue;
+    }
     if (res.status === 401 || res.status === 403) {
-      cookieCache = null; // stale cookie — refresh and retry once
+      if (attempt > 0) cookieCache = null; // stale cookie — refresh and retry once
       lastErr = `HTTP ${res.status}`;
       continue;
     }
