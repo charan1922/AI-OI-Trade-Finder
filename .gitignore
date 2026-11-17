@@ -55,7 +55,7 @@ data/replay-commentary/
 # server console logs (teed by lib/ops/file-log.ts; runtime artifact, kept 7 days)
 data/logs/
 
-# operator screenshots attached in AI Analysis v2 (lib/operator-chat/images.ts) — private, never commit
+# operator screenshots attached in AI Analysis v2 (lib/ai-analysis-v2/images.ts) — private, never commit
 data/chat-images/
 
 # local-only ops notes (real AWS identifiers). THIS REPO IS PUBLIC — the committed

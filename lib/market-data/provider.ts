@@ -34,14 +34,13 @@ export function fyersDataLimits(): FyersDataLimits {
 }
 
 /**
- * The poller's SHARE of the daily budget. It is the only bulk caller, so it is
- * capped well below the gate: 2,400 → 10 symbols a cycle (3 calls each × 80
- * cycles). The rest of the 4,500 is for the open-trade guard (one quote every
- * FAST_GUARD_TICK_MS while a trade is open — ~1,300 for a trade held
- * 10:00–15:12 at 15s), scanner premiums and NIFTY candles. Priority symbols
- * (open trade first, then TF candidates, then today's suggestions) take the
- * slots before the rotating tail — so the other ~155 names get candles only
- * occasionally until the full design lands.
+ * The poller's SHARE of the daily budget. It is the only bulk caller: ≤
+ * MAX_PRIORITY_SYMBOLS names × 2 calls (EQ candles + FUT depth) plus ~4
+ * batched snapshot calls (50 names each) for everyone else, per cycle —
+ * ~2,100 a day. The rest of the 4,500 is for the open-trade guard (one quote
+ * every FAST_GUARD_TICK_MS while a trade is open — ~1,300 for a trade held
+ * 10:00–15:12 at 15s), scanner premiums and NIFTY candles; the gate keeps the
+ * last 500 for the guard (lib/fyers/budget.ts).
  */
 export const POLLER_DAILY_BUDGET = 2_400;
 
@@ -49,8 +48,10 @@ export function pollerDataLimits(): FyersDataLimits {
   return { ...fyersDataLimits(), perDay: POLLER_DAILY_BUDGET };
 }
 
-/** History calls the poller makes per symbol per cycle (EQ candles, FUT candles, depth). */
-const CALLS_PER_SYMBOL = 3;
+/** Calls the poller makes per PRIORITY symbol per cycle (EQ candles, FUT depth). */
+const CALLS_PER_SYMBOL = 2;
+/** Most symbols that get full per-cycle data: open trades first, then TF's top 10. */
+export const MAX_PRIORITY_SYMBOLS = 12;
 /** 5-minute recording cycles in a session (09:15–15:30 = 75) plus margin. Off-hours
  *  cycles return 'market-closed' before downloading anything (poller.ts). */
 const RECORDING_CYCLES_PER_DAY = 80;

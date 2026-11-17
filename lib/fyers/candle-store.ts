@@ -192,6 +192,40 @@ export async function attachFutDepth(
 }
 
 /**
+ * Attach NSE's combined OI %-change (oi-spurts feed — NO Fyers call) to the
+ * current bucket's FUT row for EVERY name the feed carries. Since the Fyers
+ * Standard-plan budget (2026-11-17) only the priority set gets a depth call,
+ * so attachFutDepth alone would leave App OIΔ30m (combinedOiSlope over this
+ * series) blank for everyone else. Inserts a zero-OHLCV, oi=0 placeholder —
+ * depth readers filter on oi > 0, so it never reads as a depth snapshot — and
+ * on conflict touches ONLY nseOiPct/updatedAt.
+ */
+export async function attachNseOiPct(
+  date: string,
+  bucketTs: number,
+  bySymbol: Map<string, number>,
+  nowMs: number = Date.now()
+): Promise<number> {
+  if (bySymbol.size === 0) return 0;
+  await ensureFyersCandlesTable();
+  const entries = [...bySymbol.entries()];
+  const at = new Date(nowMs).toISOString();
+  for (let i = 0; i < entries.length; i += 200) {
+    const chunk = entries.slice(i, i + 200);
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO fyers_candles
+         (symbol, instrument, date, bucketTs, open, high, low, close, volume, oi, nseOiPct, updatedAt)
+       VALUES ${chunk.map(() => "(?, 'FUT', ?, ?, 0, 0, 0, 0, 0, 0, ?, ?)").join(', ')}
+       ON CONFLICT(symbol, instrument, date, bucketTs) DO UPDATE SET
+         nseOiPct = excluded.nseOiPct,
+         updatedAt = excluded.updatedAt`,
+      ...chunk.flatMap(([symbol, pct]) => [symbol, date, bucketTs, pct, at])
+    );
+  }
+  return entries.length;
+}
+
+/**
  * Sessions of 5-min candles retained. The local 2026-07-15 measurement was
  * ~4.8 MB/session including indexes at 166 symbols (~96 MB for 20 sessions).
  * This must be rechecked against production volume headroom after rollout. Today's

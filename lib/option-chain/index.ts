@@ -8,7 +8,6 @@
  * separate winners from losers. Re-run that study before promoting it.
  */
 export { deriveOptionActivityEvidence, OPTION_EVIDENCE_VERSION } from './evidence';
-export { getCachedOptionEvidence, scheduleOptionEvidenceShadow } from './shadow';
 export {
   ensureOptionChainTable,
   istMinuteOfDay,

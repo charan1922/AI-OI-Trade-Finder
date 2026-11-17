@@ -1,30 +1,19 @@
 import { NextResponse } from 'next/server';
-import { getCachedNiftyGammaContext } from '@/lib/signals/nifty-gamma-context';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-/** Cached, display-only NIFTY option-chain context for /live. */
+/**
+ * The NIFTY option-chain context was REMOVED on 2026-11-17: Fyers' Standard
+ * plan allows 5,000 data calls a day, and this display-only read (already
+ * hidden on /live) cost two option-chain calls every poller cycle. The route
+ * stays so the AI chats that list it as a readable path (v1 operator-chat,
+ * v2 data reader) get a plain answer instead of a 404.
+ */
 export async function GET() {
-  try {
-    const context = getCachedNiftyGammaContext();
-    const data = context
-      ? {
-          expiry: context.expiry,
-          spot: context.spot,
-          lotSize: context.lotSize,
-          capturedAt: context.capturedAt,
-          proxy: {
-            balance: context.proxy.balance,
-            netSharePct: context.proxy.netSharePct,
-            concentrationStrike: context.proxy.concentrationStrike,
-            label: context.proxy.label,
-          },
-        }
-      : null;
-    return NextResponse.json({ success: true, data });
-  } catch (error) {
-    console.warn('[Nifty context] unavailable:', (error as Error).message);
-    return NextResponse.json({ success: true, data: null });
-  }
+  return NextResponse.json({
+    success: true,
+    data: null,
+    note: 'NIFTY option-chain context removed on 2026-11-17 (Fyers Standard-plan data budget). No option-chain data is collected.',
+  });
 }

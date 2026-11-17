@@ -85,6 +85,8 @@ interface PollerStatus {
   lastWarmup?: { date: string; at: number; fyers: string; dhan: string } | null;
   /** Daily fno_stocks ↔ exchange sync (lib/fyers/universe-sync.ts). Optional so
    *  an older server payload still renders. */
+  /** Fyers Standard plan: data calls used today + any refusal latch. */
+  dataBudget?: { count: number; perDay: number; latchUntil: number | null; latchReason: string | null };
   universeSync?: {
     date: string;
     at: string;
@@ -470,6 +472,26 @@ export default function FyersPage() {
                   </div>
                 )}
               </>
+            )}
+            {status.dataBudget && (
+              <div className="mt-2 text-[10px] text-muted-foreground">
+                Fyers data calls today{' '}
+                <b className="font-semibold text-foreground">
+                  {status.dataBudget.count.toLocaleString('en-IN')} / {status.dataBudget.perDay.toLocaleString('en-IN')}
+                </b>{' '}
+                · Standard plan allows 5,000/day, 50/min · last 500 kept for open trades
+              </div>
+            )}
+            {status.dataBudget?.latchUntil != null && (
+              <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+                Fyers data paused until{' '}
+                {new Date(status.dataBudget.latchUntil).toLocaleTimeString('en-IN', {
+                  timeZone: 'Asia/Kolkata',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}{' '}
+                IST — {status.dataBudget.latchReason}. No Fyers data calls are sent until then.
+              </div>
             )}
             {status.universeSync && <UniverseSyncNote report={status.universeSync} />}
             {status.lastCapture && (

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { isMarketHours, todayIST } from '@/lib/market-data';
 import { approximateTfRFactor, computeRFactor } from '@/lib/r-factor';
 import { getNseOiLatestForSymbols } from '@/lib/fyers/candle-store';
+import { getLatestQuoteSnapshots, type QuoteSnapshot } from '@/lib/fyers/quote-snapshots';
 import { getNseOiRowMap, LIVE_PATH_NSE_WAIT_MS } from '@/lib/nse/combined-oi';
 import type { OiStock } from '@/lib/nse/pulse';
 import { addToUniverse } from '@/lib/fyers/symbols';
@@ -169,6 +170,7 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
   // Fyers poller from the oi-spurts feed. DB-only, one batched query; names not
   // in that feed are simply absent (shown as "—", never faked).
   const nseOi = await getNseOiLatestForSymbols(allowed, today).catch(() => new Map<string, never>());
+  const quoteSnaps = await getLatestQuoteSnapshots(allowed, today).catch(() => new Map<string, QuoteSnapshot>());
   // Rich oi-spurts row per symbol (options premium, fut/opt value split, options
   // share, absolute combined OI) — live-feed snapshot through the shared 30s NSE
   // cache. Display columns for the F&O OI Build-up view; missing → "—", never faked.
@@ -185,7 +187,16 @@ async function computeQuotePayload(symbols: string[], includeAllFno = false): Pr
   // R-Factor turnover factor uses, surfaced as its own column).
   const sessionFrac = sessionFractionElapsed(now);
   const rows: LiveUrgencyRow[] = allowed.map((s) => {
-    const eqQ = eqMap.get(s);
+    // Names outside the Fyers priority set have no fresh candles (Standard-plan
+    // budget, 2026-11-17) — only a batched snapshot each cycle. Use it when it
+    // is newer than the last candle's close. A snapshot's open/high/low are the
+    // DAY's so far, never a 5-min bar; missing values stay null, never 0.
+    const candle = eqMap.get(s);
+    const snap = quoteSnaps.get(s);
+    const eqQ: { close: number | null; open: number | null; high: number | null; low: number | null } | undefined =
+      snap && (!candle || snap.tsMs > (candle.bucketTs + 300) * 1000)
+        ? { close: snap.ltp, open: snap.open, high: snap.high, low: snap.low }
+        : candle;
     const futQ = futMap.get(s);
     const ltp = eqQ?.close ?? null;
     const open = eqQ?.open ?? 0;

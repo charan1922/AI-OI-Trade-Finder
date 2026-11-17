@@ -56,7 +56,7 @@ export async function fetchOptionQuotesWithHealth(optSecurityIds: readonly strin
   const out: QuoteBatchResult = { quotes: new Map(), sourceOk: true, error: null, missingIds: [] };
   if (ids.length === 0) return out;
   try {
-    const q = await marketFeed('quote', { NSE_FNO: ids });
+    const q = await marketFeed('quote', { NSE_FNO: ids }, { lane: 'critical' });
     const unpriced: string[] = [];
     for (const id of ids) {
       const oq = q.NSE_FNO?.[String(id)];
@@ -170,7 +170,7 @@ export async function fetchLiveSpot(symbol: string): Promise<number | null> {
     });
     const id = Number(eq?.securityId);
     if (!Number.isFinite(id) || id <= 0) return null;
-    const q = await marketFeed('ohlc', { NSE_EQ: [id] });
+    const q = await marketFeed('ohlc', { NSE_EQ: [id] }, { lane: 'critical' });
     const ltp = Number(q.NSE_EQ?.[String(id)]?.last_price);
     return Number.isFinite(ltp) && ltp > 0 ? ltp : null;
   } catch (err) {
