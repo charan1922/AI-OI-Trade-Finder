@@ -10,8 +10,9 @@
  *   - MTO delivery data (delivery qty / %)
  * and stores one row per (date, symbol) in `bhavcopy_days`.
  *
- * Sync is explicit (user-triggered), never automatic. NSE requires a session
- * cookie — nseindia.com is visited first to obtain one.
+ * Sync is explicit (user-triggered), never automatic. nseindia.com is visited
+ * first for a session cookie, but archive downloads try WITHOUT it first —
+ * since 2026-11 NSE hangs archive requests that carry it (nseArchiveHeaders).
  */
 
 import { inflateRawSync } from 'node:zlib';
@@ -416,7 +417,7 @@ export async function syncBhavcopy(
   return { dates: datesAdded, rows: totalRows, skipped, elapsed };
 }
 
-/** Get NSE session cookie by visiting nseindia.com first. Required for bhavcopy downloads. */
+/** Get NSE session cookie by visiting nseindia.com first. Only a FALLBACK for archive downloads (see nseArchiveHeaders). */
 async function getNSECookie(): Promise<string> {
   try {
     const res = await fetch('https://www.nseindia.com/', {
@@ -551,17 +552,32 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * not-yet-published) returns immediately. Returns null only after exhausting
  * retries or on a true 404.
  */
-async function downloadAndExtractZip(url: string, cookie = '', attempts = 4): Promise<string | null> {
+/**
+ * Headers for an nsearchives request. Odd attempts go WITHOUT the homepage
+ * cookie, even attempts WITH it. Why: from ~2026-11-13 NSE's Akamai edge HANGS
+ * (no response, 20s timeout) any nsearchives request carrying the nseindia.com
+ * homepage cookies (AKA_A2/ak_bmsc/bm_mi), while the same request with no
+ * cookie returns the file in ~80ms — reproduced inside the prod container
+ * 2026-11-17. Every sync since returned "no data" for real sessions. The
+ * cookie stays as the fallback in case NSE flips the rule back.
+ */
+function nseArchiveHeaders(cookie: string, attempt: number): Record<string, string> {
   const hdrs: Record<string, string> = { ...NSE_HEADERS };
-  if (cookie) hdrs.Cookie = cookie;
+  if (cookie && attempt % 2 === 0) hdrs.Cookie = cookie;
+  return hdrs;
+}
+
+async function downloadAndExtractZip(url: string, cookie = '', attempts = 4): Promise<string | null> {
+  let lastFailure = 'unknown';
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
     let res: Response | null = null;
     try {
-      res = await fetch(url, { headers: hdrs, signal: controller.signal });
-    } catch {
+      res = await fetch(url, { headers: nseArchiveHeaders(cookie, attempt), signal: controller.signal });
+    } catch (err) {
       // network error / timeout — transient, fall through to retry
+      lastFailure = (err as Error).name === 'AbortError' ? 'timeout' : (err as Error).message;
     } finally {
       clearTimeout(timeout);
     }
@@ -572,14 +588,20 @@ async function downloadAndExtractZip(url: string, cookie = '', attempts = 4): Pr
         try {
           const csv = extractCsvFromZip(buffer);
           if (csv) return csv;
+          lastFailure = 'empty zip';
         } catch {
           // corrupt/partial download — retry
+          lastFailure = 'corrupt zip';
         }
+      } else {
+        // 403/429/5xx → throttled, retry
+        lastFailure = `HTTP ${res.status}`;
       }
-      // else 403/429/5xx → throttled, retry
     }
     if (attempt < attempts) await sleep(500 * 2 ** (attempt - 1)); // 0.5s → 1s → 2s
   }
+  // Not a 404 — the file may well exist. Say so, or a block reads as a holiday.
+  console.warn(`[Bhavcopy] download failed after ${attempts} attempts (${lastFailure}): ${url}`);
   return null;
 }
 
@@ -842,21 +864,21 @@ async function fetchMTODeliveryData(date: Date, cookie = ''): Promise<Map<string
   const yyyy = date.getFullYear();
   const url = `${NSE_BASE}/archives/equities/mto/MTO_${dd}${mm}${yyyy}.DAT`;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-  const hdrs: Record<string, string> = { ...NSE_HEADERS };
-  if (cookie) hdrs.Cookie = cookie;
-
-  let res: Response;
-  try {
-    res = await fetch(url, { headers: hdrs, signal: controller.signal });
-  } catch {
-    return new Map();
-  } finally {
-    clearTimeout(timeout);
+  // No cookie first, then with it — see nseArchiveHeaders().
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= 2 && !res?.ok; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      res = await fetch(url, { headers: nseArchiveHeaders(cookie, attempt), signal: controller.signal });
+    } catch {
+      res = null;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
-  if (!res.ok) return new Map();
+  if (!res?.ok) return new Map();
 
   const text = await res.text();
   const result = new Map<string, MTOData>();
