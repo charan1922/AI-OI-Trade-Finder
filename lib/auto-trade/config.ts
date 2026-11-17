@@ -126,8 +126,14 @@ export const MAX_TOOL_STEPS = 10;
  * an intraday option stop was a material chunk of the risk budget. This is a
  * TARGET cadence, not an exit-latency guarantee — the guard heartbeat reports
  * actual scheduling and quote latency. Deterministic code only — no AI here.
+ *
+ * 15 seconds since 2026-11-17: Fyers' Standard plan allows 5,000 data calls a
+ * day (lib/market-data/provider.ts). At 5s one trade held 10:00–15:12 cost
+ * ~3,700 quotes on its own — the day's budget ran out by midday and the guard
+ * would then have had NO price at all. 15s costs ~1,300 and keeps the guard fed
+ * all session; 15s is still 4× tighter than the original 60s.
  */
-export const FAST_GUARD_TICK_MS = 5_000;
+export const FAST_GUARD_TICK_MS = 15_000;
 
 /** place_entry_order demands a check_order ALLOW for the SAME symbol within
  *  this window (AT-006: the check-then-place workflow is code-enforced, not

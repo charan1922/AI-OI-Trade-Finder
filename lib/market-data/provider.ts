@@ -3,12 +3,18 @@ export const MARKET_DATA_PROVIDER = 'fyers' as const;
 export const DHAN_RETIRED_MESSAGE = 'Dhan is inactive. Use Fyers for market data and new trades.';
 
 /**
- * Fyers' OFFICIAL API limits — FyersDev/fyers-skills references/rate-limits.md
- * (Fyers' own GitHub org, read 2026-10-08): the same for every account, no
- * per-plan difference. Breaching the per-minute cap more than 3 times in a day
- * blocks the account for the rest of the day, so the data gate runs BELOW them.
+ * Fyers' OFFICIAL Data-API limits on the STANDARD plan (no Prime subscription).
+ * Fyers split limits by plan (notice "Changes to FYERS API Rate Limits and
+ * Usage", announced 2026-10-15); this account has been refused above them
+ * since 2026-11-16 09:15 IST ("You've reached the Standard plan limit of 50
+ * requests/minute" from 09:15, "… 5,000 requests/day" from 11:45 — no
+ * candles for the rest of both days). Before that every account had
+ * 10/sec, 200/min, 100,000/day. Orders/positions/funds (Transaction APIs)
+ * keep 200/min, 100k/day — those go through the broker adapter's own gate.
+ * Operator decision 2026-11-17: stay on Standard, do not upgrade to Prime.
+ * Design for the full fix: docs/superpowers/specs/2026-11-17-fyers-standard-plan-budget-design.md
  */
-export const FYERS_OFFICIAL_LIMITS = { perSecond: 10, perMinute: 200, perDay: 100_000 } as const;
+export const FYERS_OFFICIAL_LIMITS = { perSecond: 5, perMinute: 50, perDay: 5_000 } as const;
 
 export interface FyersDataLimits {
   perSecond: number;
@@ -17,14 +23,30 @@ export interface FyersDataLimits {
 }
 
 /**
- * The data gate's budget (lib/fyers/client.ts throughFyersGate). Under the
- * official limits with headroom: the broker adapter has its OWN serial gate and
- * its orders / positions / quotes count against the same 200/min, so data stops
- * at 150. This replaced an invented "standard plan" (5/sec, 50/min, 5,000/day)
- * that capped the poller at 16 symbols a cycle and froze prices for 40+ minutes.
+ * The data gate's budget (lib/fyers/client.ts throughFyersGate) — every Fyers
+ * data call shares it: poller candles + depth, the open-trade guard's option
+ * quotes, scanner premiums, NIFTY candles. Under the Standard limits with
+ * headroom for bursts and the adapter's rare order-time quote (it does not pass
+ * through this gate).
  */
 export function fyersDataLimits(): FyersDataLimits {
-  return { perSecond: 8, perMinute: 150, perDay: 90_000 };
+  return { perSecond: 4, perMinute: 40, perDay: 4_500 };
+}
+
+/**
+ * The poller's SHARE of the daily budget. It is the only bulk caller, so it is
+ * capped well below the gate: 2,400 → 10 symbols a cycle (3 calls each × 80
+ * cycles). The rest of the 4,500 is for the open-trade guard (one quote every
+ * FAST_GUARD_TICK_MS while a trade is open — ~1,300 for a trade held
+ * 10:00–15:12 at 15s), scanner premiums and NIFTY candles. Priority symbols
+ * (open trade first, then TF candidates, then today's suggestions) take the
+ * slots before the rotating tail — so the other ~155 names get candles only
+ * occasionally until the full design lands.
+ */
+export const POLLER_DAILY_BUDGET = 2_400;
+
+export function pollerDataLimits(): FyersDataLimits {
+  return { ...fyersDataLimits(), perDay: POLLER_DAILY_BUDGET };
 }
 
 /** History calls the poller makes per symbol per cycle (EQ candles, FUT candles, depth). */

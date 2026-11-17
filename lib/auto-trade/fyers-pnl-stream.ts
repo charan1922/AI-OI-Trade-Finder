@@ -167,7 +167,7 @@ function positiveSize(value: unknown): number | null {
 
 /** Conservative fast-path target check: the best bid must meet the target and
  * have enough displayed quantity to cover the entire position. Missing size
- * never authorizes a streamed exit; the 5-second REST guard remains fallback. */
+ * never authorizes a streamed exit; the 15-second REST guard remains fallback. */
 export function isStreamTargetExecutable(args: {
   bid: number | null;
   bidSize: number | null;
@@ -441,7 +441,7 @@ function scheduleReconnect(reason: string): void {
     current.nextReconnectAt = null;
     connectExistingSocket(reason);
   }, delayMs);
-  console.warn(`${TAG} reconnect scheduled in ${delayMs}ms (${reason}); 5-second REST guard remains active`);
+  console.warn(`${TAG} reconnect scheduled in ${delayMs}ms (${reason}); 15-second REST guard remains active`);
 }
 
 /**
@@ -456,7 +456,7 @@ function scheduleReconnect(reason: string): void {
  * later of the last message and the moment the socket came up (a socket that
  * just connected has simply not had time to say anything yet).
  *
- * A false positive costs one reconnect; the 5-second REST guard protects
+ * A false positive costs one reconnect; the 15-second REST guard protects
  * throughout either way.
  */
 export const STREAM_SILENCE_LIMIT_MS = 120_000;
@@ -499,7 +499,7 @@ async function ensureSocket(): Promise<void> {
     token = await getFyersAccessToken();
   } catch (err) {
     s.lastError = `token refresh check failed: ${(err as Error).message}`;
-    console.warn(`${TAG} ${s.lastError}; 5-second REST guard remains active`);
+    console.warn(`${TAG} ${s.lastError}; 15-second REST guard remains active`);
     return;
   }
 
@@ -564,7 +564,7 @@ async function ensureSocket(): Promise<void> {
       current.connected = false;
       current.connecting = false;
       current.subscribed.clear();
-      console.warn(`${TAG} disconnected; 5-second REST guard remains active`);
+      console.warn(`${TAG} disconnected; 15-second REST guard remains active`);
       scheduleReconnect('socket close');
     });
     // Do not combine the opaque SDK retry loop with our supervisor. The SDK is

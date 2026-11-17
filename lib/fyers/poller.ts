@@ -38,7 +38,7 @@ import { pruneQuoteSnapshots } from '@/lib/auto-trade/store';
 import { pruneOptionChainSnapshots } from '@/lib/option-chain/store';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import { reviewUngradedBacklog } from '@/lib/trade-suggest/review';
-import { fyersDataLimits, symbolsPerCycle } from '@/lib/market-data/provider';
+import { pollerDataLimits, symbolsPerCycle } from '@/lib/market-data/provider';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
@@ -447,13 +447,18 @@ export async function runFyersCycle(
       : { symbols: new Set<string>(), riskBearing: [] as string[], earlierSuggestions: [] as string[] };
     const priority = priorityInfo.symbols;
 
-    const priorityOrdered = universe.filter((symbol) => priority.has(symbol));
+    // Priority keeps getPrioritySymbols()' INSERTION order — open trades first,
+    // then TF candidates, then today's suggestions — not universe order: with
+    // only ~10 slots a cycle, an alphabetical cut could drop the open trade,
+    // and the position guard reads its spot from these candles.
+    const universeSet = new Set(universe);
+    const priorityOrdered = [...priority].filter((symbol) => universeSet.has(symbol));
     const tail = universe.filter((symbol) => !priority.has(symbol));
-    // Fyers' official limits allow the whole universe every cycle (~500 calls in
-    // ~3.3 min at the gate's 150/min; ~37k of the 90k daily budget). The old
-    // invented 5,000/day "standard plan" capped this at 16 symbols and froze
-    // prices for 40+ minutes (2026-10-08). Candidates still go first.
-    const maxSymbolsThisCycle = symbolsPerCycle(fyersDataLimits(), universe.length);
+    // Fyers Standard plan (since 2026-11-16): 5,000 data calls/day across the
+    // whole app. The poller gets 2,400 of them → 10 symbols a cycle (3 calls
+    // each). It was the whole ~165-symbol universe every cycle (~37k/day),
+    // which ran the day's budget out by 11:45. Priority names go first.
+    const maxSymbolsThisCycle = symbolsPerCycle(pollerDataLimits(), universe.length);
     const tailSlots = Math.max(0, maxSymbolsThisCycle - Math.min(priorityOrdered.length, maxSymbolsThisCycle));
     const tailStart = tail.length === 0 ? 0 : (state.cycles * Math.max(1, tailSlots)) % tail.length;
     const rotatingTail = [...tail.slice(tailStart), ...tail.slice(0, tailStart)].slice(0, tailSlots);
@@ -668,10 +673,11 @@ async function getPrioritySymbols(
   today: string,
   candidateSnapshot: CandidateSnapshot | null
 ): Promise<{ symbols: Set<string>; riskBearing: string[]; earlierSuggestions: string[] }> {
+  // Insertion order IS the priority order (the cycle cap cuts from the end):
+  // open trades first — the position guard reads their spot from these candles.
   const symbols = new Set<string>();
   const riskBearing: string[] = [];
   const earlierSuggestions: string[] = [];
-  for (const symbol of candidateSnapshot?.prioritySymbols ?? []) symbols.add(symbol);
   try {
     const { getRiskBearingTrades } = await import('@/lib/auto-trade/store');
     for (const t of await getRiskBearingTrades()) {
@@ -681,6 +687,7 @@ async function getPrioritySymbols(
   } catch (err) {
     console.warn(`${TAG} priority: open trades unavailable: ${(err as Error).message}`);
   }
+  for (const symbol of candidateSnapshot?.prioritySymbols ?? []) symbols.add(symbol);
   try {
     const { getSuggestions } = await import('@/lib/trade-suggest/store');
     for (const s of await getSuggestions(today)) {
