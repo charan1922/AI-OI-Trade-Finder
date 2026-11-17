@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { requestFyersData } from './client';
+import type { FyersLane } from './budget';
 import type { MarketFeedQuote, MarketFeedResponse } from '@/lib/market-data/common';
 
 /** Legacy index keys are internal identifiers, not tokens sent to Fyers. */
@@ -69,11 +70,11 @@ export function spreadFromDepth(q: MarketFeedQuote): { bid: number; ask: number;
 
 host.__fyersDepthRequests ??= new Map();
 
-export async function fetchFyersDepth(symbol: string, deadline = Date.now() + 8_000): Promise<MarketFeedQuote> {
+export async function fetchFyersDepth(symbol: string, deadline = Date.now() + 8_000, lane: FyersLane = 'normal'): Promise<MarketFeedQuote> {
   const running = host.__fyersDepthRequests!.get(symbol);
   if (running) return running;
   const request = (async () => {
-    const response = await requestFyersData('depth', { symbol, ohlcv_flag: 1 }, deadline);
+    const response = await requestFyersData('depth', { symbol, ohlcv_flag: 1 }, deadline, lane);
     const values = response.d as Record<string, Record<string, unknown>> | undefined;
     if (!values?.[symbol]) throw new Error(`Fyers depth missing requested symbol ${symbol}`);
     return normalizeFyersDepth(values[symbol]);
@@ -83,14 +84,20 @@ export async function fetchFyersDepth(symbol: string, deadline = Date.now() + 8_
 }
 
 /** Full depth/OI requires one request per instrument on Fyers, not Dhan-sized batches. */
-export async function marketFeed(endpoint: 'quote' | 'ohlc', securities: Record<string, number[]>): Promise<MarketFeedResponse> {
+/** `lane: 'critical'` = open-trade guard / entry spot: may use the gate's reserved last calls of the day. */
+export async function marketFeed(
+  endpoint: 'quote' | 'ohlc',
+  securities: Record<string, number[]>,
+  opts: { lane?: FyersLane } = {},
+): Promise<MarketFeedResponse> {
+  const lane = opts.lane ?? 'normal';
   const contracts = await resolveFeedSymbols(securities);
   const out: MarketFeedResponse = {};
   const deadline = Date.now() + 8_000;
   if (endpoint === 'ohlc' || contracts.every((c) => c.segment === 'IDX_I')) {
     for (let i = 0; i < contracts.length; i += 50) {
       const batch = contracts.slice(i, i + 50);
-      const response = await requestFyersData('quotes', { symbols: batch.map((c) => c.symbol).join(',') }, deadline);
+      const response = await requestFyersData('quotes', { symbols: batch.map((c) => c.symbol).join(',') }, deadline, lane);
       const data = response.d as { n: string; s: string; v: Record<string, unknown> }[];
       if (!Array.isArray(data)) throw new Error('Invalid Fyers quotes response');
       for (const contract of batch) {
@@ -110,7 +117,7 @@ export async function marketFeed(endpoint: 'quote' | 'ohlc', securities: Record<
       while (!failed && cursor < contracts.length) {
         const contract = contracts[cursor++];
         try {
-          const quote = await fetchFyersDepth(contract.symbol, deadline);
+          const quote = await fetchFyersDepth(contract.symbol, deadline, lane);
           (out[contract.segment] ??= {})[contract.id] = quote;
         } catch (error) { failed = true; throw error; }
       }

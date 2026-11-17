@@ -28,8 +28,17 @@ import { releaseRuntimeLease, tryAcquireRuntimeLease } from '@/lib/runtime/lease
 import { markToday, wasMarkedToday } from '@/lib/runtime/daily-marker';
 import { inDriftReminderWindow, runConfigDriftReminderCore } from '@/lib/config/config-drift-reminder';
 import { FyersAuthError, getFyersAccessToken, getFyersTokenStatus, hasFyersAuth } from '@/lib/fyers/auth';
-import { fetchFutDepth, fetchHistory5m, type FyersBar } from '@/lib/fyers/client';
-import { attachFutDepth, fyersBucketFor, pruneCandleHistory, upsertCandles } from '@/lib/fyers/candle-store';
+import {
+  fetchFutDepth,
+  fetchHistory5m,
+  FyersBudgetError,
+  getFyersDataBudgetStatus,
+  requestFyersData,
+  type FyersBar,
+  type FyersDataBudgetStatus,
+} from '@/lib/fyers/client';
+import { attachFutDepth, attachNseOiPct, fyersBucketFor, pruneCandleHistory, upsertCandles } from '@/lib/fyers/candle-store';
+import { pruneQuoteSnapshotHistory, recordQuoteSnapshots, type QuoteSnapshot } from '@/lib/fyers/quote-snapshots';
 import { getTrackedUniverse, peekUniverse, resolveFutSymbol, toEqSymbol } from '@/lib/fyers/symbols';
 import { getNseCombinedOiPctMap } from '@/lib/nse/combined-oi';
 import { startCycleTimeline } from '@/lib/ops/cycle-timeline';
@@ -38,7 +47,7 @@ import { pruneQuoteSnapshots } from '@/lib/auto-trade/store';
 import { pruneOptionChainSnapshots } from '@/lib/option-chain/store';
 import type { CandidateSnapshot } from '@/lib/trade-suggest/candidates';
 import { reviewUngradedBacklog } from '@/lib/trade-suggest/review';
-import { pollerDataLimits, symbolsPerCycle } from '@/lib/market-data/provider';
+import { MAX_PRIORITY_SYMBOLS, pollerDataLimits, symbolsPerCycle } from '@/lib/market-data/provider';
 
 const TAG = '[FyersPoller]';
 const CYCLE_MS = 5 * 60 * 1000;
@@ -82,7 +91,7 @@ async function mapBounded<T>(
 
 export interface CycleError {
   symbol: string;
-  stage: 'resolve' | 'eq-history' | 'fut-history' | 'oi' | 'cycle';
+  stage: 'resolve' | 'eq-history' | 'fut-history' | 'oi' | 'snapshot' | 'cycle';
   message: string;
 }
 
@@ -97,6 +106,8 @@ export interface CycleSummary {
   eqBars: number;
   futBars: number;
   oiAttached: number;
+  /** Non-priority names priced by the batched quotes snapshot this cycle. */
+  snapshotSymbols: number;
   prioritySymbols: number;
   /** Priority symbols whose Fyers history response contained candle rows. */
   priorityFreshSymbols: number;
@@ -343,6 +354,7 @@ export async function runFyersCycle(
     eqBars: 0,
     futBars: 0,
     oiAttached: 0,
+    snapshotSymbols: 0,
     prioritySymbols: 0,
     priorityFreshSymbols: 0,
     captureReleaseMs: null,
@@ -453,17 +465,17 @@ export async function runFyersCycle(
     // and the position guard reads its spot from these candles.
     const universeSet = new Set(universe);
     const priorityOrdered = [...priority].filter((symbol) => universeSet.has(symbol));
-    const tail = universe.filter((symbol) => !priority.has(symbol));
     // Fyers Standard plan (since 2026-11-16): 5,000 data calls/day across the
-    // whole app. The poller gets 2,400 of them → 10 symbols a cycle (3 calls
-    // each). It was the whole ~165-symbol universe every cycle (~37k/day),
-    // which ran the day's budget out by 11:45. Priority names go first.
-    const maxSymbolsThisCycle = symbolsPerCycle(pollerDataLimits(), universe.length);
-    const tailSlots = Math.max(0, maxSymbolsThisCycle - Math.min(priorityOrdered.length, maxSymbolsThisCycle));
-    const tailStart = tail.length === 0 ? 0 : (state.cycles * Math.max(1, tailSlots)) % tail.length;
-    const rotatingTail = [...tail.slice(tailStart), ...tail.slice(0, tailStart)].slice(0, tailSlots);
-    const ordered = [...priorityOrdered.slice(0, maxSymbolsThisCycle), ...rotatingTail];
-    const priorityCount = Math.min(priorityOrdered.length, maxSymbolsThisCycle);
+    // whole app. Full data (EQ candles + FUT depth, 2 calls) goes ONLY to the
+    // priority set, capped at MAX_PRIORITY_SYMBOLS; every other name gets a
+    // batched price snapshot (one call per 50 names) after the decision path.
+    // It was 3 calls for all ~165 names every cycle (~37k/day), which ran the
+    // day's budget out by 11:45 on 16 and 17 Nov.
+    const maxSymbolsThisCycle = Math.min(MAX_PRIORITY_SYMBOLS, symbolsPerCycle(pollerDataLimits(), universe.length));
+    const ordered = priorityOrdered.slice(0, maxSymbolsThisCycle);
+    const priorityCount = ordered.length;
+    const orderedSet = new Set(ordered);
+    const snapshotSymbols = universe.filter((symbol) => !orderedSet.has(symbol));
     summary.prioritySymbols = priorityCount;
     let captureFired = false;
 
@@ -543,7 +555,7 @@ export async function runFyersCycle(
       captureFired = true;
       summary.captureReleaseMs = Date.now() - startedMs;
       console.log(
-        `${TAG} priority EQ refresh ${priorityFreshCount}/${priorityCount} fresh — capture fired; ${priorityCount - priorityFreshCount} use last stored candle context, FUT/depth and ${ordered.length - priorityCount} more symbols continue in background`
+        `${TAG} priority EQ refresh ${priorityFreshCount}/${priorityCount} fresh — capture fired; ${priorityCount - priorityFreshCount} use last stored candle context, FUT depth for ${priorityCount} + snapshots for ${snapshotSymbols.length} continue in background`
       );
       void runAutonomousCapture(today, state, candidateSnapshot, startedMs);
     } else if (!cycleAborted && captureEligible && priorityCount === 0) {
@@ -557,6 +569,13 @@ export async function runFyersCycle(
 
     // Recorder-only work starts after the decision path is released.
     const nseOiPctBySymbol = attachOi ? await getNseCombinedOiPctMap() : new Map<string, number>();
+    // NSE's combined OI % for EVERY name (no Fyers call) — App OIΔ30m's series.
+    if (attachOi && nseOiPctBySymbol.size > 0) {
+      const inUniverse = new Map([...nseOiPctBySymbol].filter(([symbol]) => universeSet.has(symbol)));
+      await attachNseOiPct(date, fyersBucketFor(Date.now()), inUniverse).catch((err) => {
+        console.warn(`${TAG} nseOiPct attach failed: ${(err as Error).message}`);
+      });
+    }
     for (let symbolIdx = 0; symbolIdx < ordered.length && !cycleAborted; symbolIdx += 1) {
       const symbol = ordered[symbolIdx];
       try {
@@ -571,18 +590,10 @@ export async function runFyersCycle(
           });
         }
 
-        // Priority EQ was completed above; the tail still gets the identical
-        // full EQ+FUT+depth refresh before the cycle finishes.
-        if (symbolIdx >= priorityCount) {
-          await downloadEq(symbol);
-          if (cycleAborted) break;
-        }
-
+        // EQ candles were refreshed above. FUT candles are no longer
+        // downloaded (nothing reads them; Standard-plan budget) — only the
+        // depth snapshot, which carries futures OI for the priority names.
         if (futSymbol) {
-          summary.apiCalls += 1;
-          const futBars = await withAuthRetry(() => fetchHistory5m(futSymbol, date));
-          summary.futBars += await upsertCandles(symbol, 'FUT', date, futBars);
-
           if (attachOi) {
             summary.apiCalls += 1;
             const depth = await withAuthRetry(() => fetchFutDepth(futSymbol));
@@ -614,10 +625,45 @@ export async function runFyersCycle(
       }
     }
 
+    // Everyone outside the priority set: ONE quotes call per 50 symbols.
+    if (attachOi && !cycleAborted && snapshotSymbols.length > 0) {
+      const snaps: QuoteSnapshot[] = [];
+      const n = (x: unknown) => (Number.isFinite(Number(x)) && Number(x) > 0 ? Number(x) : null);
+      for (let i = 0; i < snapshotSymbols.length; i += 50) {
+        const batch = snapshotSymbols.slice(i, i + 50);
+        try {
+          summary.apiCalls += 1;
+          const res = await requestFyersData('quotes', { symbols: batch.map(toEqSymbol).join(',') });
+          const data = Array.isArray(res.d) ? (res.d as { n: string; s: string; v: Record<string, unknown> }[]) : [];
+          const at = Date.now();
+          for (const symbol of batch) {
+            const v = data.find((e) => e.n === toEqSymbol(symbol) && e.s === 'ok')?.v;
+            const ltp = n(v?.lp);
+            if (!v || ltp === null) continue;
+            snaps.push({
+              symbol,
+              tsMs: at,
+              ltp,
+              open: n(v.open_price),
+              high: n(v.high_price),
+              low: n(v.low_price),
+              prevClose: n(v.prev_close_price),
+              volume: n(v.volume),
+            });
+          }
+        } catch (err) {
+          summary.errors.push({ symbol: '*', stage: 'snapshot', message: (err as Error).message });
+          if (err instanceof FyersBudgetError) break;
+        }
+      }
+      summary.snapshotSymbols = await recordQuoteSnapshots(date, snaps).catch(() => 0);
+    }
+
     // Retention never affects today's readers. Keep its SQLite work entirely
     // off the tick-to-decision path and run it after the recorder is complete.
     if (!opts.dateOverride) {
       await pruneCandleHistory();
+      await pruneQuoteSnapshotHistory().catch(() => 0);
       await pruneRankSnapshots();
       // The guard samples a quote every 5s per open position; without retention
       // auto_quote_snapshots outgrows every other table. Never runs while the
@@ -638,7 +684,7 @@ export async function runFyersCycle(
     state.cycles += 1;
     console.log(
       `${TAG} cycle #${state.cycles} (${trigger}) ${date}: ${summary.symbolsProcessed}/${summary.universeSize} symbols, ` +
-        `${summary.eqBars} eq bars, ${summary.futBars} fut bars, ${summary.oiAttached} OI, ` +
+        `${summary.eqBars} eq bars, ${summary.oiAttached} OI, ${summary.snapshotSymbols} snapshots, ` +
         `${summary.apiCalls} calls, ${summary.errors.length} errors, ${Date.now() - startedMs}ms`
     );
 
@@ -688,12 +734,12 @@ async function getPrioritySymbols(
     console.warn(`${TAG} priority: open trades unavailable: ${(err as Error).message}`);
   }
   for (const symbol of candidateSnapshot?.prioritySymbols ?? []) symbols.add(symbol);
+  // Earlier suggestions are reported but NOT given per-cycle slots (Fyers
+  // Standard plan): they only need candles for grading, and runEodScorecard
+  // fetches one full day for each after the close.
   try {
     const { getSuggestions } = await import('@/lib/trade-suggest/store');
-    for (const s of await getSuggestions(today)) {
-      symbols.add(s.symbol);
-      earlierSuggestions.push(s.symbol);
-    }
+    for (const s of await getSuggestions(today)) earlierSuggestions.push(s.symbol);
   } catch (err) {
     console.warn(`${TAG} priority: suggestions unavailable: ${(err as Error).message}`);
   }
@@ -759,7 +805,6 @@ async function runAutonomousCapture(
   };
   state.lastCapture = timing;
   const origin = `http://127.0.0.1:${process.env.PORT ?? '5001'}`;
-  let allowDisplayRefresh = false;
   try {
     try {
       const { runTradeSuggest } = await import('@/lib/trade-suggest/engine');
@@ -791,10 +836,6 @@ async function runAutonomousCapture(
         timing.tickToDecisionMs = decisionReadyMs - cycleStart;
         timing.redundantReadTools = outcome.redundantReadTools ?? 0;
         timing.detail = outcome.reason ?? null;
-        // Only this process may spend the low-priority Dhan option-chain call
-        // after it actually owned and completed the engine pass. If another
-        // process owns the pass, its quote lane must remain uncontested.
-        allowDisplayRefresh = outcome.ran;
         console.log(
           `${TAG} latency: tick→auto-pass ${decisionReadyMs - (cycleStartedMs ?? captureStartedMs)}ms (scan→decision ${decisionReadyMs - scanReadyMs}ms; ${outcome.reason ?? (outcome.ran ? 'pass ran — action taken' : 'pass skipped')})`
         );
@@ -830,21 +871,9 @@ async function runAutonomousCapture(
     timeline.setStatus(timing.status);
     void timeline.finish();
     state.captureRunning = false;
-    // Display-only and deliberately off the decision path. Skip unless this
-    // process owned the engine pass, and skip whenever an entry submission or
-    // confirmed position bears risk. /live reads only the resulting cache.
-    if (allowDisplayRefresh) void refreshDisplayOnlyNiftyContext();
-  }
-}
-
-async function refreshDisplayOnlyNiftyContext(): Promise<void> {
-  try {
-    const { getRiskBearingTrades } = await import('@/lib/auto-trade/store');
-    if ((await getRiskBearingTrades()).length > 0) return;
-    const { refreshNiftyGammaContext } = await import('@/lib/signals/nifty-gamma-context');
-    await refreshNiftyGammaContext();
-  } catch (err) {
-    console.warn(`${TAG} display-only NIFTY context refresh failed: ${(err as Error).message}`);
+    // The display-only NIFTY option-chain refresh that ran here was removed on
+    // 2026-11-17 (Fyers Standard plan: 2 option-chain calls a cycle for a
+    // widget already hidden on /live).
   }
 }
 
@@ -992,6 +1021,19 @@ async function runEodScorecard(state: PollerState): Promise<void> {
   const istToday = `${istNow.getFullYear()}-${String(istNow.getMonth() + 1).padStart(2, '0')}-${String(istNow.getDate()).padStart(2, '0')}`;
   if (state.lastScorecardDate === istToday) return; // already graded once today
   try {
+    // Earlier suggestions are no longer recorded every cycle (Fyers Standard
+    // budget). One full-day history call each, after the close, so review.ts
+    // grades them on complete candles. ≤ ~10 calls a day.
+    try {
+      const { getSuggestions } = await import('@/lib/trade-suggest/store');
+      const symbols = [...new Set((await getSuggestions(istToday)).map((s) => s.symbol))];
+      for (const symbol of symbols) {
+        const bars = await fetchHistory5m(toEqSymbol(symbol), istToday);
+        if (bars.length > 0) await upsertCandles(symbol, 'EQ', istToday, bars);
+      }
+    } catch (err) {
+      console.warn(`${TAG} EOD grading fetch failed: ${(err as Error).message}`);
+    }
     const { dates, reviewed, skipped, expired } = await reviewUngradedBacklog();
     state.lastScorecardDate = istToday;
     const backfilled = dates.filter((d) => d !== istToday);
@@ -1188,6 +1230,8 @@ export interface PollerStatus {
   lastWarmup: { date: string; at: number; fyers: string; dhan: string } | null;
   /** Last date the pre-open config-drift reminder ran (see runConfigDriftReminder). */
   lastConfigDriftAlertDate: string | null;
+  /** Fyers Standard-plan data budget: calls today + any refusal latch (lib/fyers/budget.ts). */
+  dataBudget: FyersDataBudgetStatus;
 }
 
 export function getFyersPollerStatus(): PollerStatus {
@@ -1201,6 +1245,7 @@ export function getFyersPollerStatus(): PollerStatus {
     nextTickAt: state.nextTickAt,
     lastCycle: state.lastCycle,
     captureRunning: state.captureRunning,
+    dataBudget: getFyersDataBudgetStatus(),
     captureSkips: state.captureSkips,
     lastCapture: state.lastCapture,
     marketOpen: isMarketHours(),

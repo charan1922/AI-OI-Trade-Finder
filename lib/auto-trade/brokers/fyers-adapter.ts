@@ -16,6 +16,7 @@
 import path from 'node:path';
 import { fyersModel } from 'fyers-api-v3';
 import { fyersAppId, getFyersAccessToken } from '@/lib/fyers/auth';
+import { requestFyersData } from '@/lib/fyers/client';
 import {
   BrokerSubmissionError,
   type BrokerAdapter,
@@ -120,7 +121,9 @@ export async function runOrderPipelineSmoke(contract: {
   const symbol = toFyersOptionSymbol(contract);
   const fyers = await getFyers();
 
-  const quote = (await serial(() => fyers.getQuotes([symbol]))) as Record<string, unknown>;
+  // A quote is a Data API call → through the shared data gate (counted against
+  // the Standard plan's 5,000/day, latch-aware), not this adapter's serial().
+  const quote = await requestFyersData('quotes', { symbols: symbol }, Date.now() + 8_000, 'critical');
   const first = (quote?.d as Record<string, unknown>[] | undefined)?.[0];
   const ltp = Number((first?.v as Record<string, unknown> | undefined)?.lp);
   steps.push(`quote ${symbol}: LTP ₹${Number.isFinite(ltp) ? ltp : '—'}`);

@@ -17,6 +17,16 @@ import { fyersModel } from 'fyers-api-v3';
 import path from 'node:path';
 import { FyersAuthError, clearFyersToken, fyersAppId, getFyersAccessToken } from '@/lib/fyers/auth';
 import { fyersDataLimits } from '@/lib/market-data/provider';
+import {
+  admitCall,
+  classifyLimitRefusal,
+  istDayKey,
+  latchUntilFor,
+  resumeBudget,
+  type BudgetState,
+  type FyersLane,
+} from './budget';
+import { loadStoredBudget, saveStoredBudget } from './budget-store';
 
 const TAG = '[FyersClient]';
 const MIN_INTERVAL_MS = 350; // configured ceiling ≈2.8 dispatches/sec (≈171/min)
@@ -33,8 +43,10 @@ interface FyersGateState {
   cooldownUntil: number;
   consecutive429: number;
   dispatched?: number[];
-  day?: string;
-  dayCount?: number;
+  /** Today's count + latch, persisted in fyers_data_budget (see budget.ts). */
+  budget?: BudgetState;
+  budgetLoaded?: boolean;
+  saveTimer?: ReturnType<typeof setTimeout> | null;
 }
 
 const gateHost = globalThis as unknown as {
@@ -49,15 +61,87 @@ gateHost.__fyersGate ??= {
 };
 const gate = gateHost.__fyersGate;
 
-function throughFyersGate<T>(task: () => Promise<T>, deadline = Date.now() + 60_000): Promise<T> {
+/** Thrown by the gate itself (latched or out of budget) — no request was sent. */
+export class FyersBudgetError extends Error {}
+
+async function currentBudget(nowMs: number): Promise<BudgetState> {
+  const day = istDayKey(nowMs);
+  if (!gate.budgetLoaded || gate.budget?.date !== day) {
+    let stored = null;
+    try {
+      stored = await loadStoredBudget(day);
+    } catch (err) {
+      console.warn(`${TAG} budget table unreadable — counting from memory: ${(err as Error).message}`);
+    }
+    // Never move backwards within a day (memory may be ahead of the last flush).
+    const resumed = resumeBudget(stored, nowMs);
+    if (gate.budget?.date === day && gate.budget.count > resumed.count) resumed.count = gate.budget.count;
+    gate.budget = resumed;
+    gate.budgetLoaded = true;
+  }
+  return gate.budget as BudgetState;
+}
+
+function scheduleBudgetSave(immediate = false): void {
+  const flush = () => {
+    gate.saveTimer = null;
+    if (gate.budget) void saveStoredBudget(gate.budget).catch(() => undefined);
+  };
+  if (immediate) {
+    if (gate.saveTimer) clearTimeout(gate.saveTimer);
+    flush();
+    return;
+  }
+  gate.saveTimer ??= setTimeout(flush, 1_000);
+}
+
+/** Shut the gate after a Fyers limit refusal (see budget.ts). True when it was one. */
+function noteLimitRefusal(message: string): boolean {
+  const kind = classifyLimitRefusal(message);
+  if (!kind) return false;
+  if (!gate.budget) return true;
+  const until = latchUntilFor(kind, Date.now());
+  if (until > gate.budget.latchUntil) {
+    gate.budget.latchUntil = until;
+    gate.budget.latchReason = `Fyers refused: ${kind} limit`;
+    console.warn(
+      `${TAG} ${gate.budget.latchReason} — all Fyers data calls paused until ${new Date(until + 19_800_000).toISOString().slice(11, 16)} IST`
+    );
+    scheduleBudgetSave(true);
+  }
+  return true;
+}
+
+export interface FyersDataBudgetStatus {
+  date: string | null;
+  count: number;
+  perDay: number;
+  latchUntil: number | null;
+  latchReason: string | null;
+}
+
+/** Calls used today + any active latch — for /fyers and the poller status. */
+export function getFyersDataBudgetStatus(): FyersDataBudgetStatus {
+  const b = gate.budget;
+  const latched = b != null && b.latchUntil > Date.now();
+  return {
+    date: b?.date ?? null,
+    count: b?.count ?? 0,
+    perDay: fyersDataLimits().perDay,
+    latchUntil: latched ? b.latchUntil : null,
+    latchReason: latched ? b.latchReason : null,
+  };
+}
+
+function throughFyersGate<T>(task: () => Promise<T>, deadline = Date.now() + 60_000, lane: FyersLane = 'normal'): Promise<T> {
   // Serialize DISPATCH times, not whole HTTP response times. Callers may use a
   // small bounded worker pool without increasing the configured request rate;
   // slow responses no longer create avoidable head-of-line blocking.
   const dispatch = gate.tail.then(async (): Promise<void> => {
     const limits = fyersDataLimits();
-    const day = new Date(Date.now() + 19_800_000).toISOString().slice(0, 10);
-    if (gate.day !== day) { gate.day = day; gate.dayCount = 0; }
-    if ((gate.dayCount ?? 0) >= limits.perDay) throw new Error('Fyers daily data request budget exhausted');
+    const budget = await currentBudget(Date.now());
+    const refusal = admitCall(budget, lane, limits.perDay, Date.now());
+    if (refusal) throw new FyersBudgetError(refusal);
     gate.dispatched = (gate.dispatched ?? []).filter((at) => at > Date.now() - 60_000);
     const minuteAt = gate.dispatched.length >= limits.perMinute ? gate.dispatched[0] + 60_001 : 0;
     const target = Math.max(gate.lastDispatchAt + Math.max(MIN_INTERVAL_MS, 1000 / limits.perSecond), gate.cooldownUntil, minuteAt);
@@ -66,7 +150,8 @@ function throughFyersGate<T>(task: () => Promise<T>, deadline = Date.now() + 60_
     if (wait > 0) await sleep(wait);
     gate.lastDispatchAt = Date.now();
     gate.dispatched.push(gate.lastDispatchAt);
-    gate.dayCount = (gate.dayCount ?? 0) + 1;
+    budget.count += 1;
+    scheduleBudgetSave();
   });
   gate.tail = dispatch.then(
     () => undefined,
@@ -80,8 +165,9 @@ export async function requestFyersData(
   endpoint: string,
   params: Record<string, string | number>,
   deadline = Date.now() + 8_000,
+  lane: FyersLane = 'normal',
 ): Promise<Record<string, unknown>> {
-  if (!['history', 'quotes', 'depth', 'options-chain-v3', 'history/fno/expired/expiry-dates',
+  if (!['history', 'quotes', 'depth', 'history/fno/expired/expiry-dates',
     'history/fno/expired/underlying-symbols', 'history/fno/expired/historical-data'].includes(endpoint)) {
     throw new Error(`Unsupported Fyers data endpoint: ${endpoint}`);
   }
@@ -91,8 +177,12 @@ export async function requestFyersData(
     headers: { Authorization: `${fyersAppId()}:${token}` },
     signal: AbortSignal.timeout(Math.max(1, Math.min(8_000, deadline - Date.now()))),
     cache: 'no-store',
-  }), deadline);
-  if (response.status === 429) { noteFyers429(); throw new Error('Fyers data rate limit; cooling down'); }
+  }), deadline, lane);
+  if (response.status === 429) {
+    const body = await response.text().catch(() => '');
+    if (!noteLimitRefusal(body)) noteFyers429();
+    throw new Error(`Fyers data rate limit; ${body.slice(0, 120) || 'cooling down'}`);
+  }
   if (response.status === 401 || response.status === 403) {
     clearFyersToken();
     throw new FyersAuthError(`Fyers data access HTTP ${response.status}; check token and API entitlement`);
@@ -149,7 +239,10 @@ function classifyFailure(res: Record<string, unknown>): {
     clearFyersToken();
     throw new FyersAuthError(`${TAG} auth failure (code ${code}): ${message}`);
   }
-  if (code === 429 || /rate|limit exceeded|too many/i.test(message)) {
+  // Standard-plan refusals ("…limit of 50 requests/minute") carry neither
+  // "rate" nor "limit exceeded" — they latch the whole gate (budget.ts).
+  if (noteLimitRefusal(message)) return { rateLimited: true, message };
+  if (code === 429 || /rate|limit exceeded|too many|requests\/second/i.test(message)) {
     noteFyers429();
     return { rateLimited: true, message };
   }
@@ -188,6 +281,7 @@ export async function fetchHistory5m(fyersSymbol: string, date: string): Promise
     );
   } catch (err) {
     if (err instanceof FyersAuthError) throw err;
+    if (err instanceof FyersBudgetError) return []; // gate refused — nothing was sent
     res = (err ?? {}) as Record<string, unknown>; // SDK rejects with {s:'error', code, message}
   }
 
@@ -266,6 +360,7 @@ export async function fetchFutDepth(fyersSymbol: string): Promise<FutDepthSnapsh
     res = await throughFyersGate(() => fyers.getMarketDepth({ symbol: [fyersSymbol], ohlcv_flag: 1 }));
   } catch (err) {
     if (err instanceof FyersAuthError) throw err;
+    if (err instanceof FyersBudgetError) return null; // gate refused — nothing was sent
     res = (err ?? {}) as Record<string, unknown>;
   }
 
