@@ -866,7 +866,9 @@ async function fetchMTODeliveryData(date: Date, cookie = ''): Promise<Map<string
 
   // No cookie first, then with it — see nseArchiveHeaders().
   let res: Response | null = null;
-  for (let attempt = 1; attempt <= 2 && !res?.ok; attempt++) {
+  // A 404 is final (MTO is 404 for every date at this path) — retrying it WITH
+  // the cookie only buys a 15s hang per date.
+  for (let attempt = 1; attempt <= 2 && !res?.ok && res?.status !== 404; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
