@@ -10,8 +10,12 @@ import {
   replayOrderBlocks,
   type ObBar,
   type ObConfig,
+  type OrderBlock,
 } from '../lib/order-blocks/engine';
 import { summarizeOrderBlocks } from '../lib/order-blocks/read';
+import { pickRetestZone, retestItem, retestSpotPlan } from '../lib/order-blocks/retest';
+import { DEFAULT_TF_SELECTOR_CONFIG, RETEST_TF_SELECTOR_CONFIG } from '../lib/tf-live/selector';
+import { TARGET_RR } from '../lib/trade-suggest/config';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
@@ -227,6 +231,55 @@ export function runOrderBlockChecks(check: CheckFn): void {
     broken.brokenWithTrade?.zoneLow === 99.8 && broken.withTrade === null && /broken by a 5-min close/.test(broken.read)
   );
   check('ob read: no ATR yet → says so, claims nothing', summarizeOrderBlocks(live, 'bullish', 102.8, false).withTrade === null);
+
+  // ── Retest watch-list (lib/order-blocks/retest.ts) ──
+  const at = (hhmm: string) => Date.parse(`2026-11-18T${hhmm}:00+05:30`);
+  const zone = (over: Partial<OrderBlock> = {}): OrderBlock => ({
+    ...ob,
+    side: 'bullish',
+    zoneLow: 100,
+    zoneHigh: 101,
+    confirmedAtMs: at('10:00'),
+    state: 'confirmed_active',
+    firstRetestAtMs: null,
+    invalidatedAtMs: null,
+    expiredAtMs: null,
+    ...over,
+  });
+  const W = { startMin: 9 * 60 + 45, endMin: 11 * 60 }; // a test window — production passes the runtime settings
+  const waiting = retestItem('SYN', 'CE', zone(), 101.6, at('10:30'), W);
+  check('retest: an untouched zone is WAITING with its exact plan (stop = zone low)', waiting.status === 'waiting' && waiting.stopSpot === 100 && /WAIT/.test(waiting.call) && /before 11:00/.test(waiting.call));
+  check('retest: the time limit comes from the window passed in, not a constant', /before 10:30/.test(retestItem('SYN', 'CE', zone(), 101.6, at('10:00'), { ...W, endMin: 10 * 60 + 30 }).call));
+  check('retest: untouched by 11:00 → expired', retestItem('SYN', 'CE', zone(), 101.6, at('11:05'), W).status === 'expired');
+  const hit = zone({ state: 'retested', firstRetestAtMs: at('10:40') });
+  const trig = retestItem('SYN', 'CE', hit, 100.8, at('10:42'), W);
+  check('retest: a candle back in the zone, price still there → TRIGGERED', trig.status === 'triggered' && trig.triggeredAt === '10:35');
+  const plan = retestSpotPlan(trig, 100.8);
+  check('retest: plan = stop at the far edge, TARGET_RR target', plan.slSpot === 100 && plan.targetSpot === Math.round((100.8 + TARGET_RR * 0.8) * 100) / 100 && plan.slBasis === 'order-block');
+  check('retest: only the first scan after the trigger candle may act (one bar later → MISSED)', retestItem('SYN', 'CE', hit, 100.8, at('10:46'), W).status === 'missed' && retestItem('SYN', 'CE', hit, 100.8, at('10:44'), W).status === 'triggered');
+  check('retest: price already back OUT of the zone → MISSED (no chasing)', retestItem('SYN', 'CE', hit, 101.05, at('10:42'), W).status === 'missed');
+  check('retest: price at/through the stop → BROKEN', retestItem('SYN', 'CE', hit, 100, at('10:42'), W).status === 'broken');
+  check('retest: a zone closed through → BROKEN', retestItem('SYN', 'CE', zone({ state: 'invalidated', invalidatedAtMs: at('10:20') }), 100, at('10:30'), W).status === 'broken');
+  check('retest: a trigger candle starting at/after 11:00 → expired', retestItem('SYN', 'CE', zone({ state: 'retested', firstRetestAtMs: at('11:05') }), 100.8, at('11:06'), W).status === 'expired');
+  const bear = retestItem('SYN', 'PE', zone({ side: 'bearish', state: 'retested', firstRetestAtMs: at('10:40') }), 100.3, at('10:42'), W);
+  const bearPlan = retestSpotPlan(bear, 100.3);
+  check('retest: bearish mirror — stop at the zone high, target below', bear.status === 'triggered' && bearPlan.slSpot === 101 && bearPlan.targetSpot === Math.round((100.3 - TARGET_RR * 0.7) * 100) / 100);
+  const zones = [
+    zone({ id: 'early', confirmedAtMs: at('09:40') }),
+    zone({ id: 'opp', side: 'bearish', confirmedAtMs: at('10:30') }),
+    zone({ id: 'a', confirmedAtMs: at('10:05') }),
+    zone({ id: 'b', confirmedAtMs: at('10:20') }),
+  ];
+  check('retest: uses the latest same-side zone confirmed inside the window', pickRetestZone(zones, 'CE', W)?.id === 'b');
+  const diff = (Object.keys(DEFAULT_TF_SELECTOR_CONFIG) as (keyof typeof DEFAULT_TF_SELECTOR_CONFIG)[])
+    .filter((k) => JSON.stringify(DEFAULT_TF_SELECTOR_CONFIG[k]) !== JSON.stringify(RETEST_TF_SELECTOR_CONFIG[k]))
+    .sort()
+    .join(',');
+  check(
+    'retest: eligibility differs from the breakout selector ONLY in the four breakout-only checks',
+    diff === 'maxSinceEntryPct,rejectMoveProfiles,requireBreakout,requireTfBeacon',
+    diff
+  );
 
   // ── Streaming = batch, and replay at t shows nothing confirmed after t ──
   check(

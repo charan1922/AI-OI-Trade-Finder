@@ -98,6 +98,9 @@ function trimEntryPick(s: TradeSuggestion): Record<string, unknown> {
     reasons: s.reasons.filter((reason) => !/supertrend/i.test(reason)),
     // OUR order-block rule set — advisory context (see the prompt), never a gate.
     orderBlocks: s.orderBlocks ?? null,
+    // 'retest' = a code-triggered order-block retest (zone stop, fixed 2R target).
+    entryKind: s.entryKind ?? 'breakout',
+    retestCall: s.retest?.call ?? null,
     eligible: Boolean(s.option?.premium && s.plan.slSpot != null),
   };
 }
@@ -138,6 +141,9 @@ export function buildScanContext(
       selected: [],
     },
     picks: tfSelectedSuggestions(scan).map(trimEntryPick),
+    // Order-block retest plans (waiting / triggered / missed / broken / expired) — the
+    // concrete calls to name in the read, especially on a pass with no pick.
+    retestWatchlist: (scan.retestWatchlist ?? []).map((w) => ({ symbol: w.symbol, side: w.side, status: w.status, call: w.call })),
   };
 }
 

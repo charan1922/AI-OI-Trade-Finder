@@ -45,7 +45,12 @@ export interface ObConfig {
   minBodyAtr: number;
   /** Candles before the BOS bar searched for the opposing origin candle. */
   originLookback: number;
-  /** Exchange tick; every price comparison is done in integer ticks. NSE equities: ₹0.05. */
+  /**
+   * Price resolution for comparisons, in rupees. ₹0.01 (one paisa) — the finest unit any
+   * NSE price is quoted in, so it never merges two distinct prices. Not the exchange tick:
+   * per-stock ticks are not in our master data, and an assumed coarser tick could make two
+   * different highs compare equal (a false "tie" that would block a real pivot).
+   */
   tickSize: number;
   /** Close must go this many ticks past the far edge to invalidate (0 = any close beyond). */
   invalidationToleranceTicks: number;
@@ -66,7 +71,7 @@ export const OB_DEFAULT_CONFIG: ObConfig = {
   minBodyRatio: 0.6,
   minBodyAtr: 1.5,
   originLookback: 8,
-  tickSize: 0.05,
+  tickSize: 0.01,
   invalidationToleranceTicks: 0,
   expireAtSessionEnd: true,
   originSameSession: true,
