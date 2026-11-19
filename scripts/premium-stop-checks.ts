@@ -40,6 +40,7 @@ import {
 } from '../lib/auto-trade/risk/exit-backoff';
 import type { EntryGateInput } from '../lib/auto-trade/risk/gates';
 import { buildSpotPlan } from '../lib/trade-suggest/scoring';
+import { ENTRY_STOP_RISK_GATE } from '../lib/trade-suggest/config';
 
 export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
@@ -79,6 +80,10 @@ function passingGate(over: Partial<EntryGateInput> = {}): EntryGateInput {
     candleLatestBucketTs: 1_000_000_000,
     candleRequiredBucketTs: 1_000_000_000,
     candleFresh: true,
+    // These fixtures test the stop-risk gate's logic, so they switch it ON
+    // explicitly; production runs it OFF (ENTRY_STOP_RISK_GATE, 2026-11-19) —
+    // the "switched off" checks at the end of runPremiumStopChecks cover that.
+    enforceStopRisk: true,
     ...over,
   };
 }
@@ -482,4 +487,24 @@ export function runPremiumStopChecks(check: CheckFn): void {
     'exit retry: neither source at the threshold means no backoff (the two do not sum)',
     exitRetryWaitMs(effectiveFails(EXIT_FAILURE_ESCALATE - 1, EXIT_FAILURE_ESCALATE - 1)) === 0
   );
+
+  // ── Entry stop-risk gate SWITCHED OFF (operator 2026-11-19, paper mode) ────
+  // Only the "loss at the chart stop must fit the per-lot budget" refusal goes;
+  // liquidity checks and every other gate stay.
+  const off = (over: Partial<EntryGateInput> = {}) => passingGate({ enforceStopRisk: false, ...over });
+  check('stop-risk switch: ENTRY_STOP_RISK_GATE is OFF in production', ENTRY_STOP_RISK_GATE === false);
+  check(
+    'stop-risk switch: production default follows the constant (no field → gate off)',
+    checkEntryGates({ ...passingGate({ slSpot: 2871 }), enforceStopRisk: undefined }).allow
+  );
+  const farOff = checkEntryGates(off({ slSpot: 2871 }));
+  check(
+    'stop-risk switch off: an over-budget chart stop is ALLOWED, risk still recorded',
+    farOff.allow && (farOff.chartStopRisk?.riskPerLot ?? 0) > 2_500,
+    `₹${farOff.chartStopRisk?.riskPerLot}`
+  );
+  check('stop-risk switch off: an unmodellable risk (no live spot) no longer refuses', checkEntryGates(off({ spot: null })).allow);
+  check('stop-risk switch off: too little size at the ask is STILL refused (liquidity)', refused(off({ askQty: 199 })));
+  check('stop-risk switch off: a wide option spread is STILL refused (liquidity)', refused(off({ spreadPct: 9 })));
+  check('stop-risk switch off: a plan with no spot stop is STILL refused (open-trade stops stay)', refused(off({ hasSlSpot: false })));
 }

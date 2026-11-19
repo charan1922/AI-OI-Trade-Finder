@@ -284,6 +284,21 @@ export const TF_BOARD_MAX_AGE_MIN = 10;
  */
 export const MARKET_SIDEWAYS_GATE = false;
 
+/**
+ * Entry STOP-RISK gate — OFF (operator decision 2026-11-19: "I don't want the stop loss logic
+ * considered while taking a trade"; paper mode). When false:
+ *   - risk/gates.ts no longer REFUSES a pick because its modelled loss at the chart stop exceeds
+ *     maxRiskPerLotRupees (or because that loss cannot be modelled) — the figure is still computed
+ *     and recorded on the verdict;
+ *   - the scanner stops writing that risk note into `liquidityWarning`, which the AI trader reads
+ *     as a no-trade flag;
+ *   - the trader prompt no longer asks for "room to target beats risk to stop".
+ * UNCHANGED: liquidity (spread, size at the ask, slippage), stops on OPEN trades (spot plan,
+ * premium backstop, 2R trail), the 15:12 square-off, and every daily limit / capital cap.
+ * Set true to restore the gate exactly as before. Pinned by scripts/premium-stop-checks.ts.
+ */
+export const ENTRY_STOP_RISK_GATE = false;
+
 /** Only names inside TF's own top-N count as "on the board" — the TF Climbers card, the
  *  Climbed Stocks list, the engine's candidate set and the poller's priority list all read
  *  this ONE constant, so the card and the auto-trader cannot disagree.

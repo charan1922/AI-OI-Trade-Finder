@@ -96,6 +96,8 @@ function trimEntryPick(s: TradeSuggestion): Record<string, unknown> {
       sectorAligned: s.factors.sectorAligned,
     },
     reasons: s.reasons.filter((reason) => !/supertrend/i.test(reason)),
+    // OUR order-block rule set — advisory context (see the prompt), never a gate.
+    orderBlocks: s.orderBlocks ?? null,
     eligible: Boolean(s.option?.premium && s.plan.slSpot != null),
   };
 }

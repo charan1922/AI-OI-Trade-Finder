@@ -17,9 +17,13 @@ import {
   ORDER_ENTRY_MAX_SPREAD_PCT,
   OPTION_STOP_PCT_FALLBACK,
 } from '../config';
+import { ENTRY_STOP_RISK_GATE } from '@/lib/trade-suggest/config';
 import type { AutoTradeSettings, GateVerdict } from '../types';
 
 export interface EntryGateInput {
+  /** Refuse picks whose modelled loss at the chart stop exceeds the per-lot budget.
+   *  Defaults to ENTRY_STOP_RISK_GATE (OFF since 2026-11-19); checks pass it explicitly. */
+  enforceStopRisk?: boolean;
   settings: AutoTradeSettings;
   /** Date of this entry attempt and the exact contract expiry (YYYY-MM-DD).
    * Required so a stale proposal cannot bypass the expiry-week roll rule. */
@@ -233,8 +237,12 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
             evalAtMs: istEpochMs(x.tradeDate, s.squareOffMin),
           })
         : { ok: false as const, reason: 'live spot, chart stop or contract details missing' };
+    // ENTRY_STOP_RISK_GATE off (operator 2026-11-19): the modelled risk is still
+    // computed and recorded on the verdict, but neither an over-budget figure nor
+    // an unmodellable one refuses the entry. Liquidity checks below still apply.
+    const enforceStopRisk = x.enforceStopRisk ?? ENTRY_STOP_RISK_GATE;
     if (!modelled.ok) {
-      reasons.push(`risk at the chart stop cannot be computed (${modelled.reason}) — failing closed`);
+      if (enforceStopRisk) reasons.push(`risk at the chart stop cannot be computed (${modelled.reason}) — failing closed`);
     } else {
       chartStopRisk = {
         riskPerLot: modelled.riskPerLot,
@@ -242,7 +250,7 @@ export function checkEntryGates(x: EntryGateInput): GateVerdict {
         dropPct: modelled.dropPct,
         iv: modelled.iv,
       };
-      if (modelled.riskPerLot > maxRiskPerLot) {
+      if (enforceStopRisk && modelled.riskPerLot > maxRiskPerLot) {
         reasons.push(
           `lot risks ₹${modelled.riskPerLot.toLocaleString('en-IN')} if the stock reaches its ₹${x.slSpot} chart stop ` +
             `(option modelled at ₹${modelled.premiumAtStop} there vs the ₹${x.askPrice} ask, spot ₹${x.spot}) ` +
