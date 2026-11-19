@@ -20,6 +20,8 @@
  */
 
 import { orderBlockRead } from '@/lib/order-blocks/read';
+import { buildRetestWatchlist, retestSpotPlan, type RetestWatchItem } from '@/lib/order-blocks/retest';
+import { saveRetestWatchlist } from '@/lib/order-blocks/retest-store';
 import { setupScore } from '@/app/live/_lib/setup-score';
 import type { LiveQuoteResponse, LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
@@ -34,6 +36,7 @@ import { combinedOiSlope } from '@/lib/signals/combined-oi-slope';
 import { atr, sessionVwap, supertrend } from '@/lib/signals/indicators';
 import { deriveSessionContext } from '@/lib/signals/session-context';
 import {
+  TARGET_RR,
   CAPITAL_BUDGET,
   CHAOTIC_OPEN_MAX_RATIO,
   MAX_PICKS,
@@ -91,6 +94,7 @@ import {
 import {
   describeRejections,
   selectTfCandidates,
+  RETEST_TF_SELECTOR_CONFIG,
   type TfCandidate,
   type TfSymbolContext,
 } from '@/lib/tf-live/selector';
@@ -568,6 +572,51 @@ export async function runTradeSuggest(
   }
   const tfBySymbol = new Map(tf.candidates.map((candidate) => [candidate.symbol, candidate]));
 
+  // ── Order-block RETEST watch-list (operator 2026-11-19, lib/order-blocks/retest.ts) ──
+  // Retest-eligible names get a concrete plan; a TRIGGERED one (a completed candle
+  // traded back into its zone, price not bounced away) joins the candidate set and is
+  // priced/gated exactly like a breakout pick. Best-effort: a failure here never
+  // affects the breakout path.
+  const retestTriggered = new Map<string, RetestWatchItem>();
+  try {
+    const ltpBySymbol = new Map(quotes.rows.map((r) => [r.symbol, r.ltp ?? null] as const));
+    // The retest window IS the auto-trade entry window (runtime settings, /auto-trade) —
+    // never a second copy of 09:45–11:00 here. getAutoTradeSettings never throws.
+    const entrySettings = await getAutoTradeSettings();
+    const retestWindow = { startMin: entrySettings.entryStartMin, endMin: entrySettings.entryEndMin };
+    const watch = await buildRetestWatchlist(
+      tf.retestCandidates.map((c) => ({ symbol: c.symbol, side: c.side })),
+      date,
+      Date.now(),
+      ltpBySymbol,
+      retestWindow
+    );
+    base.retestWatchlist = watch;
+    void saveRetestWatchlist(date, watch, { window: retestWindow, targetR: TARGET_RR }).catch((error) =>
+      console.warn(`${TAG} retest watch-list not saved: ${(error as Error).message}`)
+    );
+    for (const item of watch) {
+      const cand = tf.retestCandidates.find((c) => c.symbol === item.symbol);
+      if (item.status !== 'triggered' || !cand || tfBySymbol.has(item.symbol)) continue;
+      retestTriggered.set(item.symbol, item);
+      tfBySymbol.set(item.symbol, cand);
+      base.tfSelection?.selected.push({
+        symbol: cand.symbol,
+        side: cand.side,
+        tfRFactor: cand.tfRFactor,
+        tfRankNow: cand.tfRankNow,
+        deltaR: cand.deltaR,
+        premValueCr: cand.premValueCr,
+        kind: 'retest',
+      });
+    }
+    if (watch.length > 0) {
+      console.log(`${TAG} retest watch-list: ${watch.map((w) => `${w.symbol} ${w.side} ${w.status}`).join(', ')}`);
+    }
+  } catch (error) {
+    console.warn(`${TAG} retest watch-list failed: ${(error as Error).message}`);
+  }
+
   // Real bid/ask for the few TF candidates. Since the Fyers migration (ea74b3e,
   // 2026-10-06) the quote rows carry no order book (bid/ask/spreadPct null) and a
   // null spread reads as "illiquid" below — which rejected EVERY TF candidate
@@ -768,10 +817,15 @@ export async function runTradeSuggest(
       continue;
     }
     const a14 = atr(s.bars);
-    const plan = buildSpotPlan(side, ltp, s.bars, s.or, fyersBucketFor(Date.now()), {
-      atr: a14,
-      atrMult: SL_ATR_MULT,
-    });
+    const retest = retestTriggered.get(r.symbol) ?? null;
+    // A triggered order-block retest is planned off its zone: stop one tick past the
+    // far edge, fixed 2R target (lib/order-blocks/retest.ts). Breakouts are unchanged.
+    const plan = retest
+      ? retestSpotPlan(retest, ltp)
+      : buildSpotPlan(side, ltp, s.bars, s.or, fyersBucketFor(Date.now()), {
+          atr: a14,
+          atrMult: SL_ATR_MULT,
+        });
     // Per-lot risk at the CHART stop — the number auto-trade's gate enforces.
     if (option) {
       applyChartStopRisk(option, { spot: ltp, slSpot: plan.slSpot, tradeDate: date, nowMs: Date.now() }, premiumPolicy);
@@ -988,6 +1042,8 @@ export async function runTradeSuggest(
       },
       // Advisory order-block read at the planned entry (operator 2026-11-19).
       orderBlocks: await orderBlockRead(r.symbol, date, s.direction, r.ltp ?? plan.entrySpot),
+      entryKind: retest ? 'retest' : 'breakout',
+      retest,
     });
   }
 
@@ -1070,16 +1126,20 @@ async function buildTfSelection(
 ): Promise<{
   tradeable: boolean;
   candidates: TfCandidate[];
+  /** Names that pass the RETEST eligibility (breakout-only checks off) but not the breakout set. */
+  retestCandidates: TfCandidate[];
   summary: TfSelectionSummary;
 }> {
   const nowMin = istMinutesNow();
   const notTradeable = (reason: string): {
     tradeable: false;
     candidates: TfCandidate[];
+    retestCandidates: TfCandidate[];
     summary: TfSelectionSummary;
   } => ({
     tradeable: false,
     candidates: [],
+    retestCandidates: [],
     summary: { available: false, reason, boardAgeMin: null, considered: 0, selected: [] },
   });
 
@@ -1124,6 +1184,7 @@ async function buildTfSelection(
       return {
         tradeable: true,
         candidates: [],
+        retestCandidates: [],
         summary: { available: true, reason: regime.reason, boardAgeMin: ageMin, considered: race.runners.length, selected: [] },
       };
     }
@@ -1178,9 +1239,15 @@ async function buildTfSelection(
   }
 
   const result = selectTfCandidates(race.runners, context);
+  // Retest eligibility: the same checks minus the four breakout-only ones (selector.ts).
+  const breakoutSet = new Set(result.candidates.map((c) => c.symbol));
+  const retestCandidates = selectTfCandidates(race.runners, context, RETEST_TF_SELECTOR_CONFIG).candidates.filter(
+    (c) => !breakoutSet.has(c.symbol)
+  );
   return {
     tradeable: true,
     candidates: result.candidates,
+    retestCandidates,
     summary: {
       available: true,
       reason: describeRejections(result.rejected, result.considered, result.candidates.length),
@@ -1193,6 +1260,7 @@ async function buildTfSelection(
         tfRankNow: c.tfRankNow,
         deltaR: c.deltaR,
         premValueCr: c.premValueCr,
+        kind: 'breakout' as const,
       })),
     },
   };

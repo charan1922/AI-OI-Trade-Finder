@@ -265,6 +265,21 @@ export const LIVE_TF_SELECTOR_CONFIG: TfSelectorConfig = {
 };
 
 /**
+ * RETEST watch-list eligibility (operator 2026-11-19, lib/order-blocks/retest.ts): the SAME
+ * selector — ① climbing, ② moving, options pool, not chasing (stretch), in OI/active list,
+ * Supertrend veto — with the four checks that demand a breakout RIGHT NOW switched off,
+ * because a pullback into the zone fails them by design: our ORB, TF beacon, "not extended"
+ * (since-09:45 cap) and "move started" (quiet/fading). One definition of every check.
+ */
+export const RETEST_TF_SELECTOR_CONFIG: TfSelectorConfig = {
+  ...DEFAULT_TF_SELECTOR_CONFIG,
+  requireBreakout: false,
+  requireTfBeacon: false,
+  maxSinceEntryPct: Number.POSITIVE_INFINITY,
+  rejectMoveProfiles: [],
+};
+
+/**
  * Filter and rank race runners into tradeable candidates.
  *
  * `runners` must already be ordered by TF R-Factor desc (as `raceAtMinute`

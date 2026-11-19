@@ -3,6 +3,7 @@
  */
 
 import type { OrderBlockRead } from '@/lib/order-blocks/read';
+import type { RetestWatchItem } from '@/lib/order-blocks/retest';
 import type { BreakoutSignal } from '@/lib/breakout';
 import type { ConsolidationBreakout } from '@/lib/trade-suggest/consolidation-breakout';
 import type { MoveFreshness } from '@/lib/trade-suggest/move-freshness';
@@ -84,7 +85,7 @@ export interface SpotPlan {
   slSpot: number | null;
   /** 1:2 reward:risk from entry/SL. Null when SL couldn't be derived. */
   targetSpot: number | null;
-  slBasis: 'last-candle' | 'swing' | 'opening-range' | 'floor' | 'none';
+  slBasis: 'last-candle' | 'swing' | 'opening-range' | 'floor' | 'none' | 'order-block';
 }
 
 /** Context factors attached to each pick — DISPLAY EVIDENCE, deliberately not
@@ -190,6 +191,11 @@ export interface TradeSuggestion {
    *  (lib/order-blocks), ADVISORY for the AI only: no gate reads it. Null when
    *  no candles / not computed. Optional: rows stored before 2026-11-19 lack it. */
   orderBlocks?: OrderBlockRead | null;
+  /** How this pick qualified: the breakout selector, or a triggered order-block
+   *  RETEST (lib/order-blocks/retest.ts). Absent on rows stored before 2026-11-19. */
+  entryKind?: 'breakout' | 'retest';
+  /** The retest watch-list item behind an `entryKind: 'retest'` pick. */
+  retest?: RetestWatchItem | null;
 }
 
 /** Market breadth among the scanned candidates — context, never a gate
@@ -372,6 +378,8 @@ export interface SuggestResponse {
   tracked?: TrackedPosition[];
   /** Current thesis evidence for tracked names, independent of suggestion gates. */
   managedPositionSignals?: ManagedPositionSignal[];
+  /** Order-block retest plans for today's retest-eligible TF names (waiting / triggered / …). */
+  retestWatchlist?: RetestWatchItem[];
   /** TradeFinder's independent board + entry-window race (evidence only). */
   tfContext?: TfScanContext;
   /** What the permanent TF Running Race selector did this pass. Carries the
@@ -400,5 +408,7 @@ export interface TfSelectionSummary {
     /** TF R-Factor gained over the trailing 30 min — the accumulation RATE. */
     deltaR: number;
     premValueCr: number;
+    /** 'retest' = a triggered order-block retest (selected through RETEST_TF_SELECTOR_CONFIG). */
+    kind?: 'breakout' | 'retest';
   }[];
 }

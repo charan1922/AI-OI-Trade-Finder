@@ -19,7 +19,8 @@ algorithm and not proof of an institutional order. On completed 5-min EQ candles
 - Confirmation = the BOS bar's endMs. A zone does not exist before it.
 - Lifecycle on later bars: overlap → `retested` (first time); close beyond the far edge → `invalidated` (wick alone
   doesn't); both on one bar → both events, final invalidated; live zones expire at their session's last close.
-- Prices compared in integer ticks (₹0.05). One streaming core (`processClosedBar`) backs batch replay.
+- Prices compared to the paisa (₹0.01 — the finest unit any NSE price is quoted in; per-stock exchange ticks
+  are not in our master data, so none is assumed). One streaming core (`processClosedBar`) backs batch replay.
 
 **Session rule added after a real-data check:** ALKEM 2026-11-09 produced a zone confirmed 09:20 from a 10:25 candle of
 the previous day (the 8-bar lookback crossed the overnight gap). `originSameSession: true` stops that; ATR and pivots

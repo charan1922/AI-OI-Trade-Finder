@@ -6,9 +6,10 @@
  * by `asOfMs` are used, so the read never contains a zone confirmed later.
  */
 import { prisma } from '@/lib/db';
+import { FYERS_BUCKET_SEC } from '@/lib/fyers/bucket';
 import { invalidBarReason, OB_ALGORITHM_VERSION, OB_DEFAULT_CONFIG, replayOrderBlocks, type ObBar, type OrderBlock } from './engine';
 
-const FIVE_MIN_MS = 300_000;
+const BAR_MS = FYERS_BUCKET_SEC * 1000;
 export const OB_SOURCE = 'fyers_candles — 5-min EQ candles recorded by the Fyers poller';
 
 export interface DatedBar extends ObBar {
@@ -35,7 +36,7 @@ export async function loadObBars(symbol: string, date: string, asOfMs: number): 
     const b: DatedBar = {
       date: String(r.date),
       startMs,
-      endMs: startMs + FIVE_MIN_MS,
+      endMs: startMs + BAR_MS,
       open: Number(r.open),
       high: Number(r.high),
       low: Number(r.low),

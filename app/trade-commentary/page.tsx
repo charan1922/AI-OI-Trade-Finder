@@ -6,6 +6,7 @@ import { RichText } from '@/components/rich-text';
 import { useRole } from '@/lib/auth/use-role';
 import { ChatComposer, ChatItem } from './_components/chat-thread';
 import { OrderBlockChart } from './_components/order-block-chart';
+import { RetestWatchlist } from './_components/retest-watchlist';
 import { type ChatMessage, useOperatorChat } from './_hooks/use-operator-chat';
 
 type ChipTone = 'good' | 'warn' | 'info';
@@ -441,6 +442,9 @@ export default function TradeCommentaryPage() {
           configured={chat.configured}
         />
       )}
+
+      {/* The clear calls: today's order-block retest plans (operator 2026-11-19). */}
+      <RetestWatchlist />
 
       {data?.configured === false && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">

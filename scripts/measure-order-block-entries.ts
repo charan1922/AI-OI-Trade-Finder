@@ -24,10 +24,10 @@ const minuteOf = (ms: number) => {
   return d.getUTCHours() * 60 + d.getUTCMinutes();
 };
 const dateOf = (ms: number) => new Date(ms + IST).toISOString().slice(0, 10);
+// The auto-trade entry window in force over the replayed sessions (settings entryStartMin / entryEndMin).
 const ENTRY_START = 9 * 60 + 45;
 const ENTRY_END = 11 * 60;
 const EXIT_BAR_START = 15 * 60 + 10;
-const TICK = OB_DEFAULT_CONFIG.tickSize;
 
 const sessions = (
   db
@@ -111,7 +111,8 @@ for (const symbol of symbols) {
     const confIdx = day.findIndex((b) => b.endMs === ob.confirmedAtMs);
     if (confIdx < 0) continue;
     const d: 1 | -1 = ob.side === 'bullish' ? 1 : -1;
-    const stop = d === 1 ? ob.zoneLow - TICK : ob.zoneHigh + TICK;
+    // Same stop as the live retest plan (lib/order-blocks/retest.ts): the zone's far edge.
+    const stop = d === 1 ? ob.zoneLow : ob.zoneHigh;
 
     // A) breakout: buy the confirming close.
     for (const v of ['time', 'target2R'] as Variant[]) {
