@@ -2,6 +2,7 @@
  * Shared shapes for the /trade-suggest engine (see engine.ts for the flow).
  */
 
+import type { OrderBlockRead } from '@/lib/order-blocks/read';
 import type { BreakoutSignal } from '@/lib/breakout';
 import type { ConsolidationBreakout } from '@/lib/trade-suggest/consolidation-breakout';
 import type { MoveFreshness } from '@/lib/trade-suggest/move-freshness';
@@ -185,6 +186,10 @@ export interface TradeSuggestion {
    *  because a suggestion rehydrated from the DB may predate it; the auto-trade
    *  gate recomputes freshness from the store at placement time regardless. */
   candleContext?: SuggestionCandleContext;
+  /** Order-block read for this direction at the current price — OUR rule set
+   *  (lib/order-blocks), ADVISORY for the AI only: no gate reads it. Null when
+   *  no candles / not computed. Optional: rows stored before 2026-11-19 lack it. */
+  orderBlocks?: OrderBlockRead | null;
 }
 
 /** Market breadth among the scanned candidates — context, never a gate
@@ -252,6 +257,10 @@ export interface ManagedPositionSignal {
   /** TradeFinder's independent rank for the held name, when available. */
   tfCorroboration: TfCorroboration | null;
   dataAsOfMs: number | null;
+  /** Order-block read for this direction at the current price — OUR rule set
+   *  (lib/order-blocks), ADVISORY for the AI only: no gate reads it. Null when
+   *  no candles / not computed. Optional: rows stored before 2026-11-19 lack it. */
+  orderBlocks?: OrderBlockRead | null;
 }
 
 /** Session-level TradeFinder context attached to a scan: how fresh their board

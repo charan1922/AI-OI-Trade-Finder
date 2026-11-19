@@ -5,6 +5,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 import { RichText } from '@/components/rich-text';
 import { useRole } from '@/lib/auth/use-role';
 import { ChatComposer, ChatItem } from './_components/chat-thread';
+import { OrderBlockChart } from './_components/order-block-chart';
 import { type ChatMessage, useOperatorChat } from './_hooks/use-operator-chat';
 
 type ChipTone = 'good' | 'warn' | 'info';
@@ -202,9 +203,11 @@ function Stat({ label, value, cls = '' }: { label: string; value: number | null;
 }
 
 // One pick: name + badge, its pills, and its plan — grouped as one unit.
-function PickBlock({ p }: { p: StoredPick }) {
+// `date`/`asOf` (the read's) enable the order-block chart AS OF that read.
+function PickBlock({ p, date, asOf }: { p: StoredPick; date?: string; asOf?: string }) {
   const bull = p.direction === 'bullish';
   const isPosition = p.kind === 'position';
+  const [showChart, setShowChart] = useState(false);
   return (
     <div className="border-t border-border/50 pt-2 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
@@ -240,6 +243,21 @@ function PickBlock({ p }: { p: StoredPick }) {
             <span className="text-[10.5px] text-muted-foreground">₹{Math.round(p.perLotCost).toLocaleString('en-IN')}/lot</span>
           )}
         </div>
+      )}
+      {date && asOf && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowChart((v) => !v)}
+            className="mt-1 text-[10px] font-medium text-primary hover:underline"
+            title="5-min candles with order-block zones, exactly as they stood at this read"
+          >
+            {showChart ? 'Hide chart' : 'Chart · order blocks'}
+          </button>
+          {showChart && (
+            <OrderBlockChart symbol={p.symbol} date={date} asOf={asOf} entry={p.entrySpot} stop={p.slSpot} target={p.targetSpot} />
+          )}
+        </>
       )}
     </div>
   );
@@ -539,7 +557,7 @@ export default function TradeCommentaryPage() {
                       {/* Each stock: pills + plan, then its own analysis directly below */}
                       {picks.map((p, i) => (
                         <div key={`${p.symbol}-${i}`} className="rounded-lg border border-border/50 bg-muted/10 p-2">
-                          <PickBlock p={p} />
+                          <PickBlock p={p} date={r.date} asOf={r.asOf} />
                           {split.perStock[p.symbol] && (
                             <div className="mt-1.5 border-t border-border/40 pt-1.5">
                               <RichText content={stripHeadingTicker(split.perStock[p.symbol], p.symbol)} />
@@ -559,7 +577,7 @@ export default function TradeCommentaryPage() {
                       {picks.length > 0 && (
                         <div className="mb-2 space-y-2 rounded-lg bg-muted/20 p-2">
                           {picks.map((p, i) => (
-                            <PickBlock key={`${p.symbol}-${i}`} p={p} />
+                            <PickBlock key={`${p.symbol}-${i}`} p={p} date={r.date} asOf={r.asOf} />
                           ))}
                         </div>
                       )}

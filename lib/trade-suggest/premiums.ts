@@ -21,6 +21,7 @@
 
 import { bestBidAsk, marketFeed } from '@/lib/market-data';
 import {
+  ENTRY_STOP_RISK_GATE,
   OPTION_WARN_SPREAD_PCT,
   MAX_RISK_PER_LOT_RUPEES,
   OPTION_STOP_PCT,
@@ -193,8 +194,12 @@ export function applyChartStopRisk(
   const { stopPct, maxRiskPerLot, squareOffMin } = safePolicy(policy);
   const ask = p.ask ?? p.ltp;
   const warnings = p.liquidityWarning ? [p.liquidityWarning] : [];
+  // With ENTRY_STOP_RISK_GATE off, stop-risk notes stay OUT of liquidityWarning:
+  // the AI trader reads a non-null liquidityWarning as "don't trade", which would
+  // quietly restore the gate the operator switched off. Spread notes stay.
+  const riskNotes = ENTRY_STOP_RISK_GATE;
   if (at.slSpot == null) {
-    warnings.push('no chart stop — per-lot risk cannot be measured');
+    if (riskNotes) warnings.push('no chart stop — per-lot risk cannot be measured');
   } else {
     const r = spotStopRiskPerLot({
       optionType: option.optionType,
@@ -208,9 +213,9 @@ export function applyChartStopRisk(
       evalAtMs: istEpochMs(at.tradeDate, squareOffMin),
     });
     if (!r.ok) {
-      warnings.push(`risk at the chart stop cannot be modelled (${r.reason})`);
+      if (riskNotes) warnings.push(`risk at the chart stop cannot be modelled (${r.reason})`);
     } else {
-      if (r.riskPerLot > maxRiskPerLot)
+      if (riskNotes && r.riskPerLot > maxRiskPerLot)
         warnings.push(
           `lot risks ₹${r.riskPerLot.toLocaleString('en-IN')} if the stock reaches its ₹${at.slSpot} chart stop — above the ₹${maxRiskPerLot.toLocaleString('en-IN')} per-lot budget`
         );

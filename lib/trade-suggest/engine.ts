@@ -19,6 +19,7 @@
  * before selecting an executable contract. Stale or mixed snapshots fail closed.
  */
 
+import { orderBlockRead } from '@/lib/order-blocks/read';
 import { setupScore } from '@/app/live/_lib/setup-score';
 import type { LiveQuoteResponse, LiveUrgencyRow } from '@/app/live/_lib/types';
 import { prisma } from '@/lib/db';
@@ -518,6 +519,9 @@ export async function runTradeSuggest(
           direction,
         }),
         tfCorroboration: corroborateWithTf(tfSnapshot, trade.symbol),
+        // Order-block context for the HELD name (advisory; a broken with-trade
+        // zone is thesis damage the AI may review for an exit — never a gate).
+        orderBlocks: await orderBlockRead(trade.symbol, date, direction, liveSpot),
         dataAsOfMs: base.marketDataAsOfMs ?? null,
       };
     })
@@ -982,6 +986,8 @@ export async function runTradeSuggest(
         latestBucketTs: freshness.latestBucketTs,
         fresh: freshness.fresh,
       },
+      // Advisory order-block read at the planned entry (operator 2026-11-19).
+      orderBlocks: await orderBlockRead(r.symbol, date, s.direction, r.ltp ?? plan.entrySpot),
     });
   }
 
